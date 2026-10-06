@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Colax Capture",
+  "version": "0.1.0",
+  "description": "Offers to save an email or password into Colax when you sign up or sign in somewhere.",
+  "minimum_chrome_version": "116",
+
+  "permissions": ["storage", "tabs", "activeTab", "scripting"],
+
+  "host_permissions": ["<all_urls>"],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "action": {
+    "default_title": "Colax — open the vault",
+    "default_icon": {
+      "16": "colax-icon.png",
+      "32": "colax-icon.png",
+      "48": "colax-icon.png",
+      "128": "colax-icon.png"
+    }
+  }
+}

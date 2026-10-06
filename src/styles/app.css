@@ -1,0 +1,933 @@
+/**
+ * Application shell, cards, sidebar, settings and dialogs.
+ *
+ * Layout and surface tokens live in tokens.css; the vendored carousel styles live
+ * with their components.
+ */
+.ambient{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;opacity:var(--ambient-strength, 1);transition:opacity var(--slow) var(--ease)}
+.ambient:after{content:"";position:absolute;inset:0;background:var(--bg);opacity:var(--bg-dim, 0);transition:opacity var(--slow) var(--ease)}
+.ambient__blob{position:absolute;border-radius:50%;will-change:transform;contain:strict}
+.ambient__blob--1{top:-14vmax;left:-10vmax;width:44vmax;height:44vmax;background:radial-gradient(circle,var(--ambient-1),transparent 70%);animation:drift-a 26s var(--ease) infinite alternate}
+.ambient__blob--2{bottom:-18vmax;right:-12vmax;width:42vmax;height:42vmax;background:radial-gradient(circle,var(--ambient-2),transparent 70%);animation:drift-b 32s var(--ease) infinite alternate-reverse}
+.ambient__blob--3{top:26%;right:14%;width:30vmax;height:30vmax;background:radial-gradient(circle,var(--ambient-3),transparent 72%);opacity:.6}
+@keyframes drift-a{0%{transform:translateZ(0) scale(1)}
+to{transform:translate3d(8%,7%,0) scale(1.18)}
+}
+@keyframes drift-b{0%{transform:translateZ(0) scale(1.1)}
+to{transform:translate3d(-9%,-6%,0) scale(.94)}
+}
+.ambient__blob:after{content:"";position:absolute;inset:-10%;transform:translateZ(0)}
+.grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.03;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E")}
+[data-theme=light] .grain{opacity:.022}
+/* minmax(0, 1fr) on the row is load-bearing: the implicit row would otherwise be
+   auto-sized, grow to the full content height, push .main past the viewport and
+   leave .content with nothing to scroll against. */
+.shell{position:relative;z-index:2;display:grid;grid-template-columns:272px 1fr;grid-template-rows:minmax(0, 1fr);height:100%}
+/* ---- Rail placement ------------------------------------------------------
+   The rail is a grid area, so docking it to another edge is a matter of
+   changing which rows and columns it occupies rather than reordering DOM.
+   `order` is deliberately NOT used: the rail is the first child, and moving it
+   visually while it stays first in the DOM would put the tab order out of sync
+   with what the user sees. */
+.shell[data-rail=right]{grid-template-columns:1fr 272px}
+.shell[data-rail=right] .sidebar{grid-column:2;grid-row:1}
+.shell[data-rail=right] .main{grid-column:1;grid-row:1}
+.shell[data-rail=top]{grid-template-columns:minmax(0, 1fr);grid-template-rows:auto minmax(0, 1fr)}
+.shell[data-rail=top] .sidebar{grid-column:1;grid-row:1}
+.shell[data-rail=top] .main{grid-column:1;grid-row:2}
+/* Docked top or bottom, the rail runs horizontally, so it stops being a column
+   of stacked rows and becomes a scrolling strip. */
+.shell[data-rail=top] .sidebar,.shell[data-rail=bottom] .sidebar{flex-direction:row;align-items:center;gap:var(--space-1);overflow-x:auto;overflow-y:hidden;padding:var(--space-2) var(--space-3)}
+.shell[data-rail=top] .sidebar{border-right:none;border-bottom:1px solid var(--border)}
+.shell[data-rail=bottom] .sidebar{border-right:none;border-top:1px solid var(--border)}
+.shell[data-rail=bottom]{grid-template-columns:minmax(0, 1fr);grid-template-rows:minmax(0, 1fr) auto}
+.shell[data-rail=bottom] .main{grid-column:1;grid-row:1}
+.shell[data-rail=bottom] .sidebar{grid-column:1;grid-row:2}
+/* In a horizontal strip the folder tree has nowhere sensible to nest, so
+   children sit inline after their folder instead of indented underneath. */
+.shell[data-rail=top] .sidebar__folder-children,.shell[data-rail=bottom] .sidebar__folder-children{margin-left:0;padding-left:0;border-left:none;flex-direction:row;gap:var(--space-1)}
+.shell[data-rail=top] .sidebar__spacer,.shell[data-rail=bottom] .sidebar__spacer{display:none}
+.shell[data-rail=top] .sidebar__rule,.shell[data-rail=bottom] .sidebar__rule{width:1px;height:22px;align-self:center;margin:0 var(--space-2);background:linear-gradient(180deg,transparent,var(--border-strong) 22%,var(--border-strong) 78%,transparent)}
+.shell[data-rail=top] .sidebar__edge,.shell[data-rail=bottom] .sidebar__edge{display:none}
+.shell[data-rail=top] .sidebar__footer,.shell[data-rail=bottom] .sidebar__footer{flex-direction:row;padding-top:0}
+/* Name-only drops the glyphs but keeps the hue dot, which is the only thing
+   telling two similar channel names apart at a glance. */
+.sidebar[data-labels=name] .nav-item{gap:var(--space-2)}
+.brand{display:flex;align-items:center;gap:var(--space-3);padding:0 var(--space-2) var(--space-4)}
+.brand__mark{display:grid;place-items:center;width:38px;height:38px;border-radius:var(--radius-md);background:var(--grad-primary);color:#fff;box-shadow:0 6px 20px -6px hsl(var(--accent-h) 84% 50% / .6),inset 0 1px #ffffff4d;flex-shrink:0;transition:transform var(--normal) var(--ease-out),box-shadow var(--normal) var(--ease)}
+.brand:hover .brand__mark{transform:translateY(-2px) scale(1.04)}
+.brand__name{font-size:var(--text-base);font-weight:640;letter-spacing:-.02em}
+.brand__sub{font-size:var(--text-xs);color:var(--text-faint);letter-spacing:.01em}
+.sidebar__nav{display:flex;flex-direction:column;gap:3px}
+.nav-item{position:relative;display:flex;align-items:center;gap:var(--space-3);width:100%;padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);font-size:var(--text-sm);font-weight:500;color:var(--text-muted);transition:background var(--fast) var(--ease),color var(--fast) var(--ease),transform var(--fast) var(--ease)}
+.nav-item:hover{background:var(--surface-hover);color:var(--text);transform:translate(2px)}
+.nav-item:active{transform:translate(2px) scale(.985)}
+.nav-item[aria-current=true]{background:var(--grad-soft);color:var(--accent-text)}
+.nav-item[aria-current=true]:before{content:"";position:absolute;left:-12px;top:50%;width:3px;height:18px;border-radius:var(--radius-full);background:var(--grad-primary);translate:0 -50%}
+.nav-item__count{margin-left:auto;font-size:var(--text-xs);font-variant-numeric:tabular-nums;color:var(--text-faint)}
+.nav-item[aria-current=true] .nav-item__count{color:var(--accent-text)}
+.nav-item__badge{margin-left:auto;min-width:19px;padding:0 6px;border-radius:var(--radius-full);background:var(--warn-soft);color:var(--warn);font-size:var(--text-xs);font-weight:600;text-align:center}
+.sidebar__spacer{flex:1;min-height:var(--space-4)}
+.sidebar__section{padding:var(--space-4) var(--space-3) var(--space-2);font-size:var(--text-xs);font-weight:640;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint)}
+.sidebar__footer{display:flex;flex-direction:column;gap:3px;padding-top:var(--space-2)}
+.main{display:flex;flex-direction:column;min-width:0;height:100%;position:relative;isolation:isolate}
+.content{position:relative;z-index:1;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+/* Flow owns its own scrolling, so it needs a bounded column to scroll inside.
+   The chain has to be definite at every step: .content is a flex item with
+   min-height 0, this wrapper fills it, and the AnimatedList fills the wrapper.
+   Given an auto-height parent the list's `height: 100%` resolves to auto, the
+   inner scroller grows to fit every card, and `overscroll-behavior: contain`
+   on that inner element then eats the wheel instead of passing it up. */
+[data-flow-scroll]{display:flex;flex-direction:column;height:100%;min-height:0}
+[data-flow-scroll] > .rb-animated-list{flex:1 1 auto;min-height:0}
+/* Same reason as the rail: the topbar's own fill plus a bottom border put a
+   hard line under the header. The page scrolls beneath it, so nothing was ever
+   occluded by it and the fill bought nothing. */
+.topbar{position:relative;z-index:20;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:var(--space-4);padding:var(--space-4) var(--space-6);background:none;border-bottom:none;backdrop-filter:none;flex-shrink:0}
+/* The rail and the page are one surface.
+   It used to carry its own translucent fill, a right border and a backdrop blur,
+   which drew a visible seam down the middle of the app whenever a background
+   image or the ambient gradient was showing through. Now it inherits the page
+   entirely and is separated by space alone. */
+.sidebar{position:relative;z-index:20;display:flex;flex-direction:column;gap:var(--space-2);padding:var(--space-5) var(--space-3);background:none;border-right:none;backdrop-filter:none;overflow-y:auto}
+.topbar__lead{display:flex;align-items:center;gap:var(--space-2);justify-self:start}
+/* Search and the icon share one centred column, the icon beneath the field. */
+.topbar__centre{display:flex;flex-direction:column;align-items:center;gap:var(--space-2);justify-self:center;min-width:0}
+/* The mark is inline SVG, so it inherits currentColor and needs no plate and no
+   inversion: black line-art in light mode, the same art in white in dark mode.
+   Only a faint tint behind it, to seat it against the topbar. */
+.brand-mark__wrap{display:grid;place-items:center;color:var(--text);transition:color var(--normal) var(--ease)}
+.colax-mark{display:block;color:inherit}
+.topbar__actions{display:flex;align-items:center;gap:var(--space-2);justify-self:end}
+/* Search: a quiet inset well rather than a bordered box, so it reads as part of
+   the topbar instead of a control sitting on top of it. */
+/* Search.
+   Rebuilt three times in this project and still read badly each time: too
+   narrow, so the placeholder clipped; too tall, so it outweighed the buttons
+   beside it; and its own fill plus border made it a slab floating on a
+   transparent topbar rather than part of the header.
+
+   Now it is a plain full-width field on the page surface with a hairline, sized
+   to the header's own rhythm. The icon and the trailing affordance sit at
+   fixed offsets that match the padding exactly, so the text always begins
+   between them rather than under them. */
+.search{position:relative;display:flex;align-items:center;justify-self:center;width:100%;max-width:520px}
+.search__icon{position:absolute;left:var(--space-3);top:50%;translate:0 -50%;width:16px;height:16px;color:var(--text-faint);pointer-events:none;transition:color var(--fast) var(--ease)}
+.search:focus-within .search__icon{color:var(--accent-text)}
+.search__input{width:100%;height:38px;padding:0 44px 0 40px;border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--surface-raised);color:var(--text);font-size:var(--text-sm);transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease),color var(--fast) var(--ease)}
+.search__input::placeholder{color:var(--text-faint)}
+/* type="text" already drops the native clear affordance; this hides the WebKit
+   one too in case a UA stylesheet reinstates it. */
+.search__input::-webkit-search-cancel-button,.search__input::-webkit-search-decoration{-webkit-appearance:none;appearance:none;display:none}
+.search__input:focus{outline:none;border-color:hsl(var(--accent-h) 55% 58% / .55);background:var(--bg);box-shadow:0 0 0 3px hsl(var(--accent-h) 55% 58% / .12)}
+/* The brand image lives in the topbar's lead slot, not here. */
+/* A pill with one continuous border. The old markup nested a second centred box
+   inside a third and dropped the border on focus, which is what made it look
+   broken; the field now keeps its shape and only the ring changes. */
+/* type="text" already drops the native clear affordance; this hides the WebKit
+   one too in case a UA stylesheet reinstates it. */
+/* The trailing affordance shares the input's right padding so the two line up
+   with the text block rather than floating against the outer edge. */
+.brand-subtitle{font-size:var(--text-xs);font-weight:620;color:var(--text-muted);letter-spacing:.16em;margin-bottom:4px;text-transform:uppercase;opacity:.9;text-align:center}
+.topbar__centre{gap:var(--space-2)}
+.search__kbd{position:absolute;right:10px;top:50%;translate:0 -50%;display:flex;pointer-events:none}
+.search__clear{position:absolute;right:5px;top:50%;translate:0 -50%;display:grid;place-items:center;width:26px;height:26px;border:none;border-radius:50%;background:var(--surface-hover);color:var(--text-muted);cursor:pointer;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),transform var(--fast) var(--ease-out)}
+.search__clear:hover{background:var(--surface-active);color:var(--text);transform:scale(1.08)}
+/* A bare hint glyph read as a button next to the field. It is a keyboard hint,
+   so it is muted and needs no plate. */
+.search .kbd{background:none;border:none;padding:0;color:var(--text-faint);font-size:var(--text-xs);box-shadow:none}
+/* ---- Per-view card sizing ------------------------------------------------
+   Each view publishes --card-scale / --card-max / --card-min-height /
+   --card-radius / --card-surface from its own slice of preferences, so Flow,
+   List and Orbit are tuned independently. Defaults here match
+   DEFAULT_CARD_SIZE so a view rendered before its wrapper mounts still looks
+   right.
+
+   Scale is `zoom`, not `transform: scale()`. A transform magnifies an already
+   laid-out box: the text inside stays the size it was, the cards overlap their
+   neighbours because the transform does not feed back into layout, and it blurs
+   anything rasterised. Zoom reflows padding, gaps and type, and still reserves
+   layout space. The trade is that zoom scales the element's own used size too,
+   so a wrapper that is pinned to `height: 100%` has to divide by the same
+   factor to end up exactly as tall as it was at 1x.
+
+   The selector is `.content__inner.list-scale` and not `.list-scale` on purpose.
+   List reuses .content__inner for its padding, and that class carries a
+   hard-coded `max-width: 900px` further down this file. At equal specificity the
+   later rule wins, so a plain `.list-scale` would lose that fight and the width
+   slider would sit there doing nothing at exactly one setting. Two classes beat
+   one regardless of order.
+
+   The surface slider fades the card toward the background rather than swapping in
+   a different colour, so the mix is resolved once here and reused, hover
+   included, rather than each surface re-deriving it. */
+.flow-scale,.content__inner.list-scale{--card-scale:1;--card-max:none;--card-min-height:0;--card-radius:var(--radius-lg);--card-surface:1;zoom:var(--card-scale);height:calc(100% / var(--card-scale));min-height:0;width:100%;max-width:var(--card-max);margin-inline:auto}
+.flow-scale,.list-scale{--card-bg:color-mix(in srgb,var(--glass) calc(var(--card-surface) * 100%),transparent);--card-bg-strong:color-mix(in srgb,var(--glass-strong) calc(var(--card-surface) * 100%),transparent)}
+.flow-scale>.rb-animated-list{height:100%}
+/* Width is a cap rather than a fixed width: both views stay fluid inside it, so
+   the slider means "allowed to grow this wide" and a narrow window is still
+   filled edge to edge. Height is a floor for the same reason, since the cards
+   carry a photo and a credential block of varying depth and a hard height would
+   clip whichever is tallest. */
+.rb-animated-list__item,.item{width:100%;min-height:var(--card-min-height,0);border-radius:var(--card-radius,var(--radius-lg))}
+.rb-animated-list__item,.item{background:var(--card-bg,var(--glass))}
+.item:hover{background:var(--card-bg-strong,var(--glass-strong))}
+.card-row__secret{border-radius:calc(var(--card-radius,var(--radius-lg)) - 2px)}
+[data-theme] .carousel-view__panel{border-radius:var(--card-radius,var(--radius-xl))}
+
+/* ---- Appearance panel ----------------------------------------------------
+   A slide-over, not a modal. It is translucent on purpose and has no backdrop:
+   the user is changing card size and colour *while looking at the cards*, so
+   anything opaque between them and the list would make the whole panel a blind
+   guess. It hugs the right edge so the list stays visible down its left side. */
+.tuner{position:fixed;top:0;right:0;bottom:0;z-index:70;display:flex;flex-direction:column;width:min(340px,100vw);border-left:1px solid var(--border);background:hsl(220 24% 8% / .72);backdrop-filter:blur(18px) saturate(140%);box-shadow:-24px 0 60px -30px hsl(220 40% 2% / .8);animation:tuner-in var(--normal) var(--ease-out) both}
+[data-theme=light] .tuner{background:hsl(210 30% 97% / .78);box-shadow:-24px 0 60px -30px hsl(222 40% 20% / .28)}
+@keyframes tuner-in{from{opacity:0;translate:16px 0}to{opacity:1;translate:none}}
+.tuner__head{display:flex;align-items:flex-start;gap:var(--space-3);padding:var(--space-5) var(--space-5) var(--space-4);border-bottom:1px solid var(--border);flex-shrink:0}
+.tuner__title{margin:0;font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:-.01em}
+.tuner__hint{margin:4px 0 0;font-size:var(--text-xs);line-height:1.5;color:var(--text-faint)}
+.tuner__body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:var(--space-4) var(--space-5) var(--space-8);display:flex;flex-direction:column;gap:var(--space-6)}
+.tuner__group{display:flex;flex-direction:column;gap:var(--space-4)}
+.tuner__legend{margin:0;font-size:var(--text-xs);font-weight:660;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint)}
+.tuner__reset{width:100%}
+
+.content__inner{max-width:900px;margin:0 auto;padding:var(--space-4) var(--space-6) var(--space-12)}
+.content__inner--wide{max-width:1180px}
+.view-switcher{display:flex;gap:3px;padding:3px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);backdrop-filter:blur(10px)}
+.view-switcher__option{display:flex;align-items:center;gap:6px;padding:6px var(--space-3);border-radius:calc(var(--radius-md) - 4px);font-size:var(--text-xs);font-weight:560;color:var(--text-muted);white-space:nowrap;transition:background var(--normal) var(--ease),color var(--normal) var(--ease),box-shadow var(--normal) var(--ease)}
+.view-switcher__option:hover{color:var(--text);background:var(--surface-hover)}
+.view-switcher__option[aria-pressed=true]{background:var(--grad-primary);color:#fff;box-shadow:0 4px 14px -6px hsl(var(--accent-h) 84% 50% / .7)}
+.view-pane{position:absolute;inset:0}
+.rb-animated-list__glow{position:absolute;inset:0;border-radius:inherit;background:var(--grad-soft);opacity:.55;pointer-events:none;animation:glow-in var(--normal) var(--ease-out) both}
+@keyframes glow-in{0%{opacity:0}
+}
+.card-row__head{display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3)}
+/* The website name, sitting where the avatar used to. Monospaced because a
+   domain is read character by character, and it takes no width from the title. */
+.card-row__site{flex:0 1 auto;min-width:0;max-width:42%;font-family:var(--font-mono);font-size:var(--text-xs);font-weight:520;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:3px 7px;border:1px solid var(--card-hairline);border-radius:var(--radius-sm);background:hsl(220 30% 3% / .34);backdrop-filter:blur(6px)}
+/* Second-factor badge. Centred on the card's top edge, which is why it is
+   positioned against .card-row rather than living inside the head row. */
+.card-row__secured{position:absolute;top:0;left:50%;translate:-50% -42%;z-index:2;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--surface);color:var(--accent-text);--badge-knockout:var(--surface);box-shadow:0 2px 10px hsl(220 40% 2% / .5)}
+[data-theme='light'] .card-row__secured{box-shadow:0 2px 10px hsl(222 40% 20% / .18)}
+.card-row__body{flex:1;min-width:0}
+.card-row__title{display:flex;align-items:center;gap:var(--space-2);min-width:0}
+.card-row__name{font-size:var(--text-base);font-weight:620;letter-spacing:-.018em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-row__meta{font-size:var(--text-sm);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-row__actions{display:flex;gap:2px;flex-shrink:0}
+.card-row__secret{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-2) var(--space-2) var(--space-3);border-radius:var(--radius-md);background:var(--bg-deep);transition:box-shadow var(--normal) var(--ease)}
+.card-row__password{flex:1;min-width:0;font-family:var(--font-mono);font-size:var(--text-sm);letter-spacing:-.01em;word-break:break-all;user-select:all}
+.card-row__foot{display:flex;align-items:center;gap:var(--space-3);margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--border)}
+.card-row__label{font-size:var(--text-xs);font-weight:640;letter-spacing:.05em;text-transform:uppercase;color:var(--text-faint);flex-shrink:0}
+/* The username now shares the password's treatment: monospaced, same size, so
+   the two read as one credential block rather than a heading and a subheading. */
+.card-row__username{flex:1;min-width:0;font-family:var(--font-mono);font-size:var(--text-base);letter-spacing:-.01em;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:all}
+.item__trigger{display:flex;align-items:flex-start;gap:var(--space-4);flex:1;min-width:0;text-align:left;padding:0}
+.item__trigger .avatar{margin-top:-1px}
+.item__peek{flex-basis:100%;display:flex;align-items:center;padding:var(--space-3) var(--space-4);margin-top:var(--space-3);border-radius:var(--radius-md);background:var(--bg-deep);font-family:var(--font-mono);font-size:var(--text-sm);word-break:break-all;user-select:all;animation:expand var(--normal) var(--ease-out) both}
+@keyframes expand{0%{opacity:0;transform:translateY(-4px)}
+}
+.carousel-view{position:relative;display:flex;flex-direction:column;height:100%;min-height:0}
+.carousel-view__stage{position:relative;flex:1;min-height:0}
+.carousel-view__panel{flex-shrink:0;width:min(620px,calc(100% - var(--space-8)));margin:0 auto;padding:var(--space-4) var(--space-5);border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--glass-strong);backdrop-filter:blur(14px) saturate(140%);box-shadow:var(--card-shadow);animation:orbit-panel-in var(--normal) var(--ease-out) both;transition:border-color var(--normal) var(--ease),background var(--normal) var(--ease)}
+.carousel-view__panel:hover{border-color:var(--border-strong);background:var(--surface-raised)}
+/* Each ring step swaps the card in rather than cutting: the panel lifts and
+   settles, and the identity above the artwork leads it. */
+@keyframes orbit-panel-in{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+.carousel-view__head{position:relative;z-index:2;display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3);animation:orbit-head-in 460ms var(--ease-out) both}
+@keyframes orbit-head-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.carousel-view__name{position:relative;z-index:2;flex:1;min-width:0;font-size:var(--text-lg);font-weight:620;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.carousel-view__username{position:relative;z-index:2;font-size:var(--text-sm);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.carousel-view__secret{position:relative;z-index:2;display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3);border-radius:var(--radius-md);background:var(--bg-deep);font-family:var(--font-mono);font-size:var(--text-sm);word-break:break-all;user-select:all;animation:orbit-rise var(--normal) var(--ease-out) both;animation-delay:60ms}
+@keyframes orbit-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.carousel-view__pw{flex:1;min-width:0;animation:orbit-pw var(--fast) var(--ease-out) both}
+@keyframes orbit-pw{from{opacity:0;filter:blur(3px);transform:translateX(-3px)}to{opacity:1;filter:blur(0);transform:translateX(0)}}
+/* A slow sheen across the artwork, so an idle Orbit panel still reads as alive. */
+.carousel-view__panel::after{content:"";position:absolute;inset:0;z-index:1;border-radius:inherit;pointer-events:none;background:linear-gradient(105deg,transparent 38%,hsl(0 0% 100% / .05) 50%,transparent 62%);background-size:280% 100%;animation:orbit-sheen 7.5s var(--ease) infinite}
+@keyframes orbit-sheen{0%,100%{background-position:180% 0}50%{background-position:-80% 0}}
+.carousel-view__meta{position:relative;z-index:2;display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-3);flex-wrap:wrap;animation:orbit-rise var(--normal) var(--ease-out) both;animation-delay:110ms}
+.carousel-view__hint{flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:var(--space-2);margin:var(--space-3) 0 var(--space-4);font-size:var(--text-xs);color:var(--text-faint)}
+.btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);border:1px solid transparent;border-radius:var(--radius-md);font-size:var(--text-sm);font-weight:560;white-space:nowrap;overflow:hidden;transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease),color var(--fast) var(--ease),transform var(--fast) var(--ease-out),box-shadow var(--fast) var(--ease)}
+.btn:active:not(:disabled){transform:scale(.97)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn--primary{background:var(--grad-primary);color:#fff;box-shadow:0 6px 20px -8px hsl(var(--accent-h) 84% 50% / .75)}
+.btn--primary:hover:not(:disabled){box-shadow:0 10px 30px -8px hsl(var(--accent-h) 84% 50% / .9);filter:brightness(1.08)}
+.btn--primary:after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 20%,hsl(0 0% 100% / .28) 50%,transparent 80%);translate:-100% 0;transition:translate var(--slow) var(--ease-out);pointer-events:none}
+.btn--primary:hover:not(:disabled):after{translate:100% 0}
+/* Quieter primary action, so the New login button matches the rest of the
+   interface rather than shouting over every other control. */
+.btn--quiet{position:relative;overflow:hidden;border:1px solid hsl(var(--accent-h) 46% 58% / .5);background:var(--accent-soft);color:var(--accent-text);box-shadow:none;font-weight:560}
+.btn--quiet:hover:not(:disabled){border-color:hsl(var(--accent-h) 52% 62% / .75);background:hsl(var(--accent-h) 46% 58% / .2)}
+.btn--secondary{background:var(--glass);border-color:var(--border);color:var(--text);backdrop-filter:blur(10px)}
+.btn--secondary:hover:not(:disabled){background:var(--surface-hover);border-color:var(--border-strong)}
+.btn--ghost{color:var(--text-muted)}
+.btn--ghost:hover:not(:disabled){background:var(--surface-hover);color:var(--text)}
+.btn--danger{background:var(--danger-soft);color:var(--danger)}
+.btn--danger:hover:not(:disabled){background:var(--danger);color:#fff}
+.btn--block{width:100%}
+.btn--lg{padding:var(--space-3) var(--space-6);font-size:var(--text-base)}
+.btn--icon{padding:var(--space-2);width:34px;height:34px;color:var(--text-muted);flex-shrink:0}
+.btn--icon:hover:not(:disabled){background:var(--surface-hover);color:var(--text)}
+.btn--icon.is-active{background:var(--accent-soft);color:var(--accent-text)}
+/* The reveal eye marks itself with data-active in every view, so the "password
+   is showing" state is legible instead of relying on the icon swap alone. */
+.btn--icon[data-active]{background:var(--accent-soft);color:var(--accent-text);border-color:transparent}
+.kbd{display:inline-flex;align-items:center;gap:2px;padding:2px 6px;border:1px solid var(--border);border-bottom-width:2px;border-radius:var(--radius-sm);background:var(--glass-strong);font-family:var(--font-sans);font-size:var(--text-xs);font-weight:560;color:var(--text-faint);line-height:1.4}
+.lock{position:relative;z-index:2;display:grid;place-items:center;height:100%;padding:var(--space-6);overflow-y:auto}
+.lock__card{position:relative;width:100%;max-width:420px;padding:var(--space-8);border:1px solid var(--border);border-radius:var(--radius-2xl);background:var(--glass-strong);backdrop-filter:blur(18px) saturate(150%);box-shadow:var(--shadow-lg)}
+.lock__brand{display:flex;flex-direction:column;align-items:center;gap:var(--space-4);margin-bottom:var(--space-6);text-align:center}
+.lock__mark{display:grid;place-items:center;width:58px;height:58px;border-radius:var(--radius-lg);background:var(--grad-primary);color:#fff;box-shadow:0 14px 40px -10px hsl(var(--accent-h) 84% 50% / .7),inset 0 1px #ffffff59}
+.lock__title{font-size:var(--text-xl);font-weight:660;letter-spacing:-.03em}
+.lock__hint{font-size:var(--text-sm);color:var(--text-muted);line-height:1.6}
+.field{display:flex;flex-direction:column;gap:var(--space-2);margin-bottom:var(--space-4)}
+.field__label{font-size:var(--text-sm);font-weight:560}
+.field-row{display:flex;align-items:center;gap:var(--space-2)}
+.input{width:100%;padding:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-deep);font-size:var(--text-base);transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.input::placeholder{color:var(--text-faint)}
+.input:focus{outline:none;border-color:transparent;box-shadow:var(--glow)}
+.input--mono{font-family:var(--font-mono);font-size:var(--text-sm);letter-spacing:-.01em}
+textarea.input{min-height:88px;resize:vertical;line-height:1.6}
+.field__note{font-size:var(--text-xs);line-height:1.6;color:var(--text-muted)}
+.strength{display:flex;flex-direction:column;gap:var(--space-2)}
+.strength__bar{display:flex;gap:3px}
+.strength__seg{flex:1;height:4px;border-radius:var(--radius-full);background:var(--border);transition:background var(--normal) var(--ease)}
+.strength__meta{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);font-size:var(--text-xs)}
+.strength__label{font-weight:640}
+.strength__time{color:var(--text-muted);font-variant-numeric:tabular-nums}
+.alert{display:flex;gap:var(--space-3);padding:var(--space-4);margin-bottom:var(--space-4);border:1px solid var(--border);border-radius:var(--radius-lg);font-size:var(--text-sm);line-height:1.6}
+.alert--danger{border-color:color-mix(in srgb,var(--danger) 42%,transparent);background:var(--danger-soft);color:var(--danger)}
+.alert--warn{border-color:color-mix(in srgb,var(--warn) 42%,transparent);background:var(--warn-soft);color:var(--warn)}
+.alert--info{background:var(--glass);color:var(--text-muted)}
+.list{display:flex;flex-direction:column;gap:var(--space-2)}
+.list-group{margin-bottom:var(--space-6)}
+.list-group__title{display:block;width:100%;padding:var(--space-2) 0 0;margin-bottom:var(--space-2);font-size:var(--text-xs);font-weight:640;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint)}
+.list-group__starred{display:inline-flex;align-items:center;gap:5px;color:var(--warn)}
+.item{display:flex;align-items:center;gap:var(--space-4);width:100%;padding:var(--space-3) var(--space-4);border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--glass);text-align:left;flex-wrap:wrap;box-shadow:var(--card-shadow);transition:border-color var(--normal) var(--ease),background var(--normal) var(--ease),transform var(--normal) var(--ease-out)}
+.item:hover{border-color:transparent;background:var(--glass-strong);transform:translateY(-2px);box-shadow:none}
+.item.is-open{border-color:transparent;box-shadow:none}
+.avatar{display:grid;place-items:center;width:40px;height:40px;border-radius:var(--radius-md);font-size:var(--text-base);font-weight:640;color:#fff;flex-shrink:0;text-transform:uppercase;user-select:none;box-shadow:inset 0 1px #ffffff40}
+.avatar--lg{width:48px;height:48px;font-size:var(--text-xl);border-radius:var(--radius-lg)}
+.item__body{flex:1;min-width:0}
+.item__title{display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-base);font-weight:580;letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item__meta{display:block;font-size:var(--text-sm);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item__actions{display:flex;align-items:center;gap:var(--space-1);opacity:0;transition:opacity var(--fast) var(--ease)}
+.item:hover .item__actions,.item:focus-within .item__actions{opacity:1}
+.chip{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:var(--radius-full);font-size:var(--text-xs);font-weight:620;letter-spacing:.01em;flex-shrink:0}
+.chip--warn{background:var(--warn-soft);color:var(--warn)}
+.chip--danger{background:var(--danger-soft);color:var(--danger)}
+.chip--muted{background:var(--surface-active);color:var(--text-muted)}
+.chip--accent{background:var(--accent-soft);color:var(--accent-text)}
+.detail{padding:var(--space-4);margin:calc(-1 * var(--space-2)) 0 var(--space-2);border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--glass-strong);backdrop-filter:blur(20px);box-shadow:var(--shadow-md)}
+.detail__row{display:grid;grid-template-columns:92px 1fr auto;align-items:center;gap:var(--space-3);padding:var(--space-2) 0;border-bottom:1px solid var(--border)}
+.detail__row:last-of-type{border-bottom:none}
+.detail__label{font-size:var(--text-xs);font-weight:640;letter-spacing:.05em;text-transform:uppercase;color:var(--text-faint)}
+.detail__value{min-width:0;font-size:var(--text-sm);word-break:break-all;user-select:all}
+.detail__value--mono{font-family:var(--font-mono);font-size:var(--text-sm)}
+.detail__value--muted{color:var(--text-faint)}
+.detail__notes{padding:var(--space-3) 0;font-size:var(--text-sm);line-height:1.6;color:var(--text-muted);white-space:pre-wrap;word-break:break-word}
+.detail__actions{display:flex;gap:var(--space-2);padding-top:var(--space-3);margin-top:var(--space-2);border-top:1px solid var(--border);flex-wrap:wrap}
+.totp{display:flex;align-items:center;gap:var(--space-3);font-family:var(--font-mono);font-size:var(--text-lg);font-variant-numeric:tabular-nums;letter-spacing:.08em}
+.totp__ring{--progress: 0;width:22px;height:22px;border-radius:50%;background:conic-gradient(var(--accent) calc(var(--progress) * 1%),var(--border) 0);flex-shrink:0}
+.totp__ring:after{content:"";display:block;width:100%;height:100%;border-radius:50%;background:var(--surface-raised);transform:scale(.62)}
+.empty{display:flex;flex-direction:column;align-items:center;gap:var(--space-3);padding:var(--space-12) var(--space-6);text-align:center}
+.empty__icon{display:grid;place-items:center;width:64px;height:64px;margin-bottom:var(--space-2);border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--glass);backdrop-filter:blur(10px);color:var(--text-faint)}
+.empty__title{font-size:var(--text-lg);font-weight:620;letter-spacing:-.02em}
+.empty__text{max-width:380px;font-size:var(--text-sm);color:var(--text-muted);line-height:1.6}
+.overlay{position:fixed;inset:0;z-index:40;display:grid;place-items:center;padding:var(--space-6);background:#05060b9e;backdrop-filter:blur(4px)}
+[data-theme=light] .overlay{background:#3d568f4d}
+/* max-height rather than height, so the header and footer stay pinned and only
+   the body between them scrolls. The editor case needs the body not to scroll
+   at all, which is why `.editor-window__body` sets overflow:hidden. */
+.modal{width:100%;max-width:540px;max-height:min(88vh,780px);display:flex;flex-direction:column;border:1px solid var(--border);border-radius:var(--radius-2xl);background:var(--bg);box-shadow:var(--shadow-lg);overflow:hidden}
+.modal__body{padding:var(--space-6);overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;flex:1 1 auto;min-height:0}
+.modal--wide{max-width:660px}
+.modal__header{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-5) var(--space-6);border-bottom:1px solid var(--border);flex-shrink:0}
+.modal__title{font-size:var(--text-lg);font-weight:640;letter-spacing:-.02em}
+.modal__footer{display:flex;gap:var(--space-2);padding:var(--space-4) var(--space-6);border-top:1px solid var(--border);background:var(--glass);flex-shrink:0}
+.modal__footer .btn{flex:1}
+.gen__preview{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-deep)}
+.gen__value{flex:1;min-width:0;font-family:var(--font-mono);font-size:var(--text-sm);word-break:break-all;user-select:all}
+.slider{-webkit-appearance:none;appearance:none;width:100%;height:5px;border-radius:var(--radius-full);background:var(--border);cursor:pointer}
+.slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--grad-primary);border:2px solid var(--surface);box-shadow:var(--shadow-sm);cursor:grab;transition:transform var(--fast) var(--ease-out)}
+.slider::-webkit-slider-thumb:hover{transform:scale(1.18)}
+.slider::-moz-range-thumb{width:18px;height:18px;border:2px solid var(--surface);border-radius:50%;background:hsl(var(--accent-h) 84% 58%);cursor:grab}
+.slider-row{display:flex;align-items:center;gap:var(--space-4)}
+.slider-row__value{min-width:58px;font-family:var(--font-mono);font-size:var(--text-sm);font-variant-numeric:tabular-nums;color:var(--text-muted);text-align:right}
+.toggle-row{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) 0}
+.toggle-row__text{flex:1;font-size:var(--text-sm)}
+.toggle{position:relative;width:38px;height:22px;border-radius:var(--radius-full);background:var(--border-strong);transition:background var(--normal) var(--ease);flex-shrink:0}
+.toggle:after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:var(--shadow-sm);transition:translate var(--normal) var(--ease-out)}
+.toggle[aria-pressed=true]{background:var(--grad-primary)}
+.toggle[aria-pressed=true]:after{translate:16px 0}
+.segmented{display:inline-flex;padding:3px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass)}
+.segmented__option{display:inline-flex;align-items:center;gap:var(--space-2);padding:5px var(--space-3);border-radius:calc(var(--radius-md) - 
+3px);font-size:var(--text-sm);font-weight:520;color:var(--text-muted);transition:background var(--fast) 
+var(--ease),color var(--fast) var(--ease)}
+.segmented__option[aria-pressed=true]{background:var(--surface-raised);color:var(--text);box-shadow:none}
+.settings{display:flex;flex-direction:column;gap:var(--space-6)}
+/* Sections are hairline-outlined cards on the page field, matching the
+   reference: no glass fill, no backdrop blur, and a serif heading. */
+.section{border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card);overflow:hidden}
+.section__head{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-5) var(--space-5);border-bottom:1px solid var(--card-hairline)}
+.section__icon{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--plate);color:var(--text);flex-shrink:0}
+.section__title{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:-.01em}
+.section__hint{font-size:var(--text-xs);color:var(--text-faint)}
+.section__body{padding:var(--space-2) var(--space-5) var(--space-4)}
+.section--danger .section__icon{background:var(--danger-soft);color:var(--danger)}
+/* The divider is the whole visual rhythm of the reference page, so it uses the
+   hairline token rather than the heavier --border. */
+.setting{display:flex;align-items:center;gap:var(--space-4);padding:var(--space-4) 0;border-bottom:1px solid var(--card-hairline)}
+.setting:last-child{border-bottom:none}
+.setting__text{flex:1;min-width:0}
+.setting__label{font-size:var(--text-sm);font-weight:560}
+.setting__hint{margin-top:3px;font-size:var(--text-xs);line-height:1.6;color:var(--text-muted)}
+/* Custom select. The native popup ignored our tokens and rendered system-light,
+   so the list is drawn here instead. */
+.select{position:relative;min-width:0}
+.select__trigger{display:flex;align-items:center;gap:var(--space-2);width:100%;padding:var(--space-2) var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-raised);font-size:var(--text-sm);color:var(--text);cursor:pointer;text-align:left;transition:border-color var(--fast) var(--ease),background var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.select__trigger:hover{border-color:var(--border-strong);background:var(--surface-hover)}
+.select__trigger:focus-visible{outline:none;border-color:var(--accent);box-shadow:var(--glow)}
+.select__value{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:520}
+.select__caret{flex-shrink:0;color:var(--text-faint);transition:transform var(--fast) var(--ease)}
+.select__caret[data-open]{transform:rotate(180deg)}
+/* Opaque, not glass. The list floats over the settings body, and at 8% white the
+   rows underneath showed straight through the options. */
+.select__list{position:absolute;top:calc(100% + 6px);left:0;z-index:60;min-width:100%;max-height:280px;overflow-y:auto;overscroll-behavior:contain;padding:4px;border:1px solid var(--border-strong);border-radius:var(--radius-md);background:var(--surface);box-shadow:var(--shadow-lg)}
+[data-theme=light] .select__list{background:hsl(210 30% 98%)}
+.select__list[data-align=right]{left:auto;right:0}
+.select__option{display:flex;align-items:center;gap:var(--space-2);width:100%;padding:var(--space-2) var(--space-2);border-radius:var(--radius-sm);text-align:left;color:var(--text-muted);font-size:var(--text-sm);transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.select__option[data-active]{background:var(--surface-hover);color:var(--text)}
+.select__option[aria-selected=true]{color:var(--accent-text)}
+.select__option-icon{display:grid;place-items:center;width:15px;flex-shrink:0;color:var(--accent-text)}
+.select__option-text{display:flex;flex-direction:column;gap:1px;min-width:0}
+.select__option-label{white-space:nowrap}
+.select__option-hint{font-size:var(--text-xs);color:var(--text-faint);white-space:nowrap}
+/* The stacked-card shape, border and selected state come from the block further
+   down that carries the reference treatment; only hover lives here. */
+.accent-swatch:hover{color:var(--text)}
+.accent-swatch[aria-pressed=true]{border-color:var(--card-hairline-strong);color:var(--text);box-shadow:none}
+.option-card:hover{color:var(--text)}
+.option-card[aria-pressed=true]{border-color:var(--card-hairline-strong);background:var(--card);color:var(--text);box-shadow:none}
+.toasts{position:fixed;z-index:60;bottom:var(--space-6);left:50%;translate:-50% 0;display:flex;flex-direction:column-reverse;gap:var(--space-2);pointer-events:none}
+.toast{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);border:1px solid var(--border);border-radius:var(--radius-full);background:var(--glass-strong);backdrop-filter:blur(20px);box-shadow:var(--shadow-lg);font-size:var(--text-sm);white-space:nowrap;pointer-events:auto}
+.toast__icon{color:var(--accent-text);display:flex}
+.toast--error .toast__icon{color:var(--danger)}
+.view-menu{position:relative}
+/* Opaque for the same reason as the select list: this floats over the card list. */
+.view-menu__panel{position:absolute;top:calc(100% + 8px);z-index:30;width:232px;padding:5px;border:1px solid var(--border-strong);border-radius:var(--radius-lg);background:var(--surface);box-shadow:var(--shadow-lg);transform-origin:top right}
+.view-menu__panel[data-align=right]{right:0}
+.view-menu__panel[data-align=left]{left:0;transform-origin:top left}
+.view-menu__option{display:flex;align-items:center;gap:var(--space-3);width:100%;padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);text-align:left;transition:background var(--fast) var(--ease)}
+.view-menu__option:hover{background:var(--surface-hover)}
+.view-menu__option[aria-selected=true]{background:var(--grad-soft)}
+.view-menu__icon{display:grid;place-items:center;width:28px;height:28px;border-radius:var(--radius-sm);background:var(--surface-active);color:var(--text-muted);flex-shrink:0}
+.view-menu__option[aria-selected=true] .view-menu__icon{background:var(--grad-primary);color:#fff}
+.view-menu__text{display:flex;flex-direction:column;min-width:0}
+.view-menu__label{font-size:var(--text-sm);font-weight:560;color:var(--text)}
+.view-menu__hint{font-size:var(--text-xs);color:var(--text-faint)}
+
+/* ---- Settings window ---------------------------------------------------
+   Restyled to the editorial reference layout: a serif display heading, cards
+   separated only by a hairline, and circular plates behind icons instead of
+   filled gradient pills. The window drops its glass backdrop so the type has a
+   quiet, near-solid field to sit on.
+   ---------------------------------------------------------------------- */
+.settings-window{display:grid;grid-template-columns:248px 1fr;width:min(1080px,100%);height:min(760px,90vh);border:1px solid var(--card-hairline);border-radius:var(--radius-xl);background:var(--bg);box-shadow:var(--shadow-lg);overflow:hidden}
+.settings-window__rail{display:flex;flex-direction:column;gap:var(--space-2);padding:var(--space-6) var(--space-3);border-right:1px solid var(--card-hairline);background:var(--bg-deep);overflow-y:auto}
+.settings-window__brand{display:flex;align-items:center;gap:var(--space-2);padding:0 var(--space-2) var(--space-3);font-size:var(--text-base);font-weight:640;letter-spacing:-.02em}
+.settings-window__dot{width:9px;height:9px;border-radius:50%;background:var(--grad-primary);flex-shrink:0}
+.settings-window__tabs{display:flex;flex-direction:column;gap:2px}
+.settings-tab{position:relative;display:flex;align-items:center;gap:var(--space-3);width:100%;padding:var(--space-2) var(--space-2);border:1px solid transparent;border-radius:var(--radius-md);font-size:var(--text-sm);font-weight:520;color:var(--text-muted);text-align:left;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),border-color var(--fast) var(--ease)}
+.settings-tab:hover{background:var(--plate);border-color:var(--card-hairline);color:var(--text)}
+.settings-tab[aria-selected=true]{background:var(--plate);border-color:var(--card-hairline-strong);color:var(--text)}
+/* The plate is what carries the icon in the reference, not a filled pill. */
+.settings-tab__icon{display:grid;place-items:center;width:28px;height:28px;flex-shrink:0;border-radius:50%;background:var(--plate);transition:background var(--fast) var(--ease)}
+.settings-tab:hover .settings-tab__icon,.settings-tab[aria-selected=true] .settings-tab__icon{background:var(--surface-hover)}
+.settings-tab__label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.settings-tab__index{font-size:var(--text-xs);color:var(--text-faint);font-variant-numeric:tabular-nums;opacity:0;transition:opacity var(--fast) var(--ease)}
+.settings-tab:hover .settings-tab__index,.settings-tab[aria-selected=true] .settings-tab__index{opacity:1}
+.settings-window__main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.settings-window__header{display:flex;align-items:flex-start;gap:var(--space-3);padding:var(--space-8) var(--space-8) var(--space-5);flex-shrink:0}
+.settings-window__title{margin:0;font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;line-height:1.12;letter-spacing:-.015em;color:var(--text)}
+.settings-window__hint{margin-top:var(--space-2);font-size:var(--text-sm);color:var(--text-muted);max-width:60ch}
+.settings-window__header .btn--icon{margin-left:auto;flex-shrink:0}
+.settings-window__body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:var(--space-2) var(--space-8) var(--space-8)}
+.settings-panel{overflow:visible}
+.setting__control{flex-shrink:0;display:flex;justify-content:flex-end;align-items:center;gap:var(--space-2);min-width:0}
+.setting--stack{flex-direction:column;align-items:stretch;gap:var(--space-3)}
+.setting--stack .setting__control{justify-content:flex-start;width:100%}
+/* Theme and accent pickers.
+   These were card-sized blocks, which at four items across produced a wide
+   squat rectangle with a very large radius — the corners read as an unintended
+   squircle and the row was taller than anything else in the panel. They are
+   now compact inline chips: small radius, no card, just a dot or preview, a
+   label, and a hairline when selected. */
+.option-cards,.accent-grid{display:flex;flex-direction:row;flex-wrap:wrap;gap:var(--space-2);width:100%}
+.option-card,.accent-swatch{flex:1 1 auto;min-width:0;display:flex;flex-direction:row;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-2) var(--space-3);border:1px solid transparent;border-radius:var(--radius-sm);text-align:center;background:transparent;font-size:var(--text-sm);font-weight:520;color:var(--text-muted);transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease),color var(--fast) var(--ease)}
+.option-card:hover,.accent-swatch:hover{background:var(--plate);color:var(--text)}
+.option-card[aria-pressed=true],.accent-swatch[aria-pressed=true]{border-color:var(--card-hairline-strong);background:var(--plate);color:var(--text)}
+/* The preview shrinks to a small swatch so the row matches the accent row. */
+.option-card__preview{width:26px;height:18px;border-radius:5px;border:1px solid var(--border);overflow:hidden;position:relative;flex-shrink:0}
+.option-card__preview{position:relative;width:100%;max-width:96px;height:56px;flex-shrink:0;border-radius:var(--radius-sm);border:1px solid var(--border);overflow:hidden}
+/* Inline chips have no plate to sit on, so the icon takes the label's colour. */
+.option-card__glyph{display:grid;place-items:center;color:inherit}
+.option-card[aria-pressed=true] .option-card__glyph{color:var(--text)}
+.option-card__label{font-size:var(--text-sm);font-weight:520;white-space:nowrap}
+.accent-swatch__chip{display:inline-block;width:16px;height:16px;border-radius:50%;box-shadow:none;flex-shrink:0}
+.setting--stack .option-cards,.setting--stack .accent-grid,.setting--stack .segmented--wrap{max-width:none;width:100%}
+.settings-window .field-row{width:100%}
+.settings-window .field-row .input{flex:1;min-width:0}
+.field__hint{font-size:var(--text-xs);line-height:1.6;color:var(--text-muted)}
+.segmented--wrap{flex-wrap:wrap;max-width:none;width:100%;justify-content:flex-start;gap:var(--space-2)}
+.btn--sm{padding:4px var(--space-3);font-size:var(--text-xs)}
+.theme-switch{position:relative;display:inline-flex;width:60px;height:34px;padding:0;border:none;background:none;flex-shrink:0}
+.theme-switch__track{position:relative;inset:0;display:block;width:100%;height:100%;border-radius:var(--radius-full);overflow:hidden;cursor:pointer;color:#fff;background:linear-gradient(180deg,#7cc4f0,#4f9fe0);transition:background var(--normal) var(--ease);box-shadow:inset 0 0 0 1px #ffffff24}
+.theme-switch__track[data-on]{background:linear-gradient(180deg,#26304a,#12172a)}
+.theme-switch:focus-visible{outline:2px solid var(--border-focus);outline-offset:3px;border-radius:var(--radius-full)}
+.theme-switch__sky{position:absolute;inset:0;width:100%;height:100%}
+.theme-switch__rays{transform-origin:17px 17px;opacity:1;transition:opacity var(--normal) var(--ease)}
+.theme-switch__track[data-on] .theme-switch__rays{opacity:0}
+.theme-switch__cloud{animation:cloud-drift 6s ease-in-out infinite}
+.theme-switch__cloud:nth-of-type(2){animation-delay:1s}
+.theme-switch__cloud:nth-of-type(3){animation-delay:2s}
+@keyframes cloud-drift{0%{transform:translate(0)}
+40%{transform:translate(3px)}
+80%{transform:translate(-3px)}
+to{transform:translate(0)}
+}
+.theme-switch__stars{opacity:0;transform:translateY(-14px);transition:opacity var(--normal) var(--ease),transform var(--normal) var(--ease)}
+.theme-switch__track[data-on] .theme-switch__stars{opacity:1;transform:translateY(0)}
+.theme-switch__star{transform-box:fill-box;transform-origin:center;animation:star-twinkle 2s ease-in-out infinite}
+@keyframes star-twinkle{0%,to{transform:scale(1)}
+40%{transform:scale(1.25)}
+80%{transform:scale(.8)}
+}
+.theme-switch__knob{position:absolute;top:4px;left:4px;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;color:#fff8d6;background:#ffc93c;box-shadow:0 2px 8px #0000004d;transition:transform .4s var(--ease-out),background .4s var(--ease),color .4s var(--ease),rotate .4s var(--ease);transform:translate(0) rotate(0)}
+.theme-switch__knob[data-on]{transform:translate(26px) rotate(320deg);color:#f4f6ff;background:#e8ecff}
+.theme-switch__knob svg{position:absolute;width:15px;height:15px}
+.theme-switch__sun{opacity:1;transition:opacity .3s var(--ease)}
+.theme-switch__moon{opacity:0;transition:opacity .3s var(--ease)}
+.theme-switch__knob[data-on] .theme-switch__sun{opacity:0}
+.theme-switch__knob[data-on] .theme-switch__moon{opacity:1}
+.card-row{position:relative;overflow:hidden;padding-inline:var(--space-1)}
+.card-row__foot,.card-row__actions-row,.card-row__dates{padding-inline:var(--space-2)}
+/* Username above, password below, sharing one panel so the pair reads as a unit. */
+/* Username above, password below, both inside one dark well. The gap is what
+   separates them; they are separate rows by design so a long address does not
+   push the password out of alignment with the row below. */
+.card-row__secret{display:flex;flex-direction:column;align-items:stretch;gap:2px;padding:var(--space-2) var(--space-2) var(--space-2) var(--space-3);border-radius:var(--radius-md)}
+.card-row__secret-top{display:flex;align-items:center;gap:var(--space-2);min-width:0}
+.card-row__secret-row{display:flex;align-items:center;gap:var(--space-2);min-width:0}
+/* Opaque enough to stay readable over any photo, rather than relying on the
+   scrim behind it being dark. */
+.card-row__secret{background:hsl(220 24% 7% / .55);backdrop-filter:blur(8px)}
+[data-theme=light] .card-row__secret{background:hsl(210 30% 96% / .62)}
+.card-row__secret-row .card-row__password{font-size:var(--text-base)}
+/* Tags on a card sit on the photo too, so they need their own weight. */
+.card-row .chip--tag,.carousel-view__panel .chip--tag,.item .chip--tag{box-shadow:none}
+.card-row>*,.item>*{position:relative;z-index:1}
+.card-row__scrim,.item__scrim,.carousel-view__scrim{position:absolute;inset:0;z-index:0;background:linear-gradient(180deg,var(--scrim-top, hsl(220 24% 7% / .86)),var(--scrim-bottom, hsl(220 26% 6% / .91))),linear-gradient(120deg,hsl(var(--item-h, 212) 40% 58% / .16),transparent 65%);pointer-events:none}
+.card-row__name,.card-row__meta,.item__title,.item__meta,.carousel-view__name,.carousel-view__username,.card-row__username{text-shadow:var(--on-photo-shadow)}
+.avatar--on-photo{box-shadow:inset 0 0 0 1px #ffffff47,0 2px 8px #00000059}
+.item{position:relative;overflow:hidden}
+.item__trigger,.item__peek{position:relative}
+.carousel-view__panel{position:relative;overflow:hidden}
+/* Only the real content is lifted. The blanket `> *` rule used to also catch
+   .item__art and .carousel-view__scrim and flip them to position:relative,
+   which dropped the scrim into normal flow so the title and username were pushed
+   below the photo instead of sitting on top of it. */
+.carousel-view__panel>*:not(.item__art):not(.carousel-view__scrim){position:relative;z-index:2}
+.card-row:before,.item:before{content:none}
+.item__art{position:absolute;inset:calc(var(--item-art-blur, 0px) * -1);z-index:0;background-image:var(--item-art, none);background-size:cover;background-position:center;filter:blur(var(--item-art-blur, 0px));pointer-events:none}
+.card-row>*:not(.item__art),.item>*:not(.item__art){position:relative;z-index:1}
+.item__art~*{z-index:1}
+/* Compact toggle pinned to the sidebar's right edge, vertically centred.
+   Icon only; the label is a tooltip that fades in on hover. */
+.sidebar__edge{position:absolute;right:0;top:50%;transform:translateY(-50%);z-index:3;display:grid;place-items:center;width:22px;height:46px;border:1px solid var(--border);border-right:none;border-radius:var(--radius-md) 0 0 var(--radius-md);background:var(--glass-strong);backdrop-filter:blur(14px) saturate(140%);color:var(--text-faint);cursor:pointer;transition:width var(--normal) var(--ease),color var(--fast) var(--ease),background var(--fast) var(--ease)}
+.sidebar__edge:hover{width:30px;color:var(--text);background:var(--glass)}
+.sidebar__edge::after{content:attr(data-label);position:absolute;right:calc(100% + 8px);top:50%;transform:translateY(-50%) translateX(6px);padding:5px 9px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--glass-strong);backdrop-filter:blur(14px) saturate(140%);font-size:var(--text-xs);font-weight:560;color:var(--text);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity var(--fast) var(--ease),transform var(--fast) var(--ease-out)}
+.sidebar__edge:hover::after,.sidebar__edge:focus-visible::after{opacity:1;transform:translateY(-50%) translateX(0)}
+.sidebar[data-compact] .sidebar__edge{width:18px;height:38px}
+
+/* Icon buttons on a login that may have any photo behind them. They carry their
+   own opaque surface so they stay legible regardless of the image, instead of
+   relying on the scrim underneath being dark enough. */
+.item__actions .btn--icon,.card-row .btn--icon{border:1px solid var(--border);background:var(--surface);color:var(--text-muted);box-shadow:none}
+.item__actions .btn--icon:hover,.card-row .btn--icon:hover{color:var(--text);border-color:var(--border-strong);background:var(--surface-hover)}
+.item__actions .btn--icon[data-action=favorite][aria-pressed=true]{color:var(--warn)}
+.item__actions .btn--icon.is-active{border-color:var(--accent);color:var(--accent-text)}
+/* The small ghost buttons in a card footer have the same problem over a photo, so
+   they get their own surface too. */
+.card-row__actions-row .btn{border:1px solid var(--border);background:var(--surface);color:var(--text-muted);box-shadow:none}
+.card-row__actions-row .btn:hover{color:var(--text);border-color:var(--border-strong);background:var(--surface-hover)}
+/* Lock sits in the footer row alongside Settings rather than floating over it,
+   so it lines up with the row above and cannot overlap it. */
+.sidebar__lock{position:static;display:block;margin-top:var(--space-2)}
+.lock-fab{display:grid;place-items:center;width:100%;height:34px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);color:var(--text-muted);cursor:pointer;transition:color var(--fast) var(--ease),background var(--fast) var(--ease),border-color var(--fast) var(--ease)}
+.lock-fab:hover{color:var(--danger);border-color:var(--border-strong);background:var(--surface-hover)}
+.lock-fab:active{transform:scale(.98)}
+.sidebar[data-floating] .lock-fab{background:var(--glass-strong);border-color:transparent;box-shadow:none}
+.sidebar[data-floating] .lock-fab:hover{border-color:transparent}
+/* Floating mode: the rail itself disappears, so there is no visible edge between
+   the sidebar and the page. Only the free-floating pills remain. */
+.sidebar[data-floating]{background:transparent;border-right:none;backdrop-filter:none;box-shadow:none}
+.sidebar[data-floating] .sidebar__nav,.sidebar[data-floating] .sidebar__footer{padding-inline:var(--space-3)}
+/* The rail sits directly on the page background, so a drop shadow on it only
+   ever read as a smudge along the edge. Floating rows separate by their own
+   translucent fill and, for the active one, an inset ring. */
+/* Channels get the short depth stack, so the slider moves them too. */
+.nav-item{box-shadow:var(--channel-shadow);transition:background var(--fast) var(--ease),color var(--fast) var(--ease),transform var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.nav-item:hover{box-shadow:var(--card-shadow-hover)}
+.nav-item[aria-current=true]{box-shadow:var(--card-shadow-hover),inset 0 0 0 1px hsl(var(--accent-h) 50% 58% / .45)}
+
+.sidebar[data-floating] .sidebar__row,.sidebar[data-floating] .nav-item,.sidebar[data-floating] .sidebar__edge{border-color:transparent;background:var(--glass-strong);box-shadow:var(--channel-shadow)}
+.sidebar[data-floating] .sidebar__row:hover,.sidebar[data-floating] .nav-item:hover,.sidebar[data-floating] .sidebar__edge:hover{border-color:transparent;background:var(--surface-hover);box-shadow:none}
+.sidebar[data-floating] .nav-item[aria-current=true]{background:var(--accent-soft);box-shadow:inset 0 0 0 1px hsl(var(--accent-h) 50% 58% / .55);color:var(--text)}
+.shell[data-floating] .sidebar{border-right-color:transparent}
+.shell[data-floating] .topbar{background:transparent;border-bottom:none;box-shadow:none}
+/* The actions used to be wrapped in a floating pill: one border and one fill
+   drawn around BOTH buttons, so a view switcher and a primary action read as
+   one control with a seam down the middle. The buttons carry their own shapes;
+   the row that holds them carries none. */
+.shell[data-floating] .topbar__actions{border:none;border-radius:0;background:none;box-shadow:none;gap:var(--space-2)}
+/* Same reasoning for search, and it is worse here: the pill wrapped the input,
+   which already has its own border and radius, so the field wore two rings and
+   the outer one floated a few pixels off the inner one. The wrapper is now
+   purely a positioning context for the icon, the clear button and the hint. */
+.shell[data-floating] .search{border:none;border-radius:0;background:none;box-shadow:none;padding-inline:0}
+.settings-window[data-no-dividers] .setting,.settings-window[data-no-dividers] .settings-window__rail,.settings-window[data-no-dividers] .settings-window__header{border-color:transparent}
+.settings-window[data-no-dividers] .setting{border-bottom-style:none}
+/* ---- Dashboard ---------------------------------------------------------
+   Rebuilt around one idea: the hero answers "is anything wrong" in a sentence
+   and offers the single most useful action, and everything after that supports
+   it. The serif display face and hairline cards come from the same reference
+   layout as the settings window, so the two screens read as one product.
+   ---------------------------------------------------------------------- */
+.dashboard{display:flex;flex-direction:column;gap:var(--space-5);padding-bottom:var(--space-6)}
+
+.dash-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:var(--space-6);flex-wrap:wrap;padding:var(--space-8) var(--space-6);border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card)}
+.dash-hero__text{flex:1;min-width:260px}
+.dash-hero__eyebrow{margin:0 0 var(--space-2);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint)}
+.dash-hero__title{margin:0;font-family:var(--font-display);font-size:2.4rem;font-weight:600;line-height:1.08;letter-spacing:-.02em;color:var(--text)}
+.dash-hero__count{font-variant-numeric:tabular-nums;color:var(--warn);margin-right:.28em}
+.dash-hero__what{color:var(--text-muted)}
+.dash-hero__hint{margin:var(--space-3) 0 0;max-width:52ch;font-size:var(--text-sm);line-height:1.6;color:var(--text-muted)}
+.dash-hero__action{display:inline-flex;align-items:center;gap:var(--space-2);padding:9px var(--space-4);border:1px solid var(--card-hairline-strong);border-radius:var(--radius-full);background:transparent;color:var(--text);font-size:var(--text-sm);font-weight:560;white-space:nowrap;transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease)}
+.dash-hero__action:hover{background:var(--surface-hover);border-color:var(--accent)}
+
+/* Coverage bar. The one animated element on the screen: the width changes as
+   the user acts, and a bar that jumped would not read as progress. */
+.dash-bar{height:4px;border-radius:var(--radius-full);background:var(--surface);overflow:hidden}
+.dash-bar__fill{height:100%;border-radius:inherit;background:var(--grad-primary);transition:width var(--slow) var(--ease-out)}
+.dash-bar[data-clean] .dash-bar__fill{background:hsl(152 46% 52%)}
+
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:var(--space-2)}
+/* Staggered entrance, the second motion idea on this screen. */
+.stat{display:flex;flex-direction:column;gap:2px;padding:var(--space-3) var(--space-4);border:1px solid var(--card-hairline);border-radius:var(--radius-md);background:var(--card);animation:stat-in var(--normal) var(--ease-out) both}
+.stat__value{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
+.stat__label{font-size:var(--text-xs);color:var(--text-faint)}
+@keyframes stat-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* Outstanding work as one ranked list rather than a section per metric. */
+.dash-issues{display:flex;flex-direction:column;gap:2px}
+.dash-issue{position:relative;display:flex;align-items:center;gap:var(--space-3);width:100%;padding:var(--space-3) var(--space-4) var(--space-3) 0;border-radius:var(--radius-sm);text-align:left;color:inherit;transition:background var(--fast) var(--ease)}
+.dash-issue:hover{background:var(--surface-hover)}
+.dash-issue__bar{width:3px;align-self:stretch;border-radius:var(--radius-full);flex-shrink:0;background:var(--text-faint)}
+.dash-issue[data-severity=high] .dash-issue__bar{background:var(--danger)}
+.dash-issue[data-severity=medium] .dash-issue__bar{background:var(--warn)}
+.dash-issue__body{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.dash-issue__label{font-size:var(--text-sm);font-weight:560}
+.dash-issue__detail{font-size:var(--text-xs);color:var(--text-faint)}
+.dash-issue__count{font-size:var(--text-sm);font-variant-numeric:tabular-nums;color:var(--text-muted)}
+
+.dash-reminders{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--space-2)}
+.dash-reminder{display:grid;grid-template-columns:1fr auto;grid-template-areas:"label count" "select select";gap:var(--space-1) var(--space-2);padding:var(--space-3);border:1px solid var(--card-hairline);border-radius:var(--radius-md);background:var(--card)}
+.dash-reminder__label{grid-area:label;font-size:var(--text-sm);font-weight:560}
+.dash-reminder__count{grid-area:count;font-size:var(--text-xs);color:var(--text-faint)}
+.dash-reminder .select__trigger{grid-area:select}
+
+.dash-create{display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-3);flex-wrap:wrap}
+.dash-create .input{flex:1;min-width:160px}
+
+/* ---- Insights ----------------------------------------------------------
+   A 2x2 grid of small cards. Each shows a proportion rather than a bare
+   number, because the question is always "how much" and never "exactly how
+   many" — the exact counts live in the stat row above.
+   ---------------------------------------------------------------------- */
+.dash-insights{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-3)}
+.dash-card{display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-4);border:1px solid var(--card-hairline);border-radius:var(--radius-md);background:var(--bg-deep)}
+.dash-card__title{margin:0;font-size:var(--text-sm);font-weight:600}
+.dash-card__empty{margin:0;font-size:var(--text-xs);line-height:1.6;color:var(--text-faint)}
+.dash-card__foot{margin:0;font-size:var(--text-xs);color:var(--text-faint);font-variant-numeric:tabular-nums}
+
+/* Strength: one stacked bar plus a legend. The bar segments carry the band as
+   a data attribute so the colour scale is declared once, in one place. */
+.dash-strength{display:flex;height:8px;border-radius:var(--radius-full);overflow:hidden;background:var(--surface)}
+.dash-strength>span{display:block;min-width:3px}
+/* The legend dot inherits the band colour from its own list item, so the scale
+   is declared once and both the bar and the key read from it. */
+.dash-strength>span[data-band='0'],.dash-key li[data-band='0'] .dash-key__dot{background:hsl(357 62% 58%)}
+.dash-strength>span[data-band='1'],.dash-key li[data-band='1'] .dash-key__dot{background:hsl(24 78% 56%)}
+.dash-strength>span[data-band='2'],.dash-key li[data-band='2'] .dash-key__dot{background:hsl(42 82% 58%)}
+.dash-strength>span[data-band='3'],.dash-key li[data-band='3'] .dash-key__dot{background:hsl(160 44% 50%)}
+.dash-strength>span[data-band='4'],.dash-key li[data-band='4'] .dash-key__dot{background:hsl(196 60% 54%)}
+.dash-key{display:flex;flex-wrap:wrap;gap:2px var(--space-3);margin:0;padding:0;list-style:none}
+.dash-key li{display:flex;align-items:center;gap:5px;font-size:var(--text-xs);color:var(--text-faint)}
+.dash-key__dot{width:7px;height:7px;border-radius:50%;background:var(--text-faint);flex-shrink:0}
+.dash-key b{font-weight:600;color:var(--text-muted);font-variant-numeric:tabular-nums}
+
+/* Activity sparkline: fixed-height columns so an empty day reads as flat
+   rather than as a missing bar. */
+.dash-spark{display:flex;align-items:flex-end;gap:2px;height:46px}
+.dash-spark__col{flex:1;height:100%;display:flex;align-items:flex-end}
+.dash-spark__bar{display:block;width:100%;min-height:2px;border-radius:2px;background:var(--grad-primary);transition:height var(--normal) var(--ease-out)}
+.dash-spark__bar[data-empty]{background:var(--border-strong)}
+
+.dash-bars{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}
+.dash-bars li{display:grid;grid-template-columns:minmax(0,7rem) 1fr auto;align-items:center;gap:var(--space-2);font-size:var(--text-xs)}
+.dash-bars__label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)}
+.dash-bars__track{height:6px;border-radius:var(--radius-full);background:var(--surface);overflow:hidden}
+.dash-bars__fill{display:block;height:100%;border-radius:inherit;background:var(--grad-primary)}
+.dash-bars b{font-weight:600;color:var(--text-muted);font-variant-numeric:tabular-nums}
+
+.dash-reuse{display:flex;flex-direction:column;gap:var(--space-2);margin:0;padding:0;list-style:none}
+.dash-reuse li{display:flex;align-items:baseline;gap:var(--space-2);font-size:var(--text-xs)}
+.dash-reuse__count{font-weight:700;color:var(--danger);font-variant-numeric:tabular-nums;flex-shrink:0}
+.dash-reuse__sites{min-width:0;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 120px let the seventh tile wrap onto its own row, leaving a gap beside it. */
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:var(--space-2)}
+.stat{display:flex;flex-direction:column;gap:2px;padding:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--glass)}
+/* A tile that leads somewhere says so on hover, and takes focus like a control.
+   Without this the numbers read as decoration and the user has to hunt the
+   sidebar for the view they already have the count for. */
+.stat--link{cursor:pointer;text-align:left;transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease),transform var(--fast) var(--ease)}
+.stat--link:hover{background:var(--surface-hover);border-color:var(--border-strong)}
+.stat--link:focus-visible{outline:2px solid var(--border-focus);outline-offset:2px}
+.stat--link:active{transform:scale(.985)}
+.stat__icon{color:var(--text-faint)}
+.stat__value{font-size:var(--text-xl);font-weight:660;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stat__label{font-size:var(--text-xs);color:var(--text-faint)}
+.dash-section{display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-5);border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card)}
+.dash-section__head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap}
+.dash-section__title{margin:0;font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:-.01em}
+.dash-section__hint{margin:2px 0 0;max-width:62ch;font-size:var(--text-xs);line-height:1.5;color:var(--text-faint)}
+/* Reminder and tag controls inside a dashboard section. */
+.dash-controls{display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:var(--space-2)}
+.dash-control{align-items:flex-start;border:1px solid var(--card-hairline);border-radius:var(--radius-md);background:var(--bg-deep);padding:var(--space-3)}
+.dash-list{display:flex;flex-direction:column}
+.dash-row{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-1);border-bottom:1px solid var(--card-hairline);font-size:var(--text-sm)}
+.dash-row:last-child{border-bottom:none}
+.dash-row--button{width:100%;text-align:left;color:inherit;cursor:pointer;border-radius:var(--radius-sm)}
+.dash-row--button:hover{background:var(--surface-hover)}
+.dash-row__dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.dash-row__name{font-weight:540;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;text-align:left}
+.dash-row__badge{padding:0 6px;border-radius:var(--radius-full);background:var(--surface-hover);font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint)}
+.dash-row__meta{flex:1;min-width:0;font-size:var(--text-xs);color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-row__count{min-width:26px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text-muted)}
+.dash-row__hue{width:90px;flex-shrink:0;accent-color:var(--accent)}
+/* Login editor: a rail of sections beside the panel, mirroring Settings. */
+.editor-window__body{padding:0;overflow:hidden}
+/* The scrolling problem was a height that could not resolve.
+   `.editor-window` had only a max-height, and its single implicit grid row was
+   sized `auto`, so the row grew to fit the form and the panel inside never had a
+   bounded box to scroll against — the whole dialog body scrolled instead and the
+   footer drifted out of view. A definite height plus minmax(0, 1fr) gives the
+   row a real size, and the panel becomes the only scroller. */
+.editor-window{display:grid;grid-template-columns:196px 1fr;grid-template-rows:minmax(0,1fr);height:min(60vh,540px);min-height:340px}
+.editor-window__rail{display:flex;flex-direction:column;gap:2px;padding:var(--space-4) var(--space-3);border-right:1px solid var(--border);background:var(--bg-deep);overflow-y:auto;min-height:0}
+.editor-window__tab{width:100%}
+.editor-window__main{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.editor-window__head{padding:var(--space-5) var(--space-6) var(--space-3);flex-shrink:0}
+.editor-window__title{margin:0;font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:-.01em}
+.editor-window__hint{margin:2px 0 0;font-size:var(--text-xs);color:var(--text-faint)}
+/* flex:1 + min-height:0 is what turns this into the single scroll container
+   inside the dialog. */
+.editor-window__panel{display:flex;flex-direction:column;gap:var(--space-4);flex:1 1 auto;min-height:0;padding:var(--space-2) var(--space-6) var(--space-6);overflow-y:auto;overscroll-behavior:contain}
+.editor-window__panel>.field:last-child{margin-bottom:0}
+.editor-window__panel .field{margin-bottom:0}
+@media(max-width:640px){.editor-window{grid-template-columns:1fr}
+.editor-window__rail{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--border)}
+.editor-window__tab{white-space:nowrap}
+.editor-window__tab:before{display:none}}
+.editor-embed{padding:var(--space-4);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-deep)}
+.hue-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:var(--space-2)}
+.hue-swatch{display:flex;flex-direction:column;align-items:center;gap:6px;padding:var(--space-2);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);font-size:var(--text-xs);font-weight:520;color:var(--text-muted);transition:transform var(--normal) var(--ease-out),border-color var(--normal) var(--ease),color var(--normal) var(--ease)}
+.hue-swatch:hover{transform:translateY(-2px);color:var(--text)}
+.hue-swatch[aria-pressed=true]{border-color:transparent;color:var(--text);box-shadow:var(--glow)}
+.hue-swatch__chip{width:26px;height:26px;border-radius:50%;box-shadow:inset 0 1px #ffffff40}
+.theme-picker{padding-top:var(--space-2);margin-top:var(--space-2);border-top:1px solid var(--border)}
+.theme-picker__preview{position:relative;overflow:hidden;display:grid;place-items:center;height:96px;border:1px solid var(--border);border-radius:var(--radius-lg);background-size:cover;background-position:center;font-size:var(--text-2xl);font-weight:650;color:#ffffffeb;text-shadow:0 2px 10px hsl(0 0% 0% / .35)}
+.theme-picker__art{position:absolute;inset:calc(var(--preview-blur, 0px) * -1);background-size:cover;background-position:center;pointer-events:none}
+.theme-picker__initial{position:relative}
+/* Icon preview, mirroring the card avatar. */
+.theme-picker__avatar{position:relative;width:38px;height:38px;border-radius:var(--radius-md);background-size:cover;background-position:center;box-shadow:inset 0 0 0 1px hsl(0 0% 100% / .28),0 2px 8px hsl(0 0% 0% / .35)}
+.sidebar[data-compact]{width:60px;padding-left:var(--space-2);padding-right:var(--space-2)}
+.shell[data-compact-sidebar]{grid-template-columns:60px 1fr}
+.shell[data-compact-sidebar] .brand,.shell[data-compact-sidebar] .nav-item{justify-content:center;padding-left:0;padding-right:0}
+.sidebar{scrollbar-width:none}
+.sidebar::-webkit-scrollbar{display:none}
+/* Rows stay draggable; only the grip glyph was removed. The grab cursor is what
+   now signals it, so the affordance is the row itself rather than a badge on
+   top of it. */
+.sidebar__row{position:relative;display:flex;align-items:center;cursor:grab}
+.sidebar__row:active{cursor:grabbing}
+.sidebar__row[data-dragging]{opacity:.4;cursor:grabbing}
+.sidebar__row[data-over]:before{content:"";position:absolute;left:6px;right:6px;top:-1px;height:2px;border-radius:var(--radius-full);background:var(--grad-primary)}
+.nav-item__dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:hsl(var(--channel-h, 212) 48% 56%);box-shadow:0 0 0 2px hsl(var(--channel-h, 212) 48% 56% / .18);transition:box-shadow var(--fast) var(--ease),transform var(--fast) var(--ease)}
+.nav-item[aria-current=true] .nav-item__dot{transform:scale(1.25);box-shadow:0 0 0 3px hsl(var(--channel-h, 212) 48% 56% / .28)}
+.sidebar[data-compact] .nav-item__dot{display:none}
+.sidebar__add{margin-top:var(--space-1);color:var(--text-faint)}
+.sidebar__add:hover{color:var(--text)}
+.sidebar__row:hover .nav-item{padding-right:var(--space-2)}
+/* The per-channel wrapper only exists to host the divider; the row and the rule
+   must lay out as direct children of the nav. */
+/* The folder wrapper only exists to group a header with its children, so it
+   must not become a flex row of its own. It used to be matched as a bare
+   `.sidebar__nav > div`, which also matched every root channel row and
+   separator and gave them `display: contents`. That generates no box, so those
+   rows had no height and no hit area: root channels and separators could not be
+   picked up or dropped on at all, while the same rows inside a folder worked
+   because they are not direct children of the nav. Scoped to the wrapper. */
+.sidebar__folder{display:contents}
+/* Rule under the Dashboard, so it reads as the summary screen rather than one
+   more saved filter. Fades at both ends to avoid a hard bar across the rail. */
+.sidebar__rule{height:1px;flex-shrink:0;margin:var(--space-3) var(--space-3);background:linear-gradient(90deg,transparent,var(--border-strong) 22%,var(--border-strong) 78%,transparent)}
+/* The Dashboard keeps its own identity: no channel dot, a grid glyph that tints
+   to the active state, and a touch more weight than a filter row. */
+.sidebar__row[data-dashboard] .nav-item{font-weight:600}
+.sidebar__row[data-dashboard] .nav-item__dot{display:none}
+.nav-item__icon{display:grid;place-items:center;flex-shrink:0;opacity:.85;transition:opacity var(--fast) var(--ease),color var(--fast) var(--ease),transform var(--fast) var(--ease-out)}
+.nav-item:hover .nav-item__icon{opacity:1;transform:scale(1.06)}
+.nav-item[aria-current=true] .nav-item__icon{opacity:1;color:var(--accent-text)}
+.nav-item__label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip--tag,.tag-chip{--tag-h: 210;display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:var(--radius-full);background:hsl(var(--tag-h) 44% 55% / .16);color:hsl(var(--tag-h) 46% 72%);font-size:var(--text-xs);font-weight:600;white-space:nowrap;flex-shrink:0}
+[data-theme=light] .chip--tag,[data-theme=light] .tag-chip{color:hsl(var(--tag-h) 52% 34%);background:hsl(var(--tag-h) 52% 52% / .14)}
+.tag-chip{border:1px solid transparent;cursor:pointer;padding:4px 10px;transition:transform var(--fast) var(--ease-out),border-color var(--fast) var(--ease)}
+.tag-chip:hover{transform:translateY(-1px)}
+.tag-chip[aria-pressed=true]{border-color:hsl(var(--tag-h) 50% 55% / .6);background:hsl(var(--tag-h) 46% 52% / .26)}
+.tag-chip__dot{width:7px;height:7px;border-radius:50%;background:hsl(var(--tag-h) 52% 58%)}
+.tag-picker{display:flex;flex-direction:column;gap:var(--space-3)}
+.tag-cloud{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.card-row__dates{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--border);font-size:var(--text-xs);color:var(--text-faint)}
+.card-row__dates span{text-shadow:var(--on-photo-shadow)}
+.date-grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3)}
+.date-grid__label{display:block;margin-bottom:4px;font-size:var(--text-xs);font-weight:560;color:var(--text-faint)}
+.date-grid__hint{display:block;margin-top:4px;font-size:var(--text-xs);color:var(--text-faint)}
+.tag-manager{display:flex;flex-direction:column;gap:var(--space-2)}
+.tag-manager__row{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass)}
+.tag-manager__dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.tag-manager__name{flex:1;min-width:0;padding:4px 6px;border-radius:var(--radius-sm);font-size:var(--text-sm);font-weight:540;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tag-manager__name:hover{background:var(--surface-hover)}
+.tag-manager__hue{width:90px;flex-shrink:0;accent-color:var(--accent)}
+.tag-manager__count{flex:1;min-width:0;font-size:var(--text-xs);color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.channel-preview{--channel-h: 212;display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);color:var(--text-muted);font-size:var(--text-sm);font-weight:500}
+.channel-preview__dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;background:hsl(var(--channel-h) 48% 56%)}
+.channel-preview__name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.channel-preview__count{margin-left:auto;font-size:var(--text-xs);font-variant-numeric:tabular-nums;color:var(--text-faint)}
+.icon-picker{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.icon-picker__option{display:grid;place-items:center;width:38px;height:38px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);color:var(--text-muted);transition:border-color var(--fast) var(--ease),color var(--fast) var(--ease),background var(--fast) var(--ease)}
+.icon-picker__option:hover{color:var(--text);border-color:var(--border-strong)}
+.icon-picker__option[aria-pressed=true]{border-color:var(--accent);color:var(--accent-text);background:var(--accent-soft)}
+.tag-manager__badge{margin-left:6px;padding:0 5px;border-radius:var(--radius-full);background:var(--surface-hover);font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint);vertical-align:middle}
+.tag-manager__swatch{width:20px;height:20px;border-radius:50%;flex-shrink:0;border:1px solid var(--border);cursor:pointer;transition:transform var(--fast) var(--ease)}
+.tag-manager__swatch:hover{transform:scale(1.12)}
+.card-row[data-flagged]{box-shadow:inset 0 0 0 1px #ebaf4759}
+.ctx-menu{position:fixed;z-index:80;padding:5px;border:1px solid var(--border-strong);border-radius:var(--radius-md);background:var(--surface);box-shadow:var(--shadow-lg);transform-origin:top left;user-select:none;max-height:78vh;overflow-y:auto;overscroll-behavior:contain}
+
+/* ---- Capture prompt -----------------------------------------------------
+   Shown when the browser extension offers a sign-up or sign-in. Deliberately
+   plain: the decision is "save or not", and a password is displayed as dots
+   because the point is to confirm it arrived, not to re-read it.
+   ---------------------------------------------------------------------- */
+.capture{display:flex;flex-direction:column;gap:var(--space-4)}
+.capture__site{display:flex;align-items:baseline;gap:var(--space-3);flex-wrap:wrap}
+.capture__name{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;letter-spacing:-.01em}
+.capture__host{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-faint);word-break:break-all}
+.capture__fields{display:grid;grid-template-columns:auto 1fr;gap:var(--space-2) var(--space-4);margin:0;padding:var(--space-3) var(--space-4);border:1px solid var(--card-hairline);border-radius:var(--radius-md);background:var(--card);font-size:var(--text-sm)}
+.capture__fields dt{color:var(--text-faint)}
+.capture__fields dd{margin:0;min-width:0;font-family:var(--font-mono);font-size:var(--text-xs);word-break:break-all}
+.capture__pw{letter-spacing:.12em}
+.capture__tags{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.capture__tags-label{font-size:var(--text-xs);color:var(--text-faint)}
+/* A tag that does not exist yet, shown dashed so it reads as pending. */
+.chip--new{border-style:dashed;opacity:.85}
+.capture__note{margin:0;font-size:var(--text-xs);line-height:1.6;color:var(--text-faint)}
+.ctx-menu[data-depth="1"],.ctx-menu[data-depth="2"],.ctx-menu[data-depth="3"]{background:color-mix(in srgb,var(--surface-raised) 92%,transparent)}
+.ctx-menu__row{display:flex;align-items:center;gap:var(--space-2);width:100%;padding:7px var(--space-2);border-radius:var(--radius-sm);font-size:var(--text-sm);color:var(--text);text-align:left;transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.ctx-menu__row[data-active]:not(:disabled){background:var(--grad-primary);color:#fff}
+.ctx-menu__row[data-active]:not(:disabled) .ctx-menu__shortcut{color:#ffffffbf}
+.ctx-menu__row:disabled{opacity:.4;cursor:default}
+.ctx-menu__row--danger{color:var(--danger)}
+.ctx-menu__row--danger[data-active]:not(:disabled){background:var(--danger);color:#fff}
+.ctx-menu__icon{display:grid;place-items:center;width:18px;height:18px;flex-shrink:0;opacity:.85}
+.ctx-menu__label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctx-menu__shortcut{font-size:var(--text-xs);color:var(--text-faint);font-variant-numeric:tabular-nums;flex-shrink:0}
+.ctx-menu__chevron{font-size:15px;line-height:1;opacity:.6;flex-shrink:0}
+.ctx-menu__separator{height:1px;margin:5px 8px;background:var(--border)}
+.ctx-menu__heading{padding:6px 12px 4px;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-faint)}
+.shortcuts{display:grid;grid-template-columns:1fr auto;gap:var(--space-3) var(--space-6);align-items:center}
+.shortcuts__label{font-size:var(--text-sm);color:var(--text-muted)}
+.shortcuts__keys{display:flex;gap:3px;justify-self:end}
+.spinner{width:15px;height:15px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .6s linear infinite;opacity:.85}
+@keyframes spin{to{rotate:360deg}
+}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+@media(max-width:900px){.shell{grid-template-columns:1fr;grid-template-rows:minmax(0, 1fr) auto}
+.sidebar{grid-row:2;flex-direction:row;align-items:center;gap:var(--space-1);padding:var(--space-2) var(--space-3);border-right:none;border-top:1px solid var(--border);overflow-x:auto;overflow-y:hidden}
+.brand,.sidebar__section,.sidebar__footer,.sidebar__spacer{display:none}
+.sidebar__nav{flex-direction:row;flex:1}
+.nav-item{justify-content:center;padding:var(--space-2)}
+.nav-item[aria-current=true]:before{display:none}
+.nav-item>span:not(.nav-item__count):not(.nav-item__badge):not(.nav-item__icon){display:none}
+.sidebar__rule{width:1px;height:auto;align-self:stretch;margin:0 var(--space-2);background:linear-gradient(180deg,transparent,var(--border-strong) 22%,var(--border-strong) 78%,transparent)}
+.topbar{flex-wrap:wrap;padding-left:var(--space-4);padding-right:var(--space-4)}
+.content__inner{padding-left:var(--space-4);padding-right:var(--space-4)}
+.search{max-width:none}
+.detail__row{grid-template-columns:1fr auto}
+.detail__label{grid-column:1 / -1}
+}
+
+/* A card carrying its own photo should not also wear the depth shadow: the
+   blurred photo edge plus a dark shadow read as a mistake. Plain cards keep the
+   Settings-controlled shadow. */
+.rb-animated-list__item:has([data-photo]),.item:has([data-photo]),.carousel-view__panel:has([data-photo]){box-shadow:none}
+
+/* Folder children are indented under their parent with a guide line. */
+.sidebar__folder-children{display:flex;flex-direction:column;gap:3px;margin-left:var(--space-4);padding-left:var(--space-3);border-left:1px solid var(--border);overflow:hidden;transition:max-height var(--normal) var(--ease),opacity var(--fast) var(--ease);background:inherit}
+/* A collapsed or empty folder still has to be a drop target, otherwise there is
+   nothing to aim at and those folders cannot be dragged into at all. It keeps a
+   thin hit area instead of collapsing to zero height, and shows an outline only
+   while a drag is actually over it. */
+.sidebar__folder-children[data-collapsed],.sidebar__folder-children:empty{min-height:8px}
+.sidebar__folder-children[data-folder-drop]:hover{outline:1px dashed var(--border-strong);outline-offset:2px;border-radius:var(--radius-sm)}
+.nav-item--folder{cursor:pointer;user-select:none}
+.nav-item__chevron{display:grid;place-items:center;width:18px;height:18px;border-radius:var(--radius-sm);color:var(--text-faint);transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.nav-item__chevron:hover{background:var(--surface-hover);color:var(--text)}
+/* A separator row is a drag handle, so it needs a real hit area rather than the
+   1px line it draws. The row is 11px tall and centres the rule inside itself,
+   which is what makes a separator pickable by dragging instead of requiring a
+   pixel-perfect grab on the line. */
+.sidebar__rule--row{padding:0;margin:0 var(--space-3);height:11px;flex-shrink:0;display:flex;align-items:center;cursor:grab;background:none}
+.sidebar__rule--row:before{content:"";display:block;width:100%;height:1px;background:linear-gradient(90deg,transparent,var(--border-strong) 22%,var(--border-strong) 78%,transparent)}
+.sidebar__rule--row:hover{cursor:context-menu}
+.sidebar__rule--row:hover:before{background:linear-gradient(90deg,transparent,var(--accent-text) 22%,var(--accent-text) 78%,transparent)}
+.sidebar__rule--row:active{cursor:grabbing}
+
+/* Peek block: username line above the password when it is revealed. */
+.item__peek{display:flex;align-items:baseline;gap:var(--space-3);width:100%;padding-top:var(--space-2)}
+.item__peek-user{font-size:var(--text-xs);color:var(--text-faint);font-family:var(--font-mono)}
+
+/* The authenticator QR code in the security editor. */
+.sec__qr{display:flex;flex-direction:column;gap:var(--space-2);align-items:flex-start;margin:var(--space-3) 0}
+.sec__qr img{border-radius:var(--radius-md);border:1px solid var(--border);background:#fff;padding:8px}
+
+/* Alarm rows in Settings. */
+.alarms__list{list-style:none;display:flex;flex-direction:column;gap:var(--space-1);padding:0;margin:var(--space-3) 0}
+.alarms__row{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
+.alarms__main{flex:1;min-width:0;display:flex;align-items:baseline;gap:var(--space-3)}
+.alarms__time{font-family:var(--font-mono);font-weight:600}
+.alarms__label{color:var(--text-muted);font-size:var(--text-sm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alarms__days{color:var(--text-faint);font-size:var(--text-xs)}
+.alarms__day-row{display:flex;gap:4px;flex-wrap:wrap}
+.alarms__dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--text-faint)}
+.alarms__dot--on{background:hsl(152 55% 55%)}
+.integrations .field{margin-bottom:var(--space-4)}

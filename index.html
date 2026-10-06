@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/colax-icon.png" />
+    <link rel="apple-touch-icon" href="/colax-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="description" content="Colax — a local-first, zero-knowledge password vault." />
+    <title>Colax</title>
+    <script>
+      // Applied before first paint so there is no light/dark flash. Preferences
+      // live in IndexedDB, so this reads the small localStorage mirror instead.
+      (function () {
+        try {
+          var root = document.documentElement;
+          var mode = localStorage.getItem('aegis.theme') || 'system';
+          var dark = mode === 'dark' || (mode === 'system' && !matchMedia('(prefers-color-scheme: light)').matches);
+          root.dataset.theme = dark ? 'dark' : 'light';
+          var accent = localStorage.getItem('aegis.accent');
+          if (accent) root.dataset.accent = accent;
+        } catch (_) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

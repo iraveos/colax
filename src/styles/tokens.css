@@ -1,0 +1,444 @@
+/* ==========================================================================
+   Aegis Vault — design tokens
+
+   One neutral ramp plus an accent gradient. Every theme below changes three
+   things only: the accent hue, the gradient stops, and whether surfaces are
+   light or dark. Components never branch on theme.
+   ========================================================================== */
+
+:root {
+--font-sans: 'Inter var', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  /* Editorial serif for the big display headings (settings, dashboard). The
+     image-iterator and instrument fallbacks are what the stack degrades to on
+     machines without the nicer faces. */
+  --font-display: 'Playfair Display', 'Fraunces', 'Iowan Old Style', 'Palatino Linotype',
+    Palatino, Georgia, 'Times New Roman', serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', ui-monospace, Menlo, Consolas, monospace;
+
+  --text-xs: 0.6875rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 2rem;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+--space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+
+--radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 26px;
+  --radius-2xl: 34px;
+  --radius-full: 999px;
+
+  /* Plates and cards, following the reference layout: a near-invisible hairline
+     between card and page, and a circular icon plate that only lifts slightly
+     above the card it sits on. */
+  --card: hsl(220 18% 7%);
+  --card-hairline: hsl(220 14% 100% / 0.08);
+  --card-hairline-strong: hsl(220 14% 100% / 0.2);
+  --plate: hsl(220 14% 100% / 0.05);
+
+  /* Springy but not bouncy; tuned so UI transitions feel weighted, not floaty. */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+/* Transition durations. calc() on a custom property keeps these valid at parse
+     time; --motion-speed is written from the animation-speed preference. */
+  --motion-speed: 1;
+  --fast: calc(140ms / var(--motion-speed));
+  --normal: calc(260ms / var(--motion-speed));
+  --slow: calc(480ms / var(--motion-speed));
+
+  --accent-h: 205;
+  --accent-h-2: 168;
+
+  /* Global motion scale, driven from settings. 0 disables transforms. */
+  --motion: 1;
+
+  /* Appearance scales, all set from settings on <html>. */
+  --density: 1;
+  --roundness: 1;
+--glass-alpha: 1;
+  --ui-scale: 1;
+  /* Login-card shadow strength, 0 (flat) to 1 (deep). Written from Settings.
+     Mid value: enough lift to separate a card from the page without the heavy
+     band that a fixed shadow produced under the last card in the list. */
+  --card-depth: 0.4;
+}
+
+/* ---- Calm accents ------------------------------------------------------
+   Deliberately few and low-chroma. Each moves the hue only a little so the
+   interface stays restful rather than shouting.
+   ------------------------------------------------------------------------ */
+
+[data-accent='slate'] {
+  --accent-h: 212;
+  --accent-h-2: 196;
+}
+[data-accent='sage'] {
+  --accent-h: 152;
+  --accent-h-2: 172;
+}
+[data-accent='dusk'] {
+  --accent-h: 268;
+  --accent-h-2: 232;
+}
+[data-accent='clay'] {
+  --accent-h: 28;
+  --accent-h-2: 348;
+}
+
+/* Older stored preference names map onto the calm set. */
+[data-accent='aurora'] {
+  --accent-h: 212;
+  --accent-h-2: 168;
+}
+[data-accent='mint'] {
+  --accent-h: 152;
+  --accent-h-2: 172;
+}
+[data-accent='nebula'],
+[data-accent='orchid'] {
+  --accent-h: 268;
+  --accent-h-2: 232;
+}
+[data-accent='sunset'],
+[data-accent='ember'] {
+  --accent-h: 28;
+  --accent-h-2: 348;
+}
+
+/* ---- Dark (default) ---------------------------------------------------- */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: hsl(220 22% 7%);
+  /* Translucent page colour, for sticky headers that must occlude content
+     scrolling underneath without painting an opaque bar over the glass. */
+  --bg-veil: hsl(220 22% 7% / 0.92);
+  --bg-deep: hsl(220 24% 5%);
+
+  /* Heavily translucent glass so the ambient gradient reads through. */
+  --glass: hsl(220 30% 100% / calc(0.05 * var(--glass-alpha)));
+  --glass-strong: hsl(220 30% 100% / calc(0.085 * var(--glass-alpha)));
+  --surface: hsl(220 18% 12%);
+  --surface-raised: hsl(220 18% 15%);
+  --surface-hover: hsl(220 18% 19%);
+  --surface-active: hsl(220 18% 23%);
+
+  --border: hsl(220 20% 100% / 0.09);
+  --border-strong: hsl(220 20% 100% / 0.17);
+  --border-focus: hsl(var(--accent-h) 45% 66%);
+
+  --text: hsl(220 26% 96%);
+  --text-muted: hsl(220 12% 68%);
+  --text-faint: hsl(220 10% 50%);
+
+  --accent: hsl(var(--accent-h) 42% 62%);
+  --accent-hover: hsl(var(--accent-h) 46% 70%);
+  --accent-soft: hsl(var(--accent-h) 42% 62% / 0.16);
+  --accent-text: hsl(var(--accent-h) 50% 76%);
+
+  --grad-primary: linear-gradient(
+    120deg,
+    hsl(var(--accent-h) 44% 58%),
+    hsl(var(--accent-h-2) 40% 62%)
+  );
+  --grad-soft: linear-gradient(
+    120deg,
+    hsl(var(--accent-h) 44% 58% / 0.2),
+    hsl(var(--accent-h-2) 40% 62% / 0.12)
+  );
+  --grad-ring: linear-gradient(
+    120deg,
+    hsl(var(--accent-h) 48% 64% / 0.85),
+    hsl(var(--accent-h-2) 44% 68% / 0.5)
+  );
+
+  --danger: hsl(357 62% 68%);
+  --danger-soft: hsl(357 62% 68% / 0.15);
+  --warn: hsl(38 76% 66%);
+  --warn-soft: hsl(38 76% 66% / 0.15);
+
+--shadow-sm: 0 1px 2px hsl(220 50% 2% / 0.4);
+  --shadow-md: 0 8px 28px -8px hsl(220 50% 2% / 0.55);
+  --shadow-lg: 0 32px 80px -16px hsl(220 50% 2% / 0.75);
+
+  /* ---- Depth ------------------------------------------------------------
+     One scalar, --card-depth (0 to 1), drives every lift in the app: login
+     cards and sidebar channels alike. Every term is a multiple of it, so the
+     slider fades the shadow in continuously rather than stepping between
+     presets, and at 0 every layer collapses to nothing.
+
+     Four layers rather than two, because a single drop shadow reads as dirt
+     under a flat card. In order: a hairline contact shadow so the surface
+     touches the page, two mid layers that give the card body, and one wide
+     ambient layer for overall lift. Negative spread on the lower layers keeps
+     the blur from bleeding past the card's corners.
+     ---------------------------------------------------------------------- */
+  --shadow-h: 220;
+  --card-shadow: none;
+
+  /* Hover lift: the same stack, pushed further and a little stronger. */
+  --card-shadow-hover: none;
+
+  /* Channels are small and sit close to the page, so they get a shorter stack
+     rather than a card's full drop. */
+  --channel-shadow: none;
+  --glow: 0 0 0 1px hsl(var(--accent-h) 44% 60% / 0.3), 0 12px 40px -12px hsl(var(--accent-h) 44% 60% / 0.4);
+
+  --carousel-fade: hsl(220 22% 7%);
+
+  /* Scrim + text shadow for user-supplied photos. */
+  --scrim-top: hsl(220 24% 7% / 0.86);
+  --scrim-bottom: hsl(220 26% 6% / 0.91);
+  --on-photo-shadow: 0 1px 3px hsl(220 40% 2% / 0.9), 0 0 12px hsl(220 40% 2% / 0.6);
+
+  --ambient-1: hsl(var(--accent-h) 55% 48% / 0.42);
+  --ambient-2: hsl(var(--accent-h-2) 52% 52% / 0.34);
+  --ambient-3: hsl(calc(var(--accent-h) + 30) 50% 50% / 0.22);
+
+  /* App-wide background image, set from Settings. */
+  --bg-image: none;
+  --bg-image-opacity: 0;
+  --bg-image-blur: 0;
+}
+
+/* ---- Light ------------------------------------------------------------- */
+[data-theme='light'] {
+  color-scheme: light;
+
+--bg: hsl(210 30% 96%);
+  --bg-veil: hsl(210 30% 96% / 0.92);
+  --bg-deep: hsl(210 26% 91%);
+
+  --card: hsl(0 0% 100%);
+  --card-hairline: hsl(222 20% 12% / 0.1);
+  --card-hairline-strong: hsl(222 20% 12% / 0.26);
+  --plate: hsl(222 20% 12% / 0.045);
+
+  --glass: hsl(0 0% 100% / calc(0.62 * var(--glass-alpha)));
+  --glass-strong: hsl(0 0% 100% / calc(0.8 * var(--glass-alpha)));
+  --surface: hsl(0 0% 100%);
+  --surface-raised: hsl(0 0% 100%);
+  --surface-hover: hsl(210 30% 95%);
+  --surface-active: hsl(210 30% 91%);
+
+  --border: hsl(210 20% 87%);
+  --border-strong: hsl(210 16% 76%);
+  --border-focus: hsl(var(--accent-h) 40% 46%);
+
+  --text: hsl(222 30% 13%);
+  --text-muted: hsl(222 12% 44%);
+  --text-faint: hsl(222 10% 58%);
+
+  --accent: hsl(var(--accent-h) 40% 44%);
+  --accent-hover: hsl(var(--accent-h) 44% 36%);
+  --accent-soft: hsl(var(--accent-h) 40% 48% / 0.12);
+  --accent-text: hsl(var(--accent-h) 44% 34%);
+
+  --grad-primary: linear-gradient(
+    120deg,
+    hsl(var(--accent-h) 42% 48%),
+    hsl(var(--accent-h-2) 38% 52%)
+  );
+  --grad-soft: linear-gradient(
+    120deg,
+    hsl(var(--accent-h) 42% 52% / 0.15),
+    hsl(var(--accent-h-2) 38% 56% / 0.09)
+  );
+  --grad-ring: linear-gradient(
+    120deg,
+    hsl(var(--accent-h) 46% 52% / 0.85),
+    hsl(var(--accent-h-2) 42% 56% / 0.45)
+  );
+
+  --danger: hsl(357 58% 52%);
+  --danger-soft: hsl(357 58% 54% / 0.1);
+  --warn: hsl(32 74% 44%);
+  --warn-soft: hsl(32 74% 48% / 0.13);
+
+--shadow-sm: 0 1px 2px hsl(222 40% 20% / 0.05);
+  --shadow-md: 0 10px 30px -10px hsl(222 40% 20% / 0.14);
+  --shadow-lg: 0 32px 70px -18px hsl(222 40% 20% / 0.2);
+
+  /* Light mode needs a shallower, browner shadow: the same alpha that reads as
+     depth on black reads as dirt on white. Every --card-depth layer picks this
+     hue up, so the card and channel shadows lighten in light mode without
+     needing a second set of definitions. */
+  --shadow-h: 222;
+  --glow: 0 0 0 1px hsl(var(--accent-h) 42% 48% / 0.22), 0 14px 40px -14px hsl(var(--accent-h) 42% 48% / 0.35);
+
+  --carousel-fade: hsl(210 30% 96%);
+
+  --scrim-top: hsl(210 30% 96% / 0.84);
+  --scrim-bottom: hsl(210 32% 94% / 0.89);
+  --on-photo-shadow: 0 1px 3px hsl(0 0% 100% / 0.95), 0 0 12px hsl(0 0% 100% / 0.75);
+
+  --ambient-1: hsl(var(--accent-h) 62% 62% / 0.32);
+  --ambient-2: hsl(var(--accent-h-2) 58% 64% / 0.26);
+  --ambient-3: hsl(calc(var(--accent-h) + 30) 58% 62% / 0.18);
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Text size scales the root font size, not the body's. Almost every size in this
+   stylesheet is expressed in rem, and rem resolves against the root element —
+   setting font-size on body would leave every rem value untouched, which is why
+   the text-size control appeared to do nothing. */
+html {
+  font-size: calc(1rem * var(--ui-scale));
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'ss01';
+  overflow: hidden;
+}
+
+/* Optional app-wide background image, layered under the ambient gradient. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: calc(var(--bg-image-blur) * -1px);
+  z-index: -1;
+  background-image: var(--bg-image);
+  background-size: cover;
+  background-position: center;
+  opacity: var(--bg-image-opacity);
+  filter: blur(calc(var(--bg-image-blur) * 1px));
+  pointer-events: none;
+  transition: opacity var(--slow) var(--ease);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: var(--radius-full);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
+}
+
+/* Motion preferences: the OS setting wins, then the in-app slider. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+[data-motion='off'] *,
+[data-motion='off'] *::before,
+[data-motion='off'] *::after {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.01ms !important;
+}
+
+[data-motion='off'] .ambient__blob {
+  animation: none !important;
+}
+
+/* ---- Appearance toggles ------------------------------------------------ */
+
+[data-transparency='reduced'] {
+  --glass-alpha: 0;
+}
+
+[data-contrast='high'] {
+  --text-muted: hsl(220 14% 82%);
+  --text-faint: hsl(220 12% 66%);
+  --border: hsl(220 20% 100% / 0.2);
+  --border-strong: hsl(220 20% 100% / 0.34);
+}
+
+[data-theme='light'][data-contrast='high'] {
+  --text-muted: hsl(222 16% 28%);
+  --text-faint: hsl(222 14% 40%);
+  --border: hsl(210 18% 74%);
+  --border-strong: hsl(210 16% 58%);
+}
+
+[data-density='compact'] {
+  --density: 0.78;
+}
+[data-density='comfortable'] {
+  --density: 1;
+}
+[data-density='spacious'] {
+  --density: 1.22;
+}
