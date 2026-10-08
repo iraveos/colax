@@ -55,6 +55,7 @@ export function Sidebar({
   showLock,
   floating,
   hiddenChannels = [],
+  hiddenFolders = [],
   showNewChannelButton = true,
   showCompactButton = true,
   showSettingsButton = true,
@@ -93,6 +94,8 @@ export function Sidebar({
   floating: boolean;
   /** Channel ids hidden from the rail. They stay editable in Settings. */
   hiddenChannels?: string[];
+  /** Folder ids hidden from the rail, subtree included. Settings brings them back. */
+  hiddenFolders?: string[];
   /** Shows the "New channel" shortcut at the end of the rail. */
   showNewChannelButton?: boolean;
   /** Shows the Compact toggle in the footer. */
@@ -131,11 +134,13 @@ export function Sidebar({
   const channelById = new Map(channels.map((channel) => [channel.id, channel]));
   const folderById = new Map(folders.map((folder) => [folder.id, folder]));
   const hidden = new Set(hiddenChannels);
+  const hiddenFolderIds = new Set(hiddenFolders);
   // Every channel hidden (or none present at all): the rail would render just
   // the footer, so say where the channels went instead of looking broken.
   const railEmpty = entries.every((entry) => {
     if (entry.kind === 'separator') return true;
     if (entry.kind === 'channel') return hidden.has(entry.id);
+    if (hiddenFolderIds.has(entry.id)) return true;
     return !entry.children.some((child) => child.kind !== 'channel' || !hidden.has(child.id));
   });
 
@@ -391,6 +396,9 @@ export function Sidebar({
           if (entry.kind === 'separator') return separatorRow(entry.id, 'root', index);
           if (entry.kind === 'channel' && hidden.has(entry.id)) return null;
           if (entry.kind === 'folder') {
+            // A hidden folder hides with its whole subtree. Unhiding happens
+            // in Settings › Hidden, which lists every hidden thing at once.
+            if (hiddenFolderIds.has(entry.id)) return null;
             const folder = folderById.get(entry.id);
             if (!folder) return null;
             // A folder left with nothing visible hides with its children.

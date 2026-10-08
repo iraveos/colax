@@ -8,6 +8,7 @@ import {
   normaliseChannels,
   normaliseSidebar,
   moveChannelToFolder,
+  moveManualOrder,
   CHANNEL_ACCENTS,
   CHANNEL_ICONS,
   type Channel,
@@ -91,6 +92,7 @@ const SORT_LABELS: Record<SortMode, string> = {
   oldest: 'Least recently updated',
   strength: 'Weakest first',
   username: 'Username',
+  manual: 'Custom order',
 };
 
 /** The always-present bucket for logins with no tag at all. */
@@ -507,6 +509,9 @@ const visible = useMemo(() => {
       list = needle ? vault.items : applyChannel(activeChannel!, vault.items, staleDays);
     }
 
+    // The drag order, as an index map. Ids never dragged stay after every
+    // placed id in title order, so new logins need no bookkeeping.
+    const manualIndex = new Map(prefs.manualOrder.map((id, index) => [id, index] as const));
     const sorted = [...list].sort((a, b) => {
       const pin = prefs.pinFavorites ? Number(b.favorite) - Number(a.favorite) : 0;
       if (pin !== 0) return pin;
@@ -519,6 +524,14 @@ const visible = useMemo(() => {
           return estimateStrength(a.password).bits - estimateStrength(b.password).bits;
         case 'username':
           return (a.username || '').toLowerCase().localeCompare((b.username || '').toLowerCase());
+        case 'manual': {
+          const ai = manualIndex.get(a.id);
+          const bi = manualIndex.get(b.id);
+          if (ai !== undefined && bi !== undefined) return ai - bi;
+          if (ai !== undefined) return -1;
+          if (bi !== undefined) return 1;
+          return (a.title || '~').toLowerCase().localeCompare((b.title || '~').toLowerCase());
+        }
         default:
           return (a.title || '~').toLowerCase().localeCompare((b.title || '~').toLowerCase());
       }
@@ -530,7 +543,35 @@ const visible = useMemo(() => {
         (field ?? '').toLowerCase().includes(needle),
       ),
     );
-  }, [vault.items, activeChannel, activeFolder, sidebarBase, channelLookup, query, prefs.sort, prefs.pinFavorites, staleDays]);
+  }, [vault.items, activeChannel, activeFolder, sidebarBase, channelLookup, query, prefs.sort, prefs.pinFavorites, prefs.manualOrder, staleDays]);
+
+  /**
+   * Drops a dragged login at a flat position in the current view and records
+   * the custom order. The stored order is global: untouched pairs keep their
+   * relative positions whatever the view holds, and ids never dragged stay at
+   * the end — so the first drag in any view seeds from what is on screen and
+   * nothing else moves. A first drag also switches sorting to Custom, with a
+   * toast saying so, because silently re-sorting under the user reads as the
+   * list scrambling itself.
+   */
+  const moveLogin = useCallback(
+    (loginId: string, toIndex: number, flatIds: string[]) => {
+      const byTitle = [...vault.items]
+        .sort((a, b) => (a.title || '~').toLowerCase().localeCompare((b.title || '~').toLowerCase()))
+        .map((item) => item.id);
+      const next = moveManualOrder(prefs.manualOrder, flatIds, byTitle, loginId, toIndex);
+      const firstManual = prefs.sort !== 'manual';
+      // A drop that changes nothing (onto itself, or before its own successor)
+      // saves nothing — least of all a toast claiming something happened.
+      if (!firstManual && next.join('\n') === prefs.manualOrder.join('\n')) return;
+      void vault
+        .updatePrefs({ manualOrder: next, ...(firstManual ? { sort: 'manual' as const } : {}) })
+        .then(() => {
+          if (firstManual) notify('Custom order saved — sorting switched to Custom');
+        });
+    },
+    [vault, notify, prefs.manualOrder, prefs.sort, vault.items],
+  );
 
   /* ---- Channel editing -------------------------------------------------- */
 
@@ -873,6 +914,23 @@ const visible = useMemo(() => {
           icon: <PlusIcon />,
           onSelect: () => setEditingChannel('new'),
         },
+        ...(channel.locked
+          ? []
+          : [
+              {
+                kind: 'item' as const,
+                label: prefs.hiddenChannels.includes(channel.id) ? 'Show channel' : 'Hide channel',
+                icon: <EyeOffIcon />,
+                onSelect: () => {
+                  const hidden = prefs.hiddenChannels.includes(channel.id)
+                    ? prefs.hiddenChannels.filter((id) => id !== channel.id)
+                    : [...prefs.hiddenChannels, channel.id];
+                  void vault.updatePrefs({ hiddenChannels: hidden }).then(() => {
+                    if (hidden.includes(channel.id)) notify('Hidden — bring it back in Settings › Hidden');
+                  });
+                },
+              },
+            ]),
         {
           kind: 'item',
           label: channel.locked ? 'Cannot be deleted' : 'Delete channel',
@@ -883,7 +941,7 @@ const visible = useMemo(() => {
         },
       ];
     },
-    [prefs.tags, folders, saveChannel, deleteChannel, notify, moveChannel, addSeparator],
+    [prefs.tags, prefs.hiddenChannels, folders, saveChannel, deleteChannel, notify, moveChannel, addSeparator, vault],
   );
 
   const parentFolderIdOf = useCallback(
@@ -931,13 +989,26 @@ const visible = useMemo(() => {
       },
       {
         kind: 'item',
+        label: prefs.hiddenFolders.includes(folder.id) ? 'Show folder' : 'Hide folder',
+        icon: <EyeOffIcon />,
+        onSelect: () => {
+          const hidden = prefs.hiddenFolders.includes(folder.id)
+            ? prefs.hiddenFolders.filter((id) => id !== folder.id)
+            : [...prefs.hiddenFolders, folder.id];
+          void vault.updatePrefs({ hiddenFolders: hidden }).then(() => {
+            if (hidden.includes(folder.id)) notify('Hidden — bring it back in Settings › Hidden');
+          });
+        },
+      },
+      {
+        kind: 'item',
         label: 'Remove folder',
         icon: <TrashIcon />,
         danger: true,
         onSelect: () => deleteFolder(folder.id),
       },
     ],
-    [deleteFolder, toggleFolderCollapse],
+    [deleteFolder, toggleFolderCollapse, prefs.hiddenFolders, vault, notify],
   );
 
   const separatorMenu = useCallback(
@@ -1734,15 +1805,19 @@ label: 'Settings',
     ];
   }, [prefs.dockPos, hideChrome, openSettings]);
 
-  useDockShortcuts(
-    prefs.dockEnabled ? dockSlots : [],
+  // Stable across renders on purpose: it reads only the DOM, so re-creating it
+  // would re-subscribe the key listener on every render (each keystroke while
+  // searching, each selection click) for no reason.
+  const dockGuard = useCallback(
     // DOM-based rather than state-based: any open menu, modal, settings
     // window, tuner or editor has one of these classes, including ones added
     // later, so a new dialog cannot accidentally become type-into-the-dock.
     () =>
       !typingHasFocus() &&
       !document.querySelector('.ctx-menu, .modal, .settings-window, .tuner, .editor-window'),
+    [],
   );
+  useDockShortcuts(prefs.dockEnabled ? dockSlots : [], dockGuard);
   useSelectAllShortcuts(
     () => selection.selectAll(visible),
     () => selection.clear(),
@@ -1828,11 +1903,15 @@ label: 'Settings',
     void vault.updatePrefs({ theme: next });
   };
 
-  // Hiding the channel you are looking at drops you back to All logins rather
-  // than stranding the content on a view the rail no longer offers.
+  // Hiding the channel or folder you are looking at drops you back to All
+  // logins rather than stranding the content on a view the rail no longer
+  // offers.
   useEffect(() => {
     if (activeId !== 'all' && prefs.hiddenChannels.includes(activeId)) setActiveId('all');
-  }, [activeId, prefs.hiddenChannels]);
+    if (activeId.startsWith('folder:') && prefs.hiddenFolders.includes(activeId.slice('folder:'.length))) {
+      setActiveId('all');
+    }
+  }, [activeId, prefs.hiddenChannels, prefs.hiddenFolders]);
 
   // The preference can be "system", so the toggle label has to follow whatever
   // is actually on screen rather than the stored preference.
@@ -1945,6 +2024,9 @@ onCreate={vault.create}
           ? activeChannel.mailAccount
           : 'all',
     },
+    // Drag-reorder for the List and Grid views; Flow and Orbit ignore it but
+    // still follow the custom order through sorting.
+    onReorderLogins: moveLogin,
     ...viewActions,
   };
 
@@ -1977,6 +2059,7 @@ onCreate={vault.create}
           compact={prefs.compactSidebar}
           labels={prefs.sidebarLabels}
           hiddenChannels={prefs.hiddenChannels}
+          hiddenFolders={prefs.hiddenFolders}
           showNewChannelButton={prefs.showNewChannelButton}
           showCompactButton={prefs.showCompactButton}
           showSettingsButton={prefs.showSettingsButton}

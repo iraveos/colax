@@ -64,13 +64,41 @@ export function Dock({
   /** Right-click: the dock's own settings menu. */
   onMenu: (event: ReactMouseEvent) => void;
 }) {
-  // Free placement: press anywhere on the bar's chrome and drop anywhere on
-  // screen. The edge follows the drop point and decides the orientation; the
-  // bar itself stays exactly where it was dropped, clamped on screen. A press
-  // without movement is not a drag, so slot clicks are unaffected — the
-  // threshold is what keeps the two gestures from fighting.
+  // Free placement: press anywhere on the bar's chrome and the bar follows the
+  // pointer live, snapping its edge as it goes; release drops it, clamped on
+  // screen. A press without movement is not a drag, so slot clicks are
+  // unaffected — the threshold is what keeps the two gestures from fighting.
+  // Moves are folded through one rAF slot, so a fast pointer cannot queue more
+  // position writes than frames can paint (that backlog was the visible lag).
   const dragFrom = useRef<{ x: number; y: number } | null>(null);
+  const dragging = useRef(false);
+  const raf = useRef(0);
   const clamp01 = (value: number) => Math.min(0.94, Math.max(0.06, value));
+
+  useEffect(
+    () => () => {
+      if (raf.current) cancelAnimationFrame(raf.current);
+    },
+    [],
+  );
+
+  const moveTo = (x: number, y: number) => {
+    if (raf.current) cancelAnimationFrame(raf.current);
+    raf.current = requestAnimationFrame(() => {
+      raf.current = 0;
+      onPosChange({ edge: edgeAt(x, y), fx: clamp01(x / window.innerWidth), fy: clamp01(y / window.innerHeight) });
+    });
+  };
+
+  const endDrag = () => {
+    dragFrom.current = null;
+    dragging.current = false;
+    if (raf.current) {
+      cancelAnimationFrame(raf.current);
+      raf.current = 0;
+    }
+  };
+
   return (
     <nav
       className="dock"
@@ -90,17 +118,34 @@ export function Dock({
         // Slot buttons own their own press; the bar only tracks drags that
         // start on chrome (grip or gaps), never on a button.
         if ((event.target as HTMLElement).closest('button')) return;
+        // Capture keeps move/up events coming to the bar even when the pointer
+        // outruns it mid-drag.
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+          // Older engines drag fine without capture; release still lands.
+        }
         dragFrom.current = { x: event.clientX, y: event.clientY };
+      }}
+      onPointerMove={(event) => {
+        const from = dragFrom.current;
+        if (!from) return;
+        // Below the threshold this is still a click, not a drag.
+        if (!dragging.current && Math.hypot(event.clientX - from.x, event.clientY - from.y) < 6) return;
+        dragging.current = true;
+        moveTo(event.clientX, event.clientY);
       }}
       onPointerUp={(event) => {
         const from = dragFrom.current;
-        dragFrom.current = null;
-        if (!from) return;
-        if (Math.hypot(event.clientX - from.x, event.clientY - from.y) < 6) return;
+        const wasDrag = dragging.current;
+        endDrag();
+        // A press without movement is a click on chrome, not a drag: no write.
+        if (!from || !wasDrag) return;
         const fx = clamp01(event.clientX / window.innerWidth);
         const fy = clamp01(event.clientY / window.innerHeight);
         onPosChange({ edge: edgeAt(event.clientX, event.clientY), fx, fy });
       }}
+      onPointerCancel={endDrag}
     >
       {slots.map((slot) => {
         const Icon = slot.Icon;

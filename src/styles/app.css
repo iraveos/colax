@@ -234,8 +234,8 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(var(--card-max),100%),1fr));gap:var(--space-3);padding-bottom:var(--space-6);zoom:var(--card-scale,1);width:calc(100% / var(--card-scale,1))}
 .grid-cell__secret{margin-top:var(--space-1)}
 
-.grid-cell{position:relative;overflow:hidden;display:flex;flex-direction:column;gap:var(--space-2);min-height:var(--card-min-height,0);padding:var(--space-4);border:1px solid var(--border);border-radius:var(--card-radius,var(--radius-lg));box-shadow:var(--card-shadow);text-align:left;transition:border-color var(--fast) var(--ease),background var(--fast) var(--ease),transform var(--fast) var(--ease-out),box-shadow var(--fast) var(--ease)}
-.grid-cell:hover{border-color:transparent;transform:translateY(-2px)}
+.grid-cell{position:relative;overflow:hidden;display:flex;flex-direction:column;gap:var(--space-2);min-height:var(--card-min-height,0);padding:var(--space-4);border:1px solid var(--border);border-radius:var(--card-radius,var(--radius-lg));box-shadow:var(--card-shadow);text-align:left;transition:border-color var(--fast) var(--ease),background var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.grid-cell:hover{border-color:transparent}
 .grid-cell:has([data-photo]){box-shadow:none}
 .grid-cell__head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
 .grid-cell__body{display:flex;flex-direction:column;gap:6px;flex:1;min-width:0}
@@ -347,6 +347,11 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 .dock{cursor:grab;touch-action:none;user-select:none}
 .dock:active{cursor:grabbing}
 [data-theme=light] .dock{background:hsl(210 30% 97% / .8);box-shadow:0 18px 50px -18px hsl(222 40% 20% / .3)}
+/* The bar's blur is the single most expensive paint on screen: a big
+   backdrop-filter over an animated background janks on modest GPUs. Reduced
+   transparency drops it for a solid bar — same shape, a fraction of the cost. */
+[data-transparency='reduced'] .dock{background:hsl(220 24% 10%);backdrop-filter:none;box-shadow:0 18px 50px -18px hsl(220 40% 2% / .8)}
+[data-theme=light][data-transparency='reduced'] .dock{background:hsl(210 30% 96%);box-shadow:0 18px 50px -18px hsl(222 40% 20% / .3)}
 .dock__slot{position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:56px;padding:8px 10px 7px;border:1px solid transparent;border-radius:var(--radius-md);background:none;color:var(--text-muted);font-size:10px;font-weight:600;letter-spacing:.02em;cursor:pointer;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),border-color var(--fast) var(--ease)}
 .dock__slot:hover{background:var(--surface-hover);color:var(--text)}
 .dock__slot[aria-pressed=true]{border-color:hsl(var(--accent-h) 50% 58% / .45);background:var(--accent-soft);color:var(--accent-text)}
@@ -611,8 +616,8 @@ textarea.input{min-height:88px;resize:vertical;line-height:1.6}
 .list-group{margin-bottom:var(--space-6)}
 .list-group__title{display:block;width:100%;padding:var(--space-2) 0 0;margin-bottom:var(--space-2);font-size:var(--text-xs);font-weight:640;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint)}
 .list-group__starred{display:inline-flex;align-items:center;gap:5px;color:var(--warn)}
-.item{display:flex;align-items:center;gap:var(--space-4);width:100%;padding:var(--space-3) var(--space-4);border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--glass);text-align:left;flex-wrap:wrap;box-shadow:var(--card-shadow);transition:border-color var(--normal) var(--ease),background var(--normal) var(--ease),transform var(--normal) var(--ease-out)}
-.item:hover{border-color:transparent;background:var(--glass-strong);transform:translateY(-2px);box-shadow:none}
+.item{display:flex;align-items:center;gap:var(--space-4);width:100%;padding:var(--space-3) var(--space-4);border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--glass);text-align:left;flex-wrap:wrap;box-shadow:var(--card-shadow);transition:border-color var(--normal) var(--ease),background var(--normal) var(--ease)}
+.item:hover{border-color:transparent;background:var(--glass-strong);box-shadow:none}
 .item.is-open{border-color:transparent;box-shadow:none}
 .avatar{display:grid;place-items:center;width:40px;height:40px;border-radius:var(--radius-md);font-size:var(--text-base);font-weight:640;color:#fff;flex-shrink:0;text-transform:uppercase;user-select:none;box-shadow:inset 0 1px #ffffff40}
 .avatar--lg{width:48px;height:48px;font-size:var(--text-xl);border-radius:var(--radius-lg)}
@@ -1258,6 +1263,22 @@ to{transform:translate(0)}
 .sidebar__rule--row:before{content:"";display:block;width:100%;height:2px;border-radius:var(--radius-full);background:linear-gradient(90deg,transparent,var(--border-strong) 22%,var(--border-strong) 78%,transparent);transition:background var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
 .sidebar__rule--row:hover:before{height:3px;background:linear-gradient(90deg,transparent,var(--accent-text) 30%,var(--accent-text) 70%,transparent);box-shadow:0 0 8px hsl(var(--accent-h) 60% 58% / .5)}
 .sidebar__rule--row:active{cursor:grabbing}
+
+/* ---- Login drag-reorder (List and Grid views) ------------------------------
+   The grip starts the drag; rows and cells are drop targets with an inset
+   accent bar above or below, mirroring the sidebar drop indicator. Motion
+   owns transforms here (layout + hover lift), so no CSS transform transition
+   may touch .item/.grid-cell or every animated frame would smear. */
+.drag-grip{display:grid;place-items:center;width:20px;align-self:stretch;flex-shrink:0;border-radius:6px;color:var(--text-faint);opacity:0;cursor:grab;transition:opacity var(--fast) var(--ease),color var(--fast) var(--ease)}
+.item:hover .drag-grip,.item:focus-within .drag-grip{opacity:.75}
+.drag-grip:hover{opacity:1;color:var(--text)}
+.drag-grip:active{cursor:grabbing}
+.grid-cell .drag-grip{position:absolute;top:8px;left:8px;z-index:3;width:22px;height:22px;align-self:auto;background:hsl(220 24% 8% / .55);backdrop-filter:blur(6px)}
+[data-theme=light] .grid-cell .drag-grip{background:hsl(210 30% 97% / .7)}
+.grid-cell:hover .drag-grip,.grid-cell:focus-within .drag-grip{opacity:.85}
+.item[data-dragging],.grid-cell[data-dragging]{opacity:.45}
+.item[data-drop-before],.grid-cell[data-drop-before]{box-shadow:inset 0 3px 0 hsl(var(--accent-h) 60% 58% / .8)}
+.item[data-drop-after],.grid-cell[data-drop-after]{box-shadow:inset 0 -3px 0 hsl(var(--accent-h) 60% 58% / .8)}
 .sidebar__rule--row:active:before{height:3px;background:linear-gradient(90deg,transparent,var(--accent-text) 30%,var(--accent-text) 70%,transparent)}
 
 /* Peek block: username line above the password when it is revealed. */

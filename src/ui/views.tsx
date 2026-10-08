@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { motion } from 'motion/react';
 import { AnimatedList } from '../components/react-bits/AnimatedList.tsx';
 import { CircularCarousel, type CarouselItem } from '../components/react-bits/CircularCarousel.tsx';
 import { avatarSrc, backgroundSrc, itemBackgroundStyle, itemStyle, toCarouselItems } from './card-art.ts';
@@ -68,6 +69,13 @@ export interface ViewActions {
   showOrbitLabels?: boolean;
   /** List only: group rows under their first letter. */
   showLetterGroups?: boolean;
+  /**
+   * Drag a login to a flat position in the current view, switching sorting to
+   * the custom drag order. Only the List and Grid views offer handles — Flow
+   * and Orbit still follow the custom order through sorting, they just do not
+   * start drags themselves. Absent means no reordering here.
+   */
+  onReorderLogins?: (activeId: string, toIndex: number, flatIds: string[]) => void;
 }
 
 interface CommonViewProps extends ViewActions {
@@ -127,6 +135,127 @@ function selectionClick(
       onSelectForEdit(item, event.shiftKey);
     }
   };
+}
+
+/**
+ * Login drag-reorder shared by the List and Grid views.
+ *
+ * Only the grip starts a drag (whole-row dragging would fight text selection
+ * and buttons); every row is a drop target showing a before/after indicator
+ * from the pointer's half, and the container itself appends to the end. Rows
+ * render as motion `layout` elements upstream, so the reorder animates
+ * smoothly instead of snapping. Touch screens get no drag — HTML5 dragging is
+ * mouse-only — the sort menu still orders everything there.
+ */
+function useLoginReorder(
+  flatIds: string[],
+  onReorder?: (activeId: string, toIndex: number, flatIds: string[]) => void,
+) {
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [over, setOver] = useState<{ id: string; after: boolean } | null>(null);
+  const enabled = typeof onReorder === 'function';
+
+  const gripProps = (item: VaultItem) => ({
+    draggable: enabled,
+    onDragStart: (event: React.DragEvent) => {
+      if (!enabled) return;
+      event.dataTransfer.setData('text/plain', item.id);
+      event.dataTransfer.effectAllowed = 'move';
+      const row = (event.target as HTMLElement).closest('[data-vault-item]');
+      if (row instanceof HTMLElement) {
+        try {
+          event.dataTransfer.setDragImage(row, 24, 24);
+        } catch {
+          // Older engines ignore custom drag images; the default ghost works.
+        }
+      }
+      setDragId(item.id);
+      setOver(null);
+    },
+    onDragEnd: () => {
+      setDragId(null);
+      setOver(null);
+    },
+  });
+
+  const rowProps = (item: VaultItem) => ({
+    'data-dragging': dragId === item.id ? '' : undefined,
+    'data-drop-before': over?.id === item.id && !over.after ? '' : undefined,
+    'data-drop-after': over?.id === item.id && over.after ? '' : undefined,
+    onDragOver: (event: React.DragEvent) => {
+      if (!enabled || !dragId) return;
+      if (dragId === item.id) {
+        setOver(null);
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      const after = event.clientY - rect.top > rect.height / 2;
+      setOver((current) =>
+        current && current.id === item.id && current.after === after ? current : { id: item.id, after },
+      );
+    },
+    onDragLeave: (event: React.DragEvent) => {
+      const to = event.relatedTarget as Node | null;
+      if (to && (event.currentTarget as HTMLElement).contains(to)) return;
+      setOver((current) => (current?.id === item.id ? null : current));
+    },
+    onDrop: (event: React.DragEvent) => {
+      if (!enabled || !dragId || !onReorder) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const targetId = item.id;
+      const after = over?.id === targetId ? over.after : false;
+      const active = dragId;
+      setDragId(null);
+      setOver(null);
+      if (active === targetId) return;
+      const rest = flatIds.filter((id) => id !== active);
+      const ti = rest.indexOf(targetId);
+      onReorder(active, ti === -1 ? rest.length : ti + (after ? 1 : 0), flatIds);
+    },
+  });
+
+  /** Dropping past the last row appends to the end of the view. */
+  const listProps = {
+    onDragOver: (event: React.DragEvent) => {
+      if (enabled && dragId) event.preventDefault();
+    },
+    onDrop: (event: React.DragEvent) => {
+      if (!enabled || !dragId || !onReorder) return;
+      event.preventDefault();
+      const active = dragId;
+      setDragId(null);
+      setOver(null);
+      onReorder(active, flatIds.filter((id) => id !== active).length, flatIds);
+    },
+  };
+
+  return { enabled, dragId, gripProps, rowProps, listProps };
+}
+
+/** The six-dot grip that starts a login drag. Mouse-only, silent otherwise. */
+function DragGrip({ grip }: { grip: { draggable: boolean; onDragStart: (event: React.DragEvent) => void; onDragEnd: () => void } }) {
+  return (
+    <span
+      className="drag-grip"
+      title="Drag to reorder"
+      aria-hidden="true"
+      draggable={grip.draggable}
+      onDragStart={grip.onDragStart}
+      onDragEnd={grip.onDragEnd}
+    >
+      <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
+        <circle cx="2.5" cy="3" r="1.4" />
+        <circle cx="7.5" cy="3" r="1.4" />
+        <circle cx="2.5" cy="8" r="1.4" />
+        <circle cx="7.5" cy="8" r="1.4" />
+        <circle cx="2.5" cy="13" r="1.4" />
+        <circle cx="7.5" cy="13" r="1.4" />
+      </svg>
+    </span>
+  );
 }
 
 /** Tag chips for a login, resolved against the catalogue. */
@@ -800,6 +929,7 @@ showTagChips,
   onToggleFavorite,
   onSelect,
   onItemMenu,
+  onReorderLogins,
 }: CommonViewProps) {
   // Ids whose password has been explicitly revealed. Everything else is masked, so
   // opening the vault never puts every credential on screen at once.
@@ -808,6 +938,12 @@ showTagChips,
   const [gateItem, setGateItem] = useState<VaultItem | null>(null);
   const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
   const showGroups = showLetterGroups !== false;
+  const groups = showGroups ? groupByLetter(items) : [['', items] as [string, VaultItem[]]];
+  // Flat render order, across letter groups, so a drop lands globally.
+  const reorder = useLoginReorder(
+    groups.flatMap(([, group]) => group.map((entry) => entry.id)),
+    onReorderLogins,
+  );
 
   if (items.length === 0) return null;
 
@@ -825,8 +961,6 @@ showTagChips,
     });
   };
 
-  const groups = showGroups ? groupByLetter(items) : [['', items] as [string, VaultItem[]]];
-
   return (
     <div
       className="content__inner list-scale"
@@ -843,13 +977,16 @@ showTagChips,
       {groups.map(([letter, group]) => (
         <section className="list-group" key={letter || 'all'}>
           {letter ? <h2 className="list-group__title">{letter}</h2> : null}
-          <div className="list">
+          <div className="list" {...reorder.listProps}>
             {group.map((item) => {
               const label = labelOf(item);
               const show = revealed.has(item.id);
               const photo = backgroundSrc(item);
               return (
-          <div
+          <motion.div
+            layout
+            transition={{ type: 'spring', stiffness: 380, damping: 34 }}
+            whileHover={{ y: -2 }}
             className="item"
             data-vault-item={item.id}
             data-photo={photo ? '' : undefined}
@@ -863,7 +1000,9 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
               onEdit(item);
             }}
             onClick={selectionClick(item, onSelectForEdit)}
+            {...reorder.rowProps(item)}
           >
+                  {reorder.enabled ? <DragGrip grip={reorder.gripProps(item)} /> : null}
                   {photo ? <div className="item__art" aria-hidden="true" /> : null}
                 {photo ? <div className="item__scrim" aria-hidden="true" /> : null}
 
@@ -933,7 +1072,7 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
                       <code>{item.password || '—'}</code>
                     </div>
                   ) : null}
-                </div>
+                </motion.div>
               );
             })}
           </div>
@@ -994,10 +1133,15 @@ export function GridView({
   onCopy,
   onSelect,
   onItemMenu,
+  onReorderLogins,
 }: CommonViewProps) {
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set());
   const [gateItem, setGateItem] = useState<VaultItem | null>(null);
   const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
+  const reorder = useLoginReorder(
+    items.map((entry) => entry.id),
+    onReorderLogins,
+  );
 
   if (items.length === 0) return null;
 
@@ -1031,14 +1175,17 @@ export function GridView({
         } as React.CSSProperties
       }
     >
-      <div className="grid">
+      <div className="grid" {...reorder.listProps}>
         {items.map((item) => {
           const label = labelOf(item);
           const show = revealed.has(item.id);
           const photo = backgroundSrc(item);
           const secured = isSecured(item.security);
           return (
-          <div
+          <motion.div
+            layout
+            transition={{ type: 'spring', stiffness: 380, damping: 34 }}
+            whileHover={{ y: -2 }}
             key={item.id}
             className="grid-cell"
             data-vault-item={item.id}
@@ -1052,7 +1199,9 @@ export function GridView({
                 event.preventDefault();
                 onEdit(item);
               }}
+            {...reorder.rowProps(item)}
             >
+              {reorder.enabled ? <DragGrip grip={reorder.gripProps(item)} /> : null}
               {photo ? <div className="item__art" aria-hidden="true" /> : null}
               {photo ? <div className="card-row__scrim" aria-hidden="true" /> : null}
 
@@ -1196,7 +1345,7 @@ export function GridView({
                   {show ? <EyeOffIcon /> : <EyeIcon />}
                 </button>
               </div>
-            </div>
+            </motion.div>
           );
         })}
       </div>

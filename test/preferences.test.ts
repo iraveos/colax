@@ -86,6 +86,20 @@ test('an auto-lock value outside the offered list is reset', () => {
   assert.equal(normalisePreferences({ autoLockMinutes: 0 }).autoLockMinutes, 0, 'Never is valid');
 });
 
+test('hidden folders, manual order and custom sort survive normalisation', () => {
+  const prefs = normalisePreferences({
+    hiddenFolders: ['f1', 42, 'f1', ''],
+    manualOrder: ['b', 'a', 'b', null],
+    sort: 'manual',
+  } as never);
+  assert.deepEqual(prefs.hiddenFolders, ['f1']);
+  assert.deepEqual(prefs.manualOrder, ['b', 'a']);
+  assert.equal(prefs.sort, 'manual');
+  const fresh = normalisePreferences({});
+  assert.deepEqual(fresh.hiddenFolders, []);
+  assert.deepEqual(fresh.manualOrder, []);
+});
+
 test('a generator with every character set off is repaired', () => {
   const prefs = normalisePreferences({
     passwordGenerator: { length: 20, lower: false, upper: false, digits: false, symbols: false, avoidAmbiguous: true },

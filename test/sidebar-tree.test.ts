@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   normaliseSidebar,
   moveChannelToFolder,
+  moveManualOrder,
   BUILTIN_CHANNELS,
   type Channel,
   type Folder,
@@ -133,4 +134,25 @@ test('builtin channels are all present in the normalised tree', () => {
   const out = normaliseSidebar([], BUILTIN_CHANNELS, []);
   const ids = out.filter((e) => e.kind === 'channel').map((e) => e.id);
   for (const c of BUILTIN_CHANNELS) assert.ok(ids.includes(c.id), `${c.id} missing`);
+});
+
+test('a login drag lands on the aimed slot', () => {
+  // View order a,b,c — drag c before a.
+  assert.deepEqual(moveManualOrder(['a', 'b', 'c'], ['a', 'b', 'c'], ['a', 'b', 'c'], 'c', 0), ['c', 'a', 'b']);
+  // After the last row appends.
+  assert.deepEqual(moveManualOrder(['a', 'b', 'c'], ['a', 'b', 'c'], ['a', 'b', 'c'], 'a', 5), ['b', 'c', 'a']);
+});
+
+test('the first drag seeds from the screen, untouched pairs keep order', () => {
+  // Nothing ordered yet: the view order becomes the order, minus the move.
+  assert.deepEqual(moveManualOrder([], ['b', 'a', 'd'], ['a', 'b', 'c', 'd'], 'd', 0), ['d', 'b', 'a', 'c']);
+  // Ids outside the view stay where they were, relative order kept.
+  assert.deepEqual(
+    moveManualOrder(['x', 'y'], ['a', 'b'], ['a', 'b', 'x', 'y'], 'b', 0),
+    ['x', 'y', 'b', 'a'],
+  );
+});
+
+test('unknown and dead ids never corrupt the order', () => {
+  assert.deepEqual(moveManualOrder(['a', 'gone'], ['a', 'b'], ['a', 'b'], 'b', 0), ['b', 'a']);
 });

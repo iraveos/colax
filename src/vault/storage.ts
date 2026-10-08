@@ -220,8 +220,8 @@ export function mergeMailCache(
  */
 export type ViewLabels = 'icon' | 'name' | 'both';
 
-/** Sort order for the list views. */
-export type SortMode = 'title' | 'recent' | 'oldest' | 'strength' | 'username';
+/** Sort order for the list views. `manual` is the user's own drag order. */
+export type SortMode = 'title' | 'recent' | 'oldest' | 'strength' | 'username' | 'manual';
 
 /** A repeating reminder with its own sound. */
 export interface Alarm {
@@ -395,6 +395,17 @@ export interface VaultPreferences {
   /** Shows the Hide-sidebar button in the sidebar footer. Right-click it to hide. */
   showHideSidebarButton: boolean;
   /**
+   * Folder ids hidden from the sidebar. Like hiddenChannels: the folder keeps
+   * everything, it just takes up no rail space. Shown again from Settings.
+   */
+  hiddenFolders: string[];
+  /**
+   * The user's own login order, as ids. Dragging a login in the List or Grid
+   * view writes here and switches sorting to `manual`. Ids never seen stay at
+   * the end in title order, so new logins need no bookkeeping.
+   */
+  manualOrder: string[];
+  /**
    * Shows the channel rail at all. Off hides the entire sidebar; a button in
    * the topbar brings it back, so this can never strand Settings.
    */
@@ -514,6 +525,8 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   sidebar: [],
   showUnassignedChannel: true,
   hiddenChannels: [],
+  hiddenFolders: [],
+  manualOrder: [],
   showNewChannelButton: true,
   showCompactButton: true,
   showNewLoginButton: true,
@@ -567,6 +580,12 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.showUnassignedChannel = Boolean(merged.showUnassignedChannel);
   merged.hiddenChannels = Array.isArray(merged.hiddenChannels)
     ? [...new Set(merged.hiddenChannels.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+    : [];
+  merged.hiddenFolders = Array.isArray(merged.hiddenFolders)
+    ? [...new Set(merged.hiddenFolders.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+    : [];
+  merged.manualOrder = Array.isArray(merged.manualOrder)
+    ? [...new Set(merged.manualOrder.filter((id): id is string => typeof id === 'string' && id.length > 0))]
     : [];
   merged.showNewChannelButton = Boolean(merged.showNewChannelButton);
   merged.showCompactButton = Boolean(merged.showCompactButton);
@@ -707,7 +726,7 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.view = oneOf(merged.view, ['animated', 'carousel', 'basic', 'grid'] as const, DEFAULT_PREFERENCES.view);
   merged.sort = oneOf(
     merged.sort,
-    ['title', 'recent', 'oldest', 'strength', 'username'] as const,
+    ['title', 'recent', 'oldest', 'strength', 'username', 'manual'] as const,
     DEFAULT_PREFERENCES.sort,
   );
   merged.density = oneOf(merged.density, ['compact', 'comfortable', 'spacious'] as const, DEFAULT_PREFERENCES.density);

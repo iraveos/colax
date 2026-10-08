@@ -209,6 +209,39 @@ export function moveSidebarEntry(
 }
 
 /**
+ * Drops one login id at a position in the current view's flat order and
+ * returns the new global manual order.
+ *
+ * `toIndex` is a slot in `visibleIds` *after* removing `loginId` — the view
+ * computes it from the drop indicator, so what you aim at is what you get.
+ * Ids the order has never seen are seeded first (visible ids in view order,
+ * then `allIds`), so the first drag in any view starts from what is on screen
+ * and untouched pairs keep their relative positions everywhere. Pass `allIds`
+ * title-sorted so the seeded tail reads sensibly.
+ */
+export function moveManualOrder(
+  current: string[],
+  visibleIds: string[],
+  allIds: string[],
+  loginId: string,
+  toIndex: number,
+): string[] {
+  const known = new Set(allIds);
+  const base = current.filter((id) => known.has(id) && id !== loginId);
+  for (const id of visibleIds) {
+    if (id !== loginId && known.has(id) && !base.includes(id)) base.push(id);
+  }
+  for (const id of allIds) {
+    if (id !== loginId && !base.includes(id)) base.push(id);
+  }
+  const rest = visibleIds.filter((id) => id !== loginId);
+  const anchor = rest[Math.min(Math.max(toIndex, 0), rest.length)];
+  if (anchor === undefined) return [...base, loginId];
+  const at = base.indexOf(anchor);
+  return at === -1 ? [...base, loginId] : [...base.slice(0, at), loginId, ...base.slice(at)];
+}
+
+/**
  * Moves a channel or separator to the root, or into a folder, appending it.
  *
  * Thin wrapper over `moveSidebarEntry` for the context menus, which have no

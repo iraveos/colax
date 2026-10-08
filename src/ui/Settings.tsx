@@ -120,6 +120,7 @@ const SORTS: { id: SortMode; label: string }[] = [
   { id: 'oldest', label: 'Least recently updated' },
   { id: 'strength', label: 'Weakest first' },
   { id: 'username', label: 'Username' },
+  { id: 'manual', label: 'Custom (drag order)' },
 ];
 
 /**
@@ -792,6 +793,24 @@ export function Settings(props: {
           rows.push({ key: 'footer-hide', label: 'Hide-sidebar button', where: 'Sidebar footer', show: () => set({ showHideSidebarButton: true }) });
         if (prefs.showSidebar === false)
           rows.push({ key: 'sidebar', label: 'Sidebar', where: 'Channel rail', show: () => set({ showSidebar: true }) });
+        for (const id of prefs.hiddenChannels) {
+          const channel = prefs.channels.find((entry) => entry.id === id);
+          rows.push({
+            key: `channel:${id}`,
+            label: `Channel: ${channel?.name ?? id}`,
+            where: 'Sidebar',
+            show: () => set({ hiddenChannels: prefs.hiddenChannels.filter((entry) => entry !== id) }),
+          });
+        }
+        for (const id of prefs.hiddenFolders) {
+          const folder = prefs.folders.find((entry) => entry.id === id);
+          rows.push({
+            key: `folder:${id}`,
+            label: `Folder: ${folder?.name ?? id}`,
+            where: 'Sidebar',
+            show: () => set({ hiddenFolders: prefs.hiddenFolders.filter((entry) => entry !== id) }),
+          });
+        }
         if (rows.length === 0)
           return <p className="field__hint">Nothing is hidden. Right-click any topbar, sidebar or dock button to hide it straight from where it lives.</p>;
         return (
@@ -812,6 +831,8 @@ export function Settings(props: {
                       showCompactButton: true,
                       showHideSidebarButton: true,
                       showSidebar: true,
+                      hiddenChannels: [],
+                      hiddenFolders: [],
                     })
                   }
                 >
