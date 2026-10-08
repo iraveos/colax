@@ -995,10 +995,13 @@ export function Settings(props: {
               />
             </label>
           </Row>
-          <Row label="Forget this vault" hint="Removes every login from this device. There is no undo.">
+          <Row
+            label="Delete all data"
+            hint="Removes every login, tag, channel, folder, alarm, connected mailbox, setting and usage record from this device, and clears the clipboard. There is no undo."
+          >
             <button className="btn btn--danger" onClick={() => setConfirmReset(true)}>
               <TrashIcon width="14" height="14" />
-              Delete vault
+              Delete everything
             </button>
           </Row>
         </>
@@ -1244,7 +1247,7 @@ export function Settings(props: {
 
       {confirmReset ? (
         <Modal
-          title="Delete this vault?"
+          title="Delete all data?"
           onClose={() => setConfirmReset(false)}
           footer={
             <>
@@ -1258,8 +1261,10 @@ export function Settings(props: {
           }
         >
           <Alert tone="danger">
-            All {items.length} logins will be erased from this device. This cannot be undone, and nobody —
-            including whoever built this — can recover them.
+            All {items.length} logins, every tag, channel, folder, alarm, connected mailbox, setting and
+            usage record will be erased from this device, and the clipboard will be cleared. The app
+            returns to first-run setup. This cannot be undone, and nobody — including whoever built
+            this — can recover any of it.
           </Alert>
         </Modal>
       ) : null}

@@ -214,7 +214,11 @@ const clearHistory = useCallback(() => {
   );
 
   /**
-   * Wipes the vault and returns the app to the create screen.
+   * Wipes everything and returns the app to the create screen: the clipboard,
+   * the stored ciphertext and header, preferences (tags, channels, folders,
+   * alarms, mailboxes, usage counts, appearance — all of it), and the React
+   * state. What it cannot touch is outside the app: files you exported
+   * yourself, and the extension's separate browser storage.
    *
    * This has to live here rather than calling `service.reset()` from App: the
    * service holds the ciphertext, but this hook holds the React state (items,
@@ -224,6 +228,13 @@ const clearHistory = useCallback(() => {
    * is visibly still there.
    */
   const resetVault = useCallback(async () => {
+    // The clipboard may hold a copied password: blank it best-effort first.
+    // A denied permission must never block the wipe itself.
+    try {
+      await navigator.clipboard.writeText('');
+    } catch {
+      /* clipboard unavailable — the stored data is still wiped below */
+    }
     await service.reset();
     past.current = [];
     future.current = [];

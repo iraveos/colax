@@ -2116,11 +2116,25 @@ onCreate={vault.create}
         onOpenTuner={openTuner}
         onReset={async () => {
           // Goes through the hook, not the service: resetting only the service
-          // wipes storage while the rendered logins stay on screen.
+          // wipes storage while the rendered logins stay on screen. Every
+          // session-only set is dropped too, so a vault created afterwards
+          // starts with no verified logins, no open folders and no selection
+          // leaking over from the deleted one.
           await vault.resetVault();
           setActiveId('all');
           setEditing(null);
-          notify('Vault deleted from this device');
+          selection.clear();
+          setVerifiedItems(new Set());
+          setFoldersUnlocked(new Set());
+          setVaultVerified(false);
+          setPendingItem(null);
+          setConfirmDelete(null);
+          setBulkDelete(null);
+          setBulkSecurity(false);
+          setBulkField(null);
+          setMenu(null);
+          setViewMenuOpen(false);
+          notify('All data deleted from this device');
         }}
       />
 
