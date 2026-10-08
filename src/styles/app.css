@@ -1264,21 +1264,17 @@ to{transform:translate(0)}
 .sidebar__rule--row:hover:before{height:3px;background:linear-gradient(90deg,transparent,var(--accent-text) 30%,var(--accent-text) 70%,transparent);box-shadow:0 0 8px hsl(var(--accent-h) 60% 58% / .5)}
 .sidebar__rule--row:active{cursor:grabbing}
 
-/* ---- Login drag-reorder (List and Grid views) ------------------------------
-   The grip starts the drag; rows and cells are drop targets with an inset
-   accent bar above or below, mirroring the sidebar drop indicator. Motion
-   owns transforms here (layout + hover lift), so no CSS transform transition
-   may touch .item/.grid-cell or every animated frame would smear. */
-.drag-grip{display:grid;place-items:center;width:20px;align-self:stretch;flex-shrink:0;border-radius:6px;color:var(--text-faint);opacity:0;cursor:grab;transition:opacity var(--fast) var(--ease),color var(--fast) var(--ease)}
-.item:hover .drag-grip,.item:focus-within .drag-grip{opacity:.75}
-.drag-grip:hover{opacity:1;color:var(--text)}
-.drag-grip:active{cursor:grabbing}
-.grid-cell .drag-grip{position:absolute;top:8px;left:8px;z-index:3;width:22px;height:22px;align-self:auto;background:hsl(220 24% 8% / .55);backdrop-filter:blur(6px)}
-[data-theme=light] .grid-cell .drag-grip{background:hsl(210 30% 97% / .7)}
-.grid-cell:hover .drag-grip,.grid-cell:focus-within .drag-grip{opacity:.85}
-.item[data-dragging],.grid-cell[data-dragging]{opacity:.45}
-.item[data-drop-before],.grid-cell[data-drop-before]{box-shadow:inset 0 3px 0 hsl(var(--accent-h) 60% 58% / .8)}
-.item[data-drop-after],.grid-cell[data-drop-after]{box-shadow:inset 0 -3px 0 hsl(var(--accent-h) 60% 58% / .8)}
+/* ---- Login drag-reorder (Flow, List and Grid views) ------------------------
+   Press and hold a login anywhere except its buttons, then move: rows and
+   cells are drop targets with an inset accent bar above or below, mirroring
+   the sidebar drop indicator. The armed ring answers the hold so it never
+   feels dead. Motion owns transforms here (layout + hover lift), so no CSS
+   transform transition may touch .item/.grid-cell or every animated frame
+   would smear. */
+.item[data-armed],.grid-cell[data-armed],.rb-animated-list__item[data-armed]{box-shadow:inset 0 0 0 2px hsl(var(--accent-h) 60% 58% / .55)}
+.item[data-dragging],.grid-cell[data-dragging],.rb-animated-list__item[data-dragging]{opacity:.45}
+.item[data-drop-before],.grid-cell[data-drop-before],.rb-animated-list__item[data-drop-before]{box-shadow:inset 0 3px 0 hsl(var(--accent-h) 60% 58% / .8)}
+.item[data-drop-after],.grid-cell[data-drop-after],.rb-animated-list__item[data-drop-after]{box-shadow:inset 0 -3px 0 hsl(var(--accent-h) 60% 58% / .8)}
 .sidebar__rule--row:active:before{height:3px;background:linear-gradient(90deg,transparent,var(--accent-text) 30%,var(--accent-text) 70%,transparent)}
 
 /* Peek block: username line above the password when it is revealed. */

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { AnimatedList } from '../components/react-bits/AnimatedList.tsx';
 import { CircularCarousel, type CarouselItem } from '../components/react-bits/CircularCarousel.tsx';
@@ -71,9 +71,9 @@ export interface ViewActions {
   showLetterGroups?: boolean;
   /**
    * Drag a login to a flat position in the current view, switching sorting to
-   * the custom drag order. Only the List and Grid views offer handles — Flow
-   * and Orbit still follow the custom order through sorting, they just do not
-   * start drags themselves. Absent means no reordering here.
+   * the custom drag order. Offered by Flow, List and Grid (press and hold a
+   * login, then move); Orbit follows the custom order through sorting but
+   * starts no drags itself. Absent means no reordering here.
    */
   onReorderLogins?: (activeId: string, toIndex: number, flatIds: string[]) => void;
 }
@@ -138,83 +138,159 @@ function selectionClick(
 }
 
 /**
- * Login drag-reorder shared by the List and Grid views.
+ * Login drag-reorder shared by the Flow, List and Grid views.
  *
- * Only the grip starts a drag (whole-row dragging would fight text selection
- * and buttons); every row is a drop target showing a before/after indicator
- * from the pointer's half, and the container itself appends to the end. Rows
- * render as motion `layout` elements upstream, so the reorder animates
- * smoothly instead of snapping. Touch screens get no drag — HTML5 dragging is
- * mouse-only — the sort menu still orders everything there.
+ * No grip: press and hold anywhere on a login except its buttons, then move.
+ * The 180ms hold is what keeps this from fighting clicks and text selection —
+ * quick presses behave exactly as before, and pressing a button disarms the
+ * row, so controls never start drags. Every row is a drop target showing a
+ * before/after indicator from the pointer's half, and the container itself
+ * appends to the end. Rows render as motion `layout` elements upstream, so the
+ * reorder animates smoothly instead of snapping. Touch screens get no drag —
+ * HTML5 dragging is mouse-only — the sort menu still orders everything there.
  */
 function useLoginReorder(
   flatIds: string[],
   onReorder?: (activeId: string, toIndex: number, flatIds: string[]) => void,
 ) {
   const [dragId, setDragId] = useState<string | null>(null);
+  const [armedId, setArmedId] = useState<string | null>(null);
   const [over, setOver] = useState<{ id: string; after: boolean } | null>(null);
+  const armTimer = useRef<number>(0);
   const enabled = typeof onReorder === 'function';
+  // The native row listeners read through this mirror so they never close
+  // over stale state between re-renders.
+  const liveRef = useRef({
+    flatIds,
+    onReorder,
+    enabled,
+    dragId: null as string | null,
+    over: null as { id: string; after: boolean } | null,
+  });
+  liveRef.current.flatIds = flatIds;
+  liveRef.current.onReorder = onReorder;
+  liveRef.current.enabled = enabled;
+  liveRef.current.dragId = dragId;
+  liveRef.current.over = over;
 
-  const gripProps = (item: VaultItem) => ({
-    draggable: enabled,
-    onDragStart: (event: React.DragEvent) => {
-      if (!enabled) return;
-      event.dataTransfer.setData('text/plain', item.id);
-      event.dataTransfer.effectAllowed = 'move';
-      const row = (event.target as HTMLElement).closest('[data-vault-item]');
+  useEffect(
+    () => () => {
+      if (armTimer.current) window.clearTimeout(armTimer.current);
+    },
+    [],
+  );
+
+  const disarm = () => {
+    if (armTimer.current) {
+      window.clearTimeout(armTimer.current);
+      armTimer.current = 0;
+    }
+    setArmedId(null);
+  };
+
+  // Row drag events ride native listeners, not React props: motion.div retypes
+  // onDragStart for its own pan gestures, so a React prop would never reach
+  // the HTML5 backend. Pointer arming and the draggable flag stay declarative.
+  const rowRef = (item: VaultItem) => (node: HTMLDivElement | null) => {
+    if (!node) return;
+    const onDragStart = (event: DragEvent) => {
+      const live = liveRef.current;
+      if (!live.enabled) return;
+      if (armTimer.current) {
+        window.clearTimeout(armTimer.current);
+        armTimer.current = 0;
+      }
+      event.dataTransfer?.setData('text/plain', item.id);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      const row = (event.target as HTMLElement | null)?.closest?.('[data-vault-item]');
       if (row instanceof HTMLElement) {
         try {
-          event.dataTransfer.setDragImage(row, 24, 24);
+          event.dataTransfer?.setDragImage(row, 24, 24);
         } catch {
           // Older engines ignore custom drag images; the default ghost works.
         }
       }
       setDragId(item.id);
       setOver(null);
-    },
-    onDragEnd: () => {
-      setDragId(null);
-      setOver(null);
-    },
-  });
-
-  const rowProps = (item: VaultItem) => ({
-    'data-dragging': dragId === item.id ? '' : undefined,
-    'data-drop-before': over?.id === item.id && !over.after ? '' : undefined,
-    'data-drop-after': over?.id === item.id && over.after ? '' : undefined,
-    onDragOver: (event: React.DragEvent) => {
-      if (!enabled || !dragId) return;
-      if (dragId === item.id) {
+    };
+    const onDragOver = (event: DragEvent) => {
+      const live = liveRef.current;
+      if (!live.enabled || !live.dragId) return;
+      if (live.dragId === item.id) {
         setOver(null);
         return;
       }
       event.preventDefault();
-      event.dataTransfer.dropEffect = 'move';
-      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      const rect = node.getBoundingClientRect();
       const after = event.clientY - rect.top > rect.height / 2;
       setOver((current) =>
         current && current.id === item.id && current.after === after ? current : { id: item.id, after },
       );
-    },
-    onDragLeave: (event: React.DragEvent) => {
+    };
+    const onDragLeave = (event: DragEvent) => {
       const to = event.relatedTarget as Node | null;
-      if (to && (event.currentTarget as HTMLElement).contains(to)) return;
+      if (to && node.contains(to)) return;
       setOver((current) => (current?.id === item.id ? null : current));
-    },
-    onDrop: (event: React.DragEvent) => {
-      if (!enabled || !dragId || !onReorder) return;
+    };
+    const onDrop = (event: DragEvent) => {
+      const live = liveRef.current;
+      if (!live.enabled || !live.dragId || !live.onReorder) return;
       event.preventDefault();
       event.stopPropagation();
       const targetId = item.id;
-      const after = over?.id === targetId ? over.after : false;
-      const active = dragId;
+      const after = live.over?.id === targetId ? live.over.after : false;
+      const active = live.dragId;
       setDragId(null);
       setOver(null);
+      setArmedId(null);
       if (active === targetId) return;
-      const rest = flatIds.filter((id) => id !== active);
+      const rest = live.flatIds.filter((id) => id !== active);
       const ti = rest.indexOf(targetId);
-      onReorder(active, ti === -1 ? rest.length : ti + (after ? 1 : 0), flatIds);
+      live.onReorder(active, ti === -1 ? rest.length : ti + (after ? 1 : 0), live.flatIds);
+    };
+    const onDragEnd = () => {
+      setDragId(null);
+      setOver(null);
+      setArmedId(null);
+    };
+    node.addEventListener('dragstart', onDragStart);
+    node.addEventListener('dragover', onDragOver);
+    node.addEventListener('dragleave', onDragLeave);
+    node.addEventListener('drop', onDrop);
+    node.addEventListener('dragend', onDragEnd);
+    return () => {
+      node.removeEventListener('dragstart', onDragStart);
+      node.removeEventListener('dragover', onDragOver);
+      node.removeEventListener('dragleave', onDragLeave);
+      node.removeEventListener('drop', onDrop);
+      node.removeEventListener('dragend', onDragEnd);
+    };
+  };
+
+  const rowProps = (item: VaultItem) => ({
+    draggable: enabled && armedId === item.id,
+    'data-armed': enabled && armedId === item.id && dragId !== item.id ? '' : undefined,
+    'data-dragging': dragId === item.id ? '' : undefined,
+    'data-drop-before': over?.id === item.id && !over.after ? '' : undefined,
+    'data-drop-after': over?.id === item.id && over.after ? '' : undefined,
+    onPointerDown: (event: React.PointerEvent) => {
+      if (!enabled || event.button !== 0) return;
+      // Buttons and fields opt out: pressing them disarms, so they never drag.
+      if ((event.target as HTMLElement).closest('button, a, input, textarea, select, [contenteditable="true"]')) {
+        disarm();
+        return;
+      }
+      const id = item.id;
+      if (armTimer.current) window.clearTimeout(armTimer.current);
+      armTimer.current = window.setTimeout(() => {
+        armTimer.current = 0;
+        setArmedId(id);
+      }, 180);
     },
+    onPointerUp: disarm,
+    onPointerCancel: disarm,
+    ref: rowRef(item),
   });
 
   /** Dropping past the last row appends to the end of the view. */
@@ -228,34 +304,12 @@ function useLoginReorder(
       const active = dragId;
       setDragId(null);
       setOver(null);
+      setArmedId(null);
       onReorder(active, flatIds.filter((id) => id !== active).length, flatIds);
     },
   };
 
-  return { enabled, dragId, gripProps, rowProps, listProps };
-}
-
-/** The six-dot grip that starts a login drag. Mouse-only, silent otherwise. */
-function DragGrip({ grip }: { grip: { draggable: boolean; onDragStart: (event: React.DragEvent) => void; onDragEnd: () => void } }) {
-  return (
-    <span
-      className="drag-grip"
-      title="Drag to reorder"
-      aria-hidden="true"
-      draggable={grip.draggable}
-      onDragStart={grip.onDragStart}
-      onDragEnd={grip.onDragEnd}
-    >
-      <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
-        <circle cx="2.5" cy="3" r="1.4" />
-        <circle cx="7.5" cy="3" r="1.4" />
-        <circle cx="2.5" cy="8" r="1.4" />
-        <circle cx="7.5" cy="8" r="1.4" />
-        <circle cx="2.5" cy="13" r="1.4" />
-        <circle cx="7.5" cy="13" r="1.4" />
-      </svg>
-    </span>
-  );
+  return { enabled, dragId, rowProps, listProps };
 }
 
 /** Tag chips for a login, resolved against the catalogue. */
@@ -457,6 +511,7 @@ export function AnimatedListView({
   onOpenUrl,
   onSelect,
   onItemMenu,
+  onReorderLogins,
   tags,
 }: CommonViewProps) {
   // Ids whose password has been explicitly revealed. Everything else is masked, so
@@ -465,6 +520,10 @@ export function AnimatedListView({
   // A login with its own second factor has to clear it before its password shows.
   const [gateItem, setGateItem] = useState<VaultItem | null>(null);
   const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
+  const reorder = useLoginReorder(
+    items.map((entry) => entry.id),
+    onReorderLogins,
+  );
 
   if (items.length === 0) return null;
 
@@ -503,6 +562,8 @@ export function AnimatedListView({
       // onto the first and last cards rather than as scroll hints.
       showGradients={false}
       onItemSelect={(item) => onSelect(item)}
+      rowProps={(item) => reorder.rowProps(item)}
+      listProps={reorder.listProps}
       renderItem={(item, _index, selected) => {
         const label = labelOf(item);
         // Masked unless this row's eye has been clicked.
@@ -1002,7 +1063,6 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
             onClick={selectionClick(item, onSelectForEdit)}
             {...reorder.rowProps(item)}
           >
-                  {reorder.enabled ? <DragGrip grip={reorder.gripProps(item)} /> : null}
                   {photo ? <div className="item__art" aria-hidden="true" /> : null}
                 {photo ? <div className="item__scrim" aria-hidden="true" /> : null}
 
@@ -1201,7 +1261,6 @@ export function GridView({
               }}
             {...reorder.rowProps(item)}
             >
-              {reorder.enabled ? <DragGrip grip={reorder.gripProps(item)} /> : null}
               {photo ? <div className="item__art" aria-hidden="true" /> : null}
               {photo ? <div className="card-row__scrim" aria-hidden="true" /> : null}
 

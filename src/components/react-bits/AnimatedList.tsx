@@ -11,9 +11,23 @@
  *   - arrow-key navigation is scoped to the list instead of hijacking the window
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type HTMLAttributes,
+  type ReactNode,
+  type Ref,
+} from 'react';
 import { motion, useInView } from 'motion/react';
 import './AnimatedList.css';
+
+/** Drop/drag attributes for one row wrapper: stock handlers plus data flags. */
+export interface AnimatedRowProps extends HTMLAttributes<HTMLDivElement> {
+  [key: `data-${string}`]: string | undefined;
+  ref?: Ref<HTMLDivElement>;
+}
 
 export interface AnimatedListProps<T> {
   items: T[];
@@ -21,6 +35,10 @@ export interface AnimatedListProps<T> {
   itemKey?: (item: T, index: number) => string;
   renderItem: (item: T, index: number, selected: boolean) => ReactNode;
   onItemSelect?: (item: T, index: number) => void;
+  /** Per-row drag/drop attributes (login reorder). Spread onto the row wrapper. */
+  rowProps?: (item: T, index: number) => AnimatedRowProps;
+  /** List-level drop (append past the last row). Spread onto the scroller. */
+  listProps?: HTMLAttributes<HTMLDivElement>;
   showGradients?: boolean;
   enableArrowNavigation?: boolean;
   className?: string;
@@ -59,9 +77,12 @@ function AnimatedItem({ children, delay, index, selected, onMouseEnter, onClick 
       data-selected={selected ? '' : undefined}
       onMouseEnter={onMouseEnter}
       onClick={onClick}
+      // Layout glides rows to their new slots on reorder. The enter stagger
+      // must not delay it, so the delay only applies before first paint.
+      layout
       initial={{ scale: 0.96, opacity: 0, y: 10 }}
       animate={shown ? { scale: 1, opacity: 1, y: 0 } : { scale: 0.96, opacity: 0, y: 10 }}
-      transition={{ type: 'spring', stiffness: 340, damping: 32, mass: 0.7, delay }}
+      transition={{ type: 'spring', stiffness: 340, damping: 32, mass: 0.7, delay: shown ? 0 : delay }}
     >
       {children}
     </motion.div>
@@ -73,6 +94,8 @@ export function AnimatedList<T>({
   itemKey,
   renderItem,
   onItemSelect,
+  rowProps,
+  listProps,
   showGradients = true,
   enableArrowNavigation = true,
   className = '',
@@ -196,6 +219,7 @@ export function AnimatedList<T>({
         tabIndex={enableArrowNavigation ? 0 : -1}
         role="listbox"
         aria-label="Vault entries"
+        {...listProps}
       >
         {items.map((item, index) => (
           <AnimatedItem
@@ -206,7 +230,9 @@ export function AnimatedList<T>({
             onMouseEnter={() => setSelectedIndex(index)}
             onClick={() => select(index)}
           >
-            <div className={`rb-animated-list__item ${itemClassName}`.trim()}>{renderItem(item, index, selectedIndex === index)}</div>
+            <div className={`rb-animated-list__item ${itemClassName}`.trim()} {...rowProps?.(item, index)}>
+              {renderItem(item, index, selectedIndex === index)}
+            </div>
           </AnimatedItem>
         ))}
       </div>
