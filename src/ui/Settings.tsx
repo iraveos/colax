@@ -32,6 +32,7 @@ import {
   CloudIcon,
   DatabaseIcon,
   DownloadIcon,
+  EyeOffIcon,
   GridIcon,
   ImageIcon,
   InfoIcon,
@@ -706,6 +707,34 @@ export function Settings(props: {
               onChange={(showCompactButton) => set({ showCompactButton })}
             />
           </Row>
+          <Row label="New login button" hint="The topbar shortcut. Right-click it to hide it without coming here.">
+            <Toggle
+              label="New login button"
+              checked={prefs.showNewLoginButton}
+              onChange={(showNewLoginButton) => set({ showNewLoginButton })}
+            />
+          </Row>
+          <Row label="Bulk add button" hint="The topbar shortcut beside New login. Right-click it to hide it without coming here.">
+            <Toggle
+              label="Bulk add button"
+              checked={prefs.showBulkAddButton}
+              onChange={(showBulkAddButton) => set({ showBulkAddButton })}
+            />
+          </Row>
+          <Row label="Settings button" hint="The sidebar footer's own shortcut here. Right-click it to hide it; the Hidden tab brings it back.">
+            <Toggle
+              label="Settings button"
+              checked={prefs.showSettingsButton}
+              onChange={(showSettingsButton) => set({ showSettingsButton })}
+            />
+          </Row>
+          <Row label="Hide sidebar button" hint="The sidebar footer's Hide control. Right-click it to hide it.">
+            <Toggle
+              label="Hide sidebar button"
+              checked={prefs.showHideSidebarButton}
+              onChange={(showHideSidebarButton) => set({ showHideSidebarButton })}
+            />
+          </Row>
           <Row label="Show sidebar" hint="Hides the whole channel rail. A button appears in the topbar to bring it back, so Settings stays reachable.">
             <Toggle
               label="Show sidebar"
@@ -732,6 +761,74 @@ export function Settings(props: {
           </Row>
         </>
       ),
+    },
+
+    // Hidden items: everything right-clicked away (or toggled off in Layout),
+    // in one place with a way back each. This tab is the reason hiding can
+    // never strand anyone: every hidden button is listed here with its Show.
+    {
+      id: 'hidden',
+      label: 'Hidden',
+      icon: <EyeOffIcon />,
+      render: () => {
+        const rows: { key: string; label: string; where: string; show: () => void }[] = [];
+        if (prefs.showNewLoginButton === false)
+          rows.push({ key: 'new-login', label: 'New login button', where: 'Topbar', show: () => set({ showNewLoginButton: true }) });
+        if (prefs.showBulkAddButton === false)
+          rows.push({ key: 'bulk-add', label: 'Bulk add button', where: 'Topbar', show: () => set({ showBulkAddButton: true }) });
+        if (!prefs.dockEnabled)
+          rows.push({ key: 'dock', label: 'Quick-launch dock', where: 'Floating bar', show: () => set({ dockEnabled: true }) });
+        if (!prefs.showNewChannelButton)
+          rows.push({ key: 'sidebar-add', label: 'New channel button', where: 'Sidebar', show: () => set({ showNewChannelButton: true }) });
+        if (prefs.showSettingsButton === false)
+          rows.push({ key: 'footer-settings', label: 'Settings button', where: 'Sidebar footer', show: () => set({ showSettingsButton: true }) });
+        if (!prefs.showLockButton)
+          rows.push({ key: 'footer-lock', label: 'Lock button', where: 'Sidebar footer', show: () => set({ showLockButton: true }) });
+        if (!prefs.showShortcuts)
+          rows.push({ key: 'footer-shortcuts', label: 'Shortcuts button', where: 'Sidebar footer', show: () => set({ showShortcuts: true }) });
+        if (!prefs.showCompactButton)
+          rows.push({ key: 'footer-compact', label: 'Compact button', where: 'Sidebar footer', show: () => set({ showCompactButton: true }) });
+        if (prefs.showHideSidebarButton === false)
+          rows.push({ key: 'footer-hide', label: 'Hide-sidebar button', where: 'Sidebar footer', show: () => set({ showHideSidebarButton: true }) });
+        if (prefs.showSidebar === false)
+          rows.push({ key: 'sidebar', label: 'Sidebar', where: 'Channel rail', show: () => set({ showSidebar: true }) });
+        if (rows.length === 0)
+          return <p className="field__hint">Nothing is hidden. Right-click any topbar, sidebar or dock button to hide it straight from where it lives.</p>;
+        return (
+          <>
+            {rows.length > 1 ? (
+              <Row label="Show everything" hint="Brings back every hidden button and bar at once.">
+                <button
+                  className="btn btn--secondary"
+                  onClick={() =>
+                    set({
+                      showNewLoginButton: true,
+                      showBulkAddButton: true,
+                      dockEnabled: true,
+                      showNewChannelButton: true,
+                      showSettingsButton: true,
+                      showLockButton: true,
+                      showShortcuts: true,
+                      showCompactButton: true,
+                      showHideSidebarButton: true,
+                      showSidebar: true,
+                    })
+                  }
+                >
+                  Show all {rows.length}
+                </button>
+              </Row>
+            ) : null}
+            {rows.map((row) => (
+              <Row key={row.key} label={row.label} hint={row.where}>
+                <button className="btn btn--secondary" onClick={row.show}>
+                  Show
+                </button>
+              </Row>
+            ))}
+          </>
+        );
+      },
     },
 
     // Background and Channels sit beneath Layout now: appearance first, then

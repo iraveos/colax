@@ -57,6 +57,9 @@ export function Sidebar({
   hiddenChannels = [],
   showNewChannelButton = true,
   showCompactButton = true,
+  showSettingsButton = true,
+  showHideSidebarButton = true,
+  onHideChrome,
   onSelect,
   onReorder,
   onToggleFolder,
@@ -94,6 +97,12 @@ export function Sidebar({
   showNewChannelButton?: boolean;
   /** Shows the Compact toggle in the footer. */
   showCompactButton?: boolean;
+  /** Shows the Settings button in the footer. Right-click hides it. */
+  showSettingsButton?: boolean;
+  /** Shows the Hide-sidebar button in the footer. Right-click hides it. */
+  showHideSidebarButton?: boolean;
+  /** Right-click on a hideable button: App opens its Hide menu. */
+  onHideChrome?: (id: 'sidebar-add' | 'footer-settings' | 'footer-lock' | 'footer-shortcuts' | 'footer-compact' | 'footer-hide', event: ReactMouseEvent) => void;
   onSelect: (id: string) => void;
   onReorder: (next: SidebarEntry[]) => void;
   onToggleFolder: (folderId: string) => void;
@@ -401,7 +410,16 @@ export function Sidebar({
         ) : null}
 
         {showNewChannelButton ? (
-          <button className="nav-item nav-item--ghost sidebar__add" onClick={onNewChannel} title="New channel">
+          <button
+            className="nav-item nav-item--ghost sidebar__add"
+            onClick={onNewChannel}
+            title="New channel — right-click to hide"
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onHideChrome?.('sidebar-add', event);
+            }}
+          >
             <PlusIcon width="15" height="15" />
             {!narrowRail ? <span className="nav-item__label">New channel</span> : null}
           </button>
@@ -421,35 +439,77 @@ export function Sidebar({
           <button
             className="nav-item"
             onClick={onToggleCompact}
-            title={compact ? 'Expand sidebar' : 'Compact sidebar'}
+            title={compact ? 'Expand sidebar — right-click to hide' : 'Compact sidebar — right-click to hide'}
             aria-label={compact ? 'Expand sidebar' : 'Compact sidebar'}
             aria-pressed={compact}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onHideChrome?.('footer-compact', event);
+            }}
           >
             <CompactGlyph expanded={compact} />
             {!narrowRail ? <span>Compact</span> : null}
           </button>
         ) : null}
-        <button
-          className="nav-item"
-          onClick={onHideSidebar}
-          title="Hide sidebar"
-          aria-label="Hide sidebar"
-        >
-          <EyeOffIcon width="16" height="16" />
-          {!narrowRail ? <span>Hide</span> : null}
-        </button>
-        <button className="nav-item" onClick={onOpenSettings} title="Settings">
-          <SettingsGlyph />
-          {!narrowRail ? <span>Settings</span> : null}
-        </button>
+        {showHideSidebarButton ? (
+          <button
+            className="nav-item"
+            onClick={onHideSidebar}
+            title="Hide sidebar — right-click to hide this button"
+            aria-label="Hide sidebar"
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onHideChrome?.('footer-hide', event);
+            }}
+          >
+            <EyeOffIcon width="16" height="16" />
+            {!narrowRail ? <span>Hide</span> : null}
+          </button>
+        ) : null}
+        {showSettingsButton ? (
+          <button
+            className="nav-item"
+            onClick={onOpenSettings}
+            title="Settings — right-click to hide"
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onHideChrome?.('footer-settings', event);
+            }}
+          >
+            <SettingsGlyph />
+            {!narrowRail ? <span>Settings</span> : null}
+          </button>
+        ) : null}
         {showShortcuts ? (
-          <button className="nav-item" onClick={onOpenShortcuts} title="Keyboard shortcuts">
+          <button
+            className="nav-item"
+            onClick={onOpenShortcuts}
+            title="Keyboard shortcuts — right-click to hide"
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onHideChrome?.('footer-shortcuts', event);
+            }}
+          >
             <KeyboardGlyph />
             {!narrowRail ? <span>Shortcuts</span> : null}
           </button>
         ) : null}
         {showLock ? (
-          <button className="nav-item" onClick={onLock} title="Lock vault" aria-label="Lock vault">
+          <button
+            className="nav-item"
+            onClick={onLock}
+            title="Lock vault — right-click to hide"
+            aria-label="Lock vault"
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onHideChrome?.('footer-lock', event);
+            }}
+          >
             <LockGlyph />
             {!narrowRail ? <span>Lock</span> : null}
           </button>

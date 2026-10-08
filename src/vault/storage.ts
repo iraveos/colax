@@ -386,6 +386,14 @@ export interface VaultPreferences {
   showNewChannelButton: boolean;
   /** Shows the Compact toggle in the sidebar footer. */
   showCompactButton: boolean;
+  /** Shows the New login button in the topbar. Right-click it to hide. */
+  showNewLoginButton: boolean;
+  /** Shows the Bulk add button in the topbar. Right-click it to hide. */
+  showBulkAddButton: boolean;
+  /** Shows the Settings button in the sidebar footer. Right-click it to hide. */
+  showSettingsButton: boolean;
+  /** Shows the Hide-sidebar button in the sidebar footer. Right-click it to hide. */
+  showHideSidebarButton: boolean;
   /**
    * Shows the channel rail at all. Off hides the entire sidebar; a button in
    * the topbar brings it back, so this can never strand Settings.
@@ -508,6 +516,10 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   hiddenChannels: [],
   showNewChannelButton: true,
   showCompactButton: true,
+  showNewLoginButton: true,
+  showBulkAddButton: true,
+  showSettingsButton: true,
+  showHideSidebarButton: true,
   showSidebar: true,
   autoTagDomain: true,
   showLetterGroups: true,
@@ -558,6 +570,12 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     : [];
   merged.showNewChannelButton = Boolean(merged.showNewChannelButton);
   merged.showCompactButton = Boolean(merged.showCompactButton);
+  // Visibility switches default to shown: a missing key must never hide a
+  // button out from under the user.
+  merged.showNewLoginButton = merged.showNewLoginButton !== false;
+  merged.showBulkAddButton = merged.showBulkAddButton !== false;
+  merged.showSettingsButton = merged.showSettingsButton !== false;
+  merged.showHideSidebarButton = merged.showHideSidebarButton !== false;
   merged.showSidebar = merged.showSidebar !== false;
   merged.autoTagDomain = Boolean(merged.autoTagDomain);
   merged.showLetterGroups = merged.showLetterGroups !== false;

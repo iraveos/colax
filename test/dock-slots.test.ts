@@ -152,6 +152,24 @@ test('offered cadences (including 5s, 30s and Off) pass through untouched', () =
   assert.equal(out.gmailAccounts[2]?.refreshSeconds, 0);
 });
 
+test('chrome visibility switches default to shown, never hidden by absence', () => {
+  const out = normalisePreferences({});
+  assert.equal(out.showNewLoginButton, true);
+  assert.equal(out.showBulkAddButton, true);
+  assert.equal(out.showSettingsButton, true);
+  assert.equal(out.showHideSidebarButton, true);
+  const hidden = normalisePreferences({
+    showNewLoginButton: false,
+    showBulkAddButton: false,
+    showSettingsButton: false,
+    showHideSidebarButton: false,
+  });
+  assert.equal(hidden.showNewLoginButton, false);
+  assert.equal(hidden.showBulkAddButton, false);
+  assert.equal(hidden.showSettingsButton, false);
+  assert.equal(hidden.showHideSidebarButton, false);
+});
+
 test('duplicate account addresses collapse to one', () => {
   const stored = base();
   stored.gmailAccounts = [

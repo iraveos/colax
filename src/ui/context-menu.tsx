@@ -266,6 +266,61 @@ function MenuLayer({
   );
 }
 
+/**
+ * Every topbar / sidebar / dock button that can be hidden by right-click.
+ *
+ * One table so the hide menus (built wherever the button lives) and the
+ * Settings › Hidden tab (which brings them back) cannot disagree about what
+ * exists or what it is called.
+ */
+export type ChromeElementId =
+  | 'new-login'
+  | 'bulk-add'
+  | 'dock'
+  | 'sidebar-add'
+  | 'footer-settings'
+  | 'footer-lock'
+  | 'footer-shortcuts'
+  | 'footer-compact'
+  | 'footer-hide';
+
+export const CHROME_ELEMENTS: Record<ChromeElementId, { label: string; where: string }> = {
+  'new-login': { label: 'New login button', where: 'Topbar' },
+  'bulk-add': { label: 'Bulk add button', where: 'Topbar' },
+  dock: { label: 'Quick-launch dock', where: 'Floating bar' },
+  'sidebar-add': { label: 'New channel button', where: 'Sidebar' },
+  'footer-settings': { label: 'Settings button', where: 'Sidebar footer' },
+  'footer-lock': { label: 'Lock button', where: 'Sidebar footer' },
+  'footer-shortcuts': { label: 'Shortcuts button', where: 'Sidebar footer' },
+  'footer-compact': { label: 'Compact button', where: 'Sidebar footer' },
+  'footer-hide': { label: 'Hide-sidebar button', where: 'Sidebar footer' },
+};
+
+/**
+ * The right-click menu for a hideable button: hide this one thing, plus the
+ * way back for everything hidden before. Every hide menu ends with the way
+ * back, so hiding can never strand the user.
+ */
+export function hideChromeMenu(
+  id: ChromeElementId,
+  onHide: () => void,
+  onShowHidden: () => void,
+): MenuItem[] {
+  return [
+    {
+      kind: 'item',
+      label: `Hide ${CHROME_ELEMENTS[id].label.toLowerCase()}`,
+      onSelect: onHide,
+    },
+    { kind: 'separator' },
+    {
+      kind: 'item',
+      label: 'Show hidden items…',
+      onSelect: onShowHidden,
+    },
+  ];
+}
+
 export interface ContextMenuState {
   x: number;
   y: number;

@@ -22,7 +22,7 @@ import { FolderEditor } from './FolderEditor.tsx';
 import { detect as detectClipboard, detectBulk, useClipboardWatcher } from './useClipboardWatcher.ts';
 import { useAlarms, playAlarmSound } from './useAlarms.ts';
 import { useCaptureOffer, type PendingCapture } from './useCaptureOffer.ts';
-import type { GmailAccount, SortMode, VaultView } from '../vault/storage.ts';
+import type { GmailAccount, SortMode, VaultPreferences, VaultView } from '../vault/storage.ts';
 import { LockScreen } from './LockScreen.tsx';
 import { ItemEditor } from './ItemEditor.tsx';
 import { AppearancePanel } from './AppearancePanel.tsx';
@@ -32,7 +32,7 @@ import { Sidebar } from './Sidebar.tsx';
 import { ViewContextMenu, VIEW_OPTIONS, useViewShortcuts } from './ViewMenu.tsx';
 import { Dock, useDockShortcuts, type DockSlot } from './Dock.tsx';
 import { CHANNEL_ICONS_MAP } from './Sidebar.tsx';
-import { ContextMenu, type ContextMenuState, type MenuItem } from './context-menu.tsx';
+import { ContextMenu, hideChromeMenu, type ChromeElementId, type ContextMenuState, type MenuItem } from './context-menu.tsx';
 import { ChannelEditor } from './ChannelEditor.tsx';
 import { Alert, Modal, Toasts } from './primitives.tsx';
 import { BulkSecurityDialog, hasSecurityFactor, withoutSecurityFactor } from './BulkSecurityDialog.tsx';
@@ -61,6 +61,7 @@ import {
   CopyIcon,
   EditIcon,
   ExternalIcon,
+  EyeOffIcon,
   FlagIcon,
   GridIcon,
   InboxIcon,
@@ -679,6 +680,12 @@ const visible = useMemo(() => {
         label: 'Manage channels',
         icon: <RowsIcon />,
         onSelect: () => openSettings('channels'),
+      },
+      {
+        kind: 'item',
+        label: 'Show hidden items…',
+        icon: <EyeOffIcon />,
+        onSelect: () => openSettings('hidden'),
       },
       {
         kind: 'submenu',
@@ -1369,6 +1376,12 @@ label: 'Settings',
       },
       {
         kind: 'item',
+        label: 'Show hidden items…',
+        icon: <EyeOffIcon />,
+        onSelect: () => openSettings('hidden'),
+      },
+      {
+        kind: 'item',
         label: 'Keyboard shortcuts',
         icon: <KeyboardIcon />,
         shortcut: '?',
@@ -1654,6 +1667,30 @@ label: 'Settings',
    * right-click path too — and Hide must live here, because hiding removes the
    * bar you would otherwise unhide it from.
    */
+  /**
+   * Hides one chrome button by right-click, from wherever it lives. Writes the
+   * same preference its Settings toggle writes, so the menu and Settings can
+   * never disagree — and toasts where it went, because a button that vanishes
+   * with no word is indistinguishable from a bug.
+   */
+  const hideChrome = useCallback(
+    (id: ChromeElementId) => {
+      const patches: Record<ChromeElementId, Partial<VaultPreferences>> = {
+        'new-login': { showNewLoginButton: false },
+        'bulk-add': { showBulkAddButton: false },
+        dock: { dockEnabled: false },
+        'sidebar-add': { showNewChannelButton: false },
+        'footer-settings': { showSettingsButton: false },
+        'footer-lock': { showLockButton: false },
+        'footer-shortcuts': { showShortcuts: false },
+        'footer-compact': { showCompactButton: false },
+        'footer-hide': { showHideSidebarButton: false },
+      };
+      void vault.updatePrefs(patches[id]).then(() => notify('Hidden — bring it back in Settings › Hidden'));
+    },
+    [vault, notify],
+  );
+
   const dockMenu = useCallback((): MenuItem[] => {
     // Canonical spots per edge; dragging refines from here freely.
     const positions = [
@@ -1687,10 +1724,15 @@ label: 'Settings',
       {
         kind: 'item',
         label: 'Hide dock',
-        onSelect: () => void vault.updatePrefs({ dockEnabled: false }),
+        onSelect: () => hideChrome('dock'),
+      },
+      {
+        kind: 'item',
+        label: 'Show hidden items…',
+        onSelect: () => openSettings('hidden'),
       },
     ];
-  }, [prefs.dockPos, vault, openSettings]);
+  }, [prefs.dockPos, hideChrome, openSettings]);
 
   useDockShortcuts(
     prefs.dockEnabled ? dockSlots : [],
@@ -1937,6 +1979,12 @@ onCreate={vault.create}
           hiddenChannels={prefs.hiddenChannels}
           showNewChannelButton={prefs.showNewChannelButton}
           showCompactButton={prefs.showCompactButton}
+          showSettingsButton={prefs.showSettingsButton}
+          showHideSidebarButton={prefs.showHideSidebarButton}
+          onHideChrome={(id, event) => {
+            event.preventDefault();
+            setMenu({ x: event.clientX, y: event.clientY, items: hideChromeMenu(id, () => hideChrome(id), () => openSettings('hidden')) });
+          }}
           onSelect={setActiveId}
           onReorder={(next) => void vault.updatePrefs({ sidebar: next })}
           onToggleFolder={toggleFolderCollapse}
@@ -2021,14 +2069,34 @@ onCreate={vault.create}
             </div>
 
             <div className="topbar__actions">
-              <button className="btn btn--quiet" onClick={() => setBulkAdding(true)}>
-                <PlusIcon width="15" height="15" />
-                Bulk add
-              </button>
-              <button className="btn btn--quiet" onClick={() => setEditing('new')}>
-                <PlusIcon width="15" height="15" />
-                New login
-              </button>
+              {prefs.showBulkAddButton !== false ? (
+                <button
+                  className="btn btn--quiet"
+                  onClick={() => setBulkAdding(true)}
+                  title="Bulk add — right-click to hide"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setMenu({ x: event.clientX, y: event.clientY, items: hideChromeMenu('bulk-add', () => hideChrome('bulk-add'), () => openSettings('hidden')) });
+                  }}
+                >
+                  <PlusIcon width="15" height="15" />
+                  Bulk add
+                </button>
+              ) : null}
+              {prefs.showNewLoginButton !== false ? (
+                <button
+                  className="btn btn--quiet"
+                  onClick={() => setEditing('new')}
+                  title="New login — right-click to hide"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setMenu({ x: event.clientX, y: event.clientY, items: hideChromeMenu('new-login', () => hideChrome('new-login'), () => openSettings('hidden')) });
+                  }}
+                >
+                  <PlusIcon width="15" height="15" />
+                  New login
+                </button>
+              ) : null}
             </div>
           </header>
 
