@@ -349,6 +349,11 @@ button.sec__glance:hover{border-color:var(--border-strong)}
    would eat the content; the tooltip still names each slot. Position itself is
    inline (left/top fractions), so these rules only ever own orientation. */
 .dock[data-edge=left],.dock[data-edge=right]{flex-direction:column}
+/* Many slots scroll inside the bar instead of spilling off screen: a capped
+   bar that refuses the ninth slot is worse than a scrolling one. */
+.dock[data-edge=top],.dock[data-edge=bottom]{max-width:min(96vw,1100px);overflow-x:auto;scrollbar-width:thin}
+.dock[data-edge=left],.dock[data-edge=right]{max-height:88vh;overflow-y:auto;scrollbar-width:thin}
+.dock__slot{flex-shrink:0}
 .dock[data-edge=left] .dock__slot,.dock[data-edge=right] .dock__slot{flex-direction:row;min-width:0;width:100%;padding:7px 9px}
 .dock[data-edge=left] .dock__label,.dock[data-edge=right] .dock__label{display:none}
 .dock{cursor:grab;touch-action:none;user-select:none}

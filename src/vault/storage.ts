@@ -139,8 +139,12 @@ export interface DockSlotConfig {
   action?: DockLoginAction;
 }
 
-/** Hard cap: more slots than this wrap the bar into a second row. */
-export const MAX_DOCK_SLOTS = 8;
+/**
+ * How many jump slots the dock holds. Generous on purpose — the bar scrolls
+ * rather than refusing a ninth slot. Bare-key shortcuts come from 1–9 then
+ * a–z, so the cap matches that pool.
+ */
+export const MAX_DOCK_SLOTS = 24;
 
 export const DEFAULT_DOCK_SLOTS: DockSlotConfig[] = [
   { kind: 'view', ref: 'animated', key: '1' },
@@ -818,7 +822,8 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   {
     const raw = Array.isArray(merged.dockSlots) ? merged.dockSlots : [];
     const seen = new Set<string>();
-    const fallbackKeys = ['1', '2', '3', '4', '5', '6', '7', '8'];
+    // Single-character jump keys: digits first, then letters.
+    const fallbackKeys = [...'123456789abcdefghijklmnopqrstuvwxyz'].slice(0, MAX_DOCK_SLOTS);
     const clean: DockSlotConfig[] = [];
     for (const entry of raw.slice(0, MAX_DOCK_SLOTS)) {
       if (!entry || typeof entry !== 'object') continue;

@@ -140,14 +140,16 @@ function selectionClick(
 /**
  * Login drag-reorder shared by the Flow, List and Grid views.
  *
- * No grip: press and hold anywhere on a login except its buttons, then move.
- * The 180ms hold is what keeps this from fighting clicks and text selection —
- * quick presses behave exactly as before, and pressing a button disarms the
- * row, so controls never start drags. Every row is a drop target showing a
- * before/after indicator from the pointer's half, and the container itself
- * appends to the end. Rows render as motion `layout` elements upstream, so the
- * reorder animates smoothly instead of snapping. Touch screens get no drag —
- * HTML5 dragging is mouse-only — the sort menu still orders everything there.
+ * No grip and no HTML5 backend: press and hold anywhere on a login except its
+ * buttons, then move. The 180ms hold is what keeps this from fighting clicks
+ * and text selection — quick presses behave exactly as before, and pressing a
+ * button disarms the row, so controls never drag. Past the hold the pointer is
+ * captured, a ghost follows it, the row underneath gets a before/after
+ * indicator, list edges auto-scroll, and release commits. Rows render as
+ * motion `layout` elements upstream, so the reorder animates smoothly instead
+ * of snapping. (HTML5 dragging was tried first and dropped: flipping the
+ * `draggable` attribute mid-gesture is timing-sensitive per engine, while
+ * pointer capture behaves the same everywhere.)
  */
 function useLoginReorder(
   flatIds: string[],
@@ -157,124 +159,54 @@ function useLoginReorder(
   const [armedId, setArmedId] = useState<string | null>(null);
   const [over, setOver] = useState<{ id: string; after: boolean } | null>(null);
   const armTimer = useRef<number>(0);
+  const pending = useRef<{ id: string; x: number; y: number } | null>(null);
+  const dragging = useRef<string | null>(null);
+  const ghost = useRef<HTMLElement | null>(null);
+  const scroller = useRef<HTMLElement | null>(null);
+  const suppressClick = useRef(false);
   const enabled = typeof onReorder === 'function';
-  // The native row listeners read through this mirror so they never close
-  // over stale state between re-renders.
-  const liveRef = useRef({
-    flatIds,
-    onReorder,
-    enabled,
-    dragId: null as string | null,
-    over: null as { id: string; after: boolean } | null,
-  });
-  liveRef.current.flatIds = flatIds;
-  liveRef.current.onReorder = onReorder;
-  liveRef.current.enabled = enabled;
-  liveRef.current.dragId = dragId;
-  liveRef.current.over = over;
+  // The drop slot aimed at, mirrored for the pointer-up handler.
+  const overRef = useRef<{ id: string; after: boolean } | null>(null);
+  overRef.current = over;
 
   useEffect(
     () => () => {
       if (armTimer.current) window.clearTimeout(armTimer.current);
+      ghost.current?.remove();
+      ghost.current = null;
     },
     [],
   );
+
+  const killGhost = () => {
+    ghost.current?.remove();
+    ghost.current = null;
+  };
 
   const disarm = () => {
     if (armTimer.current) {
       window.clearTimeout(armTimer.current);
       armTimer.current = 0;
     }
+    pending.current = null;
     setArmedId(null);
   };
 
-  // Row drag events ride native listeners, not React props: motion.div retypes
-  // onDragStart for its own pan gestures, so a React prop would never reach
-  // the HTML5 backend. Pointer arming and the draggable flag stay declarative.
-  const rowRef = (item: VaultItem) => (node: HTMLDivElement | null) => {
-    if (!node) return;
-    const onDragStart = (event: DragEvent) => {
-      const live = liveRef.current;
-      if (!live.enabled) return;
-      if (armTimer.current) {
-        window.clearTimeout(armTimer.current);
-        armTimer.current = 0;
-      }
-      event.dataTransfer?.setData('text/plain', item.id);
-      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
-      const row = (event.target as HTMLElement | null)?.closest?.('[data-vault-item]');
-      if (row instanceof HTMLElement) {
-        try {
-          event.dataTransfer?.setDragImage(row, 24, 24);
-        } catch {
-          // Older engines ignore custom drag images; the default ghost works.
-        }
-      }
-      setDragId(item.id);
-      setOver(null);
-    };
-    const onDragOver = (event: DragEvent) => {
-      const live = liveRef.current;
-      if (!live.enabled || !live.dragId) return;
-      if (live.dragId === item.id) {
-        setOver(null);
-        return;
-      }
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-      const rect = node.getBoundingClientRect();
-      const after = event.clientY - rect.top > rect.height / 2;
-      setOver((current) =>
-        current && current.id === item.id && current.after === after ? current : { id: item.id, after },
-      );
-    };
-    const onDragLeave = (event: DragEvent) => {
-      const to = event.relatedTarget as Node | null;
-      if (to && node.contains(to)) return;
-      setOver((current) => (current?.id === item.id ? null : current));
-    };
-    const onDrop = (event: DragEvent) => {
-      const live = liveRef.current;
-      if (!live.enabled || !live.dragId || !live.onReorder) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const targetId = item.id;
-      const after = live.over?.id === targetId ? live.over.after : false;
-      const active = live.dragId;
-      setDragId(null);
-      setOver(null);
-      setArmedId(null);
-      if (active === targetId) return;
-      const rest = live.flatIds.filter((id) => id !== active);
-      const ti = rest.indexOf(targetId);
-      live.onReorder(active, ti === -1 ? rest.length : ti + (after ? 1 : 0), live.flatIds);
-    };
-    const onDragEnd = () => {
-      setDragId(null);
-      setOver(null);
-      setArmedId(null);
-    };
-    node.addEventListener('dragstart', onDragStart);
-    node.addEventListener('dragover', onDragOver);
-    node.addEventListener('dragleave', onDragLeave);
-    node.addEventListener('drop', onDrop);
-    node.addEventListener('dragend', onDragEnd);
-    return () => {
-      node.removeEventListener('dragstart', onDragStart);
-      node.removeEventListener('dragover', onDragOver);
-      node.removeEventListener('dragleave', onDragLeave);
-      node.removeEventListener('drop', onDrop);
-      node.removeEventListener('dragend', onDragEnd);
-    };
+  const markOver = (id: string | null, after: boolean) => {
+    setOver((current) => {
+      if (id === null) return current === null ? current : null;
+      return current && current.id === id && current.after === after ? current : { id, after };
+    });
   };
 
   const rowProps = (item: VaultItem) => ({
-    draggable: enabled && armedId === item.id,
     'data-armed': enabled && armedId === item.id && dragId !== item.id ? '' : undefined,
     'data-dragging': dragId === item.id ? '' : undefined,
     'data-drop-before': over?.id === item.id && !over.after ? '' : undefined,
     'data-drop-after': over?.id === item.id && over.after ? '' : undefined,
     onPointerDown: (event: React.PointerEvent) => {
+      // A fresh gesture clears yesterday's click suppression first.
+      suppressClick.current = false;
       if (!enabled || event.button !== 0) return;
       // Buttons and fields opt out: pressing them disarms, so they never drag.
       // The grid's body proxy (.grid-cell__open) is the exception — it stands
@@ -288,35 +220,118 @@ function useLoginReorder(
         disarm();
         return;
       }
-      const id = item.id;
+      pending.current = { id: item.id, x: event.clientX, y: event.clientY };
       if (armTimer.current) window.clearTimeout(armTimer.current);
       armTimer.current = window.setTimeout(() => {
         armTimer.current = 0;
-        setArmedId(id);
+        setArmedId(item.id);
       }, 180);
     },
-    onPointerUp: disarm,
-    onPointerCancel: disarm,
-    ref: rowRef(item),
+    onPointerMove: (event: React.PointerEvent) => {
+      const press = pending.current;
+      if (!enabled || !press) return;
+      // Barely moved and not held yet: still a potential click or text
+      // selection — native behavior proceeds untouched.
+      if (press.id === item.id && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 8) return;
+      // Moved before the hold elapsed: an ordinary gesture, never a drag.
+      if (armedId !== press.id) {
+        disarm();
+        return;
+      }
+      // Held, now moving: dragging. Capture keeps every later move coming to
+      // this row even when the pointer outruns it.
+      if (!dragging.current) {
+        dragging.current = press.id;
+        pending.current = null;
+        setDragId(press.id);
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+          // Capture is a convenience; the moves still arrive without it.
+        }
+        const row = (event.currentTarget as HTMLElement).closest('[data-vault-item]') as HTMLElement | null;
+        scroller.current = row?.closest(
+          '.rb-animated-list__scroll, .content, .modal__body',
+        ) as HTMLElement | null;
+        if (row) {
+          const clone = row.cloneNode(true) as HTMLElement;
+          clone.removeAttribute('id');
+          clone.style.cssText +=
+            ';position:fixed;left:0;top:0;z-index:200;pointer-events:none;opacity:.88;margin:0;';
+          document.body.appendChild(clone);
+          ghost.current = clone;
+        }
+      }
+      const row = (event.currentTarget as HTMLElement).closest('[data-vault-item]') as HTMLElement | null;
+      if (ghost.current && row) {
+        ghost.current.style.width = `${row.offsetWidth}px`;
+        ghost.current.style.transform = `translate(${event.clientX - 24}px, ${event.clientY - 20}px)`;
+      }
+      // Edge auto-scroll so long lists stay reachable mid-drag.
+      const box = scroller.current;
+      if (box && box.scrollHeight > box.clientHeight + 4) {
+        const rect = box.getBoundingClientRect();
+        if (event.clientY < rect.top + 56) box.scrollBy({ top: -10 });
+        else if (event.clientY > rect.bottom - 56) box.scrollBy({ top: 10 });
+      }
+      const hit = document.elementFromPoint(event.clientX, event.clientY);
+      const target = hit?.closest?.('[data-vault-item]');
+      const id = target?.getAttribute?.('data-vault-item') ?? null;
+      if (!id || id === dragging.current) {
+        markOver(null, false);
+        return;
+      }
+      const rect = (target as HTMLElement).getBoundingClientRect();
+      markOver(id, event.clientY - rect.top > rect.height / 2);
+    },
+    onPointerUp: () => {
+      if (armTimer.current) {
+        window.clearTimeout(armTimer.current);
+        armTimer.current = 0;
+      }
+      pending.current = null;
+      if (!dragging.current) {
+        // Plain press: a click may follow, and it must behave normally.
+        setArmedId(null);
+        return;
+      }
+      const active = dragging.current;
+      dragging.current = null;
+      killGhost();
+      const slot = overRef.current;
+      setDragId(null);
+      setArmedId(null);
+      setOver(null);
+      // The click that follows a real drop is swallowed below, so dropping
+      // never also opens the login. Back on itself, or released with no slot
+      // aimed: not a move.
+      suppressClick.current = true;
+      window.setTimeout(() => {
+        suppressClick.current = false;
+      }, 400);
+      if (!onReorder || !slot || active === slot.id) return;
+      const rest = flatIds.filter((id) => id !== active);
+      const ti = rest.indexOf(slot.id);
+      onReorder(active, ti === -1 ? rest.length : ti + (slot.after ? 1 : 0), flatIds);
+    },
+    onPointerCancel: () => {
+      pending.current = null;
+      dragging.current = null;
+      killGhost();
+      setDragId(null);
+      setArmedId(null);
+      setOver(null);
+    },
+    // Swallows the click that follows a drop. Capture phase, so the card's
+    // own open/selection handlers never see it.
+    onClickCapture: (event: React.SyntheticEvent) => {
+      if (!suppressClick.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+    },
   });
 
-  /** Dropping past the last row appends to the end of the view. */
-  const listProps = {
-    onDragOver: (event: React.DragEvent) => {
-      if (enabled && dragId) event.preventDefault();
-    },
-    onDrop: (event: React.DragEvent) => {
-      if (!enabled || !dragId || !onReorder) return;
-      event.preventDefault();
-      const active = dragId;
-      setDragId(null);
-      setOver(null);
-      setArmedId(null);
-      onReorder(active, flatIds.filter((id) => id !== active).length, flatIds);
-    },
-  };
-
-  return { enabled, dragId, rowProps, listProps };
+  return { enabled, dragId, rowProps };
 }
 
 /**
@@ -594,7 +609,6 @@ export function AnimatedListView({
         ...reorder.rowProps(item),
         'data-selected': selectedIds?.has(item.id) ? '' : undefined,
       })}
-      listProps={reorder.listProps}
       renderItem={(item, _index, selected) => {
         const label = labelOf(item);
         // Masked unless this row's eye has been clicked.
@@ -1068,7 +1082,7 @@ showTagChips,
       {groups.map(([letter, group]) => (
         <section className="list-group" key={letter || 'all'}>
           {letter ? <h2 className="list-group__title">{letter}</h2> : null}
-          <div className="list" {...reorder.listProps}>
+          <div className="list">
             {group.map((item) => {
               const label = labelOf(item);
               const show = revealed.has(item.id);
@@ -1265,7 +1279,7 @@ export function GridView({
         } as React.CSSProperties
       }
     >
-      <div className="grid" {...reorder.listProps}>
+      <div className="grid">
         {items.map((item) => {
           const label = labelOf(item);
           const show = revealed.has(item.id);

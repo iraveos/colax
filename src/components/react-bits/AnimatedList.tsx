@@ -37,8 +37,6 @@ export interface AnimatedListProps<T> {
   onItemSelect?: (item: T, index: number) => void;
   /** Per-row drag/drop attributes (login reorder). Spread onto the row wrapper. */
   rowProps?: (item: T, index: number) => AnimatedRowProps;
-  /** List-level drop (append past the last row). Spread onto the scroller. */
-  listProps?: HTMLAttributes<HTMLDivElement>;
   showGradients?: boolean;
   enableArrowNavigation?: boolean;
   className?: string;
@@ -95,7 +93,6 @@ export function AnimatedList<T>({
   renderItem,
   onItemSelect,
   rowProps,
-  listProps,
   showGradients = true,
   enableArrowNavigation = true,
   className = '',
@@ -219,7 +216,6 @@ export function AnimatedList<T>({
         tabIndex={enableArrowNavigation ? 0 : -1}
         role="listbox"
         aria-label="Vault entries"
-        {...listProps}
       >
         {items.map((item, index) => (
           <AnimatedItem

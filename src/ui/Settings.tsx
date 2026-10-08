@@ -4,7 +4,6 @@ import {
   DEFAULT_PREFERENCES,
   type CardSizePrefs,
   type Density,
-  type ViewLabels,
   type SortMode,
   type ThemeMode,
   type VaultPreferences,
@@ -106,12 +105,6 @@ const VIEWS: { id: VaultView; label: string; hint: string; icon: ReactNode }[] =
   { id: 'carousel', label: 'Orbit', hint: '3D carousel ring', icon: <GridIcon /> },
   { id: 'basic', label: 'List', hint: 'Plain grouped list', icon: <RowsIcon /> },
   { id: 'grid', label: 'Grid', hint: 'Responsive card grid', icon: <SquaresIcon /> },
-];
-
-const VIEW_LABEL_MODES: { id: ViewLabels; label: string; hint: string }[] = [
-  { id: 'icon', label: 'Icons only', hint: 'Glyphs alone' },
-  { id: 'name', label: 'Names only', hint: 'Text alone' },
-  { id: 'both', label: 'Both', hint: 'Glyph and text' },
 ];
 
 const SORTS: { id: SortMode; label: string }[] = [
@@ -540,61 +533,6 @@ export function Settings(props: {
                   </span>
                 </button>
               ))}
-            </div>
-          </Row>
-          <Row
-            label="View switcher labels"
-            hint="What the view picker (Flow / Orbit / List / Grid) shows — not the sidebar channels, which are set above. One click sets every view at once and clears individual overrides below; the rows underneath are for exceptions."
-            stacked
-          >
-            <div className="option-cards">
-              {VIEW_LABEL_MODES.map((mode) => (
-                <button
-                  key={mode.id}
-                  className="option-card"
-                  aria-pressed={prefs.viewLabels === mode.id}
-                  onClick={() => set({ viewLabels: mode.id, viewLabelsByView: {} })}
-                >
-                  <span>{mode.label}</span>
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-faint)' }}>{mode.hint}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="label-override">
-              {VIEWS.map((view) => {
-                const override = prefs.viewLabelsByView[view.id];
-                return (
-                  <div className="label-override__row" key={view.id}>
-                    <span className="label-override__name">{view.label}</span>
-                    <div className="segmented segmented--wrap">
-                      <button
-                        className="segmented__option"
-                        aria-pressed={!override}
-                        onClick={() => {
-                          const next = { ...prefs.viewLabelsByView };
-                          delete next[view.id];
-                          set({ viewLabelsByView: next });
-                        }}
-                      >
-                        Follow all
-                      </button>
-                      {VIEW_LABEL_MODES.map((mode) => (
-                        <button
-                          key={mode.id}
-                          className="segmented__option"
-                          aria-pressed={override === mode.id}
-                          onClick={() =>
-                            set({ viewLabelsByView: { ...prefs.viewLabelsByView, [view.id]: mode.id } })
-                          }
-                        >
-                          {mode.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
             </div>
           </Row>
           <Row
