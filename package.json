@@ -1,7 +1,7 @@
 {
   "name": "colax",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.2",
   "type": "module",
   "description": "Colax — a local-first, zero-knowledge password vault. Runs in the browser today, portable to a native app later.",
   "main": "dist-electron/main.cjs",
@@ -29,9 +29,18 @@
     "win": {
       "target": "nsis",
       "icon": "public/colax-icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Colax"
     }
   },
   "dependencies": {
+    "imapflow": "^2.2.11",
     "motion": "^12.43.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.0",

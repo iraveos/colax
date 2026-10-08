@@ -2,20 +2,29 @@
  * Per-login message expander for the login cards.
  *
  * A labelled row under the credentials: closed it reads "Messages", open it
- * lists the last 5. Fetching happens on expand, not on render — mounting one
- * poller per card would multiply inbox traffic by the visible card count, and
- * most expanders are never opened.
+ * lists them newest-first. Fetching happens on expand, not on render — mounting
+ * one poller per card would multiply inbox traffic by the visible card count,
+ * and most expanders are never opened.
+ *
+ * Google's feed only returns the ~20 most recent unread messages per read and
+ * offers no pagination, so a list fed by reads alone could never grow past
+ * that. Every successful read therefore merges into a persistent per-account
+ * cache (see `mailCache`), and the list renders from reads + cache together.
+ * Every loaded message renders — no paging, no "Load more": the list simply
+ * scrolls as far back as the cache reaches.
  *
  * Matching is by the login's username against the sender address. When nothing
- * matches, the five most recent messages show instead with a note saying so:
- * an empty expander reads as broken, while an honest "none matched" reads as
+ * matches, recent messages show instead with a note saying so: an empty
+ * expander reads as broken, while an honest "none matched" reads as
  * information. An account scope narrower than 'all' (set per channel) limits
  * which accounts are read at all.
  */
 
-import { useState } from 'react';
-import { fetchGmailOnce, type GmailMessage } from './useGmail.ts';
-import type { GmailAccount } from '../vault/storage.ts';
+import { useEffect, useRef, useState } from 'react';
+import { fetchGmailOnce, gmailOpenUrl, type GmailMessage } from './useGmail.ts';
+import { gmailHexOf } from '../lib/mail-text.ts';
+import { useFullBody } from './useFullBody.ts';
+import type { CachedMailMessage, GmailAccount } from '../vault/storage.ts';
 import type { VaultItem } from '../vault/types.ts';
 import { relativeTime } from '../vault/types.ts';
 import { MailIcon } from './icons.tsx';
@@ -32,21 +41,47 @@ export function LoginMessages({
   item,
   accounts,
   accountScope,
+  cache,
+  onCacheMessages,
+  onOpenExternal,
+  defaultOpen,
 }: {
   item: VaultItem;
   accounts: GmailAccount[];
   /** 'all' or one account id, from the active channel's mail settings. */
   accountScope: string;
+  /** Previously fetched messages, per account id. Fills the gaps the feed cannot. */
+  cache?: Record<string, CachedMailMessage[]>;
+  /** Persists one account's fresh read into that cache. */
+  onCacheMessages?: (accountId: string, messages: GmailMessage[]) => void;
+  /** Opens a message link in the real browser (never a second app window). */
+  onOpenExternal?: (url: string) => void;
+  /** Starts expanded with a read underway. Used when the expander lives in its own window. */
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!!defaultOpen);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [messages, setMessages] = useState<GmailMessage[] | null>(null);
   const [unmatched, setUnmatched] = useState(false);
+  /** The one message showing its full details, by account:id. Null collapses all. */
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const { bodies: fullBodies, load: loadFullBody, available: canFullBody } = useFullBody();
+  // Full bodies fetch once per opened message, keyed by account:id. The set
+  // survives re-renders so opening, closing and reopening never refetches.
+  const requested = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (defaultOpen && messages === null) void load();
+    // Runs once per mount by design: it kicks off the first read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultOpen]);
 
   async function load() {
     setLoading(true);
     setError(null);
+    requested.current.clear();
+    setExpandedId(null);
     try {
       const live = accounts.filter(
         (account) =>
@@ -68,7 +103,7 @@ export function LoginMessages({
             undefined,
             account.id,
           );
-          return { found, failed };
+          return { account, found, failed };
         }),
       );
       const failures = perAccount.filter((entry) => entry.failed);
@@ -76,13 +111,34 @@ export function LoginMessages({
         setError(failures.map((entry) => entry.failed).join(' '));
         return;
       }
-      const all = perAccount
-        .flatMap((entry) => entry.found)
-        .sort((a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''));
-      // The whole fetch renders as you scroll — the list is scrollable, not
-      // paged, so capping it at five would hide mail the fetch already paid for.
+      // Reads that came back fine join the persistent cache, so the next
+      // expand starts further back than any single read could reach.
+      for (const entry of perAccount) {
+        if (entry.found.length > 0) onCacheMessages?.(entry.account.id, entry.found);
+      }
+      // Fresh reads plus everything cached before, newest first, deduped.
+      // Without the cache half this list could never pass ~20: that is all
+      // Google hands over per read.
+      const seen = new Set<string>();
+      const all: GmailMessage[] = [];
+      for (const message of [...perAccount.flatMap((entry) => entry.found), ...cachedInScope()]) {
+        const key = `${message.accountId}:${message.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        all.push(message);
+      }
+      all.sort((a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''));
       const matched = all.filter((message) => matchesLogin(message, item.username));
-      if (matched.length > 0) {
+      const mode = item.mailFilter ?? 'auto';
+      if (mode === 'matched') {
+        // Only mail to this login, possibly none — never the recent fallback.
+        setMessages(matched);
+        setUnmatched(false);
+      } else if (mode === 'recent') {
+        // Everything recent, skipping the matching entirely.
+        setMessages(all);
+        setUnmatched(false);
+      } else if (matched.length > 0) {
         setMessages(matched);
         setUnmatched(false);
       } else if (item.username.trim()) {
@@ -101,6 +157,18 @@ export function LoginMessages({
     }
   }
 
+  /** Cached messages for the accounts currently in scope, newest first. */
+  function cachedInScope(): GmailMessage[] {
+    if (!cache) return [];
+    const out: GmailMessage[] = [];
+    for (const account of accounts) {
+      if (!account.enabled || !account.address || !account.appPassword) continue;
+      if (accountScope !== 'all' && account.id !== accountScope) continue;
+      for (const message of cache[account.id] ?? []) out.push({ ...message, accountId: account.id });
+    }
+    return out;
+  }
+
   function toggle() {
     if (open) {
       setOpen(false);
@@ -110,6 +178,29 @@ export function LoginMessages({
     if (messages !== null || loading) return;
     void load();
   }
+
+  // The whole point of opening a row is reading the message: the full text
+  // starts loading the moment it expands, with no extra button. One IMAP read
+  // per message, only for rows the user actually opens.
+  useEffect(() => {
+    if (!expandedId || !canFullBody || !messages) return;
+    if (requested.current.has(expandedId)) return;
+    const message = messages.find((entry) => `${entry.accountId}:${entry.id}` === expandedId);
+    if (!message || !gmailHexOf(message.id)) return;
+    const account = accounts.find((entry) => entry.id === message.accountId);
+    if (!account) return;
+    requested.current.add(expandedId);
+    loadFullBody(
+      expandedId,
+      account.address,
+      account.appPassword,
+      message.id,
+      message.title,
+      message.author || message.email,
+    );
+  });
+
+  const accountName = (id: string) => accounts.find((entry) => entry.id === id)?.address ?? '';
 
   return (
     <div className="login-messages">
@@ -129,6 +220,27 @@ export function LoginMessages({
       </button>
       {open ? (
         <div className="login-messages__body">
+          {open && messages !== null ? (
+            <div className="login-messages__toolbar">
+              <span className="field__note" style={{ margin: 0 }}>
+                {messages.length === 0
+                  ? 'No messages.'
+                  : `Showing all ${messages.length} — newest first. Opening a row loads its full text straight away.`}
+              </span>
+              <button
+                type="button"
+                className="btn btn--quiet btn--sm"
+                disabled={loading}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void load();
+                }}
+              >
+                {loading ? <span className="spinner" /> : null}
+                Refresh
+              </button>
+            </div>
+          ) : null}
           {error ? (
             <p className="sec__error">
               {error}{' '}
@@ -138,30 +250,160 @@ export function LoginMessages({
             </p>
           ) : messages !== null && messages.length === 0 && !loading ? (
             <p className="field__hint">
-              {item.username.trim()
-                ? 'No messages found.'
-                : 'Add an email to this login to match its messages.'}
+              {(item.mailFilter ?? 'auto') === 'matched' && item.username.trim()
+                ? 'No messages matched this login yet.'
+                : item.username.trim()
+                  ? 'No messages found.'
+                  : 'Add an email to this login to match its messages.'}
             </p>
           ) : (
-            <ul className="inbox__list login-messages__list">
-              {unmatched ? (
-                <li className="field__hint" aria-hidden="true">
-                  None matched this login — recent mail:
-                </li>
-              ) : null}
-              {(messages ?? []).map((message) => (
-                <li key={`${message.accountId}:${message.id}`} className="inbox__message">
-                  <span className="inbox__subject">{message.title || '(no subject)'}</span>
-                  <span className="inbox__meta">
-                    {message.author || message.email || 'Unknown sender'}
-                    {message.issued && relativeTime(Date.parse(message.issued))
-                      ? ` · ${relativeTime(Date.parse(message.issued))}`
-                      : ''}
-                  </span>
-                  {message.summary ? <span className="inbox__summary">{message.summary}</span> : null}
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="inbox__list login-messages__list msg-list">
+                {unmatched ? (
+                  <li className="field__hint" aria-hidden="true">
+                    None matched this login — recent mail:
+                  </li>
+                ) : null}
+                {(messages ?? []).map((message) => {
+                  const key = `${message.accountId}:${message.id}`;
+                  const isOpen = expandedId === key;
+                  const stamp = Date.parse(message.issued || '');
+                  const when = Number.isNaN(stamp) ? '' : new Date(stamp).toLocaleString();
+                  const ago = message.issued && relativeTime(Date.parse(message.issued))
+                    ? relativeTime(Date.parse(message.issued))
+                    : '';
+                  return (
+                    <li key={key} className="inbox__message" data-open={isOpen || undefined}>
+                      {/* Only this header toggles. The detail below is a plain
+                          div with no toggle handler, so selecting text inside
+                          it can never collapse the row. */}
+                      <button
+                        type="button"
+                        className="msg__head"
+                        aria-expanded={isOpen}
+                        aria-label={isOpen ? `Collapse: ${message.title || '(no subject)'}` : `Expand: ${message.title || '(no subject)'}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setExpandedId(isOpen ? null : key);
+                        }}
+                      >
+                        <svg
+                          width="12"
+                          height="12"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.4"
+                          strokeLinecap="round"
+                          aria-hidden="true"
+                          className="msg__chev"
+                          data-open={isOpen || undefined}
+                        >
+                          <path d="m9 6 6 6-6 6" />
+                        </svg>
+                        <span className="msg__head-text">
+                          <span className="inbox__subject">{message.title || '(no subject)'}</span>
+                          <span className="inbox__meta">
+                            {message.author || message.email || 'Unknown sender'}
+                            {accountName(message.accountId) ? ` · ${accountName(message.accountId)}` : ''}
+                            {ago ? ` · ${ago}` : ''}
+                          </span>
+                        </span>
+                      </button>
+                      {message.summary && !isOpen ? <span className="inbox__summary">{message.summary}</span> : null}
+                      {isOpen ? (
+                        <div className="login-messages__detail" onClick={(event) => event.stopPropagation()}>
+                          <dl className="msg__fields">
+                            <div className="msg__field">
+                              <dt>From</dt>
+                              <dd>{[message.author, message.email].filter(Boolean).join(' · ') || 'Unknown sender'}</dd>
+                            </div>
+                            <div className="msg__field">
+                              <dt>Date</dt>
+                              <dd>{when || 'Unknown date'}{ago ? ` (${ago})` : ''}</dd>
+                            </div>
+                            {accountName(message.accountId) ? (
+                              <div className="msg__field">
+                                <dt>Mailbox</dt>
+                                <dd>{accountName(message.accountId)}</dd>
+                              </div>
+                            ) : null}
+                            <div className="msg__field">
+                              <dt>Subject</dt>
+                              <dd>{message.title || '(no subject)'}</dd>
+                            </div>
+                          </dl>
+                          {message.summary ? (
+                            <p className="inbox__summary inbox__summary--full">{message.summary}</p>
+                          ) : (
+                            <span className="field__hint">No preview text.</span>
+                          )}
+                          <span className="login-messages__actions">
+                            {onOpenExternal ? (
+                              <button
+                                type="button"
+                                className="btn btn--quiet btn--sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  const account = accounts.find((entry) => entry.id === message.accountId);
+                                  onOpenExternal(gmailOpenUrl(message, account?.address ?? ''));
+                                }}
+                              >
+                                Open in Gmail
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="btn btn--quiet btn--sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setExpandedId(null);
+                              }}
+                            >
+                              Collapse
+                            </button>
+                          </span>
+                          {canFullBody && gmailHexOf(message.id) ? (
+                            fullBodies[key]?.status === 'ok' ? (
+                              <span className="full-mail">{fullBodies[key]?.text}</span>
+                            ) : fullBodies[key]?.status === 'error' ? (
+                              <span className="field__hint">
+                                {fullBodies[key]?.error}{' '}
+                                <button
+                                  type="button"
+                                  className="btn btn--quiet btn--sm"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    const account = accounts.find((entry) => entry.id === message.accountId);
+                                    if (account) {
+                                      requested.current.delete(key);
+                                      loadFullBody(
+                                        key,
+                                        account.address,
+                                        account.appPassword,
+                                        message.id,
+                                        message.title,
+                                        message.author || message.email,
+                                      );
+                                    }
+                                  }}
+                                >
+                                  Retry
+                                </button>
+                              </span>
+                            ) : (
+                              <span className="field__hint">
+                                <span className="spinner" /> Loading full message…
+                              </span>
+                            )
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
           )}
         </div>
       ) : null}

@@ -118,12 +118,38 @@ test('dock placement clamps onto the screen', () => {
 
 test('a legacy single gmail object migrates into accounts', () => {
   const stored = base();
-  stored.gmail = { enabled: true, address: 'me@gmail.com', appPassword: 'xxxx', refreshSeconds: 10 };
+  stored.gmail = { enabled: true, address: 'me@gmail.com', appPassword: 'xxxx', refreshSeconds: 120 };
   const out = normalisePreferences(stored);
   assert.equal(out.gmailAccounts.length, 1);
   assert.equal(out.gmailAccounts[0]?.address, 'me@gmail.com');
-  assert.equal(out.gmailAccounts[0]?.refreshSeconds, 10);
+  assert.equal(out.gmailAccounts[0]?.refreshSeconds, 120);
   assert.equal(out.gmailAccounts[0]?.enabled, true);
+});
+
+test('retired cadences migrate onto the nearest offered choice', () => {
+  const stored = base();
+  stored.gmailAccounts = [
+    { id: 'a', address: 'a@gmail.com', appPassword: 'x', enabled: true, refreshSeconds: 2 },
+    { id: 'b', address: 'b@gmail.com', appPassword: 'y', enabled: true, refreshSeconds: 10 },
+    { id: 'c', address: 'c@gmail.com', appPassword: 'z', enabled: true, refreshSeconds: 15 },
+  ];
+  const out = normalisePreferences(stored);
+  assert.equal(out.gmailAccounts[0]?.refreshSeconds, 5);
+  assert.equal(out.gmailAccounts[1]?.refreshSeconds, 30);
+  assert.equal(out.gmailAccounts[2]?.refreshSeconds, 30);
+});
+
+test('offered cadences (including 5s, 30s and Off) pass through untouched', () => {
+  const stored = base();
+  stored.gmailAccounts = [
+    { id: 'a', address: 'a@gmail.com', appPassword: 'x', enabled: true, refreshSeconds: 5 },
+    { id: 'b', address: 'b@gmail.com', appPassword: 'y', enabled: true, refreshSeconds: 30 },
+    { id: 'c', address: 'c@gmail.com', appPassword: 'z', enabled: true, refreshSeconds: 0 },
+  ];
+  const out = normalisePreferences(stored);
+  assert.equal(out.gmailAccounts[0]?.refreshSeconds, 5);
+  assert.equal(out.gmailAccounts[1]?.refreshSeconds, 30);
+  assert.equal(out.gmailAccounts[2]?.refreshSeconds, 0);
 });
 
 test('duplicate account addresses collapse to one', () => {

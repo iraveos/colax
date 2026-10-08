@@ -19,7 +19,8 @@ import {
 } from './icons.tsx';
 import { accentOf, hostnameOf, isWeakPassword, relativeTime, type VaultItem } from '../vault/types.ts';
 import { isSecured } from '../crypto/security.ts';
-import type { CardSizePrefs, GmailAccount } from '../vault/storage.ts';
+import type { CachedMailMessage, CardSizePrefs, GmailAccount } from '../vault/storage.ts';
+import type { GmailMessage } from './useGmail.ts';
 import { SecurityGate } from './SecurityGate.tsx';
 import { LoginMessages } from './LoginMessages.tsx';
 import type { Tag } from '../vault/channels.ts';
@@ -55,6 +56,10 @@ export interface ViewActions {
   onSelect: (item: VaultItem) => void;
   /** Right-click on a specific login. */
   onItemMenu: (event: React.MouseEvent, item: VaultItem) => void;
+  /** Persists one account's fresh inbox read into the message cache. */
+  onCacheMail?: (accountId: string, messages: GmailMessage[]) => void;
+  /** Opens a URL in the real browser. Message links use this, never window.open. */
+  onOpenExternal?: (url: string) => void;
 /** Global tag catalogue, for the chips on each card. */
   tags: Tag[];
   /** Draws those chips; off hides them without losing the tags themselves. */
@@ -88,6 +93,8 @@ interface CommonViewProps extends ViewActions {
    * every account, which is also the pre-channel-settings behavior.
    */
   mailScope?: { show: boolean; account: string };
+  /** Previously fetched messages, per account id. Lets the expander reach past one feed read. */
+  mailCache?: Record<string, CachedMailMessage[]>;
 }
 
 /**
@@ -310,6 +317,9 @@ export function AnimatedListView({
   onSelectForEdit,
   gmailAccounts,
   mailScope,
+  mailCache,
+  onCacheMail,
+  onOpenExternal,
   onCopy,
   onEdit,
   onDelete,
@@ -396,13 +406,9 @@ export function AnimatedListView({
               {photo ? <div className="card-row__scrim" aria-hidden="true" /> : null}
 
             <div className="card-row__head">
-              {/* Both, not either. The hostname is what identifies a login at a
-                glance, but setting an image on the login produced *no* visible
-                change anywhere, because the avatar had been dropped in favour of
-                the hostname outright. The image leads when there is one and the
-                hostname still labels it. */}
+              {/* Image only, no site pill: the domain label is gone on purpose,
+                  so the head is just the mark and the login itself. */}
               <LoginMark item={item} site={site} />
-              {site ? <span className="card-row__site">{site}</span> : null}
 
               <div className="card-row__body">
                 <HealthBadges
@@ -528,7 +534,7 @@ export function AnimatedListView({
                 removed from its own card. Only "Open site" needs a URL. */}
             <div className="card-row__actions-row">
               {mailFor(item, mailScope, gmailAccounts) ? (
-                <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} />
+                <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
               ) : null}
               {item.url ? (
                 <button
@@ -673,7 +679,6 @@ onSelect,
         />
 
 <div className="carousel-view__head">
-          <span className="card-row__site">{hostnameOf(current.url) ?? labelOf(current)}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="carousel-view__name">{labelOf(current)}</div>
           </div>
@@ -787,6 +792,9 @@ showTagChips,
   onSelectForEdit,
   gmailAccounts,
   mailScope,
+  mailCache,
+  onCacheMail,
+  onOpenExternal,
   onEdit,
   onDelete,
   onToggleFavorite,
@@ -861,7 +869,6 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
 
 <button className="item__trigger" onClick={() => onSelect(item)}>
                     <LoginMark item={item} site={hostnameOf(item.url)} size={32} />
-                    <span className="card-row__site">{hostnameOf(item.url) ?? labelOf(item)}</span>
                     <span className="item__body">
                       <HealthBadges
                         item={item}
@@ -883,7 +890,7 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
 
                   <div className="item__actions">
                     {mailFor(item, mailScope, gmailAccounts) ? (
-                      <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} />
+                      <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                     ) : null}
                     <button
                       className="btn btn--icon"
@@ -977,12 +984,14 @@ export function GridView({
   onSelectForEdit,
   gmailAccounts,
   mailScope,
+  mailCache,
+  onCacheMail,
+  onOpenExternal,
   onEdit,
   onDelete,
   onToggleFavorite,
   onToggleAttention,
   onCopy,
-  onOpenUrl,
   onSelect,
   onItemMenu,
 }: CommonViewProps) {
@@ -1049,21 +1058,6 @@ export function GridView({
 
               <div className="grid-cell__head">
                 <LoginMark item={item} site={hostnameOf(item.url)} />
-                {item.url ? (
-                  <button
-                    type="button"
-                    className="card-row__site card-row__site--link"
-                    title={`Open ${hostnameOf(item.url)}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onOpenUrl(item);
-                    }}
-                  >
-                    {hostnameOf(item.url)}
-                  </button>
-                ) : (
-                  <span className="card-row__site">{label}</span>
-                )}
               </div>
 
               <div className="grid-cell__body">
@@ -1140,7 +1134,7 @@ export function GridView({
 
               <div className="grid-cell__actions">
                 {mailFor(item, mailScope, gmailAccounts) ? (
-                  <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} />
+                  <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                 ) : null}
                 <button
                   className="btn btn--icon"

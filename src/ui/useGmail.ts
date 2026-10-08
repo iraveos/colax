@@ -15,6 +15,27 @@ export interface GmailMessage {
 
 const FEED_URL = 'https://mail.google.com/mail/feed/atom';
 
+/**
+ * A Gmail link that survives the account switcher.
+ *
+ * The feed's bare deep link opens against whichever account the browser
+ * happens to have first, and Google answers 403 when that is not the mailbox
+ * the message came from. Pinning `/u/<address>` routes the link to the right
+ * session, and the hex tail of the feed id addresses the message itself.
+ * Falls back to a subject search, then to whatever link the feed carried.
+ */
+export function gmailOpenUrl(
+  message: Pick<GmailMessage, 'id' | 'title' | 'alternate'>,
+  accountAddress: string,
+): string {
+  const user = accountAddress.trim() ? encodeURIComponent(accountAddress.trim()) : '0';
+  const rawId = message.id ?? '';
+  const tail = rawId.includes(':') ? (rawId.split(':').pop() ?? '') : rawId;
+  if (/^[0-9a-f]+$/i.test(tail)) return `https://mail.google.com/mail/u/${user}/#inbox/${tail}`;
+  if (message.title) return `https://mail.google.com/mail/u/${user}/#search/${encodeURIComponent(message.title)}`;
+  return message.alternate || 'https://mail.google.com';
+}
+
 /** One fetch against the inbox feed; used by the polling hook and by "Test". */
 export async function fetchGmailOnce(
   address: string,
@@ -66,20 +87,44 @@ export async function fetchGmailOnce(
  * wipe the other accounts' messages: a failing account reports its address in
  * the error and contributes nothing, rather than clearing a list it shares.
  */
-export function useGmail({ accounts }: { accounts: GmailAccount[] }) {
+export function useGmail({
+  accounts,
+  onCacheMessages,
+  auto = true,
+}: {
+  accounts: GmailAccount[];
+  /**
+   * Every successful poll merges here too, so history accumulates passively —
+   * the per-login expanders are not the only reads feeding the cache.
+   */
+  onCacheMessages?: (accountId: string, messages: GmailMessage[]) => void;
+  /**
+   * Poll on the accounts' cadence. Off means one read on mount plus manual
+   * refreshes only — for windows the user, not a timer, is in charge of, so a
+   * mailbox left open never hammers the server on its own.
+   */
+  auto?: boolean;
+}) {
   const [messages, setMessages] = useState<GmailMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // Mirrored so the interval below never captures stale credentials.
   const creds = useRef(accounts);
   creds.current = accounts;
+  // Guards overlapping ticks: the interval never stacks a second request on
+  // top of one still in flight (that overlap is what got accounts throttled).
+  const inFlight = useRef(false);
+  const onCacheRef = useRef(onCacheMessages);
+  onCacheRef.current = onCacheMessages;
 
   const fetchOnce = useCallback(async () => {
+    if (inFlight.current) return;
     const live = creds.current.filter((account) => account.enabled && account.address && account.appPassword);
     if (live.length === 0) {
       setMessages([]);
       return;
     }
+    inFlight.current = true;
     setLoading(true);
     try {
       const perAccount = await Promise.all(
@@ -95,6 +140,9 @@ export function useGmail({ accounts }: { accounts: GmailAccount[] }) {
         .flatMap((entry) => entry.found)
         .sort((a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''));
       setMessages(merged);
+      for (const entry of perAccount) {
+        if (!entry.failed && entry.found.length > 0) onCacheRef.current?.(entry.account.id, entry.found);
+      }
       const failures = perAccount.filter((entry) => entry.failed);
       setError(
         failures.length === 0
@@ -103,24 +151,56 @@ export function useGmail({ accounts }: { accounts: GmailAccount[] }) {
       );
     } finally {
       setLoading(false);
+      inFlight.current = false;
     }
   }, []);
 
+  // A stable key for the live set: array identity changes on every keystroke
+  // in the editor, but this only changes when credentials, enablement or the
+  // chosen cadence actually change — so typing a password no longer fires a
+  // request per character.
+  const liveKey = accounts
+    .filter((account) => account.enabled && account.address && account.appPassword)
+    .map((account) => `${account.id}|${account.address.toLowerCase()}|${account.appPassword.length}|${account.refreshSeconds}`)
+    .sort()
+    .join(';');
+  const autoKey = accounts
+    .filter((account) => account.enabled && account.address && account.appPassword)
+    .map((account) => `${account.id}:${account.refreshSeconds}`)
+    .sort()
+    .join(';');
+
   useEffect(() => {
-    const live = accounts.filter((account) => account.enabled && account.address && account.appPassword);
+    const live = creds.current.filter((account) => account.enabled && account.address && account.appPassword);
     if (live.length === 0) {
       setMessages([]);
       setError(null);
       return;
     }
-    void fetchOnce();
-    // Fastest cadence among the accounts drives the shared timer; slower
-    // accounts simply return cached-fresh results more often than needed, which
-    // costs one cheap feed read, not correctness.
-    const cadence = Math.max(2, Math.min(...live.map((account) => account.refreshSeconds)));
+    // Debounced first read: typing an address/password settles before any
+    // network happens, instead of one request per keystroke.
+    const timer = setTimeout(() => void fetchOnce(), 700);
+    if (!auto) return () => clearTimeout(timer);
+    // The user's own cadence drives the shared timer, exactly as chosen —
+    // 5s and 30s included. Fast polling can earn a temporary Google block
+    // (the buttons warn about it), but the choice is the user's, not ours.
+    // A choice of 0 means manual only: the debounced first read plus the
+    // Refresh / Check-now buttons, no interval at all.
+    const wanted = live.map((account) =>
+      typeof account.refreshSeconds === 'number' && account.refreshSeconds > 0 ? account.refreshSeconds : 0,
+    );
+    const chosen = Math.min(...wanted);
+    if (!chosen || chosen <= 0) return () => clearTimeout(timer);
+    const cadence = Math.max(5, chosen);
     const id = setInterval(() => void fetchOnce(), cadence * 1000);
-    return () => clearInterval(id);
-  }, [accounts, fetchOnce]);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(id);
+    };
+    // liveKey/autoKey carry the semantic change; `accounts` identity alone
+    // must not re-arm the timer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveKey, autoKey, auto, fetchOnce]);
 
   return { messages, error, loading, refresh: fetchOnce };
 }
@@ -128,7 +208,7 @@ export function useGmail({ accounts }: { accounts: GmailAccount[] }) {
 function parseAtom(xml: string, accountId = ''): GmailMessage[] {
   try {
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
-    const entries = [...doc.getElementsByTagName('entry')];
+    const entries = Array.from(doc.getElementsByTagName('entry'));
     return entries.map((entry) => ({
       id: textOf(entry, 'id'),
       title: textOf(entry, 'title'),

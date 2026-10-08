@@ -8,25 +8,39 @@
 
 import { useState } from 'react';
 import { CHANNEL_KIND_LABELS, type Channel, type Tag } from '../vault/channels.ts';
-import { EditIcon, PlusIcon, TagIcon, TrashIcon } from './icons.tsx';
+import { EditIcon, EyeIcon, EyeOffIcon, PlusIcon, TagIcon, TrashIcon } from './icons.tsx';
 
 export function ChannelManager({
   channels,
   tags,
+  hiddenChannels = [],
   onEditChannel,
   onTagsChange,
+  onHiddenChannelsChange,
   onScrubTag,
   onNotify,
 }: {
   channels: Channel[];
   tags: Tag[];
+  /** Channel ids hidden from the sidebar rail. */
+  hiddenChannels?: string[];
   /** Opens the shared channel editor for an id, or 'new'. */
   onEditChannel: (channelId: string | 'new') => void;
   onTagsChange: (next: Tag[]) => void;
+  onHiddenChannelsChange?: (next: string[]) => void;
   /** Removes a deleted tag from every login that referenced it. */
   onScrubTag?: (tagId: string) => void;
   onNotify: (message: string) => void;
 }) {
+  const hidden = new Set(hiddenChannels);
+
+  function toggleHidden(channel: Channel) {
+    const next = hidden.has(channel.id)
+      ? hiddenChannels.filter((id) => id !== channel.id)
+      : [...hiddenChannels, channel.id];
+    onHiddenChannelsChange?.(next);
+    onNotify(hidden.has(channel.id) ? `"${channel.name}" is back in the sidebar` : `"${channel.name}" hidden from the sidebar`);
+  }
   const [editingTag, setEditingTag] = useState<string | null>(null);
   const [hueFor, setHueFor] = useState<string | null>(null);
 
@@ -58,43 +72,83 @@ export function ChannelManager({
         <div className="setting__label">Channels</div>
         <div className="setting__hint">
           Every channel is editable — name, icon, colour, theme, image and tags — and any of them can be
-          dragged to a new position in the sidebar. Right-clicking the sidebar does the same thing.
+          dragged to a new position in the sidebar. The eye hides one from the rail without deleting it.
+          Right-clicking the sidebar does the same thing.
         </div>
       </div>
 
       <div className="tag-manager">
-        {channels.map((channel) => (
-          <div className="tag-manager__row" key={channel.id}>
-            <span className="tag-manager__dot" style={{ background: `hsl(${channel.hue} 46% 54%)` }} />
-            <button
-              className="tag-manager__name"
-              onClick={() => onEditChannel(channel.id)}
-              title={`Edit ${channel.name}`}
-            >
-              {channel.name}
-              {channel.builtin ? <span className="tag-manager__badge">built-in</span> : null}
-            </button>
-            <span className="tag-manager__count">
-              {channel.tagIds.length === 0
-                ? CHANNEL_KIND_LABELS[channel.kind]
-                : channel.tagIds.map(tagName).join(', ')}
-            </span>
-            <button
-              className="btn btn--icon"
-              aria-label={`Edit channel ${channel.name}`}
-              onClick={() => onEditChannel(channel.id)}
-            >
-              <EditIcon width="14" height="14" />
-            </button>
-          </div>
-        ))}
+        {channels.map((channel) => {
+          const isHidden = hidden.has(channel.id);
+          return (
+            <div className="tag-manager__row" key={channel.id} data-hidden={isHidden || undefined}>
+              <span className="tag-manager__dot" style={{ background: `hsl(${channel.hue} 46% 54%)` }} />
+              <button
+                className="tag-manager__name"
+                onClick={() => onEditChannel(channel.id)}
+                title={`Edit ${channel.name}`}
+              >
+                {channel.name}
+                {channel.builtin ? <span className="tag-manager__badge">built-in</span> : null}
+                {isHidden ? <span className="tag-manager__badge">hidden</span> : null}
+              </button>
+              <span className="tag-manager__count">
+                {channel.tagIds.length === 0
+                  ? CHANNEL_KIND_LABELS[channel.kind]
+                  : channel.tagIds.map(tagName).join(', ')}
+              </span>
+              <button
+                className="btn btn--icon"
+                aria-label={isHidden ? `Show ${channel.name} in the sidebar` : `Hide ${channel.name} from the sidebar`}
+                aria-pressed={!isHidden}
+                title={isHidden ? 'Show in sidebar' : 'Hide from sidebar'}
+                onClick={() => toggleHidden(channel)}
+              >
+                {isHidden ? <EyeOffIcon width="14" height="14" /> : <EyeIcon width="14" height="14" />}
+              </button>
+              <button
+                className="btn btn--icon"
+                aria-label={`Edit channel ${channel.name}`}
+                onClick={() => onEditChannel(channel.id)}
+              >
+                <EditIcon width="14" height="14" />
+              </button>
+            </div>
+          );
+        })}
       </div>
 
-      <div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button className="btn btn--secondary" onClick={() => onEditChannel('new')}>
           <PlusIcon width="14" height="14" />
           New channel
         </button>
+        {hidden.size < channels.length ? (
+          <button
+            className="btn btn--quiet"
+            onClick={() => {
+              onHiddenChannelsChange?.(channels.map((channel) => channel.id));
+              onNotify(`Hid ${channels.length} channel${channels.length === 1 ? '' : 's'} from the sidebar`);
+            }}
+            title="Hide every channel from the sidebar rail (nothing is deleted)"
+          >
+            <EyeOffIcon width="14" height="14" />
+            Hide all
+          </button>
+        ) : null}
+        {hidden.size > 0 ? (
+          <button
+            className="btn btn--quiet"
+            onClick={() => {
+              onHiddenChannelsChange?.([]);
+              onNotify('Every channel is back in the sidebar');
+            }}
+            title="Show every hidden channel again"
+          >
+            <EyeIcon width="14" height="14" />
+            Show all
+          </button>
+        ) : null}
       </div>
 
       <div className="setting__label" style={{ marginTop: 'var(--space-2)' }}>

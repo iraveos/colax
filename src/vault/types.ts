@@ -33,6 +33,14 @@ export interface VaultItem {
    */
   showMail: boolean;
 
+  /**
+   * Which messages the expander shows. 'auto' matches the login's email and
+   * falls back to recent mail; 'matched' shows only matches (possibly none);
+   * 'recent' skips matching and shows everything recent. Chosen per login in
+   * its editor. Older records default to 'auto', preserving their behavior.
+   */
+  mailFilter: 'auto' | 'matched' | 'recent';
+
   /** Ids from the global tag catalogue. Ids rather than names so a tag can be renamed or recoloured everywhere at once. */
   tags: string[];
 
@@ -101,6 +109,7 @@ export function emptyItem(id: string, now: number = Date.now()): VaultItem {
     favorite: false,
     needsAttention: false,
     showMail: true,
+    mailFilter: 'auto',
     tags: [],
     accentHue: null,
 backgroundImage: '',
@@ -128,6 +137,7 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     // Absent on older records, which must keep showing mail: only an explicit
     // false hides the expander.
     showMail: raw.showMail !== false,
+    mailFilter: raw.mailFilter === 'matched' || raw.mailFilter === 'recent' ? raw.mailFilter : 'auto',
     accentHue: typeof raw.accentHue === 'number' ? raw.accentHue : null,
     // Records saved before security existed have none. Normalised to the empty
     // shape rather than left undefined so callers never branch on it.

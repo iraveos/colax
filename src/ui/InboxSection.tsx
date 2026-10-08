@@ -19,22 +19,36 @@ import { newGmailAccountId, type GmailAccount } from '../vault/storage.ts';
 import { Toggle } from './primitives.tsx';
 import { relativeTime } from '../vault/types.ts';
 
-const REFRESH_CHOICES = [2, 5, 10, 15, 30, 60];
+// 0 means manual only (first read + the Refresh button, no timer at all).
+// The sub-minute choices are there on request, but Google temporarily blocks
+// mailboxes that poll every few seconds — the buttons say so outright.
+const REFRESH_CHOICES = [
+  { value: 0, label: 'Off' },
+  { value: 5, label: '5s', risky: true },
+  { value: 30, label: '30s', risky: true },
+  { value: 60, label: '1m' },
+  { value: 120, label: '2m' },
+  { value: 300, label: '5m' },
+  { value: 600, label: '10m' },
+  { value: 900, label: '15m' },
+];
 
 export function InboxSection({
   accounts,
   onAccountsChange,
   onNotify,
+  onCacheMessages,
 }: {
   accounts: GmailAccount[];
   onAccountsChange: (next: GmailAccount[]) => void;
   onNotify: (message: string, tone?: 'ok' | 'error') => void;
+  onCacheMessages?: (accountId: string, messages: GmailMessage[]) => void;
 }) {
   const [testing, setTesting] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [draftAddress, setDraftAddress] = useState('');
   const [draftPassword, setDraftPassword] = useState('');
-  const { messages, error, loading, refresh } = useGmail({ accounts });
+  const { messages, error, loading, refresh } = useGmail({ accounts, onCacheMessages });
 
   const patch = (id: string, next: Partial<GmailAccount>) =>
     onAccountsChange(accounts.map((account) => (account.id === id ? { ...account, ...next } : account)));
@@ -66,7 +80,7 @@ export function InboxSection({
     }
     onAccountsChange([
       ...accounts,
-      { id: newGmailAccountId(), address, appPassword, enabled: true, refreshSeconds: 5 },
+      { id: newGmailAccountId(), address, appPassword, enabled: true, refreshSeconds: 300 },
     ]);
     setDraftAddress('');
     setDraftPassword('');
@@ -115,19 +129,35 @@ export function InboxSection({
               Test
             </button>
           </div>
-          <div className="segmented segmented--wrap">
-            {REFRESH_CHOICES.map((seconds) => (
+          <div className="segmented segmented--wrap" role="group" aria-label={`Auto-check for ${account.address || 'mailbox'}`}>
+            {REFRESH_CHOICES.map((choice) => (
               <button
-                key={seconds}
+                key={choice.value}
                 type="button"
                 className="segmented__option"
-                aria-pressed={account.refreshSeconds === seconds}
-                onClick={() => patch(account.id, { refreshSeconds: seconds })}
+                aria-pressed={(account.refreshSeconds || 0) === choice.value}
+                title={
+                  choice.value === 0
+                    ? 'No automatic checks — only Refresh now'
+                    : 'risky' in choice && choice.risky
+                      ? `Check automatically every ${choice.label} — fast enough that Google may temporarily block this mailbox`
+                      : `Check automatically every ${choice.label}`
+                }
+                onClick={() => patch(account.id, { refreshSeconds: choice.value })}
               >
-                {seconds}s
+                {choice.label}
               </button>
             ))}
           </div>
+          <p className="field__note">
+            {account.refreshSeconds > 0
+              ? `Auto-checks every ${REFRESH_CHOICES.find((c) => c.value === account.refreshSeconds)?.label ?? `${account.refreshSeconds}s`}. Refresh now checks immediately.${
+                  account.refreshSeconds < 60
+                    ? ' Fast checks can get this mailbox temporarily blocked by Google — switch to Off + Refresh now if errors appear.'
+                    : ''
+                }`
+              : 'Automatic checks are off — use Refresh now when you want mail. Safest against temporary Google blocks.'}
+          </p>
         </div>
       ))}
 

@@ -12,6 +12,7 @@ import { moveSidebarEntry } from '../vault/channels.ts';
 import type { SidebarLabels } from '../vault/storage.ts';
 import {
   CloudIcon,
+  EyeOffIcon,
   FlagIcon,
   FolderIcon,
   GridIcon,
@@ -53,6 +54,9 @@ export function Sidebar({
   showShortcuts,
   showLock,
   floating,
+  hiddenChannels = [],
+  showNewChannelButton = true,
+  showCompactButton = true,
   onSelect,
   onReorder,
   onToggleFolder,
@@ -62,6 +66,7 @@ export function Sidebar({
   onBackgroundMenu,
   onNewChannel,
   onToggleCompact,
+  onHideSidebar,
   onOpenSettings,
   onOpenShortcuts,
   onLock,
@@ -83,6 +88,12 @@ export function Sidebar({
   showShortcuts: boolean;
   showLock: boolean;
   floating: boolean;
+  /** Channel ids hidden from the rail. They stay editable in Settings. */
+  hiddenChannels?: string[];
+  /** Shows the "New channel" shortcut at the end of the rail. */
+  showNewChannelButton?: boolean;
+  /** Shows the Compact toggle in the footer. */
+  showCompactButton?: boolean;
   onSelect: (id: string) => void;
   onReorder: (next: SidebarEntry[]) => void;
   onToggleFolder: (folderId: string) => void;
@@ -92,6 +103,8 @@ export function Sidebar({
   onBackgroundMenu: (event: ReactMouseEvent) => void;
   onNewChannel: () => void;
   onToggleCompact: () => void;
+  /** Hides the whole rail. A topbar button brings it back. */
+  onHideSidebar: () => void;
   onOpenSettings: () => void;
   onOpenShortcuts: () => void;
   onLock: () => void;
@@ -108,12 +121,24 @@ export function Sidebar({
 
   const channelById = new Map(channels.map((channel) => [channel.id, channel]));
   const folderById = new Map(folders.map((folder) => [folder.id, folder]));
+  const hidden = new Set(hiddenChannels);
+  // Every channel hidden (or none present at all): the rail would render just
+  // the footer, so say where the channels went instead of looking broken.
+  const railEmpty = entries.every((entry) => {
+    if (entry.kind === 'separator') return true;
+    if (entry.kind === 'channel') return hidden.has(entry.id);
+    return !entry.children.some((child) => child.kind !== 'channel' || !hidden.has(child.id));
+  });
 
   // Icon-only is a rail you read by shape, so it behaves like compact mode even
   // when the separate compact preference says otherwise. Otherwise the user
   // picks "icons only" and still gets a wide empty rail full of padding.
   const iconOnly = labels === 'icon';
   const showLabel = labels !== 'icon' && !compact;
+  // Footer buttons and the New-channel row carry text labels of their own, so
+  // they check the rail width rather than just the compact preference: with
+  // icons-only labels the rail is equally narrow and the words overflow it.
+  const narrowRail = compact || iconOnly;
   // Compact is an icon rail, so it keeps its icons. It used to hide them
   // (`&& !compact` on this line) on the reasoning that a narrow rail should be
   // as sparse as possible. The result was a rail with nothing in it at all: the
@@ -208,7 +233,7 @@ export function Sidebar({
           style={{ ['--channel-h' as string]: String(channel.hue) }}
           aria-current={activeId === channel.id}
           onClick={() => onSelect(channel.id)}
-          title={compact ? channel.name : `${channel.name} — right-click to edit`}
+          title={narrowRail ? channel.name : `${channel.name} — right-click to edit`}
         >
           <span className="nav-item__dot" aria-hidden="true" />
           {showIcon ? (
@@ -262,7 +287,7 @@ export function Sidebar({
             aria-current={active}
             style={{ ['--channel-h' as string]: String(folder.hue) }}
             onClick={() => onSelect(`folder:${folder.id}`)}
-            title={compact ? folder.name : `${folder.name} — right-click to edit`}
+            title={narrowRail ? folder.name : `${folder.name} — right-click to edit`}
             role="button"
             tabIndex={0}
             onKeyDown={(event) => {
@@ -324,6 +349,10 @@ export function Sidebar({
         >
           {expanded
             ? (entry && entry.kind === 'folder' ? entry.children : []).map((child, childIndex) => {
+                // Hidden channels render nothing but keep their slot: the
+                // drop handlers below work on real indexes, so filtering here
+                // must not renumber the siblings.
+                if (child.kind === 'channel' && hidden.has(child.id)) return null;
                 if (child.kind === 'separator') return separatorRow(child.id, folder.id, childIndex);
                 const channel = channelById.get(child.id);
                 return channel ? channelRow(channel, folder.id, childIndex) : null;
@@ -349,18 +378,32 @@ export function Sidebar({
       <nav className="sidebar__nav" aria-label="Channels">
         {entries.map((entry, index) => {
           if (entry.kind === 'separator') return separatorRow(entry.id, 'root', index);
+          if (entry.kind === 'channel' && hidden.has(entry.id)) return null;
           if (entry.kind === 'folder') {
             const folder = folderById.get(entry.id);
-            return folder ? folderRow(folder, 'root', index) : null;
+            if (!folder) return null;
+            // A folder left with nothing visible hides with its children.
+            // Un-hiding happens in Settings, which lists every channel.
+            const visible = entry.children.some((child) => child.kind !== 'channel' || !hidden.has(child.id));
+            if (!visible) return null;
+            return folderRow(folder, 'root', index);
           }
           const channel = channelById.get(entry.id);
           return channel ? channelRow(channel, 'root', index) : null;
         })}
 
-        <button className="nav-item nav-item--ghost sidebar__add" onClick={onNewChannel} title="New channel">
-          <PlusIcon width="15" height="15" />
-          {!compact ? <span className="nav-item__label">New channel</span> : null}
-        </button>
+        {railEmpty ? (
+          <p className="sidebar__empty" role="note">
+            Rail is empty — unhide channels in Settings › Channels.
+          </p>
+        ) : null}
+
+        {showNewChannelButton ? (
+          <button className="nav-item nav-item--ghost sidebar__add" onClick={onNewChannel} title="New channel">
+            <PlusIcon width="15" height="15" />
+            {!narrowRail ? <span className="nav-item__label">New channel</span> : null}
+          </button>
+        ) : null}
       </nav>
 
       <div className="sidebar__spacer" />
@@ -372,30 +415,41 @@ export function Sidebar({
             once the rail could dock to any side. As a footer item it sits with
             the other app-level controls, keeps its label, and stays reachable
             in compact mode as an icon. */}
+        {showCompactButton ? (
+          <button
+            className="nav-item"
+            onClick={onToggleCompact}
+            title={compact ? 'Expand sidebar' : 'Compact sidebar'}
+            aria-label={compact ? 'Expand sidebar' : 'Compact sidebar'}
+            aria-pressed={compact}
+          >
+            <CompactGlyph expanded={compact} />
+            {!narrowRail ? <span>Compact</span> : null}
+          </button>
+        ) : null}
         <button
           className="nav-item"
-          onClick={onToggleCompact}
-          title={compact ? 'Expand sidebar' : 'Compact sidebar'}
-          aria-label={compact ? 'Expand sidebar' : 'Compact sidebar'}
-          aria-pressed={compact}
+          onClick={onHideSidebar}
+          title="Hide sidebar"
+          aria-label="Hide sidebar"
         >
-          <CompactGlyph expanded={compact} />
-          {!compact ? <span>Compact</span> : null}
+          <EyeOffIcon width="16" height="16" />
+          {!narrowRail ? <span>Hide</span> : null}
         </button>
         <button className="nav-item" onClick={onOpenSettings} title="Settings">
           <SettingsGlyph />
-          {!compact ? <span>Settings</span> : null}
+          {!narrowRail ? <span>Settings</span> : null}
         </button>
         {showShortcuts ? (
           <button className="nav-item" onClick={onOpenShortcuts} title="Keyboard shortcuts">
             <KeyboardGlyph />
-            {!compact ? <span>Shortcuts</span> : null}
+            {!narrowRail ? <span>Shortcuts</span> : null}
           </button>
         ) : null}
         {showLock ? (
           <button className="nav-item" onClick={onLock} title="Lock vault" aria-label="Lock vault">
             <LockGlyph />
-            {!compact ? <span>Lock</span> : null}
+            {!narrowRail ? <span>Lock</span> : null}
           </button>
         ) : null}
       </div>

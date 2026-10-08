@@ -28,6 +28,7 @@ import { Alert, Modal, StrengthMeter, Toggle } from './primitives.tsx';
 import { formatLoginCompact } from './login-format.ts';
 import { InboxSection } from './InboxSection.tsx';
 import type { GmailAccount } from '../vault/storage.ts';
+import type { GmailMessage } from './useGmail.ts';
 import {
   CopyIcon,
   DiceIcon,
@@ -214,6 +215,7 @@ export function ItemEditor({
   onCommitTags,
   gmailAccounts,
   onGmailAccountsChange,
+  onCacheMail,
 }: {
   item: VaultItem | null;
   /** Global tag catalogue, so new tags can be created inline. */
@@ -244,6 +246,8 @@ export function ItemEditor({
   /** Connected mailboxes, shared across the app rather than per-login. */
   gmailAccounts: GmailAccount[];
   onGmailAccountsChange: (next: GmailAccount[]) => void;
+  /** Persists inbox reads into the message cache. */
+  onCacheMail?: (accountId: string, messages: GmailMessage[]) => void;
 }) {
   const [draft, setDraft] = useState<Partial<VaultItem>>(item ?? {});
   const [revealed, setRevealed] = useState(false);
@@ -497,7 +501,34 @@ export function ItemEditor({
           />
           <p className="field__note">The card gets a message expander matched to this login's email.</p>
         </div>
-        <InboxSection accounts={gmailAccounts} onAccountsChange={onGmailAccountsChange} onNotify={onNotify} />
+        {draft.showMail !== false ? (
+          <div className="field">
+            <span className="field__label">Which messages</span>
+            <div className="segmented" role="radiogroup" aria-label="Which messages to show">
+              {(
+                [
+                  ['auto', 'Auto', 'Matched, or recent when nothing matches'],
+                  ['matched', 'Matched only', 'Only mail to this login'],
+                  ['recent', 'Recent only', 'Everything recent, unmatched'],
+                ] as const
+              ).map(([mode, label, hint]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={(draft.mailFilter ?? 'auto') === mode}
+                  className="segmented__option"
+                  aria-pressed={(draft.mailFilter ?? 'auto') === mode}
+                  title={hint}
+                  onClick={() => patch({ mailFilter: mode })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <InboxSection accounts={gmailAccounts} onAccountsChange={onGmailAccountsChange} onNotify={onNotify} onCacheMessages={onCacheMail} />
       </>
     ),
 

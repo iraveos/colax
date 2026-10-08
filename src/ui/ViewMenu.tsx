@@ -1,13 +1,12 @@
 /**
  * View picker.
  *
- * Reachable three ways, deliberately. The topbar button is the discoverable one,
- * but it is a click away from wherever you are working, so:
+ * The topbar switcher is gone on purpose; switching lives where it does not
+ * compete with New login for attention:
  *
- *   - the topbar button opens a panel listing every view, and
- *   - right-clicking anywhere in the content area opens the same list at the
- *     pointer, and
- *   - Ctrl+1..4 jumps straight to one.
+ *   - right-clicking empty content opens the view list at the pointer, and
+ *   - Ctrl+1..4 jumps straight to one, and
+ *   - dock view slots jump with one key each.
  *
  * All three render the same options, so they cannot drift apart.
  */
@@ -128,7 +127,6 @@ export function ViewMenu({
   const [open, setOpen] = useState(false);
   const [align, setAlign] = useState<'left' | 'right'>('right');
   const wrap = useRef<HTMLDivElement>(null);
-  const closeTimer = useRef<number | undefined>(undefined);
   const current = VIEW_OPTIONS.find((option) => option.id === value) ?? VIEW_OPTIONS[0]!;
   const CurrentIcon = current.Icon;
   // The button always names the current view: an icon-only button gave no hint
@@ -136,21 +134,15 @@ export function ViewMenu({
   void labels;
   void labelsByView;
 
-  // Flip to the left edge when there is not enough room on the right. The
-  // margin tracks the panel width (288) plus breathing room, so the panel can
-  // never hang past the viewport edge half-cut.
+  // Pin the panel's right edge to the button when the button sits near the
+  // right viewport edge, so the 288px panel extends leftwards into the window
+  // instead of hanging off-screen. The old ternary had this backwards ('left'
+  // when crowded), which is exactly how the open panel ended up cut off.
   useEffect(() => {
     if (!open) return;
     const rect = wrap.current?.getBoundingClientRect();
-    if (rect) setAlign(rect.right > window.innerWidth - 320 ? 'left' : 'right');
+    if (rect) setAlign(rect.right > window.innerWidth - 320 ? 'right' : 'left');
   }, [open]);
-
-  const cancelClose = useCallback(() => {
-    if (closeTimer.current !== undefined) {
-      window.clearTimeout(closeTimer.current);
-      closeTimer.current = undefined;
-    }
-  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -165,9 +157,8 @@ export function ViewMenu({
     return () => {
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKeyDown);
-      cancelClose();
     };
-  }, [open, cancelClose]);
+  }, [open]);
 
   const pick = useCallback(
     (next: VaultView) => {
@@ -196,31 +187,18 @@ export function ViewMenu({
     next?.focus();
   };
 
+  // Click-only on purpose: hover-opening fired every time the pointer crossed
+  // the button on its way to New login beside it, which read as a broken,
+  // flickering menu. One click opens, another closes; Escape, an outside
+  // click, or picking a view also closes it.
   return (
-    <div
-      className="view-menu"
-      ref={wrap}
-      onMouseEnter={() => {
-        cancelClose();
-        setOpen(true);
-      }}
-      onMouseLeave={() => {
-        cancelClose();
-        // A short grace period so moving between the button and the panel
-        // does not flicker it shut mid-gesture.
-        closeTimer.current = window.setTimeout(() => setOpen(false), 140);
-      }}
-      onKeyDown={onKeyDown}
-    >
+    <div className="view-menu" ref={wrap} onKeyDown={onKeyDown}>
       <button
         type="button"
         className="btn btn--secondary"
         aria-expanded={open}
         aria-haspopup="listbox"
-        // Clicking always opens: after a hover-open a toggle would close the
-        // menu on the very click meant to use it. It closes on leave,
-        // outside click, Escape, or picking a view.
-        onClick={() => setOpen(true)}
+        onClick={() => setOpen((previous) => !previous)}
         title="Change view"
       >
         <CurrentIcon width="15" height="15" />

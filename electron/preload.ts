@@ -11,7 +11,7 @@
  * short list.
  */
 import { contextBridge, ipcRenderer } from 'electron';
-import type { PlatformAPI, ShellSettings, TrayAction } from '../src/lib/platform.ts';
+import type { FullMailInput, FullMailResult, PlatformAPI, ShellSettings, TrayAction } from '../src/lib/platform.ts';
 
 declare const COLAX_APP_VERSION: string;
 
@@ -26,6 +26,10 @@ const platform: PlatformAPI = {
   }),
   openExternal: (url: string) => {
     void ipcRenderer.invoke('colax:open-external', url);
+  },
+  mail: {
+    fetchFullBody: (input: FullMailInput): Promise<FullMailResult> =>
+      ipcRenderer.invoke('colax:mail-full', input) as Promise<FullMailResult>,
   },
   shell: {
     update: (settings: ShellSettings) => {

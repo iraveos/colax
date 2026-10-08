@@ -15,6 +15,27 @@
 /** What the tray menu can ask the renderer to do. Main handles show/restart/quit itself. */
 export type TrayAction = 'lock-now' | 'toggle-mute';
 
+/** One full-body fetch over IMAP. Credentials travel per call, never stored. */
+export interface FullMailInput {
+  address: string;
+  appPassword: string;
+  /** Feed message id (`tag:...,2004:<hex>`); the hex tail addresses the mail. */
+  feedId: string;
+  /** Subject/sender, for the best-effort fallback when the id misses. */
+  subject?: string;
+  from?: string;
+}
+
+export interface FullMailResult {
+  ok: boolean;
+  subject?: string;
+  from?: string;
+  date?: string;
+  /** Plain text body, capped. */
+  text?: string;
+  error?: string;
+}
+
 /** Desktop window-chrome settings, mirrored from prefs. */
 export interface ShellSettings {
   trayEnabled: boolean;
@@ -38,6 +59,14 @@ export interface PlatformAPI {
    */
   openExternal(url: string): void;
   /**
+   * Full message bodies over IMAP. Absent on web — a browser page cannot open
+   * a socket — so call sites must tolerate undefined and hide the affordance.
+   */
+  mail?: {
+    /** Fetches one message's complete plain-text body in the main process. */
+    fetchFullBody(input: FullMailInput): Promise<FullMailResult>;
+  };
+  /**
    * Desktop shell controls. Absent on web — there is no tray, autostart or
    * window chrome to manage there, so call sites must tolerate undefined.
    */
@@ -53,6 +82,18 @@ declare global {
   interface Window {
     platform?: PlatformAPI;
   }
+}
+
+/** Baked by vite at build time (see vite.config.ts). Absent under tests and dev. */
+declare const __COLAX_BUILD__: string | undefined;
+
+/**
+ * Which exact build is running, e.g. "1.0.0 · built 2026-10-08 08:49 UTC".
+ * Shown in Settings so a stale install is identifiable on sight rather than
+ * arguable. Falls back to 'dev' wherever the define never ran.
+ */
+export function buildStamp(): string {
+  return typeof __COLAX_BUILD__ === 'string' && __COLAX_BUILD__ ? __COLAX_BUILD__ : 'dev';
 }
 
 const webPlatform: PlatformAPI = {

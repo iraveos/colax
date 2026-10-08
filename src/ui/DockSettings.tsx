@@ -20,17 +20,39 @@ import { KeyIcon, LayersIcon, MailIcon } from './icons.tsx';
 import { readImageFile } from './card-art.ts';
 import { isAllowedImageSrc, MAX_AVATAR_BYTES, type VaultItem } from '../vault/types.ts';
 import type { Channel, Folder } from '../vault/channels.ts';
-import { MAX_DOCK_SLOTS, type DockSlotConfig, type VaultView } from '../vault/storage.ts';
+import { DOCK_LOGIN_ACTIONS, MAX_DOCK_SLOTS, type DockLoginAction, type DockSlotConfig, type GmailAccount, type VaultView } from '../vault/storage.ts';
 
-function defaultLabel(slot: DockSlotConfig, channels: Channel[], folders: Folder[], logins: VaultItem[]): string {
+const LOGIN_ACTION_LABELS: Record<DockLoginAction, string> = {
+  password: 'Copy password',
+  email: 'Copy email',
+  both: 'Copy email + password',
+  edit: 'Edit login',
+  messages: 'Show messages',
+};
+
+function defaultLabel(
+  slot: DockSlotConfig,
+  channels: Channel[],
+  folders: Folder[],
+  logins: VaultItem[],
+  mailboxes: GmailAccount[],
+): string {
   if (slot.kind === 'view') return VIEW_OPTIONS.find((option) => option.id === slot.ref)?.label ?? slot.ref;
   if (slot.kind === 'inbox') return 'Inbox';
+  if (slot.kind === 'mailbox') return mailboxes.find((account) => account.id === slot.ref)?.address ?? '(missing mailbox)';
   if (slot.kind === 'folder') return folders.find((folder) => folder.id === slot.ref)?.name ?? '(missing folder)';
   if (slot.kind === 'login') {
     const item = logins.find((entry) => entry.id === slot.ref);
     return item ? item.title || item.username || 'Login' : '(missing login)';
   }
   return channels.find((channel) => channel.id === slot.ref)?.name ?? '(missing channel)';
+}
+
+function missingLabel(slot: DockSlotConfig): string {
+  if (slot.kind === 'login') return 'Login deleted';
+  if (slot.kind === 'mailbox') return 'Mailbox disconnected';
+  if (slot.kind === 'folder') return 'Folder deleted';
+  return 'Channel deleted';
 }
 
 function SlotGlyph({ slot, channels, folders }: { slot: DockSlotConfig; channels: Channel[]; folders: Folder[] }) {
@@ -41,7 +63,7 @@ function SlotGlyph({ slot, channels, folders }: { slot: DockSlotConfig; channels
     const Icon = VIEW_OPTIONS.find((option) => option.id === slot.ref)?.Icon ?? LayersIcon;
     return <Icon width="16" height="16" />;
   }
-  if (slot.kind === 'inbox') return <MailIcon width="16" height="16" />;
+  if (slot.kind === 'inbox' || slot.kind === 'mailbox') return <MailIcon width="16" height="16" />;
   if (slot.kind === 'folder') {
     const folder = folders.find((entry) => entry.id === slot.ref);
     const Icon = (folder && CHANNEL_ICONS_MAP[folder.icon]) ?? LayersIcon;
@@ -58,6 +80,7 @@ export function DockSlotsEditor({
   channels,
   folders,
   logins,
+  mailboxes,
   onChange,
   onNotify,
 }: {
@@ -65,6 +88,7 @@ export function DockSlotsEditor({
   channels: Channel[];
   folders: Folder[];
   logins: VaultItem[];
+  mailboxes: GmailAccount[];
   onChange: (next: DockSlotConfig[]) => void;
   onNotify: (message: string, tone?: 'ok' | 'error') => void;
 }) {
@@ -101,6 +125,12 @@ export function DockSlotsEditor({
     onChange(next);
   };
 
+  const setAction = (index: number, action: DockLoginAction) => {
+    const next = [...slots];
+    next[index] = { ...next[index]!, action };
+    onChange(next);
+  };
+
   const remove = (index: number) => {
     onChange(slots.filter((_, i) => i !== index));
     if (iconFor === index) setIconFor(null);
@@ -123,6 +153,9 @@ export function DockSlotsEditor({
     (view) => !present.has(`view:${view}`),
   );
   const addableInbox = present.has('inbox:') ? [] : ['inbox'];
+  const addableMailboxes = mailboxes
+    .filter((account) => account.address && !present.has(`mailbox:${account.id}`))
+    .sort((a, b) => a.address.localeCompare(b.address));
   const addableFolders = folders
     .filter((folder) => !present.has(`folder:${folder.id}`))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -179,8 +212,9 @@ export function DockSlotsEditor({
           const missing =
             (slot.kind === 'channel' && !channels.some((channel) => channel.id === slot.ref)) ||
             (slot.kind === 'folder' && !folders.some((folder) => folder.id === slot.ref)) ||
-            (slot.kind === 'login' && !logins.some((item) => item.id === slot.ref));
-          const display = slot.label || defaultLabel(slot, channels, folders, logins);
+            (slot.kind === 'login' && !logins.some((item) => item.id === slot.ref)) ||
+            (slot.kind === 'mailbox' && !mailboxes.some((account) => account.id === slot.ref));
+          const display = slot.label || defaultLabel(slot, channels, folders, logins, mailboxes);
           const taken = slots.filter((_, i) => i !== index).map((entry) => entry.key);
           return (
             <li
@@ -212,7 +246,7 @@ export function DockSlotsEditor({
               </span>
               {missing ? (
                 <span className="dock-slots__missing">
-                  Channel deleted
+                  {missingLabel(slot)}
                   <button type="button" className="btn btn--quiet btn--sm" onClick={() => remove(index)}>
                     Remove
                   </button>
@@ -222,11 +256,26 @@ export function DockSlotsEditor({
                   <input
                     className="input dock-slots__name"
                     value={slot.label ?? ''}
-                    placeholder={defaultLabel(slot, channels, folders, logins)}
+                    placeholder={defaultLabel(slot, channels, folders, logins, mailboxes)}
                     maxLength={24}
                     aria-label={`Label for ${display}`}
                     onChange={(event) => setLabel(index, event.target.value)}
                   />
+                  {slot.kind === 'login' ? (
+                    <select
+                      className="select__trigger dock-slots__action"
+                      value={slot.action ?? 'both'}
+                      aria-label={`Action for ${display}`}
+                      title="What pressing this slot does"
+                      onChange={(event) => setAction(index, event.target.value as DockLoginAction)}
+                    >
+                      {DOCK_LOGIN_ACTIONS.map((action) => (
+                        <option key={action} value={action}>
+                          {LOGIN_ACTION_LABELS[action]}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
                   <KeyRecorder
                     value={slot.key}
                     taken={taken}
@@ -294,6 +343,17 @@ export function DockSlotsEditor({
               Inbox
             </button>
           ))}
+          {addableMailboxes.map((account) => (
+            <button
+              key={account.id}
+              type="button"
+              className="segmented__option"
+              onClick={() => add({ kind: 'mailbox', ref: account.id, key: String(slots.length + 1) })}
+              title={`Open ${account.address} in a window`}
+            >
+              {account.address} (mailbox)
+            </button>
+          ))}
           {addableFolders.map((folder) => (
             <button
               key={folder.id}
@@ -333,7 +393,7 @@ export function DockSlotsEditor({
               </button>
             ))}
           </div>
-          {addableViews.length + addableInbox.length + addableChannels.length + addableFolders.length === 0 &&
+          {addableViews.length + addableInbox.length + addableMailboxes.length + addableChannels.length + addableFolders.length === 0 &&
           addableLogins.length === 0 &&
           !loginFilter.trim() ? (
             <p className="field__hint">Everything available is already on the bar.</p>

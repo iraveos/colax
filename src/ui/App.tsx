@@ -14,6 +14,7 @@ import {
   type Folder,
   type SidebarEntry,
 } from '../vault/channels.ts';
+import { mergeMailCache } from '../vault/storage.ts';
 import { captureToDraft, findSimilarTag, suggestTagsForDraft } from '../vault/site-intel.ts';
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
@@ -21,14 +22,14 @@ import { FolderEditor } from './FolderEditor.tsx';
 import { detect as detectClipboard, useClipboardWatcher } from './useClipboardWatcher.ts';
 import { useAlarms, playAlarmSound } from './useAlarms.ts';
 import { useCaptureOffer, type PendingCapture } from './useCaptureOffer.ts';
-import type { SortMode, VaultView } from '../vault/storage.ts';
+import type { GmailAccount, SortMode, VaultView } from '../vault/storage.ts';
 import { LockScreen } from './LockScreen.tsx';
 import { ItemEditor } from './ItemEditor.tsx';
 import { AppearancePanel } from './AppearancePanel.tsx';
 import { Settings } from './Settings.tsx';
 import { Dashboard } from './Dashboard.tsx';
 import { Sidebar } from './Sidebar.tsx';
-import { ViewContextMenu, ViewMenu, VIEW_OPTIONS, useViewShortcuts } from './ViewMenu.tsx';
+import { ViewContextMenu, VIEW_OPTIONS, useViewShortcuts } from './ViewMenu.tsx';
 import { Dock, useDockShortcuts, type DockSlot } from './Dock.tsx';
 import { CHANNEL_ICONS_MAP } from './Sidebar.tsx';
 import { ContextMenu, type ContextMenuState, type MenuItem } from './context-menu.tsx';
@@ -36,6 +37,8 @@ import { ChannelEditor } from './ChannelEditor.tsx';
 import { Alert, Modal, Toasts } from './primitives.tsx';
 import { BulkSecurityDialog, hasSecurityFactor, withoutSecurityFactor } from './BulkSecurityDialog.tsx';
 import { AnimatedListView, BasicView, CarouselView, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
+import { LoginMessages } from './LoginMessages.tsx';
+import { MailboxWindow } from './MailboxWindow.tsx';
 import {
   useAutoLock,
   useClipboard,
@@ -168,6 +171,10 @@ export function App() {
   // actions people actually reach for.
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [viewMenuAt, setViewMenuAt] = useState({ x: 0, y: 0 });
+  /** A mailbox opened from a dock slot, showing its messages in a window. */
+  const [mailboxFor, setMailboxFor] = useState<GmailAccount | null>(null);
+  /** A login whose messages were opened from a dock slot. */
+  const [messagesFor, setMessagesFor] = useState<VaultItem | null>(null);
   /** null = closed; a channel id edits that one; 'new' creates one. */
   const [editingChannel, setEditingChannel] = useState<string | 'new' | null>(null);
   /** null = closed; a folder id edits that one; 'new' creates one. */
@@ -311,25 +318,6 @@ export function App() {
     },
     [notify, prefs.autoTagChannel, prefs.channels, prefs.tags, vault],
   );
-
-  // Optional lock triggers for shared machines.
-  useEffect(() => {
-    if (vault.status !== 'unlocked') return;
-    if (prefs.lockOnBlur) {
-      const onBlur = () => vault.lock();
-      window.addEventListener('blur', onBlur);
-      return () => window.removeEventListener('blur', onBlur);
-    }
-  }, [prefs.lockOnBlur, vault.status, vault]);
-
-  useEffect(() => {
-    if (vault.status !== 'unlocked' || !prefs.lockOnHidden) return;
-    const onVisibility = () => {
-      if (document.hidden) vault.lock();
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, [prefs.lockOnHidden, vault.status, vault]);
 
   const cycleView = useCallback(
     (current: VaultView) => {
@@ -1170,9 +1158,18 @@ const visible = useMemo(() => {
     onDelete: requestDelete,
     onToggleFavorite: (item) => void toggleFavorite(item),
     onToggleAttention: (item) => void toggleAttention(item),
+    // Fresh inbox reads join the persistent per-account cache, so message
+    // lists keep reaching further back than Google's ~20-per-read feed.
+    onCacheMail: (accountId, messages) => {
+      const next = mergeMailCache(vault.prefs.mailCache ?? {}, accountId, messages);
+      void vault.updatePrefs({ mailCache: next });
+    },
 tags: prefs.tags,
     showTagChips: prefs.showTagChips,
     onOpenUrl: openUrl,
+    // Message links leave through the platform seam, never a bare
+    // window.open — which inside Electron spawns a second app window.
+    onOpenExternal: (url) => getPlatform().openExternal(url),
     onItemMenu: (event, item) => {
       event.preventDefault();
       setMenu({
@@ -1542,22 +1539,52 @@ label: 'Settings',
         const item = vault.items.find((entry) => entry.id === slot.ref);
         // Gone (deleted) renders nothing, like a deleted channel's slot.
         if (!item) continue;
+        const action = slot.action ?? 'both';
+        const actionHint =
+          action === 'password' ? 'Copy password'
+          : action === 'email' ? 'Copy email'
+          : action === 'edit' ? 'Edit login'
+          : action === 'messages' ? 'Show messages'
+          : 'Copy login';
         resolved.push({
           id,
           label: slot.label || item.title || item.username || 'Login',
-          hint: item.username || item.url || 'Copy login',
+          hint: item.username || item.url || actionHint,
           Icon: KeyIcon,
           imageUrl: slot.icon,
           key: slot.key,
           active: selection.ids.has(item.id),
-          // One line, "email password", ready to paste into a form. Channel
-          // slots keep navigating — copying every login in a channel silently
-          // would be a footgun, so bulk copying stays behind the explicit
-          // multi-select Share instead.
           onJump: () => {
-            const line = [item.username.trim(), item.password].filter(Boolean).join(' ');
-            if (line) void copy(line, 'Login');
+            // The slot's configured action, chosen in the dock settings. The
+            // default stays the historic one line, "email password", ready to
+            // paste into a form.
+            if (action === 'password') {
+              if (item.password) void copy(item.password, 'Password');
+            } else if (action === 'email') {
+              if (item.username) void copy(item.username, 'Email');
+            } else if (action === 'edit') {
+              requestEdit(item);
+            } else if (action === 'messages') {
+              setMessagesFor(item);
+            } else {
+              const line = [item.username.trim(), item.password].filter(Boolean).join(' ');
+              if (line) void copy(line, 'Login');
+            }
           },
+        });
+      } else if (slot.kind === 'mailbox') {
+        const account = prefs.gmailAccounts.find((entry) => entry.id === slot.ref);
+        // Disconnected since: renders nothing rather than a dead button.
+        if (!account) continue;
+        resolved.push({
+          id,
+          label: slot.label || account.address || 'Mailbox',
+          hint: account.address ? `Messages for ${account.address}` : 'Mailbox messages',
+          Icon: MailIcon,
+          imageUrl: slot.icon,
+          key: slot.key,
+          active: mailboxFor?.id === account.id,
+          onJump: () => setMailboxFor(account),
         });
       } else {
         const channel = channelLookup.find((entry) => entry.id === slot.ref);
@@ -1576,7 +1603,7 @@ label: 'Settings',
       }
     }
     return resolved;
-  }, [prefs.dockSlots, channelLookup, folders, view, activeChannel, activeFolder, activeId, selection, vault, viewActions, copy]);
+  }, [prefs.dockSlots, prefs.gmailAccounts, channelLookup, folders, view, activeChannel, activeFolder, activeId, selection, vault, viewActions, copy, mailboxFor, requestEdit]);
 
   /**
    * The dock's own menu: position, a route to full configuration, and hide.
@@ -1716,6 +1743,12 @@ label: 'Settings',
     void vault.updatePrefs({ theme: next });
   };
 
+  // Hiding the channel you are looking at drops you back to All logins rather
+  // than stranding the content on a view the rail no longer offers.
+  useEffect(() => {
+    if (activeId !== 'all' && prefs.hiddenChannels.includes(activeId)) setActiveId('all');
+  }, [activeId, prefs.hiddenChannels]);
+
   // The preference can be "system", so the toggle label has to follow whatever
   // is actually on screen rather than the stored preference.
   const resolvedTheme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
@@ -1817,6 +1850,7 @@ onCreate={vault.create}
     // pinned to a single account, scopes every card it shows. Anything else —
     // All logins, folders, search — shows everything.
     gmailAccounts: prefs.gmailAccounts,
+    mailCache: prefs.mailCache,
     mailScope: {
       show: activeChannel?.showMail !== false,
       account:
@@ -1839,11 +1873,16 @@ onCreate={vault.create}
 
       <div
         className="shell"
-        data-compact-sidebar={prefs.compactSidebar || undefined}
+        // Icons-only labels read as a narrow rail too, so the column follows
+        // the same rule — otherwise the rail shrinks to 60px inside a 272px
+        // column and most of the sidebar is dead space.
+        data-compact-sidebar={prefs.compactSidebar || prefs.sidebarLabels === 'icon' || undefined}
+        data-sidebar-hidden={prefs.showSidebar === false || undefined}
         data-floating={prefs.floatingChrome || undefined}
         data-rail={prefs.sidebarPosition}
         data-labels={prefs.sidebarLabels}
       >
+        {prefs.showSidebar !== false ? (
         <Sidebar
           entries={sidebarBase}
           channels={channelLookup}
@@ -1852,6 +1891,9 @@ onCreate={vault.create}
           counts={channelCounts}
           compact={prefs.compactSidebar}
           labels={prefs.sidebarLabels}
+          hiddenChannels={prefs.hiddenChannels}
+          showNewChannelButton={prefs.showNewChannelButton}
+          showCompactButton={prefs.showCompactButton}
           onSelect={setActiveId}
           onReorder={(next) => void vault.updatePrefs({ sidebar: next })}
           onToggleFolder={toggleFolderCollapse}
@@ -1872,6 +1914,7 @@ onCreate={vault.create}
           }}
           onNewChannel={() => setEditingChannel('new')}
           onToggleCompact={() => void vault.updatePrefs({ compactSidebar: !prefs.compactSidebar })}
+          onHideSidebar={() => void vault.updatePrefs({ showSidebar: false })}
           showShortcuts={prefs.showShortcuts}
           showLock={prefs.showLockButton}
           floating={prefs.floatingChrome}
@@ -1882,12 +1925,25 @@ onCreate={vault.create}
             if (prefs.clearClipboardOnLock) void navigator.clipboard.writeText('').catch(() => {});
           }}
         />
+        ) : null}
 
 <main className="main">
           <header className="topbar">
-            {/* The lead slot is a spacer: the icon moved under the search, so the
-                left cell only has to balance the right one. */}
-            <div className="topbar__lead" aria-hidden="true" />
+            {/* The lead slot is a spacer — unless the sidebar is hidden, in
+                which case it carries the way back, so Settings stays
+                reachable. */}
+            <div className="topbar__lead">
+              {prefs.showSidebar === false ? (
+                <button
+                  className="btn btn--secondary"
+                  onClick={() => void vault.updatePrefs({ showSidebar: true })}
+                  title="Show sidebar"
+                >
+                  <RowsIcon width="15" height="15" />
+                  <span>Sidebar</span>
+                </button>
+              ) : null}
+            </div>
 
             {/* Search and the brand icon share the centre column, the icon sitting
                 directly beneath the field on the same centre line. */}
@@ -1924,12 +1980,6 @@ onCreate={vault.create}
             </div>
 
             <div className="topbar__actions">
-              <ViewMenu
-          value={view}
-          labels={prefs.viewLabels}
-          labelsByView={prefs.viewLabelsByView}
-          onChange={(next) => void vault.updatePrefs({ view: next })}
-        />
               <button className="btn btn--quiet" onClick={() => setEditing('new')}>
                 <PlusIcon width="15" height="15" />
                 New login
@@ -2220,6 +2270,41 @@ onCreate={vault.create}
         </Modal>
       ) : null}
 
+      {(() => {
+        const liveAccount = mailboxFor ? prefs.gmailAccounts.find((entry) => entry.id === mailboxFor.id) : null;
+        return liveAccount ? (
+          <MailboxWindow
+            key={liveAccount.id}
+            account={liveAccount}
+            cache={prefs.mailCache}
+            onCacheMessages={viewActions.onCacheMail}
+            onOpenExternal={(url) => getPlatform().openExternal(url)}
+            onClose={() => setMailboxFor(null)}
+          />
+        ) : null;
+      })()}
+
+      {(() => {
+        const liveItem = messagesFor ? vault.items.find((entry) => entry.id === messagesFor.id) : null;
+        return liveItem ? (
+          <Modal
+            title={`Messages · ${liveItem.title || liveItem.username || 'Login'}`}
+            onClose={() => setMessagesFor(null)}
+            wide
+          >
+            <LoginMessages
+              item={liveItem}
+              accounts={prefs.gmailAccounts}
+              accountScope="all"
+              cache={prefs.mailCache}
+              onCacheMessages={viewActions.onCacheMail}
+              onOpenExternal={(url) => getPlatform().openExternal(url)}
+              defaultOpen
+            />
+          </Modal>
+        ) : null;
+      })()}
+
       {editingChannel ? (
         <ChannelEditor
           // Remount per channel so the draft always matches what is being edited.
@@ -2259,6 +2344,7 @@ onCreate={vault.create}
           tags={prefs.tags}
           gmailAccounts={prefs.gmailAccounts}
           onGmailAccountsChange={(gmailAccounts) => void vault.updatePrefs({ gmailAccounts })}
+          onCacheMail={viewActions.onCacheMail}
           onCommitTags={(next) => void vault.updatePrefs({ tags: next })}
           generatorOptions={prefs.passwordGenerator}
           onGeneratorOptionsChange={(next) => void vault.updatePrefs({ passwordGenerator: next })}

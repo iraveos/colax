@@ -13,6 +13,7 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell, Tray } from 'electron';
 import { join } from 'node:path';
 import type { ShellSettings } from '../src/lib/platform.ts';
+import { fetchFullMail } from './mail-imap.ts';
 // Inlined as a data URL by esbuild (see scripts/electron-build.mjs), so the
 // tray icon needs no file path that differs between dev and packaged builds.
 import trayPng from '../public/colax-icon.png';
@@ -220,6 +221,14 @@ void app.whenReady().then(() => {
 
   ipcMain.handle('colax:open-external', (_event, url: unknown) => {
     if (typeof url === 'string') void openExternal(url);
+  });
+  ipcMain.handle('colax:mail-full', async (_event, input: unknown) => {
+    if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };
+    const args = input as { address?: unknown; appPassword?: unknown; feedId?: unknown };
+    if (typeof args.address !== 'string' || typeof args.appPassword !== 'string' || typeof args.feedId !== 'string') {
+      return { ok: false, error: 'Bad request.' };
+    }
+    return fetchFullMail({ address: args.address, appPassword: args.appPassword, feedId: args.feedId });
   });
   ipcMain.handle('colax:shell-update', (_event, settings: unknown) => {
     if (!settings || typeof settings !== 'object') return;

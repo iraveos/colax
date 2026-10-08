@@ -97,13 +97,20 @@ export const DEFAULT_CARD_SIZE: Record<VaultView, CardSizePrefs> = {
 /**
  * One dock slot's configuration.
  *
- * `ref` is a VaultView for kind 'view', a channel id for kind 'channel', and
+ * `ref` is a VaultView for kind 'view', a channel id for kind 'channel', a
+ * login id for kind 'login', a Gmail account id for kind 'mailbox', and
  * unused for 'inbox'. `label` overrides the display name when present;
  * `icon` overrides the glyph with an uploaded (data URL) or remote (https)
- * image. A channel slot whose channel no longer exists is skipped at render
- * rather than erroring, so deleting a channel cannot break the bar.
+ * image. `action` (login slots only) chooses what pressing the slot does.
+ * A slot whose target no longer exists is skipped at render rather than
+ * erroring, so deleting a channel cannot break the bar.
  */
-export type DockSlotKind = 'view' | 'channel' | 'folder' | 'login' | 'inbox';
+export type DockSlotKind = 'view' | 'channel' | 'folder' | 'login' | 'inbox' | 'mailbox';
+
+/** What a dock login slot does when pressed. 'both' is the historic behavior. */
+export type DockLoginAction = 'password' | 'email' | 'both' | 'edit' | 'messages';
+
+export const DOCK_LOGIN_ACTIONS: DockLoginAction[] = ['password', 'email', 'both', 'edit', 'messages'];
 
 /** Which edge the dock snaps its orientation to. The bar reflows to a column on the sides. */
 export type DockPosition = 'bottom' | 'top' | 'left' | 'right';
@@ -128,6 +135,8 @@ export interface DockSlotConfig {
   label?: string;
   key: string;
   icon?: string;
+  /** Login slots only: what pressing does. Absent means 'both', as before. */
+  action?: DockLoginAction;
 }
 
 /** Hard cap: more slots than this wrap the bar into a second row. */
@@ -151,12 +160,53 @@ export interface GmailAccount {
   address: string;
   appPassword: string;
   enabled: boolean;
-  /** How often to re-poll, in seconds. */
+  /** How often to re-poll, in seconds. 0 means manual only (no timer). */
   refreshSeconds: number;
 }
 
 export function newGmailAccountId(): string {
   return `gm_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * One cached inbox message. Same shape the feed parser produces — subjects
+ * and senders, never credentials — kept so the message lists can grow past
+ * the ~20 Google's feed returns per read.
+ */
+export interface CachedMailMessage {
+  id: string;
+  title: string;
+  author: string;
+  email: string;
+  summary: string;
+  issued: string;
+  alternate: string;
+  accountId: string;
+}
+
+/** How many messages are kept per account. Bounds the prefs blob. */
+export const MAIL_CACHE_CAP = 300;
+
+/**
+ * Merges freshly fetched messages into an account's cache, newest first.
+ * Pure, so it is unit-testable: dedupes by message id, keeps the newest, and
+ * caps the list so one chatty mailbox cannot grow the stored record forever.
+ */
+export function mergeMailCache(
+  cache: Record<string, CachedMailMessage[]>,
+  accountId: string,
+  incoming: CachedMailMessage[],
+): Record<string, CachedMailMessage[]> {
+  const seen = new Set<string>();
+  const merged: CachedMailMessage[] = [];
+  for (const message of [...incoming, ...(cache[accountId] ?? [])]) {
+    if (!message || typeof message.id !== 'string') continue;
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    merged.push(message);
+  }
+  merged.sort((a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''));
+  return { ...cache, [accountId]: merged.slice(0, MAIL_CACHE_CAP) };
 }
 
 /**
@@ -326,6 +376,21 @@ export interface VaultPreferences {
   sidebar: SidebarEntry[];
   /** Shows a channel for logins that have no tags at all. */
   showUnassignedChannel: boolean;
+  /**
+   * Channel ids hidden from the sidebar. Hidden is not deleted: the channel
+   * keeps its logins, stays editable in Settings, and still works from the
+   * dock or the dashboard — it just takes up no rail space.
+   */
+  hiddenChannels: string[];
+  /** Shows the "New channel" shortcut at the end of the sidebar. */
+  showNewChannelButton: boolean;
+  /** Shows the Compact toggle in the sidebar footer. */
+  showCompactButton: boolean;
+  /**
+   * Shows the channel rail at all. Off hides the entire sidebar; a button in
+   * the topbar brings it back, so this can never strand Settings.
+   */
+  showSidebar: boolean;
   /** Automatically tags a login from its website/email provider domain. */
   autoTagDomain: boolean;
   /** View of the list: whether the letter group headings render. */
@@ -341,6 +406,17 @@ export interface VaultPreferences {
   // `gmail` object migrates into the first entry on load, so a connected
   // mailbox survives the upgrade without reconnecting.
   gmailAccounts: GmailAccount[];
+  /**
+   * Messages accumulated from the inbox feeds, per account id.
+   *
+   * Google's Atom feed only ever returns the ~20 most recent unread messages
+   * and offers no pagination, so without this a login's message list could
+   * never grow past that. Every successful fetch merges into this cache, so
+   * history keeps building across polls and the expander can keep loading
+   * past 20. Plaintext like the rest of prefs; subjects and senders are not
+   * secrets.
+   */
+  mailCache: Record<string, CachedMailMessage[]>;
 
   // -- Alarms
   alarms: Alarm[];
@@ -350,10 +426,6 @@ export interface VaultPreferences {
 
   // -- Security
   autoLockMinutes: number;
-  /** Whether the vault re-locks as soon as the tab loses focus. */
-  lockOnBlur: boolean;
-  /** Also lock when the tab is merely hidden, which catches minimise and tab switches. */
-  lockOnHidden: boolean;
   clearClipboardSeconds: number;
   /** Also wipe the clipboard when locking. */
   clearClipboardOnLock: boolean;
@@ -433,6 +505,10 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   folders: [],
   sidebar: [],
   showUnassignedChannel: true,
+  hiddenChannels: [],
+  showNewChannelButton: true,
+  showCompactButton: true,
+  showSidebar: true,
   autoTagDomain: true,
   showLetterGroups: true,
   clipboardCapture: false,
@@ -440,8 +516,6 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   alarms: [],
   vaultSecurity: EMPTY_SECURITY,
   autoLockMinutes: 5,
-  lockOnBlur: false,
-  lockOnHidden: false,
   clearClipboardSeconds: 30,
   clearClipboardOnLock: true,
   revealPasswords: false,
@@ -459,6 +533,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   copyToasts: true,
   confirmDeletes: true,
   gmailAccounts: [],
+  mailCache: {},
 };
 
 /**
@@ -478,6 +553,12 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.folders = normaliseFolders(merged.folders);
   merged.sidebar = normaliseSidebar(merged.sidebar, merged.channels, merged.folders);
   merged.showUnassignedChannel = Boolean(merged.showUnassignedChannel);
+  merged.hiddenChannels = Array.isArray(merged.hiddenChannels)
+    ? [...new Set(merged.hiddenChannels.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+    : [];
+  merged.showNewChannelButton = Boolean(merged.showNewChannelButton);
+  merged.showCompactButton = Boolean(merged.showCompactButton);
+  merged.showSidebar = merged.showSidebar !== false;
   merged.autoTagDomain = Boolean(merged.autoTagDomain);
   merged.showLetterGroups = merged.showLetterGroups !== false;
   merged.clipboardCapture = Boolean(merged.clipboardCapture);
@@ -511,18 +592,58 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
       if (!address && !appPassword) continue;
       if (address && seen.has(address.toLowerCase())) continue;
       seen.add(address.toLowerCase());
+      // Very old builds stored 2s/10s/15s cadences, which no longer exist as
+      // choices: they migrate onto the nearest offered one. 0 (manual) and
+      // the offered sub-minute and minute-scale choices pass through.
+      const rawCadence = record.refreshSeconds as number;
+      const cadence = [0, 5, 30, 60, 120, 300, 600, 900].includes(rawCadence)
+        ? rawCadence
+        : rawCadence > 900
+          ? 900
+          : rawCadence <= 5
+            ? 5
+            : rawCadence <= 30
+              ? 30
+              : 60;
       clean.push({
         id: typeof record.id === 'string' && record.id ? record.id : newGmailAccountId(),
         address,
         appPassword,
         enabled: record.enabled !== false,
-        refreshSeconds: [2, 5, 10, 15, 30, 60].includes(record.refreshSeconds as number)
-          ? (record.refreshSeconds as number)
-          : 5,
+        refreshSeconds: cadence,
       });
     }
     merged.gmailAccounts = clean;
     delete legacy.gmail;
+  }
+  // Message cache: plain objects with string fields only, capped per account
+  // so a hand-edited record cannot bloat the stored prefs.
+  {
+    const raw = (merged.mailCache ?? {}) as Record<string, unknown>;
+    const clean: Record<string, CachedMailMessage[]> = {};
+    const str = (value: unknown): string => (typeof value === 'string' ? value : '');
+    for (const [accountId, list] of Object.entries(raw)) {
+      if (!accountId || !Array.isArray(list)) continue;
+      const kept: CachedMailMessage[] = [];
+      for (const entry of list) {
+        if (!entry || typeof entry !== 'object') continue;
+        const record = entry as Record<string, unknown>;
+        if (typeof record.id !== 'string' || !record.id) continue;
+        kept.push({
+          id: record.id as string,
+          title: str(record.title),
+          author: str(record.author),
+          email: str(record.email),
+          summary: str(record.summary),
+          issued: str(record.issued),
+          alternate: str(record.alternate),
+          accountId,
+        });
+        if (kept.length >= MAIL_CACHE_CAP) break;
+      }
+      if (kept.length > 0) clean[accountId] = kept;
+    }
+    merged.mailCache = clean;
   }
   merged.alarms = Array.isArray(merged.alarms)
     ? merged.alarms
@@ -665,12 +786,17 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     for (const entry of raw.slice(0, MAX_DOCK_SLOTS)) {
       if (!entry || typeof entry !== 'object') continue;
       const kind = (entry as { kind?: unknown }).kind;
-      if (kind !== 'view' && kind !== 'channel' && kind !== 'folder' && kind !== 'login' && kind !== 'inbox') continue;
+      if (kind !== 'view' && kind !== 'channel' && kind !== 'folder' && kind !== 'login' && kind !== 'inbox' && kind !== 'mailbox') continue;
       const ref = typeof (entry as { ref?: unknown }).ref === 'string' ? (entry as { ref: string }).ref : '';
       if (kind === 'view' && !(['animated', 'carousel', 'basic', 'grid'] as const).includes(ref as VaultView)) continue;
-      if ((kind === 'channel' || kind === 'folder' || kind === 'login') && !ref) continue;
+      if ((kind === 'channel' || kind === 'folder' || kind === 'login' || kind === 'mailbox') && !ref) continue;
       if (kind === 'inbox' && clean.some((slot) => slot.kind === 'inbox')) continue;
       if (clean.some((slot) => slot.kind === kind && slot.ref === ref)) continue;
+      const rawAction = (entry as { action?: unknown }).action;
+      const action: DockLoginAction | undefined =
+        kind === 'login' && typeof rawAction === 'string' && (DOCK_LOGIN_ACTIONS as readonly string[]).includes(rawAction)
+          ? (rawAction as DockLoginAction)
+          : undefined;
       const rawKey = typeof (entry as { key?: unknown }).key === 'string' ? (entry as { key: string }).key.trim() : '';
       let key = rawKey.length === 1 && !seen.has(rawKey.toLowerCase()) ? rawKey : '';
       if (!key) {
@@ -687,6 +813,7 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
         ...(rawLabel ? { label: rawLabel.slice(0, 24) } : {}),
         key,
         ...(rawIcon.startsWith('data:image/') || rawIcon.startsWith('https://') ? { icon: rawIcon } : {}),
+        ...(action ? { action } : {}),
       });
     }
     merged.dockSlots = clean.length > 0 ? clean : DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot }));

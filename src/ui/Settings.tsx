@@ -23,7 +23,7 @@ import { ChannelManager } from './ChannelManager.tsx';
 import { AlarmsPanel } from './AlarmsPanel.tsx';
 
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
-import { getPlatform } from '../lib/platform.ts';
+import { buildStamp, getPlatform } from '../lib/platform.ts';
 import { DockSlotsEditor } from './DockSettings.tsx';
 import {
   AlertIcon,
@@ -611,6 +611,7 @@ export function Settings(props: {
                 channels={prefs.channels}
                 folders={prefs.folders}
                 logins={items}
+                mailboxes={prefs.gmailAccounts}
                 onChange={(dockSlots) => set({ dockSlots })}
                 onNotify={onNotify}
               />
@@ -691,6 +692,27 @@ export function Settings(props: {
               onChange={(showLockButton) => set({ showLockButton })}
             />
           </Row>
+          <Row label="New channel button" hint="The shortcut at the end of the sidebar. Hiding it changes nothing — channels are still one right-click away.">
+            <Toggle
+              label="New channel button"
+              checked={prefs.showNewChannelButton}
+              onChange={(showNewChannelButton) => set({ showNewChannelButton })}
+            />
+          </Row>
+          <Row label="Compact button" hint="The sidebar footer's narrow-rail toggle.">
+            <Toggle
+              label="Compact button"
+              checked={prefs.showCompactButton}
+              onChange={(showCompactButton) => set({ showCompactButton })}
+            />
+          </Row>
+          <Row label="Show sidebar" hint="Hides the whole channel rail. A button appears in the topbar to bring it back, so Settings stays reachable.">
+            <Toggle
+              label="Show sidebar"
+              checked={prefs.showSidebar}
+              onChange={(showSidebar) => set({ showSidebar })}
+            />
+          </Row>
           <Row
             label="Floating controls"
             hint="Detaches the sidebar channels, the view menu and New login into their own pills."
@@ -736,11 +758,13 @@ export function Settings(props: {
         <ChannelManager
           channels={prefs.channels}
           tags={prefs.tags}
+          hiddenChannels={prefs.hiddenChannels}
           onEditChannel={(channelId) => {
             if (onEditChannel) onEditChannel(channelId);
             else onNotify('Right-click a channel in the sidebar to edit it', 'error');
           }}
           onTagsChange={(tags) => void onUpdate({ tags })}
+          onHiddenChannelsChange={(hiddenChannels) => void onUpdate({ hiddenChannels })}
           onScrubTag={onScrubTag}
           onNotify={onNotify}
         />
@@ -819,16 +843,6 @@ export function Settings(props: {
               options={AUTO_LOCK_CHOICES.map((choice) => ({ value: String(choice.value), label: choice.label }))}
               onChange={(next) => set({ autoLockMinutes: Number(next) })}
               align="right"
-            />
-          </Row>
-          <Row label="Lock when this tab loses focus" hint="Useful on a shared or public machine.">
-            <Toggle label="Lock on blur" checked={prefs.lockOnBlur} onChange={(lockOnBlur) => set({ lockOnBlur })} />
-          </Row>
-          <Row label="Lock when the tab is hidden" hint="Also catches minimising the window and switching tabs.">
-            <Toggle
-              label="Lock on hide"
-              checked={prefs.lockOnHidden}
-              onChange={(lockOnHidden) => set({ lockOnHidden })}
             />
           </Row>
 <Row label="Clear clipboard" hint="Wipe the clipboard after copying.">
@@ -977,6 +991,14 @@ export function Settings(props: {
               {items.length} · about {storageKb} KB
             </span>
           </Row>
+          <Row
+            label="App version"
+            hint="The exact build running right now. If a fix you expected is missing, this tells you the install is stale."
+          >
+            <span className="chip chip--accent">
+              {getPlatform().name} · {buildStamp()}
+            </span>
+          </Row>
           <Row label="Export as CSV" hint="Plaintext, for moving to another tool. Delete it afterwards.">
             <button className="btn btn--secondary" onClick={exportCsv} disabled={items.length === 0}>
               <DownloadIcon width="14" height="14" />
@@ -1100,8 +1122,10 @@ export function Settings(props: {
       icon: <InfoIcon />,
       render: () => (
         <>
-          <Row label="Version" hint="Colax — local-first password vault.">
-            <span className="chip chip--muted">0.2.0</span>
+          <Row label="Version" hint="Colax — local-first password vault. The exact running build.">
+            <span className="chip chip--accent">
+              {getPlatform().name} · {buildStamp()}
+            </span>
           </Row>
           <Row label="Where your data goes" hint="Nowhere. There is no server and no network call.">
             <span className="chip chip--accent">
@@ -1115,7 +1139,7 @@ export function Settings(props: {
               onClick={() => {
                 const report = {
                   app: 'colax',
-                  version: '0.2.0',
+                  version: buildStamp(),
                   protection,
                   itemCount: items.length,
                   prefs,
