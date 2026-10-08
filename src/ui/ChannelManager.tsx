@@ -6,13 +6,16 @@
  * managed underneath, since a channel is defined by the tags it watches.
  */
 
-import { useState } from 'react';
-import { CHANNEL_KIND_LABELS, type Channel, type Tag } from '../vault/channels.ts';
+import { useMemo, useState } from 'react';
+import { applyChannel, CHANNEL_KIND_LABELS, type Channel, type Tag } from '../vault/channels.ts';
+import type { VaultItem } from '../vault/types.ts';
 import { EditIcon, EyeIcon, EyeOffIcon, PlusIcon, TagIcon, TrashIcon } from './icons.tsx';
 
 export function ChannelManager({
   channels,
   tags,
+  items = [],
+  staleDays = 180,
   hiddenChannels = [],
   onEditChannel,
   onTagsChange,
@@ -22,6 +25,9 @@ export function ChannelManager({
 }: {
   channels: Channel[];
   tags: Tag[];
+  /** Logins, so each row can say how many it holds. */
+  items?: VaultItem[];
+  staleDays?: number;
   /** Channel ids hidden from the sidebar rail. */
   hiddenChannels?: string[];
   /** Opens the shared channel editor for an id, or 'new'. */
@@ -32,6 +38,17 @@ export function ChannelManager({
   onScrubTag?: (tagId: string) => void;
   onNotify: (message: string) => void;
 }) {
+  const counts = useMemo(() => {
+    const next = new Map<string, number>();
+    for (const channel of channels) {
+      try {
+        next.set(channel.id, applyChannel(channel, items, staleDays).length);
+      } catch {
+        next.set(channel.id, 0);
+      }
+    }
+    return next;
+  }, [channels, items, staleDays]);
   const hidden = new Set(hiddenChannels);
 
   function toggleHidden(channel: Channel) {
@@ -80,6 +97,7 @@ export function ChannelManager({
       <div className="tag-manager">
         {channels.map((channel) => {
           const isHidden = hidden.has(channel.id);
+          const count = counts.get(channel.id) ?? 0;
           return (
             <div className="tag-manager__row" key={channel.id} data-hidden={isHidden || undefined}>
               <span className="tag-manager__dot" style={{ background: `hsl(${channel.hue} 46% 54%)` }} />
@@ -92,7 +110,8 @@ export function ChannelManager({
                 {channel.builtin ? <span className="tag-manager__badge">built-in</span> : null}
                 {isHidden ? <span className="tag-manager__badge">hidden</span> : null}
               </button>
-              <span className="tag-manager__count">
+              <span className="tag-manager__count" title={`${count} login${count === 1 ? '' : 's'} in this channel`}>
+                {count} ·{' '}
                 {channel.tagIds.length === 0
                   ? CHANNEL_KIND_LABELS[channel.kind]
                   : channel.tagIds.map(tagName).join(', ')}

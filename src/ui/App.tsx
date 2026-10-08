@@ -512,7 +512,16 @@ const visible = useMemo(() => {
     // The drag order, as an index map. Ids never dragged stay after every
     // placed id in title order, so new logins need no bookkeeping.
     const manualIndex = new Map(prefs.manualOrder.map((id, index) => [id, index] as const));
-    const sorted = [...list].sort((a, b) => {
+    // One row per login, no matter the source: a duplicated id would render
+    // the same login twice (two identical React keys), which reads as ghost
+    // duplication in every view.
+    const seenIds = new Set<string>();
+    const unique = list.filter((item) => {
+      if (seenIds.has(item.id)) return false;
+      seenIds.add(item.id);
+      return true;
+    });
+    const sorted = [...unique].sort((a, b) => {
       const pin = prefs.pinFavorites ? Number(b.favorite) - Number(a.favorite) : 0;
       if (pin !== 0) return pin;
       switch (prefs.sort) {

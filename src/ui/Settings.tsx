@@ -814,6 +814,8 @@ export function Settings(props: {
         <ChannelManager
           channels={prefs.channels}
           tags={prefs.tags}
+          items={items}
+          staleDays={prefs.passwordAgeDays}
           hiddenChannels={prefs.hiddenChannels}
           onEditChannel={(channelId) => {
             if (onEditChannel) onEditChannel(channelId);

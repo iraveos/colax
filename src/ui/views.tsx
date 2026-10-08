@@ -168,6 +168,13 @@ function useLoginReorder(
   // The drop slot aimed at, mirrored for the pointer-up handler.
   const overRef = useRef<{ id: string; after: boolean } | null>(null);
   overRef.current = over;
+  // Armed row, mirrored: the move handler must see the hold even if it fires
+  // before the re-render that flips the state.
+  const armedRef = useRef<string | null>(null);
+  // Latest props for the window-level backstop below.
+  const liveRef = useRef({ flatIds, onReorder });
+  liveRef.current.flatIds = flatIds;
+  liveRef.current.onReorder = onReorder;
 
   useEffect(
     () => () => {
@@ -189,8 +196,74 @@ function useLoginReorder(
       armTimer.current = 0;
     }
     pending.current = null;
+    armedRef.current = null;
     setArmedId(null);
   };
+
+  // Commits (or cancels) an in-flight drag. Shared by the row's own pointer-up
+  // and the window backstop, so a release the row never sees — off-window,
+  // capture lost — still ends the drag instead of stranding a ghost. First
+  // finisher wins: whoever runs first clears `dragging`, the other sees null.
+  const finishDrag = (commit: boolean) => {
+    const active = dragging.current;
+    dragging.current = null;
+    killGhost();
+    pending.current = null;
+    armedRef.current = null;
+    setDragId(null);
+    setArmedId(null);
+    setOver(null);
+    if (!commit || !active) return;
+    const slot = overRef.current;
+    overRef.current = null;
+    // The click that follows a real drop is swallowed by onClickCapture, so
+    // dropping never also opens the login.
+    suppressClick.current = true;
+    window.setTimeout(() => {
+      suppressClick.current = false;
+    }, 400);
+    const { onReorder, flatIds } = liveRef.current;
+    if (!onReorder || !slot || active === slot.id) return;
+    const rest = flatIds.filter((id) => id !== active);
+    const ti = rest.indexOf(slot.id);
+    onReorder(active, ti === -1 ? rest.length : ti + (slot.after ? 1 : 0), flatIds);
+  };
+
+  const cancelDrag = () => {
+    dragging.current = null;
+    pending.current = null;
+    killGhost();
+    if (armTimer.current) {
+      window.clearTimeout(armTimer.current);
+      armTimer.current = 0;
+    }
+    armedRef.current = null;
+    setDragId(null);
+    setArmedId(null);
+    setOver(null);
+  };
+
+  // Backstop: releases and interruptions the row itself never hears must still
+  // end the drag. Without this an off-window release left a ghost behind that
+  // looked exactly like a duplicated login.
+  useEffect(() => {
+    const onUp = () => {
+      if (dragging.current) finishDrag(true);
+    };
+    const onCancel = () => {
+      if (dragging.current || pending.current) cancelDrag();
+    };
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', onCancel);
+    return () => {
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('blur', onCancel);
+    };
+    // finishDrag/cancelDrag only touch refs and setState: safe to hold.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const markOver = (id: string | null, after: boolean) => {
     setOver((current) => {
@@ -224,60 +297,75 @@ function useLoginReorder(
       if (armTimer.current) window.clearTimeout(armTimer.current);
       armTimer.current = window.setTimeout(() => {
         armTimer.current = 0;
+        armedRef.current = item.id;
         setArmedId(item.id);
       }, 180);
     },
     onPointerMove: (event: React.PointerEvent) => {
+      if (!enabled) return;
+      // Already dragging: track the pointer, wherever it roams.
+      if (dragging.current) {
+        const row = (event.currentTarget as HTMLElement).closest('[data-vault-item]') as HTMLElement | null;
+        if (ghost.current && row) {
+          ghost.current.style.width = `${row.offsetWidth}px`;
+          ghost.current.style.transform = `translate(${event.clientX - 24}px, ${event.clientY - 20}px)`;
+        }
+        // Edge auto-scroll so long lists stay reachable mid-drag.
+        const box = scroller.current;
+        if (box && box.scrollHeight > box.clientHeight + 4) {
+          const rect = box.getBoundingClientRect();
+          if (event.clientY < rect.top + 56) box.scrollBy({ top: -10 });
+          else if (event.clientY > rect.bottom - 56) box.scrollBy({ top: 10 });
+        }
+        const hit = document.elementFromPoint(event.clientX, event.clientY);
+        const target = hit?.closest?.('[data-vault-item]');
+        const id = target?.getAttribute?.('data-vault-item') ?? null;
+        if (!id || id === dragging.current) {
+          markOver(null, false);
+          return;
+        }
+        const rect = (target as HTMLElement).getBoundingClientRect();
+        markOver(id, event.clientY - rect.top > rect.height / 2);
+        return;
+      }
       const press = pending.current;
-      if (!enabled || !press) return;
+      if (!press) return;
       // Barely moved and not held yet: still a potential click or text
       // selection — native behavior proceeds untouched.
       if (press.id === item.id && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 8) return;
       // Moved before the hold elapsed: an ordinary gesture, never a drag.
-      if (armedId !== press.id) {
+      if (armedRef.current !== press.id) {
         disarm();
         return;
       }
       // Held, now moving: dragging. Capture keeps every later move coming to
       // this row even when the pointer outruns it.
-      if (!dragging.current) {
-        dragging.current = press.id;
-        pending.current = null;
-        setDragId(press.id);
-        try {
-          event.currentTarget.setPointerCapture(event.pointerId);
-        } catch {
-          // Capture is a convenience; the moves still arrive without it.
-        }
-        const row = (event.currentTarget as HTMLElement).closest('[data-vault-item]') as HTMLElement | null;
-        scroller.current = row?.closest(
-          '.rb-animated-list__scroll, .content, .modal__body',
-        ) as HTMLElement | null;
-        if (row) {
-          const clone = row.cloneNode(true) as HTMLElement;
-          clone.removeAttribute('id');
-          clone.style.cssText +=
-            ';position:fixed;left:0;top:0;z-index:200;pointer-events:none;opacity:.88;margin:0;';
-          document.body.appendChild(clone);
-          ghost.current = clone;
-        }
+      dragging.current = press.id;
+      pending.current = null;
+      setDragId(press.id);
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture is a convenience; the moves still arrive without it.
       }
       const row = (event.currentTarget as HTMLElement).closest('[data-vault-item]') as HTMLElement | null;
-      if (ghost.current && row) {
+      scroller.current = row?.closest(
+        '.rb-animated-list__scroll, .content, .modal__body',
+      ) as HTMLElement | null;
+      if (row) {
+        const clone = row.cloneNode(true) as HTMLElement;
+        clone.removeAttribute('id');
+        clone.style.cssText +=
+          ';position:fixed;left:0;top:0;z-index:200;pointer-events:none;opacity:.88;margin:0;';
+        document.body.appendChild(clone);
+        ghost.current = clone;
         ghost.current.style.width = `${row.offsetWidth}px`;
         ghost.current.style.transform = `translate(${event.clientX - 24}px, ${event.clientY - 20}px)`;
-      }
-      // Edge auto-scroll so long lists stay reachable mid-drag.
-      const box = scroller.current;
-      if (box && box.scrollHeight > box.clientHeight + 4) {
-        const rect = box.getBoundingClientRect();
-        if (event.clientY < rect.top + 56) box.scrollBy({ top: -10 });
-        else if (event.clientY > rect.bottom - 56) box.scrollBy({ top: 10 });
       }
       const hit = document.elementFromPoint(event.clientX, event.clientY);
       const target = hit?.closest?.('[data-vault-item]');
       const id = target?.getAttribute?.('data-vault-item') ?? null;
-      if (!id || id === dragging.current) {
+      if (!id || id === press.id) {
         markOver(null, false);
         return;
       }
@@ -290,38 +378,12 @@ function useLoginReorder(
         armTimer.current = 0;
       }
       pending.current = null;
-      if (!dragging.current) {
-        // Plain press: a click may follow, and it must behave normally.
-        setArmedId(null);
-        return;
-      }
-      const active = dragging.current;
-      dragging.current = null;
-      killGhost();
-      const slot = overRef.current;
-      setDragId(null);
-      setArmedId(null);
-      setOver(null);
-      // The click that follows a real drop is swallowed below, so dropping
-      // never also opens the login. Back on itself, or released with no slot
-      // aimed: not a move.
-      suppressClick.current = true;
-      window.setTimeout(() => {
-        suppressClick.current = false;
-      }, 400);
-      if (!onReorder || !slot || active === slot.id) return;
-      const rest = flatIds.filter((id) => id !== active);
-      const ti = rest.indexOf(slot.id);
-      onReorder(active, ti === -1 ? rest.length : ti + (slot.after ? 1 : 0), flatIds);
+      // A drag in flight commits here; the window backstop covers releases
+      // this row never hears. A plain press just disarms for the click.
+      if (dragging.current) finishDrag(true);
+      else setArmedId(null);
     },
-    onPointerCancel: () => {
-      pending.current = null;
-      dragging.current = null;
-      killGhost();
-      setDragId(null);
-      setArmedId(null);
-      setOver(null);
-    },
+    onPointerCancel: () => cancelDrag(),
     // Swallows the click that follows a drop. Capture phase, so the card's
     // own open/selection handlers never see it.
     onClickCapture: (event: React.SyntheticEvent) => {
