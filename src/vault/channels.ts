@@ -12,7 +12,8 @@
  */
 
 import { findReusedPasswords, type VaultItem } from './types.ts';
-import { EMPTY_SECURITY, type LoginSecurity } from '../crypto/security.ts';
+import { estimateStrength } from '../crypto/passwords.ts';
+import { EMPTY_SECURITY, normaliseSecurity, type LoginSecurity } from '../crypto/security.ts';
 
 /** Mirrors AccentName in storage.ts, redeclared here to avoid an import cycle. */
 export type ChannelAccent = 'slate' | 'sage' | 'dusk' | 'clay';
@@ -20,6 +21,25 @@ export type ChannelAccent = 'slate' | 'sage' | 'dusk' | 'clay';
 export const CHANNEL_ACCENTS: ChannelAccent[] = ['slate', 'sage', 'dusk', 'clay'];
 
 export type ChannelKind = 'all' | 'favorites' | 'attention' | 'tags' | 'weak' | 'dashboard' | 'unassigned';
+
+/**
+ * Human names for the built-in channel kinds.
+ *
+ * Two places (the dashboard rows and the channel manager) rendered
+ * `channel.kind` verbatim for untagged built-ins, so users saw lowercase
+ * identifiers — "favorites", "attention", "weak" — where every other label in
+ * the app is a proper name. A channel with tags shows its tag names instead,
+ * so this only covers the untagged case.
+ */
+export const CHANNEL_KIND_LABELS: Record<ChannelKind, string> = {
+  all: 'Everything',
+  favorites: 'Favorites',
+  attention: 'Needs attention',
+  tags: 'Tagged',
+  weak: 'Weak or reused',
+  dashboard: 'Dashboard',
+  unassigned: 'Unassigned',
+};
 
 export interface Channel {
   id: string;
@@ -40,6 +60,17 @@ export interface Channel {
   builtin: boolean;
   /** Cannot be deleted or reordered away — there must always be one view. */
   locked: boolean;
+  /**
+   * Whether logins show their message expander while this channel is active.
+   * Hiding keeps a work channel free of personal mail without disconnecting
+   * anything.
+   */
+  showMail: boolean;
+  /**
+   * Which account's mail the expander reads: 'all' or an account id. A stored
+   * id that no longer exists behaves as 'all' rather than showing nothing.
+   */
+  mailAccount: string;
 }
 
 export interface Tag {
@@ -209,19 +240,9 @@ export function normaliseFolders(stored: Folder[] | undefined): Folder[] {
       accent: CHANNEL_ACCENTS.includes(raw.accent as ChannelAccent) ? (raw.accent as ChannelAccent) : 'slate',
       backgroundImage: typeof raw.backgroundImage === 'string' ? raw.backgroundImage : '',
       collapsed: Boolean(raw.collapsed),
-      security: {
-        totp: raw.security?.totp?.seed ? { seed: String(raw.security.totp.seed) } : null,
-        questions: Array.isArray(raw.security?.questions)
-          ? raw.security!.questions
-              .filter((question): question is NonNullable<typeof question> => Boolean(question && question.hash))
-              .map((question) => ({
-                id: String(question.id ?? newFolderId()),
-                prompt: String(question.prompt ?? ''),
-                hash: String(question.hash),
-                salt: String(question.salt ?? ''),
-              }))
-          : [],
-      },
+      // Shared helper — this used to rebuild the block inline without
+      // passcode, silently unprotecting passcode-only folders on reload.
+      security: normaliseSecurity(raw.security),
     });
   }
   return folders;
@@ -288,11 +309,11 @@ export function selectableIds(entries: SidebarEntry[]): string[] {
 const DEFAULT_CHANNEL_HUE = 212;
 
 export const BUILTIN_CHANNELS: Channel[] = [
-  { id: 'all', name: 'All logins', kind: 'all', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: DEFAULT_CHANNEL_HUE, accent: 'slate', backgroundImage: '' },
-  { id: 'favorites', name: 'Favorites', kind: 'favorites', tagIds: [], builtin: true, locked: false, icon: 'star', hue: 44, accent: 'slate', backgroundImage: '' },
-  { id: 'attention', name: 'Needs attention', kind: 'attention', tagIds: [], builtin: true, locked: false, icon: 'flag', hue: 8, accent: 'clay', backgroundImage: '' },
-  { id: 'weak', name: 'Weak or reused', kind: 'weak', tagIds: [], builtin: true, locked: false, icon: 'shield', hue: 152, accent: 'sage', backgroundImage: '' },
-  { id: 'dashboard', name: 'Dashboard', kind: 'dashboard', tagIds: [], builtin: true, locked: true, icon: 'grid', hue: 268, accent: 'dusk', backgroundImage: '' },
+  { id: 'all', name: 'All logins', kind: 'all', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: DEFAULT_CHANNEL_HUE, accent: 'slate', backgroundImage: '', showMail: true, mailAccount: 'all' },
+  { id: 'favorites', name: 'Favorites', kind: 'favorites', tagIds: [], builtin: true, locked: false, icon: 'star', hue: 44, accent: 'slate', backgroundImage: '', showMail: true, mailAccount: 'all' },
+  { id: 'attention', name: 'Needs attention', kind: 'attention', tagIds: [], builtin: true, locked: false, icon: 'flag', hue: 8, accent: 'clay', backgroundImage: '', showMail: true, mailAccount: 'all' },
+  { id: 'weak', name: 'Weak or reused', kind: 'weak', tagIds: [], builtin: true, locked: false, icon: 'shield', hue: 152, accent: 'sage', backgroundImage: '', showMail: true, mailAccount: 'all' },
+  { id: 'dashboard', name: 'Dashboard', kind: 'dashboard', tagIds: [], builtin: true, locked: true, icon: 'grid', hue: 268, accent: 'dusk', backgroundImage: '', showMail: true, mailAccount: 'all' },
 ];
 
 /** Icon keys the sidebar knows how to draw. */
@@ -364,13 +385,27 @@ export function applyChannel(channel: Channel, items: VaultItem[], staleAfterDay
       list = items;
       break;
     case 'weak': {
+      // Same source the dashboard's Weak tile counts from: reused, stale,
+      // guessable on its own, or following the same pattern as another login
+      // (summer2023/summer2024 and friends). Counting only reuse+age here made
+      // the Weak tile say 4 while this channel listed 2 for the same vault.
       const reused = findReusedPasswords(items);
-      const cutoff = Date.now() - staleAfterDays * 86_400_000;
-      list = items.filter(
-        (item) =>
-          (item.password !== '' && reused.has(item.password)) ||
-          (item.password !== '' && item.passwordUpdatedAt < cutoff),
-      );
+      const patterns = new Map<string, number>();
+      for (const item of items) {
+        if (!item.password) continue;
+        const stem = weakPatternStem(item.password);
+        if (stem) patterns.set(stem, (patterns.get(stem) ?? 0) + 1);
+      }
+      const cutoff = staleAfterDays > 0 ? Date.now() - staleAfterDays * 86_400_000 : 0;
+      list = items.filter((item) => {
+        if (item.password === '') return false;
+        if (reused.has(item.password)) return true;
+        if (staleAfterDays > 0 && item.passwordUpdatedAt < cutoff) return true;
+        if (estimateStrength(item.password).score <= 1) return true;
+        const stem = weakPatternStem(item.password);
+        if (stem && (patterns.get(stem) ?? 0) > 1) return true;
+        return false;
+      });
       break;
     }
     default:
@@ -428,6 +463,8 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
       // The fallback view and the summary screen are both structural: there must
       // always be one of each, so neither can be deleted or reordered away.
       locked: id === 'all' || kind === 'dashboard',
+      showMail: raw.showMail !== false,
+      mailAccount: typeof raw.mailAccount === 'string' && raw.mailAccount ? raw.mailAccount : 'all',
     });
   }
 
@@ -474,11 +511,50 @@ export function createChannel(name: string, patch: Partial<Channel> = {}): Chann
     hue: Math.round(Math.random() * 359),
     accent: 'slate',
     backgroundImage: '',
+    showMail: true,
+    mailAccount: 'all',
     ...safe,
     // A new channel is never one of the shipped ones, whatever the caller passed.
     builtin: false,
     locked: false,
   };
+}
+
+/** Lowercased digits-stripped stem, or '' when too short to mean anything. */
+function weakPatternStem(password: string): string {
+  const stem = password.toLowerCase().replace(/[0-9]+/g, '');
+  return stem.length >= 4 ? stem : '';
+}
+
+/**
+ * Editable default tags every vault starts with.
+ *
+ * These are ordinary tags — rename, recolour or delete them from the dashboard
+ * like any other. They exist so "weak", "needs attention" and "reused" are
+ * something you can put on a login and filter by, instead of only being badge
+ * text the app decides for you. Hues are spread around the wheel so the three
+ * stay distinguishable at a glance.
+ */
+export const DEFAULT_TAG_SEEDS: { name: string; hue: number }[] = [
+  { name: 'weak', hue: 8 },
+  { name: 'needs attention', hue: 36 },
+  { name: 'reused', hue: 268 },
+];
+
+/**
+ * Adds any missing default tag (matched case-insensitively), preserving the
+ * user's order and never duplicating. Runs on load so older vaults gain the
+ * defaults without losing the tags they already have.
+ */
+export function ensureDefaultTags(tags: Tag[]): Tag[] {
+  const next = [...tags];
+  const have = new Set(next.map((tag) => tag.name.trim().toLowerCase()));
+  for (const seed of DEFAULT_TAG_SEEDS) {
+    if (have.has(seed.name.toLowerCase())) continue;
+    next.push({ id: newTagId(), name: seed.name, hue: seed.hue });
+    have.add(seed.name.toLowerCase());
+  }
+  return next;
 }
 
 export function normaliseTags(stored: Tag[] | undefined): Tag[] {

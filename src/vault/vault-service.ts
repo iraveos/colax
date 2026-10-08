@@ -183,6 +183,20 @@ const next: VaultItem = { ...current, ...patch, id, updatedAt: Date.now() };
     await this.#persist(next);
   }
 
+  /**
+   * Flips the attention flag without touching updatedAt.
+   *
+   * updateItem always stamps updatedAt, which would defeat the purpose here:
+   * the untouched-login scan flags by age, so stamping would reset the very
+   * clock it read. Flags carry no age semantics of their own, so they bypass it.
+   */
+  async setAttention(id: string, value: boolean): Promise<void> {
+    const current = this.#items.find((item) => item.id === id);
+    if (!current) throw new Error('That item no longer exists.');
+    if (current.needsAttention === value) return;
+    await this.#persist({ ...current, needsAttention: value });
+  }
+
 async deleteItem(id: string): Promise<void> {
     this.#requireHandle();
     await this.#storage.deleteItem(id);

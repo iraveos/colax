@@ -1,5 +1,6 @@
 import type { SealedBlob } from '../crypto/vault-crypto.ts';
-import type { LoginSecurity } from '../crypto/security.ts';
+import { normaliseSecurity, type LoginSecurity } from '../crypto/security.ts';
+import { estimateStrength } from '../crypto/passwords.ts';
 
 /** What actually sits in storage: the id in the clear, everything else as ciphertext. */
 export interface StoredItem {
@@ -24,6 +25,13 @@ export interface VaultItem {
    * is something you like, this is something you should deal with.
    */
   needsAttention: boolean;
+
+  /**
+   * Whether this login shows its message expander. True unless explicitly
+   * switched off in the editor, so older records (which lack the field) keep
+   * showing mail rather than silently losing it.
+   */
+  showMail: boolean;
 
   /** Ids from the global tag catalogue. Ids rather than names so a tag can be renamed or recoloured everywhere at once. */
   tags: string[];
@@ -92,6 +100,7 @@ export function emptyItem(id: string, now: number = Date.now()): VaultItem {
     security: { totp: null, questions: [] },
     favorite: false,
     needsAttention: false,
+    showMail: true,
     tags: [],
     accentHue: null,
 backgroundImage: '',
@@ -116,32 +125,26 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     usernameUpdatedAt: typeof raw.usernameUpdatedAt === 'number' ? raw.usernameUpdatedAt : created,
     tags: Array.isArray(raw.tags) ? raw.tags.filter((tag): tag is string => typeof tag === 'string') : [],
     needsAttention: Boolean(raw.needsAttention),
+    // Absent on older records, which must keep showing mail: only an explicit
+    // false hides the expander.
+    showMail: raw.showMail !== false,
     accentHue: typeof raw.accentHue === 'number' ? raw.accentHue : null,
     // Records saved before security existed have none. Normalised to the empty
     // shape rather than left undefined so callers never branch on it.
-    security: {
-      totp: raw.security?.totp?.seed ? { seed: String(raw.security.totp.seed) } : null,
-      questions: Array.isArray(raw.security?.questions)
-        ? raw.security.questions
-            .filter((question): question is NonNullable<typeof question> => Boolean(question && question.hash))
-            .map((question) => ({
-              id: String(question.id ?? randomId()),
-              prompt: String(question.prompt ?? ''),
-              hash: String(question.hash),
-              salt: String(question.salt ?? ''),
-            }))
-        : [],
-    },
+    // Shared helper, so a new factor cannot be forgotten here the way passcode
+    // was: it used to be rebuilt inline without passcode, silently unprotecting
+    // passcode-only logins on reload.
+    security: normaliseSecurity(raw.security),
   };
-}
-
-/** Fallback id for a question saved before questions carried one. */
-function randomId(): string {
-  return `sq_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /** Human-friendly relative age, e.g. "3 days ago". */
 export function relativeTime(timestamp: number, now: number = Date.now()): string {
+  // Mail feeds and hand-edited dates can carry unparseable timestamps, and
+  // every comparison below is false for NaN — without this the function falls
+  // through to "NaN minutes ago" territory. Empty renders as nothing, which is
+  // what an unknown date should look like.
+  if (!Number.isFinite(timestamp)) return '';
   const seconds = Math.max(0, Math.round((now - timestamp) / 1000));
   if (seconds < 45) return 'just now';
   const units: [number, string][] = [
@@ -246,18 +249,50 @@ export function normalizeUrl(url: string): string {
 }
 
 /** Reused passwords and long-untouched passwords are the two things worth surfacing. */
+/**
+ * Logins with a password problem: reused, stale, low-strength, or following
+ * the same pattern (summer2023/summer2024 and friends).
+ *
+ * Strength and pattern are checked here — not just reuse and age — because a
+ * unique, fresh "Password1" is still a bad password and the Weak channel
+ * should say so. Pattern matching strips digits and case first, so rotations
+ * that only bump a number still group together; stems under 4 characters are
+ * skipped so "a1"/"a2" do not flag every short password as a family.
+ */
 export function findWeakItems(items: VaultItem[], staleAfterDays = 180): VaultItem[] {
   const cutoff = Date.now() - staleAfterDays * 86_400_000;
   const usage = new Map<string, number>();
+  const patterns = new Map<string, number>();
   for (const item of items) {
     if (!item.password) continue;
     usage.set(item.password, (usage.get(item.password) ?? 0) + 1);
+    const stem = patternStem(item.password);
+    if (stem) patterns.set(stem, (patterns.get(stem) ?? 0) + 1);
   }
-  return items.filter(
-    (item) =>
-      (item.password !== '' && (usage.get(item.password) ?? 0) > 1) ||
-      (item.password !== '' && item.passwordUpdatedAt < cutoff),
-  );
+  return items.filter((item) => {
+    if (item.password === '') return false;
+    if ((usage.get(item.password) ?? 0) > 1) return true;
+    if (item.passwordUpdatedAt < cutoff) return true;
+    if (estimateStrength(item.password).score <= 1) return true;
+    const stem = patternStem(item.password);
+    if (stem && (patterns.get(stem) ?? 0) > 1) return true;
+    return false;
+  });
+}
+
+/** Lowercased digits-stripped stem, or '' when too short to mean anything. */
+function patternStem(password: string): string {
+  const stem = password.toLowerCase().replace(/[0-9]+/g, '');
+  return stem.length >= 4 ? stem : '';
+}
+
+/**
+ * True when the password itself is guessable, regardless of reuse or age.
+ * Empty means "no password", not "weak" — an empty field must never earn a
+ * badge, or every login-in-progress would flash warnings while being typed.
+ */
+export function isWeakPassword(item: Pick<VaultItem, 'password'>): boolean {
+  return item.password !== '' && estimateStrength(item.password).score <= 1;
 }
 
 /** Passwords used by more than one login. Keyed by password so callers can match on `item.password`. */

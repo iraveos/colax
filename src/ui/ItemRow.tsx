@@ -57,6 +57,15 @@ function TotpRow({ secret, onCopy }: { secret: string; onCopy: (value: string, l
   );
 }
 
+/**
+ * One row of the list view, and the single place a modifier-click is turned
+ * into a selection gesture.
+ *
+ * Every view routes its click handling through here or through the equivalent
+ * handler, so selection behaves identically wherever the login is drawn. A plain
+ * click still does the ordinary thing (open and copy), because a click that
+ * selects instead of opening would be a surprising way to lose the fast path.
+ */
 export function ItemRow({
   item,
   expanded,
@@ -100,9 +109,7 @@ export function ItemRow({
         >
           <Avatar label={label} />
           <span className="item__body">
-            <span className="item__title">
-              {label}
-              {item.favorite ? <StarIcon width="13" height="13" filled style={{ color: 'var(--warn)' }} /> : null}
+            <span className="card-badges">
               {duplicated ? <span className="chip chip--warn">reused</span> : null}
               {stale ? (
                 <span className="chip chip--muted">
@@ -110,6 +117,11 @@ export function ItemRow({
                   old
                 </span>
               ) : null}
+              {item.needsAttention ? <span className="chip chip--danger">needs attention</span> : null}
+            </span>
+            <span className="item__title">
+              {label}
+              {item.favorite ? <StarIcon width="13" height="13" filled style={{ color: 'var(--warn)' }} /> : null}
             </span>
             <span className="item__meta">{item.username || item.url || 'No username'}</span>
           </span>

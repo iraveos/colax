@@ -141,17 +141,27 @@
   translate: -50% -50%;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  gap: 1px;
-  padding: 30px 12px 9px;
+  /* Centred, not bottom-anchored. The title and email sit in the middle of the
+     card's face so they read as the card's own content rather than as a caption
+     fitted across its foot. The old flex-end plus a bottom-weighted gradient
+     made every card look like it had a caption bar bolted underneath it. */
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  gap: 3px;
+  padding: 14px 16px;
   border-radius: var(--cc-radius, 18px);
   overflow: hidden;
-  /* Was near-opaque black across the bottom third, which read as a hard bar
-     bolted onto every card rather than a scrim. Lighter and shorter now, so it
-     only has to make the title legible over the art. */
-  background: linear-gradient(to top, hsl(220 30% 3% / 0.62), hsl(220 30% 3% / 0.18) 62%, transparent);
+  /* A centred scrim rather than a bottom one: the wash sits under the text
+     itself so it stays legible over art, without darkening the card's top and
+     bottom edges, which are the parts that read as the card's shape. */
+  background: radial-gradient(
+    ellipse 78% 58% at 50% 50%,
+    hsl(220 30% 3% / 0.66),
+    hsl(220 30% 3% / 0.34) 68%,
+    transparent
+  );
   pointer-events: none;
-  text-align: left;
   /* --cc-facing is 1 square-on, 0 edge-on. Held off until the card is a decent
      width, because a title squeezed into 30px is unreadable, then ramped up.
      The 0.62 floor keeps the selected card labelled however far round the ring

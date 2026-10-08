@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { CardSizePrefs, VaultView } from '../vault/storage.ts';
 import { DEFAULT_CARD_SIZE } from '../vault/storage.ts';
 import { CHANNEL_ACCENTS, type ChannelAccent } from '../vault/channels.ts';
@@ -28,6 +28,7 @@ const VIEW_LABELS: Record<VaultView, string> = {
   animated: 'Flow',
   carousel: 'Orbit',
   basic: 'List',
+  grid: 'Grid',
 };
 
 /** One slider, with its live value shown the way the user set it. */
@@ -101,8 +102,20 @@ export function AppearancePanel({
   const isOrbit = view === 'carousel';
   const isList = view === 'basic';
 
+  // Clicking anywhere outside closes the panel. It has no backdrop by design
+  // (the point is watching the cards while dragging), so dismissal needs an
+  // explicit outside-click listener rather than a backdrop click.
+  const root = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) onClose();
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+  }, [onClose]);
+
   return (
-    <aside className="tuner" role="dialog" aria-label="Card appearance" aria-modal="false">
+    <aside ref={root} className="tuner" role="dialog" aria-label="Card appearance" aria-modal="false">
       <header className="tuner__head">
         <div>
           <h2 className="tuner__title">Card appearance</h2>
@@ -186,18 +199,12 @@ export function AppearancePanel({
             onChange={(radius) => set({ radius })}
           />
 
-          <Slider
-            id="tuner-surface"
-            label="Card surface"
-            hint="0 lets the background show straight through the card."
-            value={cardSize.surface}
-            min={0}
-            max={1}
-            step={0.05}
-            onChange={(surface) => set({ surface })}
-          />
         </section>
 
+        {/* No view-switcher controls here on purpose. They lived in this panel
+            for a while, duplicated from Settings, and the two copies confused
+            which one was authoritative. The Layout tab in Settings is the only
+            home for picker labels now. */}
         <section className="tuner__group">
           <h3 className="tuner__legend">Accent</h3>
           <div className="accent-grid">
@@ -218,13 +225,17 @@ export function AppearancePanel({
               </button>
             ))}
           </div>
-          <p className="field__hint">Applies to the whole app while this view is open.</p>
+          <p className="field__hint">
+            Applies to the whole app and is remembered. Channels no longer override it.
+          </p>
         </section>
 
         <button
           type="button"
           className="btn btn--secondary tuner__reset"
-          onClick={() => onCardSizeChange({ ...DEFAULT_CARD_SIZE[view] })}
+          onClick={() => {
+            onCardSizeChange({ ...DEFAULT_CARD_SIZE[view] });
+          }}
         >
           Reset {VIEW_LABELS[view]} to defaults
         </button>

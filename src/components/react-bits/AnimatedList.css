@@ -25,6 +25,12 @@
   scrollbar-color: var(--border-strong) transparent;
 }
 
+/* The scroll container is deliberately never zoomed — only the rows inside it
+   are — so the scrollbar keeps a constant width at every card scale. An earlier
+   version zoomed the whole wrapper and compensated the track with a calc(),
+   which worked in Chromium but not in Firefox, whose `scrollbar-width` keyword
+   cannot take a calc. If the zoom ever moves back onto the wrapper, this width
+   has to be compensated again or the bar will scale with the cards. */
 .rb-animated-list__scroll::-webkit-scrollbar {
   width: 10px;
 }

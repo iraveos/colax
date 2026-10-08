@@ -94,12 +94,30 @@ export const ShieldIcon = (props: IconProps) => (
   </Icon>
 );
 
-/** A key inside a shield: marks a login that has its own second factor. */
-export const KeyShieldIcon = (props: IconProps) => (
-  <Icon {...props}>
+/**
+ * A shield with a key inside it: marks a login that has a second factor.
+ *
+ * Now filled rather than outlined. At the 13px the second-factor badge renders
+ * it, the stroked version's key was roughly a pixel wide and the shield's two
+ * edges were closer together than the stroke width, so it collapsed into a grey
+ * smudge. Filling the shield and knocking the key out leaves one solid shape,
+ * which stays identifiable at a glance, and it is the same trick SecuredIcon
+ * already used.
+ */
+export const KeyShieldIcon = ({ width = 13, height = 13, ...props }: IconProps) => (
+  <Icon width={width} height={height} fill="currentColor" strokeWidth={1.7} {...props}>
     <path d="M12 3 4.8 5.6v5.6c0 4.4 3 8.3 7.2 9.4 4.2-1.1 7.2-5 7.2-9.4V5.6L12 3Z" />
-    <circle cx="10.6" cy="10.4" r="1.7" />
-    <path d="m12 11.6 2.4 2.4M13.4 12.9l1.2-1.2" />
+    {/* Knocked out so the key reads against the filled shield rather than
+        fighting it, and so the glyph survives a theme change without needing a
+        second colour. */}
+    <circle cx="10.5" cy="10.2" r="1.85" fill="var(--badge-knockout, #fff)" stroke="none" />
+    <path
+      d="M12.1 11.8 14.4 14M13.6 13l1.3-1.3"
+      stroke="var(--badge-knockout, #fff)"
+      strokeWidth={2.1}
+      strokeLinecap="round"
+      fill="none"
+    />
   </Icon>
 );
 
@@ -165,6 +183,23 @@ export const EyeOffIcon = (props: IconProps) => (
   </Icon>
 );
 
+/**
+ * Two people side by side, for Share.
+ *
+ * A conventional send-arrow would be wrong here: nothing is transmitted. The
+ * action copies the credentials to the clipboard so they can be pasted into
+ * whatever the person actually uses, and an arrow would promise a transmission
+ * this app deliberately does not do.
+ */
+export const ShareIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <circle cx="8.6" cy="9.2" r="3.1" />
+    <path d="M2.6 19.4c0-2.6 2.7-4.4 6-4.4 1 0 2 .15 2.8.45" />
+    <path d="M14.4 6.1a2.9 2.9 0 1 1 2.5 4.3" />
+    <path d="M15.6 14.6c2.6.2 4.4 1.8 4.4 4" />
+  </Icon>
+);
+
 export const CopyIcon = (props: IconProps) => (
   <Icon {...props}>
     <rect x="9" y="9" width="11.5" height="11.5" rx="3" />
@@ -215,6 +250,21 @@ export const SecuredIcon = (props: IconProps) => (
       strokeWidth={2.2}
       fill="none"
     />
+  </Icon>
+);
+
+/**
+ * Four equal squares. Grid view's glyph.
+ *
+ * GridIcon is already taken by the Dashboard channel and is a 3D-ish grid that
+ * reads as a cube; this is flat, so the two do not blur together in the sidebar.
+ */
+export const SquaresIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="3.6" y="3.6" width="7" height="7" rx="1.6" />
+    <rect x="13.4" y="3.6" width="7" height="7" rx="1.6" />
+    <rect x="3.6" y="13.4" width="7" height="7" rx="1.6" />
+    <rect x="13.4" y="13.4" width="7" height="7" rx="1.6" />
   </Icon>
 );
 

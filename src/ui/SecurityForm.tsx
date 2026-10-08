@@ -46,10 +46,25 @@ export function SecurityForm({
   const [liveCode, setLiveCode] = useState('');
   const [qr, setQr] = useState('');
 
+  /**
+   * A seed the user generated or pasted but has not confirmed yet.
+   *
+   * This is the whole fix for the phantom gate. Generating or attaching used to
+   * call onChange immediately, so the factor was live — and gating logins, the
+   * folder, or the whole vault — before any code had ever verified it. Clicking
+   * "Generate a key" out of curiosity armed a demand for codes from an
+   * authenticator that was never configured, with no way back except removing
+   * the factor (which itself requires passing the gate). Now nothing is saved
+   * until a code proves the seed works; walking away leaves no trace.
+   */
+  const [stagedSeed, setStagedSeed] = useState<string | null>(null);
+  // The seed under test: a staged one while confirming, otherwise the saved one.
+  const activeSeed = stagedSeed ?? security.totp?.seed ?? null;
+
   // The live code, re-read once a second. Cheap, and it proves the seed works
   // before the user scans it into their phone.
   useEffect(() => {
-    if (!security.totp?.seed) {
+    if (!activeSeed) {
       setLiveCode('');
       setQr('');
       return;
@@ -57,7 +72,7 @@ export function SecurityForm({
     let cancelled = false;
     const tick = async () => {
       try {
-        const code = await currentTotpCode(security.totp!.seed);
+        const code = await currentTotpCode(activeSeed);
         if (!cancelled) setLiveCode(code);
       } catch {
         if (!cancelled) setLiveCode('');
@@ -69,12 +84,12 @@ export function SecurityForm({
       cancelled = true;
       clearInterval(id);
     };
-  }, [security.totp?.seed]);
+  }, [activeSeed]);
 
   useEffect(() => {
-    if (!security.totp?.seed) return;
+    if (!activeSeed) return;
     let cancelled = false;
-    void QRCode.toDataURL(otpauthUrl(security.totp.seed, label), { margin: 1, width: 220 }).then((url) => {
+    void QRCode.toDataURL(otpauthUrl(activeSeed, label), { margin: 1, width: 220 }).then((url) => {
       if (!cancelled) setQr(url);
     }).catch(() => {
       if (!cancelled) setQr('');
@@ -82,7 +97,7 @@ export function SecurityForm({
     return () => {
       cancelled = true;
     };
-  }, [security.totp?.seed, label]);
+  }, [activeSeed, label]);
 
   async function attachSeed() {
     const seed = extractTotpSeed(seedInput);
@@ -90,33 +105,53 @@ export function SecurityForm({
       onNotify('That does not look like an authenticator key', 'error');
       return;
     }
-    onChange({ ...security, totp: { seed } });
+    // Staged, not saved: the factor only becomes real once a code confirms it.
+    setStagedSeed(seed);
     setSeedInput('');
-    onNotify('Authenticator key saved');
+    setCodeInput('');
+    setCodeError('');
   }
 
   async function generate() {
     const seed = generateTotpSeed();
-    onChange({ ...security, totp: { seed } });
-    onNotify('New authenticator key created');
+    setStagedSeed(seed);
+    setCodeInput('');
+    setCodeError('');
+    onNotify('Scan the code, then confirm one to keep the key');
   }
 
   async function confirmCode() {
-    if (!security.totp?.seed) return;
-    const ok = await verifyTotp(security.totp.seed, codeInput);
+    if (!activeSeed) return;
+    const ok = await verifyTotp(activeSeed, codeInput);
     if (!ok) {
       setCodeError('That code did not match. Check the clock on this device.');
       return;
     }
     setCodeError('');
-    onNotify('Authenticator confirmed');
+    if (stagedSeed) {
+      // First successful confirmation is what saves the key. Until this line
+      // runs, nothing about the login, folder or vault has changed.
+      onChange({ ...security, totp: { seed: stagedSeed } });
+      setStagedSeed(null);
+      onNotify('Authenticator key saved');
+    } else {
+      onNotify('Authenticator confirmed');
+    }
   }
 
   function detach() {
     onChange({ ...security, totp: null });
+    setStagedSeed(null);
     setCodeInput('');
     setQr('');
     onNotify('Authenticator removed');
+  }
+
+  function discardStaged() {
+    setStagedSeed(null);
+    setCodeInput('');
+    setCodeError('');
+    setQr('');
   }
 
   const [newPrompt, setNewPrompt] = useState(QUESTION_PROMPTS[0] ?? '');
@@ -208,8 +243,18 @@ export function SecurityForm({
 
   const level = securityLevel(security);
 
+  // Mini-tabs: one factor visible at a time. Stacking authenticator, passcode,
+  // questions and passkey in one scroll buried the setup that mattered, and
+  // the QR code pushed everything else a screen away. The tiles above double as
+  // the tabs — status and navigation in one row.
+  const [tab, setTab] = useState<'authenticator' | 'passcode' | 'questions' | 'passkey'>('authenticator');
+
   return (
-    <div className="sec">
+    <div className="sec sec--summary">
+      {/* The status and the two factors that matter, up front. The three cards
+          below are for setup and repair; the common case is "is this login
+          protected, and by what", which used to require reading past a paragraph
+          and a QR code to answer. */}
       <div className="sec__intro">
         <p className="sec__lead">
           Optional. With nothing here, this works exactly as before. With something here, it gates access.
@@ -219,17 +264,107 @@ export function SecurityForm({
         </span>
       </div>
 
-      <section className="sec__card">
+      <div className="sec__tabs" role="tablist" aria-label="Second factor">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'authenticator'}
+          className="sec__glance"
+          data-on={Boolean(security.totp) || undefined}
+          data-active={tab === 'authenticator' || undefined}
+          onClick={() => setTab('authenticator')}
+        >
+          <span className="sec__glance-icon" aria-hidden="true">
+            <ShieldGlyph />
+          </span>
+          <span className="sec__glance-body">
+            <span className="sec__glance-title">Authenticator</span>
+            <span className="sec__glance-note">
+              {security.totp ? 'Key attached — a code is needed' : 'Not set'}
+            </span>
+          </span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'passcode'}
+          className="sec__glance"
+          data-on={Boolean(security.passcode) || undefined}
+          data-active={tab === 'passcode' || undefined}
+          onClick={() => setTab('passcode')}
+        >
+          <span className="sec__glance-icon" aria-hidden="true">
+            <KeyGlyph />
+          </span>
+          <span className="sec__glance-body">
+            <span className="sec__glance-title">Passcode</span>
+            <span className="sec__glance-note">
+              {security.passcode ? 'Set — it gates this login' : 'Not set'}
+            </span>
+          </span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'questions'}
+          className="sec__glance"
+          data-on={security.questions.length > 0 || undefined}
+          data-active={tab === 'questions' || undefined}
+          onClick={() => setTab('questions')}
+        >
+          <span className="sec__glance-icon" aria-hidden="true">
+            <QuestionGlyph />
+          </span>
+          <span className="sec__glance-body">
+            <span className="sec__glance-title">Recovery</span>
+            <span className="sec__glance-note">
+              {security.questions.length === 0
+                ? 'Not set'
+                : `${security.questions.length} question${security.questions.length === 1 ? '' : 's'}`}
+            </span>
+          </span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'passkey'}
+          className="sec__glance"
+          data-active={tab === 'passkey' || undefined}
+          onClick={() => setTab('passkey')}
+        >
+          <span className="sec__glance-icon" aria-hidden="true">
+            <PasskeyGlyph />
+          </span>
+          <span className="sec__glance-body">
+            <span className="sec__glance-title">Passkey</span>
+            <span className="sec__glance-note">Unavailable here</span>
+          </span>
+        </button>
+      </div>
+
+      {tab === 'authenticator' ? (
+      <section className="sec__card" role="tabpanel">
         <header className="sec__head">
           <h3 className="sec__title">Authenticator app</h3>
-          {security.totp ? (
+          {security.totp && !stagedSeed ? (
             <button type="button" className="btn btn--quiet btn--sm" onClick={detach}>
               Remove
             </button>
           ) : null}
+          {stagedSeed ? (
+            <button type="button" className="btn btn--quiet btn--sm" onClick={discardStaged}>
+              Discard
+            </button>
+          ) : null}
         </header>
 
-        {security.totp ? (
+        {stagedSeed ? (
+          <p className="sec__pending" role="status">
+            Not saved yet. Confirm a code below and the key is kept; leave without confirming and nothing changes.
+          </p>
+        ) : null}
+
+        {activeSeed ? (
           <>
             {qr ? (
               <div className="sec__qr">
@@ -290,8 +425,10 @@ export function SecurityForm({
           </>
         )}
       </section>
+      ) : null}
 
-      <section className="sec__card">
+      {tab === 'passcode' ? (
+      <section className="sec__card" role="tabpanel">
         <header className="sec__head">
           <h3 className="sec__title">Passcode</h3>
           {security.passcode ? (
@@ -374,8 +511,10 @@ export function SecurityForm({
         )}
         {passcodeError ? <p className="sec__error">{passcodeError}</p> : null}
       </section>
+      ) : null}
 
-      <section className="sec__card">
+      {tab === 'questions' ? (
+      <section className="sec__card" role="tabpanel">
         <header className="sec__head">
           <h3 className="sec__title">Recovery questions</h3>
         </header>
@@ -467,15 +606,57 @@ export function SecurityForm({
           {answerError ? <p className="sec__error">{answerError}</p> : null}
         </div>
       </section>
+      ) : null}
 
-      <section className="sec__card" data-disabled>
+      {tab === 'passkey' ? (
+      <section className="sec__card" data-disabled role="tabpanel">
         <header className="sec__head">
           <h3 className="sec__title">Passkey</h3>
           <span className="sec__badge">Not available here</span>
         </header>
         <p className="field__note">{PASSKEY_REASON}</p>
       </section>
+      ) : null}
     </div>
+  );
+}
+
+function PasskeyGlyph() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <rect x="3.5" y="9" width="13" height="10" rx="2.5" />
+      <path d="M16.5 12.5H21V15h-4.5" />
+      <path d="M6.5 9V7a4.5 4.5 0 0 1 9 0v2" />
+    </svg>
+  );
+}
+
+/** Small inline glyphs for the at-a-glance summary. */
+function ShieldGlyph() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3 4.8 5.6v5.6c0 4.4 3 8.3 7.2 9.4 4.2-1.1 7.2-5 7.2-9.4V5.6L12 3Z" />
+      <path d="m9.3 11.8 1.9 1.9 3.6-3.7" />
+    </svg>
+  );
+}
+
+function KeyGlyph() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="8.4" cy="8.4" r="4" />
+      <path d="m11.3 11.3 8 8M17 17l-2 2M19.4 19.4l-2 2" />
+    </svg>
+  );
+}
+
+function QuestionGlyph() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.4" />
+      <path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .9-1 1.6v.5" />
+      <path d="M12 17h.01" />
+    </svg>
   );
 }
 

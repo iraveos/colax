@@ -5,9 +5,65 @@ import { DEFAULT_PREFERENCES, normalisePreferences } from '../src/vault/storage.
 /** A mutable copy of the defaults, so a test can corrupt one field. */
 const base = () => structuredClone(DEFAULT_PREFERENCES) as unknown as Record<string, unknown>;
 
-test('cardSize defaults exist for all three views', () => {
+test('cardSize defaults exist for all four views', () => {
   const out = normalisePreferences(base());
-  assert.deepEqual(Object.keys(out.cardSize).sort(), ['animated', 'basic', 'carousel']);
+  assert.deepEqual(Object.keys(out.cardSize).sort(), ['animated', 'basic', 'carousel', 'grid']);
+});
+
+test('the grid view is a real, selectable view', () => {
+  const out = normalisePreferences(base());
+  assert.equal(out.view, DEFAULT_PREFERENCES.view);
+
+  const grid = base();
+  grid.view = 'grid';
+  assert.equal(normalisePreferences(grid).view, 'grid');
+
+  // A record written before Grid existed must keep whichever view it actually
+  // had rather than being rewritten into something else.
+  const older = base();
+  older.view = 'animated';
+  assert.equal(normalisePreferences(older).view, 'animated');
+});
+
+test('viewLabels accepts only the three known modes', () => {
+  for (const mode of ['icon', 'name', 'both'] as const) {
+    const stored = base();
+    stored.viewLabels = mode;
+    assert.equal(normalisePreferences(stored).viewLabels, mode);
+  }
+  const bogus = base();
+  bogus.viewLabels = 'nonsense';
+  assert.equal(normalisePreferences(bogus).viewLabels, 'both');
+});
+
+test('viewLabelsByView keeps valid overrides and drops invalid ones', () => {
+  const stored = base();
+  stored.viewLabelsByView = { grid: 'icon', basic: 'nonsense', animated: 42, carousel: null };
+  const out = normalisePreferences(stored);
+  assert.equal(out.viewLabelsByView.grid, 'icon');
+  // A bad entry is dropped rather than kept, so the view falls back to the
+  // group setting instead of rendering an undefined label mode.
+  assert.equal('basic' in out.viewLabelsByView, false);
+  assert.equal('animated' in out.viewLabelsByView, false);
+  assert.equal('carousel' in out.viewLabelsByView, false);
+});
+
+test('an absent viewLabelsByView becomes an empty object, not undefined', () => {
+  const stored = base();
+  delete stored.viewLabelsByView;
+  const out = normalisePreferences(stored);
+  assert.deepEqual(out.viewLabelsByView, {});
+});
+
+test('the accent preference survives normalisation', () => {
+  // Regression guard: channels used to re-skin from their own accent field and
+  // shadow the preference, which is why the picker appeared inert. The
+  // preference itself was always fine; this pins that it still round-trips.
+  for (const accent of ['slate', 'sage', 'dusk', 'clay'] as const) {
+    const stored = base();
+    stored.accent = accent;
+    assert.equal(normalisePreferences(stored).accent, accent);
+  }
 });
 
 test('a missing cardSize is filled with defaults, not left undefined', () => {

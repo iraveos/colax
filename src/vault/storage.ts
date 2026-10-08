@@ -10,6 +10,7 @@ import type { StoredItem } from './types.ts';
 import type { VaultHeader } from '../crypto/vault-crypto.ts';
 
 import {
+  ensureDefaultTags,
   normaliseChannels,
   normaliseFolders,
   normaliseSidebar,
@@ -20,10 +21,10 @@ import {
   type SidebarEntry,
   type Tag,
 } from './channels.ts';
-import { EMPTY_SECURITY, type LoginSecurity } from '../crypto/security.ts';
+import { EMPTY_SECURITY, normaliseSecurity, type LoginSecurity } from '../crypto/security.ts';
 
 /** How the vault is laid out on screen. The choice is persisted. */
-export type VaultView = 'animated' | 'carousel' | 'basic';
+export type VaultView = 'animated' | 'carousel' | 'basic' | 'grid';
 
 /** Light/dark, or follow the system. */
 export type ThemeMode = 'light' | 'dark' | 'system';
@@ -87,7 +88,87 @@ export const DEFAULT_CARD_SIZE: Record<VaultView, CardSizePrefs> = {
   animated: { scale: 1, width: 560, minHeight: 132, aspect: 1, surface: 1, radius: 14 },
   carousel: { scale: 1, width: 340, minHeight: 0, aspect: 1.35, surface: 1, radius: 20 },
   basic: { scale: 1, width: 900, minHeight: 64, aspect: 1, surface: 1, radius: 14 },
+  // Grid reflows to whatever fits, so its width is the widest a single cell may
+  // get before the track count drops. That is the one number worth tuning here:
+  // raising it buys larger cards at the cost of columns.
+  grid: { scale: 1, width: 340, minHeight: 96, aspect: 1, surface: 1, radius: 14 },
 };
+
+/**
+ * One dock slot's configuration.
+ *
+ * `ref` is a VaultView for kind 'view', a channel id for kind 'channel', and
+ * unused for 'inbox'. `label` overrides the display name when present;
+ * `icon` overrides the glyph with an uploaded (data URL) or remote (https)
+ * image. A channel slot whose channel no longer exists is skipped at render
+ * rather than erroring, so deleting a channel cannot break the bar.
+ */
+export type DockSlotKind = 'view' | 'channel' | 'folder' | 'login' | 'inbox';
+
+/** Which edge the dock snaps its orientation to. The bar reflows to a column on the sides. */
+export type DockPosition = 'bottom' | 'top' | 'left' | 'right';
+
+/**
+ * Where the dock sits: viewport fractions plus the snapped edge that decides
+ * its orientation (row on top/bottom, column on the sides). Free placement,
+ * not four slots — the bar drags anywhere and the edge follows the nearest
+ * side on drop.
+ */
+export interface DockPlacement {
+  edge: DockPosition;
+  /** 0–1 across the viewport width. */
+  fx: number;
+  /** 0–1 down the viewport height. */
+  fy: number;
+}
+
+export interface DockSlotConfig {
+  kind: DockSlotKind;
+  ref: string;
+  label?: string;
+  key: string;
+  icon?: string;
+}
+
+/** Hard cap: more slots than this wrap the bar into a second row. */
+export const MAX_DOCK_SLOTS = 8;
+
+export const DEFAULT_DOCK_SLOTS: DockSlotConfig[] = [
+  { kind: 'view', ref: 'animated', key: '1' },
+  { kind: 'view', ref: 'carousel', key: '2' },
+  { kind: 'view', ref: 'basic', key: '3' },
+  { kind: 'view', ref: 'grid', key: '4' },
+  { kind: 'inbox', ref: '', key: '5' },
+];
+
+/**
+ * One connected mailbox. An app password, from Google Account > Security,
+ * never sent anywhere but mail.google.com. Each account polls on its own
+ * cadence; messages merge newest-first wherever they render.
+ */
+export interface GmailAccount {
+  id: string;
+  address: string;
+  appPassword: string;
+  enabled: boolean;
+  /** How often to re-poll, in seconds. */
+  refreshSeconds: number;
+}
+
+export function newGmailAccountId(): string {
+  return `gm_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * How a view is named wherever the four views are offered as a group: the
+ * topbar picker, the sidebar, and the right-click menu.
+ *
+ * Mirrors SidebarLabels rather than reusing it, because the two are tuned
+ * independently. The sidebar rail can afford to drop names to a tooltip; the
+ * view switcher is the only place that says what "Orbit" is, and taking the
+ * names away there leaves four unlabelled glyphs.
+ */
+export type ViewLabels = 'icon' | 'name' | 'both';
 
 /** Sort order for the list views. */
 export type SortMode = 'title' | 'recent' | 'oldest' | 'strength' | 'username';
@@ -135,6 +216,20 @@ export interface VaultPreferences {
   cardSize: Record<VaultView, CardSizePrefs>;
   /** How the sidebar rail presents channels. */
   sidebarLabels: SidebarLabels;
+  /**
+   * Whether the view switcher shows glyphs, names, or both. One value for the
+   * whole group, because a switcher showing four icons on the left and four
+   * labelled entries on the right reads as two different controls that happen
+   * to sit together. Settings has a per-view override for anyone who wants
+   * them to disagree, applied on top of this.
+   */
+  viewLabels: ViewLabels;
+  /**
+   * Per-view override of `viewLabels`. A view absent from the record follows
+   * the global setting, so the override is opt-in rather than four more
+   * preferences to keep in step by hand.
+   */
+  viewLabelsByView: Partial<Record<VaultView, ViewLabels>>;
   /** Which edge of the window the channel rail is docked to. */
   sidebarPosition: SidebarPosition;
   /** Root font size as a percentage of the default. */
@@ -164,6 +259,41 @@ export interface VaultPreferences {
   compactSidebar: boolean;
   /** Shows the keyboard shortcuts entry in the sidebar. Also in Settings › About. */
   showShortcuts: boolean;
+  /**
+   * Quick-launch dock slots, in bar order.
+   *
+   * Each slot jumps somewhere (a view, a channel, the inbox) on click or on
+   * its key. Keys are single characters pressed bare (no modifier), matched
+   * only when no text field, menu, dialog or editor is open. Bare keys are
+   * what makes it fast; the guard list is what keeps it from eating
+   * keystrokes. The key lives on the slot (not in a parallel array) so the
+   * dock, the badges, the listener and the settings rows cannot disagree
+   * about which key means what.
+   */
+  dockEnabled: boolean;
+  dockSlots: DockSlotConfig[];
+  dockPos: DockPlacement;
+  /**
+   * Per-login use counts: incremented on copy and on edit, read by the
+   * Frequently-used panel and the untouched-login scan.
+   *
+   * Plaintext like the rest of prefs — counts are not secret — and capped, so
+   * a deleted login's entry cannot grow the record forever. Entries for gone
+   * logins are pruned on write, not on load, because load cannot see the items.
+   */
+  usage: Record<string, { count: number; at: number }>;
+  /**
+   * Desktop shell settings. Read by Electron; inert on web, where there is no
+   * tray, no autostart and no window chrome to manage. Kept in prefs (not in
+   * the shell) so they back up and reset with everything else.
+   */
+  trayEnabled: boolean;
+  /** The X button hides to the tray instead of quitting. Needs trayEnabled. */
+  closeToTray: boolean;
+  /** Start with the OS, into the tray. */
+  launchAtLogin: boolean;
+  /** Silences alarm sounds (and the test chime). Toasts still appear. */
+  soundsMuted: boolean;
   /** Detaches sidebar channels and topbar buttons into floating pills. */
   floatingChrome: boolean;
   /** Shows the lock control on the main screen. Settings always keeps its own. */
@@ -207,15 +337,10 @@ export interface VaultPreferences {
   /** Saves them immediately rather than asking first. */
   clipboardAutoSave: boolean;
 
-  // -- Gmail integration
-  gmail: {
-    enabled: boolean;
-    address: string;
-    /** An app password, from Google Account > Security. Never sent anywhere else. */
-    appPassword: string;
-    /** How often the inbox view re-polls, in seconds. */
-    refreshSeconds: number;
-  };
+  // -- Gmail integration: several accounts, each independent. The old single
+  // `gmail` object migrates into the first entry on load, so a connected
+  // mailbox survives the upgrade without reconnecting.
+  gmailAccounts: GmailAccount[];
 
   // -- Alarms
   alarms: Alarm[];
@@ -268,6 +393,8 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   cardDepth: 0.4,
   cardSize: DEFAULT_CARD_SIZE,
   sidebarLabels: 'both',
+  viewLabels: 'both',
+  viewLabelsByView: {},
   sidebarPosition: 'left',
   textScale: 100,
   reduceTransparency: false,
@@ -283,6 +410,14 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   expandOnOpen: false,
   compactSidebar: false,
   showShortcuts: false,
+  dockEnabled: true,
+  dockSlots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })),
+  dockPos: { edge: 'bottom', fx: 0.5, fy: 0.94 },
+  usage: {},
+  trayEnabled: true,
+  closeToTray: true,
+  launchAtLogin: false,
+  soundsMuted: false,
   floatingChrome: false,
   showLockButton: true,
   autoTagChannel: false,
@@ -302,7 +437,6 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   showLetterGroups: true,
   clipboardCapture: false,
   clipboardAutoSave: false,
-  gmail: { enabled: false, address: '', appPassword: '', refreshSeconds: 5 },
   alarms: [],
   vaultSecurity: EMPTY_SECURITY,
   autoLockMinutes: 5,
@@ -324,6 +458,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   },
   copyToasts: true,
   confirmDeletes: true,
+  gmailAccounts: [],
 };
 
 /**
@@ -336,7 +471,10 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   const merged: VaultPreferences = { ...DEFAULT_PREFERENCES, ...stored };
   merged.passwordGenerator = { ...DEFAULT_PREFERENCES.passwordGenerator, ...stored?.passwordGenerator };
   merged.channels = normaliseChannels(merged.channels);
-  merged.tags = normaliseTags(merged.tags);
+  // Default health tags are ordinary, editable tags — seeded here so every
+  // vault (new or migrated) has weak / needs attention / reused to assign and
+  // filter by, rather than badge text only the app controls.
+  merged.tags = ensureDefaultTags(normaliseTags(merged.tags));
   merged.folders = normaliseFolders(merged.folders);
   merged.sidebar = normaliseSidebar(merged.sidebar, merged.channels, merged.folders);
   merged.showUnassignedChannel = Boolean(merged.showUnassignedChannel);
@@ -344,14 +482,48 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.showLetterGroups = merged.showLetterGroups !== false;
   merged.clipboardCapture = Boolean(merged.clipboardCapture);
   merged.clipboardAutoSave = Boolean(merged.clipboardAutoSave);
-  merged.gmail = {
-    enabled: Boolean(merged.gmail?.enabled),
-    address: typeof merged.gmail?.address === 'string' ? merged.gmail.address : '',
-    appPassword: typeof merged.gmail?.appPassword === 'string' ? merged.gmail.appPassword : '',
-    refreshSeconds: [2, 5, 10, 15, 30, 60].includes(merged.gmail?.refreshSeconds)
-      ? merged.gmail.refreshSeconds
-      : DEFAULT_PREFERENCES.gmail.refreshSeconds,
-  };
+  // Several accounts now; the old single object migrates into the first entry
+  // so a connected mailbox keeps working without reconnecting. Anything
+  // malformed is dropped per account rather than wiping the whole list.
+  {
+    const legacy = merged as Partial<VaultPreferences> & {
+      gmail?: { enabled?: unknown; address?: unknown; appPassword?: unknown; refreshSeconds?: unknown };
+    };
+    // Stored accounts win when non-empty; otherwise the legacy single object
+    // migrates in. Checking length (not just Array) matters because the
+    // defaults spread an empty array over a record that predates accounts.
+    const storedAccounts = Array.isArray(merged.gmailAccounts) && merged.gmailAccounts.length > 0
+      ? merged.gmailAccounts
+      : [];
+    const raw: unknown[] =
+      storedAccounts.length > 0
+        ? storedAccounts
+        : legacy.gmail && (typeof legacy.gmail.address === 'string' || typeof legacy.gmail.appPassword === 'string')
+          ? [{ ...legacy.gmail, id: newGmailAccountId() }]
+          : [];
+    const clean: GmailAccount[] = [];
+    const seen = new Set<string>();
+    for (const entry of raw.slice(0, 8)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const record = entry as Record<string, unknown>;
+      const address = typeof record.address === 'string' ? record.address.trim() : '';
+      const appPassword = typeof record.appPassword === 'string' ? record.appPassword.replace(/\s+/g, '') : '';
+      if (!address && !appPassword) continue;
+      if (address && seen.has(address.toLowerCase())) continue;
+      seen.add(address.toLowerCase());
+      clean.push({
+        id: typeof record.id === 'string' && record.id ? record.id : newGmailAccountId(),
+        address,
+        appPassword,
+        enabled: record.enabled !== false,
+        refreshSeconds: [2, 5, 10, 15, 30, 60].includes(record.refreshSeconds as number)
+          ? (record.refreshSeconds as number)
+          : 5,
+      });
+    }
+    merged.gmailAccounts = clean;
+    delete legacy.gmail;
+  }
   merged.alarms = Array.isArray(merged.alarms)
     ? merged.alarms
         .filter((alarm): alarm is Alarm => Boolean(alarm && typeof alarm.id === 'string' && typeof alarm.time === 'string'))
@@ -366,19 +538,10 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
           enabled: Boolean(alarm.enabled),
         }))
     : [];
-  merged.vaultSecurity = {
-    totp: merged.vaultSecurity?.totp?.seed ? { seed: String(merged.vaultSecurity.totp.seed) } : null,
-    questions: Array.isArray(merged.vaultSecurity?.questions)
-      ? merged.vaultSecurity.questions
-          .filter((question): question is NonNullable<typeof question> => Boolean(question && question.hash))
-          .map((question) => ({
-            id: String(question.id ?? `vq_${Math.random().toString(36).slice(2, 10)}`),
-            prompt: String(question.prompt ?? ''),
-            hash: String(question.hash),
-            salt: String(question.salt ?? ''),
-          }))
-      : [],
-  };
+  // normaliseSecurity, not a hand-rolled rebuild: three sites used to rebuild
+  // this object inline and all three forgot `passcode`, so a passcode-only
+  // second factor silently stopped protecting anything on reload.
+  merged.vaultSecurity = normaliseSecurity(merged.vaultSecurity);
 
   const oneOf = <T extends string>(value: T, allowed: readonly T[], fallback: T): T =>
     allowed.includes(value) ? value : fallback;
@@ -402,7 +565,7 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     ['slate', 'sage', 'dusk', 'clay'] as const,
     DEFAULT_PREFERENCES.accent,
   );
-  merged.view = oneOf(merged.view, ['animated', 'carousel', 'basic'] as const, DEFAULT_PREFERENCES.view);
+  merged.view = oneOf(merged.view, ['animated', 'carousel', 'basic', 'grid'] as const, DEFAULT_PREFERENCES.view);
   merged.sort = oneOf(
     merged.sort,
     ['title', 'recent', 'oldest', 'strength', 'username'] as const,
@@ -423,7 +586,7 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   // Per-view card geometry. Each field is clamped individually rather than
   // taking the stored object wholesale, so a partially-written or hand-edited
   // record cannot leave a view with a zero width or a NaN radius.
-  const views: VaultView[] = ['animated', 'carousel', 'basic'];
+  const views: VaultView[] = ['animated', 'carousel', 'basic', 'grid'];
   const storedCardSize = (merged.cardSize ?? {}) as Partial<Record<VaultView, Partial<CardSizePrefs>>>;
   const cardSize = {} as Record<VaultView, CardSizePrefs>;
   for (const view of views) {
@@ -440,7 +603,94 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   }
   merged.cardSize = cardSize;
   merged.sidebarLabels = oneOf(merged.sidebarLabels, ['icon', 'name', 'both'] as const, 'both');
+  merged.viewLabels = oneOf(merged.viewLabels, ['icon', 'name', 'both'] as const, 'both');
+
+  // The per-view override is filtered rather than coerced field by field, and a
+  // view whose entry is dropped simply falls back to the global setting. An
+  // empty object is the normal state and must stay one, so it is not replaced
+  // with null or omitted.
+  const VIEW_LABEL_MODES = ['icon', 'name', 'both'] as const;
+  const rawViewLabels = (merged.viewLabelsByView ?? {}) as Record<string, unknown>;
+  const viewLabelsByView: Partial<Record<VaultView, ViewLabels>> = {};
+  for (const view of views) {
+    const mode = rawViewLabels[view];
+    if (typeof mode === 'string' && (VIEW_LABEL_MODES as readonly string[]).includes(mode)) {
+      viewLabelsByView[view] = mode as ViewLabels;
+    }
+  }
+  merged.viewLabelsByView = viewLabelsByView;
   merged.sidebarPosition = oneOf(merged.sidebarPosition, ['left', 'right', 'top', 'bottom'] as const, 'left');
+
+  // Dock slots: at most MAX_DOCK_SLOTS, each with a valid kind, a valid view ref,
+  // a unique single-character key, a short label and a safe icon. Anything
+  // else falls back slot by slot, so a hand-edited or partially-written record
+  // cannot leave a slot unreachable, two slots fighting over one key, or a
+  // javascript: URL smuggled in as an icon.
+  merged.dockEnabled = Boolean(merged.dockEnabled);
+  // Use counts: plain objects with numeric fields only, capped at 200 by
+  // recency so the record cannot grow without bound. Pruning by id happens on
+  // write (which sees the items); load only validates shape.
+  {
+    const raw = (merged.usage ?? {}) as Record<string, unknown>;
+    const entries: [string, { count: number; at: number }][] = [];
+    for (const [id, value] of Object.entries(raw)) {
+      if (!value || typeof value !== 'object') continue;
+      const record = value as Record<string, unknown>;
+      const count = typeof record.count === 'number' && Number.isFinite(record.count) ? Math.max(0, Math.floor(record.count)) : 0;
+      const at = typeof record.at === 'number' && Number.isFinite(record.at) ? record.at : 0;
+      if (id && (count > 0 || at > 0)) entries.push([id, { count, at }]);
+    }
+    entries.sort((a, b) => b[1].at - a[1].at);
+    merged.usage = Object.fromEntries(entries.slice(0, 200));
+  }
+  // Free placement as clamped fractions. Anything outside 0–1 (a hand-edited
+  // record, a resize across monitors) is pulled back on screen rather than
+  // stranding the bar where no pointer can reach it.
+  {
+    const raw = (merged.dockPos ?? {}) as Partial<DockPlacement>;
+    const edge = raw.edge === 'top' || raw.edge === 'left' || raw.edge === 'right' ? raw.edge : 'bottom';
+    const clamp = (value: unknown, fallback: number) =>
+      typeof value === 'number' && Number.isFinite(value) ? Math.min(0.94, Math.max(0.06, value)) : fallback;
+    merged.dockPos = { edge, fx: clamp(raw.fx, 0.5), fy: clamp(raw.fy, edge === 'top' ? 0.06 : 0.94) };
+  }
+  merged.trayEnabled = Boolean(merged.trayEnabled);
+  merged.closeToTray = Boolean(merged.closeToTray);
+  merged.launchAtLogin = Boolean(merged.launchAtLogin);
+  merged.soundsMuted = Boolean(merged.soundsMuted);
+  {
+    const raw = Array.isArray(merged.dockSlots) ? merged.dockSlots : [];
+    const seen = new Set<string>();
+    const fallbackKeys = ['1', '2', '3', '4', '5', '6', '7', '8'];
+    const clean: DockSlotConfig[] = [];
+    for (const entry of raw.slice(0, MAX_DOCK_SLOTS)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const kind = (entry as { kind?: unknown }).kind;
+      if (kind !== 'view' && kind !== 'channel' && kind !== 'folder' && kind !== 'login' && kind !== 'inbox') continue;
+      const ref = typeof (entry as { ref?: unknown }).ref === 'string' ? (entry as { ref: string }).ref : '';
+      if (kind === 'view' && !(['animated', 'carousel', 'basic', 'grid'] as const).includes(ref as VaultView)) continue;
+      if ((kind === 'channel' || kind === 'folder' || kind === 'login') && !ref) continue;
+      if (kind === 'inbox' && clean.some((slot) => slot.kind === 'inbox')) continue;
+      if (clean.some((slot) => slot.kind === kind && slot.ref === ref)) continue;
+      const rawKey = typeof (entry as { key?: unknown }).key === 'string' ? (entry as { key: string }).key.trim() : '';
+      let key = rawKey.length === 1 && !seen.has(rawKey.toLowerCase()) ? rawKey : '';
+      if (!key) {
+        const free = fallbackKeys.find((candidate) => !seen.has(candidate));
+        if (!free) continue;
+        key = free;
+      }
+      seen.add(key.toLowerCase());
+      const rawLabel = typeof (entry as { label?: unknown }).label === 'string' ? (entry as { label: string }).label.trim() : '';
+      const rawIcon = typeof (entry as { icon?: unknown }).icon === 'string' ? (entry as { icon: string }).icon.trim() : '';
+      clean.push({
+        kind,
+        ref,
+        ...(rawLabel ? { label: rawLabel.slice(0, 24) } : {}),
+        key,
+        ...(rawIcon.startsWith('data:image/') || rawIcon.startsWith('https://') ? { icon: rawIcon } : {}),
+      });
+    }
+    merged.dockSlots = clean.length > 0 ? clean : DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot }));
+  }
 
   // Reminder windows. Anything at 0 switches that check off.
   merged.passwordAgeDays = [0, 30, 60, 90, 180, 365, 730].includes(merged.passwordAgeDays)

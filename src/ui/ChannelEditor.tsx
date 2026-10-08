@@ -18,7 +18,8 @@ import {
 } from '../vault/channels.ts';
 import { MAX_APP_BACKGROUND_BYTES } from '../vault/types.ts';
 import { readImageFile } from './card-art.ts';
-import { Modal } from './primitives.tsx';
+import { Modal, Toggle } from './primitives.tsx';
+import type { GmailAccount } from '../vault/storage.ts';
 import {
   CloudIcon,
   FlagIcon,
@@ -68,6 +69,7 @@ export function ChannelEditor({
   channel,
   tags,
   itemCount,
+  accounts,
   onSave,
   onDelete,
   onClose,
@@ -78,6 +80,8 @@ export function ChannelEditor({
   tags: Tag[];
   /** How many logins the current draft matches, for the live preview. */
   itemCount: number;
+  /** Connected mailboxes, for the per-channel mail account picker. */
+  accounts: GmailAccount[];
   onSave: (next: Channel) => void;
   onDelete?: (id: string) => void;
   onClose: () => void;
@@ -335,6 +339,38 @@ export function ChannelEditor({
           onChange={(event) => void onPick(event.target.files?.[0])}
         />
         <p className="field__hint">A backdrop for this channel, behind the logins it shows.</p>
+      </div>
+
+      <div className="field">
+        <span className="field__label">Messages</span>
+        <p className="field__note" style={{ marginTop: 0 }}>
+          Whether logins show their message expander while this channel is selected, and from which mailbox.
+        </p>
+        <Toggle
+          label="Show messages in this channel"
+          checked={draft.showMail !== false}
+          onChange={(showMail) => patch({ showMail })}
+        />
+        {draft.showMail !== false && accounts.length > 1 ? (
+          <div className="field" style={{ marginTop: 'var(--space-2)' }}>
+            <label className="field__label" htmlFor="channel-mail-account">
+              Read mail from
+            </label>
+            <select
+              id="channel-mail-account"
+              className="select__trigger"
+              value={accounts.some((account) => account.id === draft.mailAccount) ? draft.mailAccount : 'all'}
+              onChange={(event) => patch({ mailAccount: event.target.value })}
+            >
+              <option value="all">All connected mailboxes</option>
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.address || '(no address)'}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
       </div>
     </Modal>
   );

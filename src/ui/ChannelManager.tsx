@@ -7,7 +7,7 @@
  */
 
 import { useState } from 'react';
-import type { Channel, Tag } from '../vault/channels.ts';
+import { CHANNEL_KIND_LABELS, type Channel, type Tag } from '../vault/channels.ts';
 import { EditIcon, PlusIcon, TagIcon, TrashIcon } from './icons.tsx';
 
 export function ChannelManager({
@@ -76,9 +76,7 @@ export function ChannelManager({
             </button>
             <span className="tag-manager__count">
               {channel.tagIds.length === 0
-                ? channel.kind === 'all'
-                  ? 'everything'
-                  : channel.kind
+                ? CHANNEL_KIND_LABELS[channel.kind]
                 : channel.tagIds.map(tagName).join(', ')}
             </span>
             <button

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { estimateStrength } from '../crypto/passwords.ts';
-import { findReusedPasswords, hostnameOf, type VaultItem } from '../vault/types.ts';
+import { findReusedPasswords, hostnameOf, isWeakPassword, type VaultItem } from '../vault/types.ts';
 import {
   applyChannel,
   createChannel,
@@ -18,7 +18,7 @@ import { captureToDraft, findSimilarTag, suggestTagsForDraft } from '../vault/si
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
 import { FolderEditor } from './FolderEditor.tsx';
-import { useClipboardWatcher } from './useClipboardWatcher.ts';
+import { detect as detectClipboard, useClipboardWatcher } from './useClipboardWatcher.ts';
 import { useAlarms, playAlarmSound } from './useAlarms.ts';
 import { useCaptureOffer, type PendingCapture } from './useCaptureOffer.ts';
 import type { SortMode, VaultView } from '../vault/storage.ts';
@@ -28,22 +28,33 @@ import { AppearancePanel } from './AppearancePanel.tsx';
 import { Settings } from './Settings.tsx';
 import { Dashboard } from './Dashboard.tsx';
 import { Sidebar } from './Sidebar.tsx';
-import { ViewMenu } from './ViewMenu.tsx';
+import { ViewContextMenu, ViewMenu, VIEW_OPTIONS, useViewShortcuts } from './ViewMenu.tsx';
+import { Dock, useDockShortcuts, type DockSlot } from './Dock.tsx';
+import { CHANNEL_ICONS_MAP } from './Sidebar.tsx';
 import { ContextMenu, type ContextMenuState, type MenuItem } from './context-menu.tsx';
 import { ChannelEditor } from './ChannelEditor.tsx';
 import { Alert, Modal, Toasts } from './primitives.tsx';
-import { AnimatedListView, BasicView, CarouselView, ViewEmptyState, type ViewActions } from './views.tsx';
+import { BulkSecurityDialog, hasSecurityFactor, withoutSecurityFactor } from './BulkSecurityDialog.tsx';
+import { AnimatedListView, BasicView, CarouselView, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
 import {
   useAutoLock,
   useClipboard,
   useHotkeys,
+  useSelectAllShortcuts,
   useToasts,
   useVault,
   applyAppearance,
   applyChannelAppearance,
+  typingHasFocus,
 } from './hooks.ts';
+import { useSelection } from './useSelection.ts';
+import { applyBulkEdit, bulkMenu, type BulkEdit } from './bulk-edit.ts';
+import { BulkEditDialog } from './BulkEditDialog.tsx';
+import { formatLoginCompact, formatLoginForClipboard, formatLoginsForClipboard } from './login-format.ts';
+import { getPlatform } from '../lib/platform.ts';
 import {
   AlertIcon,
+  CheckIcon,
   CopyIcon,
   EditIcon,
   ExternalIcon,
@@ -54,12 +65,14 @@ import {
   KeyIcon,
   LayersIcon,
   LockIcon,
+  MailIcon,
   MoonIcon,
   PaletteIcon,
   PlusIcon,
   RowsIcon,
   SearchIcon,
   SettingsIcon,
+  ShareIcon,
   ShieldIcon,
   StarIcon,
   SunIcon,
@@ -88,6 +101,8 @@ const UNASSIGNED: Channel = {
   backgroundImage: '',
   builtin: false,
   locked: false,
+  showMail: true,
+  mailAccount: 'all',
 };
 
 function stripChannel(rows: SidebarEntry[], id: string): SidebarEntry[] {
@@ -116,6 +131,11 @@ export function App() {
   const [activeId, setActiveId] = useState('all');
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<VaultItem | null | 'new'>(null);
+  // Multi-selection, plus which bulk dialog (if any) is open over it.
+  const selection = useSelection();
+  const [bulkField, setBulkField] = useState<'title' | 'notes' | 'tags' | 'theme' | null>(null);
+  const [bulkSecurity, setBulkSecurity] = useState(false);
+  const [bulkDelete, setBulkDelete] = useState<VaultItem[] | null>(null);
   /**
    * Logins whose second factor has been cleared this session.
    *
@@ -134,6 +154,20 @@ export function App() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  // The selection, mirrored into a ref for the window-level contextmenu handler.
+  // That listener is registered once and must not depend on the selection, or
+  // every ctrl-click would re-register it mid-gesture.
+  const bulkRef = useRef<ReadonlySet<string>>(new Set());
+  bulkRef.current = selection.ids;
+  // The bulk menu itself, for the same reason: the window listener reads it but
+  // must not depend on it.
+  const selectionMenuRef = useRef<MenuItem[]>([]);
+  // Shift-right-click opens the view picker on its own. On its own because the
+  // plain right-click is already busy: cards get an item menu and empty space
+  // gets the app menu, and neither had room for four views without burying the
+  // actions people actually reach for.
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [viewMenuAt, setViewMenuAt] = useState({ x: 0, y: 0 });
   /** null = closed; a channel id edits that one; 'new' creates one. */
   const [editingChannel, setEditingChannel] = useState<string | 'new' | null>(null);
   /** null = closed; a folder id edits that one; 'new' creates one. */
@@ -157,24 +191,56 @@ export function App() {
     unlocked: vault.status === 'unlocked',
     autoSave: prefs.clipboardAutoSave,
     onAutoSave: (creds) => {
+      // Left untagged, which is what puts it in the Unassigned channel. That is
+      // deliberate: a clipboard login has no site to categorise it by, so it
+      // waits there instead of being guessed into a channel that may be wrong.
+      // autoTagDomain applies when a login is edited in the app, not here.
       void vault
         .mutate(() =>
           vault.service.addItem({
-            title: creds.username.split('@')[0] ?? 'Clipboard login',
+            // A clipboard block that carried a title keeps it; otherwise the
+            // local part of the address is a better guess than "Clipboard login".
+            title: creds.title?.trim() || creds.username.split('@')[0] || 'Clipboard login',
             username: creds.username,
             password: creds.password,
-            url: '',
+            url: creds.url ?? '',
+            notes: creds.notes ?? '',
           }),
         )
         .then(() => notify('Saved credentials from the clipboard'));
     },
   });
 
-  // Reminders with custom sounds.
+  // Reminders with custom sounds. Muted alarms still toast — silence is about
+  // sound, not about missing the reminder.
   useAlarms(prefs.alarms, (alarm) => {
-    playAlarmSound(alarm);
+    if (!prefs.soundsMuted) playAlarmSound(alarm);
     notify(`Alarm: ${alarm.label || alarm.time}`);
   });
+
+  /* ---- Desktop shell ------------------------------------------------------
+     Push window-chrome settings whenever they change (and once at boot), and
+     listen for the two tray actions the shell cannot handle alone. Everything
+     here is behind `shell?`, so the web build neither sends nor listens. */
+  useEffect(() => {
+    const shell = getPlatform().shell;
+    if (!shell) return;
+    shell.update({
+      trayEnabled: prefs.trayEnabled,
+      closeToTray: prefs.closeToTray,
+      launchAtLogin: prefs.launchAtLogin,
+      soundsMuted: prefs.soundsMuted,
+    });
+    return shell.onTrayAction((action) => {
+      if (action === 'lock-now') vault.lock();
+      else if (action === 'toggle-mute') {
+        void vault.updatePrefs({ soundsMuted: !prefs.soundsMuted });
+      }
+    });
+    // prefs.* individually: the effect must re-run per field, not per prefs
+    // object identity, or every keystroke anywhere re-pushes shell state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefs.trayEnabled, prefs.closeToTray, prefs.launchAtLogin, prefs.soundsMuted]);
 
   // Extra factor gating the whole vault, verified once per unlock.
   const [vaultVerified, setVaultVerified] = useState(false);
@@ -267,7 +333,11 @@ export function App() {
 
   const cycleView = useCallback(
     (current: VaultView) => {
-      const order: VaultView[] = ['animated', 'carousel', 'basic'];
+      // Built from VIEW_OPTIONS so a new view is cyclable the moment it is
+      // added. A hardcoded list was how Grid became unreachable from the `v`
+      // hotkey: it was never added here, and cycling from Grid wrapped to Flow
+      // because indexOf returned -1.
+      const order = VIEW_OPTIONS.map((option) => option.id);
       void vault.updatePrefs({ view: order[(order.indexOf(current) + 1) % order.length] as VaultView });
     },
     [vault],
@@ -392,19 +462,19 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     [sidebarBase, folders],
   );
 
+  // Only a background image overrides the global appearance now; the accent is
+  // global. See applyChannelAppearance for why the accent was taken back out.
   const contextForAppearance = useMemo(() => {
     if (activeFolder) return activeFolder;
     if (activeChannel) {
       const pf = getParentFolderForChannel(activeChannel.id);
-      if (pf && (pf.backgroundImage || pf.accent !== prefs.accent)) return pf;
+      if (pf && pf.backgroundImage) return pf;
       return activeChannel;
     }
     return null;
-  }, [activeFolder, activeChannel, getParentFolderForChannel, folders, prefs.accent]);
+  }, [activeFolder, activeChannel, getParentFolderForChannel, folders]);
 
-  const channelIsCustom = contextForAppearance
-    ? contextForAppearance.accent !== prefs.accent || Boolean(contextForAppearance.backgroundImage)
-    : false;
+  const channelIsCustom = Boolean(contextForAppearance?.backgroundImage);
   useEffect(() => {
     if (channelIsCustom && contextForAppearance) {
       applyChannelAppearance(prefs, contextForAppearance as unknown as Channel);
@@ -642,6 +712,9 @@ const visible = useMemo(() => {
           onSelect: () => void vault.updatePrefs({ sidebarPosition: position }),
         })),
       },
+      // The size controls, per view, straight from the menu. Each entry states
+      // what that view is currently set to, so the menu doubles as a readout.
+      cardSizeMenu(),
       {
         kind: 'item',
         label: 'Card appearance…',
@@ -902,7 +975,69 @@ const visible = useMemo(() => {
     [removeSeparator, moveChannel, parentFolderIdOf, folders],
   );
 
+  /**
+   * Opens the appearance panel on a chosen view.
+   *
+   * Switches the view first, so the sliders act on the view the user asked for
+   * rather than whichever one happened to be open. Without that the panel said
+   * "Flow" while editing Orbit's numbers.
+   */
+  const openTuner = useCallback(
+    (target?: VaultView) => {
+      const next = target ?? view;
+      if (next !== view) void vault.updatePrefs({ view: next });
+      setShowSettings(false);
+      setShowTuner(true);
+    },
+    [view, vault],
+  );
+
+  /**
+   * The per-view size controls, as a submenu.
+   *
+   * Reachable from both the item menu and the background menu, because the ask
+   * was "right-click, then get to the size settings of the views" and only one
+   * of those two menus had a route there. Every entry opens the appearance panel
+   * already scoped to that view, so there is one place the sliders actually
+   * live rather than a second, divergent copy of them in a menu.
+   *
+   * Labels are names only. An earlier version appended each view's current
+   * numbers ("Flow — 560px wide, 132px min"), which truncated to gibberish in
+   * the 232px menu. The panel itself is the readout; the menu is the route.
+   */
+  const cardSizeMenu = useCallback(
+    (): MenuItem => ({
+      kind: 'submenu',
+      label: 'Card size',
+      icon: <PaletteIcon />,
+      heading: 'Per-view card size',
+      items: VIEW_OPTIONS.map((option) => ({
+        kind: 'item' as const,
+        label: option.label,
+        checked: view === option.id,
+        icon: <option.Icon />,
+        onSelect: () => openTuner(option.id),
+      })),
+    }),
+    [prefs.cardSize, view, openTuner],
+  );
+
   /* ---- Item actions ---------------------------------------------------- */
+
+  /**
+   * Records one use of a login for the Frequently-used panel and the
+   * untouched-login scan. Copying and editing count; merely looking does not,
+   * so scrolling past a login never promotes it.
+   */
+  const touchLogin = useCallback(
+    (id: string) => {
+      void vault.recordUse(
+        id,
+        new Set(vault.items.map((entry) => entry.id)),
+      );
+    },
+    [vault],
+  );
 
   const openItem = useCallback(
     (item: VaultItem) => {
@@ -915,9 +1050,41 @@ const visible = useMemo(() => {
         return;
       }
       void copy(item.password, 'Password');
+      touchLogin(item.id);
     },
-    [copy, notify, prefs.warnOnReuse, duplicateIds, vault.items.length],
+    [copy, notify, prefs.warnOnReuse, duplicateIds, vault.items.length, touchLogin, vault],
   );
+
+  /* ---- Untouched-login scan ------------------------------------------------
+     Once per unlock: any login with a password that nobody has copied or
+     edited within the staleness window gets flagged for attention. The flag
+     carries no age of its own (setAttention preserves updatedAt), so this
+     fires at most once per window per login rather than every unlock. Off when
+     the staleness window itself is off. */
+  useEffect(() => {
+    if (vault.status !== 'unlocked') return;
+    if (prefs.passwordAgeDays <= 0) return;
+    const cutoff = Date.now() - prefs.passwordAgeDays * 86_400_000;
+    const untouched = vault.items.filter((item) => {
+      if (item.needsAttention || !item.password) return false;
+      const lastUse = prefs.usage[item.id]?.at ?? item.updatedAt;
+      return lastUse < cutoff;
+    });
+    if (untouched.length === 0) return;
+    void vault
+      .mutate(async () => {
+        for (const item of untouched) await vault.service.setAttention(item.id, true);
+      })
+      .then(() =>
+        notify(
+          `${untouched.length} untouched login${untouched.length === 1 ? '' : 's'} flagged for attention`,
+        ),
+      );
+    // Runs once per unlock by depending on status alone. Depending on items or
+    // prefs would re-run after the flagging itself writes, which is both
+    // pointless (everything newly flagged is excluded) and noisy.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault.status]);
 
   const toggleFavorite = useCallback(
     async (item: VaultItem) => {
@@ -947,7 +1114,11 @@ const visible = useMemo(() => {
     if (!item.url) return;
     const host = hostnameOf(item.url);
     notify(`Opening ${host ?? 'site'}${prefs.warnOnReuse && duplicateIds.has(item.password) ? ' — password is reused' : ''}`, prefs.warnOnReuse && duplicateIds.has(item.password) ? 'error' : 'ok');
-    window.open(item.url, '_blank', 'noopener');
+    // Through the platform seam, not window.open directly: inside Electron a
+    // bare window.open spawns a second app window holding the unlocked vault,
+    // and the shell routes this to the OS browser instead. Web behavior is
+    // unchanged (the fallback is the same call).
+    getPlatform().openExternal(item.url);
   }, [notify, prefs.warnOnReuse, duplicateIds]);
 
   /**
@@ -971,17 +1142,29 @@ const visible = useMemo(() => {
     [verifiedItems],
   );
 
-  /** Clears the gate and then opens the editor the user was trying to reach. */
+  /**
+   * Clears the gate, then continues wherever the user was headed.
+   *
+   * 'edit' opens the editor they double-clicked toward; 'reveal' only marks
+   * the login verified, because the editor is already open and re-setting it
+   * would discard the draft in progress. Before this branched, the editor's
+   * unlock button skipped the gate outright — one click revealed the password
+   * with no factor checked at all.
+   */
   const completeGate = useCallback(() => {
     const item = pendingItem;
     if (!item) return;
     setVerifiedItems((current) => new Set(current).add(item.id));
     setPendingItem(null);
-    setEditing(item);
-  }, [pendingItem]);
+    if (pendingIntent === 'edit') setEditing(item);
+  }, [pendingItem, pendingIntent]);
 
   const viewActions: ViewActions = {
-    onCopy: copy,
+    // Card-button copies count as use when the card passes itself along.
+    onCopy: (value: string, label: string, item?: VaultItem) => {
+      void copy(value, label);
+      if (item) touchLogin(item.id);
+    },
     onSelect: openItem,
     onEdit: requestEdit,
     onDelete: requestDelete,
@@ -1011,21 +1194,51 @@ tags: prefs.tags,
           icon: <KeyIcon />,
           shortcut: 'click',
           disabled: !item.password,
-          onSelect: () => void copy(item.password, 'Password'),
+          onSelect: () => {
+            void copy(item.password, 'Password');
+            touchLogin(item.id);
+          },
         },
         {
           kind: 'item',
           label: 'Copy username',
           icon: <CopyIcon />,
           disabled: !item.username,
-          onSelect: () => void copy(item.username, 'Username'),
+          onSelect: () => {
+            void copy(item.username, 'Username');
+            touchLogin(item.id);
+          },
         },
         {
           kind: 'item',
           label: 'Copy URL',
           icon: <ExternalIcon />,
           disabled: !item.url,
-          onSelect: () => void copy(item.url, 'URL'),
+          onSelect: () => {
+            void copy(item.url, 'URL');
+            touchLogin(item.id);
+          },
+        },
+        // Short on purpose: three lines (title, email, password) that a friend
+        // with Colax pastes straight back into a login. The full labelled
+        // block is what bulk Share copies; one login does not need it.
+        {
+          kind: 'item',
+          label: 'Share login',
+          icon: <ShareIcon />,
+          disabled: !item.password && !item.username,
+          onSelect: () => {
+            void copy(
+              formatLoginCompact({
+                title: item.title,
+                username: item.username,
+                password: item.password,
+                totpSecret: item.totpSecret,
+              }),
+              'Login shared',
+            );
+            touchLogin(item.id);
+          },
         },
         { kind: 'separator' },
         {
@@ -1038,8 +1251,14 @@ tags: prefs.tags,
           kind: 'item',
           label: 'Edit login',
           icon: <EditIcon />,
-          onSelect: () => setEditing(item),
+          // Gated like every other route into the editor: a secured login
+          // clears its second factor first instead of handing over the secret.
+          onSelect: () => requestEdit(item),
         },
+        // Per-view card sizing. This was only reachable from the *background*
+        // context menu, so right-clicking a card — the thing you are actually
+        // looking at — had no route to the size sliders for it.
+        cardSizeMenu(),
         {
           kind: 'submenu',
           label: 'Open',
@@ -1068,7 +1287,11 @@ tags: prefs.tags,
         },
       ];
     },
-    [copy, duplicateIds, toggleFavorite, openUrl, requestDelete],
+    // cardSizeMenu is a callback that changes when the sizes change. Leaving it
+    // out of this list froze the card menu's Card-size submenu on whatever the
+    // sizes were at first render: it opened the tuner for the wrong view and
+    // described numbers that no longer matched.
+    [copy, duplicateIds, toggleFavorite, openUrl, requestDelete, requestEdit, cardSizeMenu, touchLogin],
   );
 
   const appMenu = useCallback((): MenuItem[] => {
@@ -1080,19 +1303,25 @@ tags: prefs.tags,
         shortcut: 'N',
         onSelect: () => setEditing('new'),
       },
-{
+      {
         kind: 'submenu',
         label: 'Switch view',
         icon: <LayersIcon />,
         heading: 'View',
-        items: (['animated', 'carousel', 'basic'] as VaultView[]).map((id) => ({
+        // Built from VIEW_OPTIONS so this submenu, the topbar panel and the
+        // right-click list are one list, not three that drift apart.
+        items: VIEW_OPTIONS.map((option) => ({
           kind: 'item' as const,
-          label: { animated: 'Flow', carousel: 'Orbit', basic: 'List' }[id],
-          checked: view === id,
-          icon: id === 'carousel' ? <GridIcon /> : id === 'basic' ? <RowsIcon /> : <LayersIcon />,
-          onSelect: () => void vault.updatePrefs({ view: id }),
+          label: option.label,
+          shortcut: option.shortcut,
+          checked: view === option.id,
+          icon: <option.Icon />,
+          onSelect: () => void vault.updatePrefs({ view: option.id }),
         })),
       },
+      // Same per-view size controls as the card menu. Empty space is the most
+      // common right-click target and it had no route to them at all.
+      cardSizeMenu(),
 {
         kind: 'submenu',
         label: 'Sort by',
@@ -1171,10 +1400,29 @@ label: 'Settings',
       }
       event.preventDefault();
       const itemEl = target?.closest('[data-vault-item]') as HTMLElement | null;
+      if (event.shiftKey) {
+        event.preventDefault();
+        setMenu(null);
+        setViewMenuAt({ x: event.clientX, y: event.clientY });
+        setViewMenuOpen(true);
+        return;
+      }
+      setViewMenuOpen(false);
       if (itemEl) {
         const id = itemEl.dataset.vaultItem;
         const item = vault.items.find((entry) => entry.id === id);
         if (item) {
+          // Right-clicking inside an existing selection acts on the whole
+          // selection, which is what makes the gesture useful: you select a set,
+          // then right-click any member of it. Right-clicking outside it starts
+          // over from that one login, so a mis-click does not silently apply a
+          // bulk action to rows the user had forgotten they had selected.
+          const bulk = bulkRef.current;
+          if (bulk.has(item.id) && bulk.size > 1) {
+            setMenu({ x: event.clientX, y: event.clientY, items: selectionMenuRef.current });
+            return;
+          }
+          selection.clear();
           setMenu({ x: event.clientX, y: event.clientY, items: itemMenu(item) });
           return;
         }
@@ -1183,7 +1431,285 @@ label: 'Settings',
     };
     window.addEventListener('contextmenu', onContextMenu);
     return () => window.removeEventListener('contextmenu', onContextMenu);
-  }, [vault.status, vault.items, vault, itemMenu, appMenu]);
+    // selectionMenu is read through a ref rather than depended on. It is
+    // rebuilt whenever the selection changes, so listing it here would tear down
+    // and re-add this window listener on every click of a selection, which also
+    // risks losing the very gesture that is still being handled.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault.status, vault.items, vault, itemMenu, appMenu, selection]);
+
+  /* ---- Paste to create ----------------------------------------------------
+     Click the vault body, Ctrl+V a copied email+password, and a new Unassigned
+     login is created from it. Reads the event's clipboard data directly, so no
+     permission prompt is involved; only fires outside text fields, menus and
+     dialogs, so pasting into a form never creates anything. An exact
+     username+password duplicate is reported instead of duplicated — pasting
+     twice must not fork the login. */
+  useEffect(() => {
+    if (vault.status !== 'unlocked') return;
+    const onPaste = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest(
+          'input, textarea, select, [contenteditable="true"], .ctx-menu, .settings-window, .modal, .editor-window, .sidebar',
+        )
+      ) {
+        return;
+      }
+      const text = event.clipboardData?.getData('text') ?? '';
+      if (!text.trim()) return;
+      const creds = detectClipboard(text);
+      if (!creds) return;
+      event.preventDefault();
+      const duplicate = vault.items.some(
+        (entry) => entry.username === creds.username && entry.password === creds.password,
+      );
+      if (duplicate) {
+        notify('That login is already in the vault', 'error');
+        return;
+      }
+      void vault
+        .mutate(() =>
+          vault.service.addItem({
+            title: creds.title?.trim() || creds.username.split('@')[0] || 'Pasted login',
+            username: creds.username,
+            password: creds.password,
+            url: creds.url ?? '',
+            notes: creds.notes ?? '',
+          }),
+        )
+        .then(() => notify('Created login in Unassigned'));
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [vault, notify]);
+
+  useViewShortcuts((next) => void vault.updatePrefs({ view: next }));
+
+  /* ---- Dock ---------------------------------------------------------------
+     Slots come from prefs.dockSlots, in bar order: views, channels, and the
+     inbox. The inbox slot selects the dashboard channel, which is where
+     connected-mail messages render — the dock does not fetch mail itself, so
+     enabling it adds no polling. A channel slot whose channel is gone renders
+     nothing rather than a dead button (normalization cannot know the channel
+     list, so the filter lives here where channels are visible). */
+  const dockSlots: DockSlot[] = useMemo(() => {
+    const dashboardId = channelLookup.find((channel) => channel.kind === 'dashboard')?.id;
+    const resolved: DockSlot[] = [];
+    for (const slot of prefs.dockSlots) {
+      const id = `${slot.kind}:${slot.ref || slot.kind}`;
+      if (slot.kind === 'view') {
+        const option = VIEW_OPTIONS.find((entry) => entry.id === slot.ref);
+        if (!option) continue;
+        resolved.push({
+          id,
+          label: slot.label || option.label,
+          hint: option.hint,
+          Icon: option.Icon,
+          imageUrl: slot.icon,
+          key: slot.key,
+          active: view === option.id,
+          onJump: () => void vault.updatePrefs({ view: option.id as VaultView }),
+        });
+      } else if (slot.kind === 'inbox') {
+        resolved.push({
+          id,
+          label: slot.label || 'Inbox',
+          hint: 'Dashboard and recent mail',
+          Icon: MailIcon,
+          imageUrl: slot.icon,
+          key: slot.key,
+          active: activeChannel?.kind === 'dashboard',
+          onJump: () => {
+            if (dashboardId) setActiveId(dashboardId);
+          },
+        });
+      } else if (slot.kind === 'folder') {
+        const folder = folders.find((entry) => entry.id === slot.ref);
+        if (!folder) continue;
+        const Icon = CHANNEL_ICONS_MAP[folder.icon] ?? LayersIcon;
+        resolved.push({
+          id,
+          label: slot.label || folder.name,
+          hint: `Folder: ${folder.name}`,
+          Icon,
+          imageUrl: slot.icon,
+          key: slot.key,
+          active: activeFolder?.id === folder.id,
+          onJump: () => setActiveId(`folder:${folder.id}`),
+        });
+      } else if (slot.kind === 'login') {
+        const item = vault.items.find((entry) => entry.id === slot.ref);
+        // Gone (deleted) renders nothing, like a deleted channel's slot.
+        if (!item) continue;
+        resolved.push({
+          id,
+          label: slot.label || item.title || item.username || 'Login',
+          hint: item.username || item.url || 'Copy login',
+          Icon: KeyIcon,
+          imageUrl: slot.icon,
+          key: slot.key,
+          active: selection.ids.has(item.id),
+          // One line, "email password", ready to paste into a form. Channel
+          // slots keep navigating — copying every login in a channel silently
+          // would be a footgun, so bulk copying stays behind the explicit
+          // multi-select Share instead.
+          onJump: () => {
+            const line = [item.username.trim(), item.password].filter(Boolean).join(' ');
+            if (line) void copy(line, 'Login');
+          },
+        });
+      } else {
+        const channel = channelLookup.find((entry) => entry.id === slot.ref);
+        if (!channel) continue;
+        const Icon = CHANNEL_ICONS_MAP[channel.icon] ?? LayersIcon;
+        resolved.push({
+          id,
+          label: slot.label || channel.name,
+          hint: `Channel: ${channel.name}`,
+          Icon,
+          imageUrl: slot.icon,
+          key: slot.key,
+          active: activeId === channel.id,
+          onJump: () => setActiveId(channel.id),
+        });
+      }
+    }
+    return resolved;
+  }, [prefs.dockSlots, channelLookup, folders, view, activeChannel, activeFolder, activeId, selection, vault, viewActions, copy]);
+
+  /**
+   * The dock's own menu: position, a route to full configuration, and hide.
+   * Dragging the grip repositions without menus, but discoverability needs a
+   * right-click path too — and Hide must live here, because hiding removes the
+   * bar you would otherwise unhide it from.
+   */
+  const dockMenu = useCallback((): MenuItem[] => {
+    // Canonical spots per edge; dragging refines from here freely.
+    const positions = [
+      { id: 'bottom', label: 'Bottom', fx: 0.5, fy: 0.94 },
+      { id: 'top', label: 'Top', fx: 0.5, fy: 0.06 },
+      { id: 'left', label: 'Left', fx: 0.06, fy: 0.5 },
+      { id: 'right', label: 'Right', fx: 0.94, fy: 0.5 },
+    ] as const;
+    return [
+      {
+        kind: 'submenu',
+        label: 'Dock position',
+        heading: 'Dock position',
+        items: positions.map((position) => ({
+          kind: 'item' as const,
+          label: position.label,
+          checked: prefs.dockPos.edge === position.id,
+          onSelect: () =>
+            void vault.updatePrefs({
+              dockPos: { edge: position.id, fx: position.fx, fy: position.fy },
+            }),
+        })),
+      },
+      {
+        kind: 'item',
+        label: 'Configure dock…',
+        icon: <SettingsIcon />,
+        onSelect: () => openSettings('layout'),
+      },
+      { kind: 'separator' },
+      {
+        kind: 'item',
+        label: 'Hide dock',
+        onSelect: () => void vault.updatePrefs({ dockEnabled: false }),
+      },
+    ];
+  }, [prefs.dockPos, vault, openSettings]);
+
+  useDockShortcuts(
+    prefs.dockEnabled ? dockSlots : [],
+    // DOM-based rather than state-based: any open menu, modal, settings
+    // window, tuner or editor has one of these classes, including ones added
+    // later, so a new dialog cannot accidentally become type-into-the-dock.
+    () =>
+      !typingHasFocus() &&
+      !document.querySelector('.ctx-menu, .modal, .settings-window, .tuner, .editor-window'),
+  );
+  useSelectAllShortcuts(
+    () => selection.selectAll(visible),
+    () => selection.clear(),
+    // Suppressed inside any text field so Ctrl+A still selects text there.
+    () => !typingHasFocus() && !showSettings && !editing,
+  );
+
+  /* ---- Selection and bulk actions -----------------------------------------
+     These have to sit above the boot/lock early returns below, not beside the
+     views that use them. App returns early while loading, while locked and while
+     the vault gate is up, so a hook declared after those returns is skipped on
+     the first render and then called on the second — which React reports as
+     "rendered more hooks than during the previous render" and refuses to
+     recover from. Every hook in this component has to be above the first return. */
+
+  const onSelectForEdit = useCallback(
+    (item: VaultItem, extend: boolean) => {
+      if (extend) selection.extendTo(item, visible);
+      else selection.toggle(item);
+    },
+    [selection, visible],
+  );
+
+  /** The selection resolved against what is currently on screen. */
+  const selectedItems = useMemo(() => selection.resolve(visible), [selection, visible]);
+
+  const shareSelection = useCallback(async () => {
+    if (selectedItems.length === 0) return;
+    const text =
+      selectedItems.length === 1
+        ? formatLoginForClipboard(selectedItems[0]!)
+        : formatLoginsForClipboard(selectedItems);
+    await copy(text, selectedItems.length === 1 ? 'Login' : `${selectedItems.length} logins`);
+  }, [copy, selectedItems]);
+
+  const applySelectionEdit = useCallback(
+    async (edit: BulkEdit) => {
+      const target = selectedItems;
+      if (target.length === 0) return;
+      await vault.mutate(() =>
+        applyBulkEdit(target, edit, (id, patch) => vault.service.updateItem(id, patch)),
+      );
+      // Reported from the dialog's own "Apply to N" count rather than recounted
+      // here: the count was computed from the same diff, and re-deriving it here
+      // risks the two disagreeing about what "changed" means.
+      notify(`${target.length} ${target.length === 1 ? 'login' : 'logins'} checked`, 'ok');
+    },
+    [notify, selectedItems, vault],
+  );
+
+  const selectionMenu = useMemo(
+    () =>
+      bulkMenu({
+        items: selectedItems,
+        icon: { share: <ShareIcon />, edit: <EditIcon />, shield: <ShieldIcon />, trash: <TrashIcon />, all: <CheckIcon /> },
+        onShare: () => void shareSelection(),
+        onEditFields: () => setBulkField('title'),
+        // Deliberately concrete actions rather than a bulk security form. Every
+        // entry names one field and does one thing, so there is no state in
+        // which a factor could be carried across from one login to another by
+        // accident. A TOTP seed is per-credential and copying one onto several
+        // logins would break every one of them at once.
+        onEditSecurity: () => setBulkSecurity(true),
+        onDelete: () => {
+          if (prefs.confirmDeletes) setBulkDelete(selectedItems);
+          else
+            void vault.mutate(async () => {
+              for (const item of selectedItems) await vault.service.deleteItem(item.id);
+            });
+        },
+        onSelectAll: () => selection.selectAll(visible),
+        onClear: () => selection.clear(),
+      }),
+    [selectedItems, shareSelection, vault, prefs.confirmDeletes, selection, visible],
+  );
+
+  // Published to the contextmenu listener, which runs outside this render's
+  // dependency graph. Kept in a ref so the listener never needs rebuilding.
+  selectionMenuRef.current = selectionMenu;
 
   const toggleTheme = () => {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -1276,7 +1802,7 @@ onCreate={vault.create}
   const reuseWarning = confirmDelete?.notes === '__reuse__' ? confirmDelete : null;
   const pendingDelete = reuseWarning ? null : confirmDelete;
 
-const commonProps = {
+  const commonProps = {
     items: visible,
     duplicateIds,
     showHealthBadges: prefs.showHealthBadges,
@@ -1285,6 +1811,21 @@ const commonProps = {
     showLetterGroups: prefs.showLetterGroups,
     // Each view reads its own slice, so tuning Orbit never resizes Flow.
     cardSize: prefs.cardSize[view],
+    selectedIds: selection.ids,
+    onSelectForEdit,
+    // Mail scope follows the active channel: a channel that hides mail, or one
+    // pinned to a single account, scopes every card it shows. Anything else —
+    // All logins, folders, search — shows everything.
+    gmailAccounts: prefs.gmailAccounts,
+    mailScope: {
+      show: activeChannel?.showMail !== false,
+      account:
+        activeChannel &&
+        activeChannel.mailAccount !== 'all' &&
+        prefs.gmailAccounts.some((entry) => entry.id === activeChannel.mailAccount)
+          ? activeChannel.mailAccount
+          : 'all',
+    },
     ...viewActions,
   };
 
@@ -1383,7 +1924,12 @@ const commonProps = {
             </div>
 
             <div className="topbar__actions">
-              <ViewMenu value={view} onChange={(next) => void vault.updatePrefs({ view: next })} />
+              <ViewMenu
+          value={view}
+          labels={prefs.viewLabels}
+          labelsByView={prefs.viewLabelsByView}
+          onChange={(next) => void vault.updatePrefs({ view: next })}
+        />
               <button className="btn btn--quiet" onClick={() => setEditing('new')}>
                 <PlusIcon width="15" height="15" />
                 New login
@@ -1414,9 +1960,11 @@ const commonProps = {
                   tags={prefs.tags}
                   items={vault.items}
                   prefs={prefs}
+                  usage={prefs.usage}
                   onEditChannel={(channelId) => setEditingChannel(channelId)}
                   onNewChannel={() => setEditingChannel('new')}
                   onSelectChannel={(id) => setActiveId(id)}
+                  onOpenLogin={(item) => requestEdit(item)}
                   onTagsChange={(tags) => {
                     // A new tag can become a channel automatically.
                     if (prefs.autoTagChannel && tags.length > prefs.tags.length) {
@@ -1453,6 +2001,11 @@ const commonProps = {
               </div>
             ) : view === 'carousel' ? (
               <CarouselView {...commonProps} {...cardProps} showOrbitLabels={prefs.showOrbitLabels} />
+            ) : view === 'grid' ? (
+              // Grid scrolls in the pane like List, so it gets the plain wrapper.
+              <div data-vault-list>
+                <GridView {...commonProps} {...cardProps} />
+              </div>
             ) : (
               <div data-vault-list>
                 <BasicView {...commonProps} {...cardProps} />
@@ -1462,7 +2015,89 @@ const commonProps = {
         </main>
       </div>
 
+      {bulkField && selectedItems.length > 0 ? (
+        <BulkEditDialog
+          items={selectedItems}
+          field={bulkField}
+          tags={prefs.tags}
+          onApply={(edit) => void applySelectionEdit(edit)}
+          onCancel={() => setBulkField(null)}
+          onNotify={notify}
+        />
+      ) : null}
+
+      {bulkSecurity && selectedItems.length > 0 ? (
+        <BulkSecurityDialog
+          items={selectedItems}
+          onNotify={notify}
+          onCancel={() => setBulkSecurity(false)}
+          onApply={async (factor) => {
+            const targets = selectedItems;
+            await vault.mutate(async () => {
+              for (const item of targets) {
+                if (!hasSecurityFactor(item, factor)) continue;
+                await vault.service.updateItem(item.id, { security: withoutSecurityFactor(item, factor) });
+              }
+            });
+          }}
+        />
+      ) : null}
+
+      {bulkDelete && bulkDelete.length > 0 ? (
+        <Modal
+          title={`Delete ${bulkDelete.length} ${bulkDelete.length === 1 ? 'login' : 'logins'}?`}
+          onClose={() => setBulkDelete(null)}
+          footer={
+            <>
+              <button type="button" className="btn btn--secondary" onClick={() => setBulkDelete(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn--danger"
+                onClick={() => {
+                  const targets = bulkDelete;
+                  setBulkDelete(null);
+                  selection.clear();
+                  void vault.mutate(async () => {
+                    for (const item of targets) await vault.service.deleteItem(item.id);
+                  });
+                  notify(`${targets.length} ${targets.length === 1 ? 'login' : 'logins'} deleted`);
+                }}
+              >
+                Delete
+              </button>
+            </>
+          }
+        >
+          <p className="field__note">
+            {bulkDelete.length === 1 ? `“${bulkDelete[0]?.title}” will be removed.` : null} This cannot be undone.
+          </p>
+        </Modal>
+      ) : null}
+
+      {/* The dock only exists on the unlocked vault screen: it jumps between
+          views and the inbox, none of which exist before unlock. */}
+      {prefs.dockEnabled ? (
+        <Dock
+          slots={dockSlots}
+          pos={prefs.dockPos}
+          onPosChange={(dockPos) => void vault.updatePrefs({ dockPos })}
+          onMenu={(event) => setMenu({ x: event.clientX, y: event.clientY, items: dockMenu() })}
+        />
+      ) : null}
+
       <ContextMenu state={menu} onClose={() => setMenu(null)} />
+      <ViewContextMenu
+        open={viewMenuOpen}
+        x={viewMenuAt.x}
+        y={viewMenuAt.y}
+        value={view}
+        labels={prefs.viewLabels}
+        labelsByView={prefs.viewLabelsByView}
+        onPick={(next) => void vault.updatePrefs({ view: next })}
+        onClose={() => setViewMenuOpen(false)}
+      />
 
 <Settings
         open={showSettings}
@@ -1478,16 +2113,11 @@ const commonProps = {
         onLock={vault.lock}
         onEditChannel={(channelId) => setEditingChannel(channelId)}
         onScrubTag={(tagId) => void scrubTag(tagId)}
-        onOpenTuner={(target) => {
-          // Switching first means the sliders act on the view whose size the
-          // user just clicked, not whichever view happened to be open.
-          if (target && target !== view) void vault.updatePrefs({ view: target });
-          setShowSettings(false);
-          setShowTuner(true);
-        }}
+        onOpenTuner={openTuner}
         onReset={async () => {
-          await vault.service.reset();
-          vault.clearHistory();
+          // Goes through the hook, not the service: resetting only the service
+          // wipes storage while the rendered logins stay on screen.
+          await vault.resetVault();
           setActiveId('all');
           setEditing(null);
           notify('Vault deleted from this device');
@@ -1531,13 +2161,17 @@ const commonProps = {
               <button
                 className="btn btn--primary"
                 onClick={() => {
+                  // Untagged, so it lands in Unassigned. A clipboard login has no
+                  // site to categorise it by and guessing a channel here would
+                  // quietly file it somewhere the user did not choose.
                   void vault
                     .mutate(() =>
                       vault.service.addItem({
-                        title: clipPending.username.split('@')[0] ?? 'Clipboard login',
+                        title: clipPending.title?.trim() || clipPending.username.split('@')[0] || 'Clipboard login',
                         username: clipPending.username,
                         password: clipPending.password,
-                        url: '',
+                        url: clipPending.url ?? '',
+                        notes: clipPending.notes ?? '',
                       }),
                     )
                     .then(() => notify('Saved from the clipboard'));
@@ -1550,11 +2184,24 @@ const commonProps = {
           }
         >
           <dl className="capture__fields">
+            {clipPending.title ? (
+              <>
+                <dt>Title</dt>
+                <dd>{clipPending.title}</dd>
+              </>
+            ) : null}
             <dt>Username</dt>
             <dd>{clipPending.username}</dd>
             <dt>Password</dt>
-            <dd>••••••••</dd>
+            <dd>••••••</dd>
+            {clipPending.url ? (
+              <>
+                <dt>Website</dt>
+                <dd>{clipPending.url}</dd>
+              </>
+            ) : null}
           </dl>
+          <p className="capture__note">Saves untagged, so it waits in Unassigned until you file it.</p>
           <p className="capture__note">Turn this off in Settings &gt; Security if it prompts too often.</p>
         </Modal>
       ) : null}
@@ -1565,6 +2212,7 @@ const commonProps = {
           key={editingChannel}
           channel={editingChannel === 'new' ? null : channels.find((entry) => entry.id === editingChannel) ?? null}
           tags={prefs.tags}
+          accounts={prefs.gmailAccounts}
           itemCount={
             editingChannel === 'new'
               ? vault.items.length
@@ -1595,17 +2243,21 @@ const commonProps = {
 <ItemEditor
           item={editing === 'new' ? null : editing}
           tags={prefs.tags}
+          gmailAccounts={prefs.gmailAccounts}
+          onGmailAccountsChange={(gmailAccounts) => void vault.updatePrefs({ gmailAccounts })}
           onCommitTags={(next) => void vault.updatePrefs({ tags: next })}
           generatorOptions={prefs.passwordGenerator}
           onGeneratorOptionsChange={(next) => void vault.updatePrefs({ passwordGenerator: next })}
           verified={editing === 'new' || verifiedItems.has(editing.id)}
           onRequestUnlock={() => {
             // Reached only when the editor was opened for a secured login
-            // without the gate being cleared, which the gate above is meant to
-            // prevent. Clearing the factor marks the login verified for the
-            // session, so the form unlocks rather than looping.
+            // without the gate being cleared. Routes through the gate like
+            // every other reveal path — the previous version marked the login
+            // verified outright, so the "unlock" button showed the password
+            // with no factor checked.
             if (editing && editing !== 'new') {
-              setVerifiedItems((current) => new Set(current).add(editing.id));
+              setPendingIntent('reveal');
+              setPendingItem(editing);
             }
           }}
           onSave={async (draft) => {
@@ -1629,11 +2281,27 @@ const commonProps = {
                 }
                 if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
               }
-              await vault.mutate(() => vault.service.addItem(draft));
+              const created = await vault.mutate(() => vault.service.addItem(draft));
+              touchLogin(created.id);
               notify('Login added');
             } else if (editing) {
+              // A changed password is re-graded on the spot: a weak replacement
+              // earns the weak badge and a needs-attention flag immediately,
+              // rather than waiting for the next health scan to notice it.
+              // Only ever sets the flag, never clears it — clearing stays a
+              // deliberate act, so saving a strong password cannot silently
+              // dismiss a flag set for another reason.
+              const rotatedWeak =
+                draft.password !== undefined &&
+                draft.password !== '' &&
+                draft.password !== editing.password &&
+                isWeakPassword({ password: draft.password });
+              if (rotatedWeak) {
+                draft = { ...draft, needsAttention: true };
+              }
               await vault.mutate(() => vault.service.updateItem(editing.id, draft));
-              notify('Login updated');
+              touchLogin(editing.id);
+              notify(rotatedWeak ? 'Saved — that password looks weak, flagged for attention' : 'Login updated');
             }
             setEditing(null);
           }}

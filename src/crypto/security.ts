@@ -360,6 +360,36 @@ export function requiresVerification(security: LoginSecurity | undefined): boole
   return isSecured(security);
 }
 
+/**
+ * Coerces a stored security block into the current shape.
+ *
+ * One shared helper because three separate normalizers (vault preferences,
+ * login items, folders) each rebuilt the object by hand, and all three forgot
+ * `passcode` — so a passcode-only second factor silently stopped protecting
+ * anything on reload, with no message anywhere. New factors belong here, not in
+ * three places.
+ */
+export function normaliseSecurity(raw: Partial<LoginSecurity> | undefined | null): LoginSecurity {
+  const passcode = raw?.passcode;
+  return {
+    totp: raw?.totp?.seed ? { seed: String(raw.totp.seed) } : null,
+    passcode:
+      passcode && typeof passcode.hash === 'string' && passcode.hash
+        ? { hash: String(passcode.hash), salt: String(passcode.salt ?? '') }
+        : null,
+    questions: Array.isArray(raw?.questions)
+      ? raw.questions
+          .filter((question): question is NonNullable<typeof question> => Boolean(question && question.hash))
+          .map((question) => ({
+            id: String(question.id ?? `sq_${Math.random().toString(36).slice(2, 10)}`),
+            prompt: String(question.prompt ?? ''),
+            hash: String(question.hash),
+            salt: String(question.salt ?? ''),
+          }))
+      : [],
+  };
+}
+
 /* ---- Passkeys ------------------------------------------------------------
    WebAuthn registration needs a server to attest the credential against, which
    a local-first vault has no way to provide honestly. Rather than ship a stored

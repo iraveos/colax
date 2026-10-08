@@ -25,6 +25,9 @@ import {
 import { createTag, type Tag } from '../vault/channels.ts';
 import { readImageFile } from './card-art.ts';
 import { Alert, Modal, StrengthMeter, Toggle } from './primitives.tsx';
+import { formatLoginCompact } from './login-format.ts';
+import { InboxSection } from './InboxSection.tsx';
+import type { GmailAccount } from '../vault/storage.ts';
 import {
   CopyIcon,
   DiceIcon,
@@ -38,6 +41,8 @@ import {
   ShieldIcon,
   TagIcon,
   XIcon,
+  MailIcon,
+  ShareIcon,
 } from './icons.tsx';
 import type { Toast } from './hooks.ts';
 
@@ -192,6 +197,7 @@ const SECTIONS = [
   { id: 'organise', label: 'Organise', hint: 'Tags and the dates behind the health warnings.', Icon: TagIcon },
   { id: 'appearance', label: 'Appearance', hint: 'Icon, colours and images.', Icon: PaletteIcon },
   { id: 'notes', label: 'Notes', hint: 'Anything else worth remembering.', Icon: EditIcon },
+  { id: 'inbox', label: 'Inbox', hint: 'Connect a mailbox and read recent mail here.', Icon: MailIcon },
   { id: 'flags', label: 'Flags', hint: 'Sorting, favourites and warnings.', Icon: FlagIcon },
 ] as const;
 
@@ -206,6 +212,8 @@ export function ItemEditor({
   verified = true,
   onNotify,
   onCommitTags,
+  gmailAccounts,
+  onGmailAccountsChange,
 }: {
   item: VaultItem | null;
   /** Global tag catalogue, so new tags can be created inline. */
@@ -233,6 +241,9 @@ export function ItemEditor({
   onNotify: (message: string) => void;
   /** Persists any tags the user created while editing. */
   onCommitTags: (tags: Tag[]) => void;
+  /** Connected mailboxes, shared across the app rather than per-login. */
+  gmailAccounts: GmailAccount[];
+  onGmailAccountsChange: (next: GmailAccount[]) => void;
 }) {
   const [draft, setDraft] = useState<Partial<VaultItem>>(item ?? {});
   const [revealed, setRevealed] = useState(false);
@@ -354,6 +365,30 @@ export function ItemEditor({
               <DiceIcon width="14" height="14" />
               Generate
             </button>
+            {/* Short share for one login: title, email, password. A friend with
+                Colax pastes it straight back into a login. */}
+            <button
+              type="button"
+              className="btn btn--secondary"
+              disabled={!draft.username && !draft.password}
+              title="Copy a short share block for this login"
+              onClick={() => {
+                void navigator.clipboard
+                  .writeText(
+                    formatLoginCompact({
+                      title: draft.title ?? '',
+                      username: draft.username ?? '',
+                      password: passwordLocked ? '' : (draft.password ?? ''),
+                      totpSecret: draft.totpSecret,
+                    }),
+                  )
+                  .then(() => onNotify('Login shared — paste it to a friend with Colax'))
+                  .catch(() => onNotify('Could not reach the clipboard'));
+              }}
+            >
+              <ShareIcon width="14" height="14" />
+              Share
+            </button>
           </div>
           {passwordLocked ? (
             <p className="field__note">Clear this login&apos;s second factor to reveal its password.</p>
@@ -451,6 +486,20 @@ export function ItemEditor({
     ),
 
     appearance: <ThemePicker draft={draft} patch={patch} onNotify={onNotify} />,
+
+    inbox: (
+      <>
+        <div className="field">
+          <Toggle
+            label="Show messages on this login"
+            checked={draft.showMail !== false}
+            onChange={(showMail) => patch({ showMail })}
+          />
+          <p className="field__note">The card gets a message expander matched to this login's email.</p>
+        </div>
+        <InboxSection accounts={gmailAccounts} onAccountsChange={onGmailAccountsChange} onNotify={onNotify} />
+      </>
+    ),
 
     notes: (
       <div className="field">
@@ -631,7 +680,7 @@ function TagPicker({
 
 /* ---- Per-login appearance ---------------------------------------------- */
 
-const HUE_PRESETS = [
+export const HUE_PRESETS = [
   { label: 'Auto', hue: null },
   { label: 'Slate', hue: 212 },
   { label: 'Sage', hue: 152 },

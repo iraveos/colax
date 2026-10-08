@@ -85,11 +85,11 @@ export function useCaptureOffer({ enabled, tags, onAccept }: CaptureOfferOptions
     // The extension's content script cannot post to a page it is not injected
     // into, so it goes through the background worker and back down this API.
     const fromExtension = ((event: MessageEvent) => receive(event.data)) as EventListener;
-    chrome?.runtime?.onMessage?.addListener(fromExtension);
+    extensionRuntime()?.onMessage?.addListener(fromExtension);
 
     return () => {
       window.removeEventListener('message', onMessage);
-      chrome?.runtime?.onMessage?.removeListener(fromExtension);
+      extensionRuntime()?.onMessage?.removeListener(fromExtension);
     };
   }, [enabled, receive]);
 
@@ -103,7 +103,7 @@ export function useCaptureOffer({ enabled, tags, onAccept }: CaptureOfferOptions
     setPending(null);
     // Tell the extension so it stops prompting on this site.
     try {
-      chrome?.runtime?.sendMessage?.({ type: 'colax:dismissed' });
+      extensionRuntime()?.sendMessage?.({ type: 'colax:dismissed' });
     } catch {
       // Not installed, or the worker is asleep. The prompt is gone either way.
     }
@@ -112,12 +112,21 @@ export function useCaptureOffer({ enabled, tags, onAccept }: CaptureOfferOptions
   return { pending, accept, dismiss, buildDraft: (offer: PendingCapture) => captureToDraft(offer.capture, offer.insight) };
 }
 
-/** The global object, typed so the app still builds without the extension. */
-declare const chrome:
-  | {
-      runtime?: {
-        onMessage?: { addListener(cb: EventListener): void; removeListener(cb: EventListener): void };
-        sendMessage?(message: unknown): void;
-      };
-    }
-  | undefined;
+interface ExtensionRuntime {
+  onMessage?: { addListener(cb: EventListener): void; removeListener(cb: EventListener): void };
+  sendMessage?(message: unknown): void;
+}
+
+/**
+ * The extension's messaging API, if one is present.
+ *
+ * Read off globalThis rather than naming `chrome` directly. Optional chaining
+ * does not save you there: `chrome?.runtime` still throws ReferenceError when
+ * `chrome` is an undeclared identifier, which is exactly what Firefox gives a
+ * plain web page (Chrome exposes a `window.chrome` without `runtime`, so the
+ * chain stops harmlessly — which is why this crashed only on Firefox).
+ * Property access on globalThis never throws, present or not.
+ */
+function extensionRuntime(): ExtensionRuntime | undefined {
+  return (globalThis as unknown as { chrome?: { runtime?: ExtensionRuntime } }).chrome?.runtime;
+}

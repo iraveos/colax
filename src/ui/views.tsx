@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AnimatedList } from '../components/react-bits/AnimatedList.tsx';
 import { CircularCarousel, type CarouselItem } from '../components/react-bits/CircularCarousel.tsx';
-import { backgroundSrc, itemBackgroundStyle, itemStyle, toCarouselItems } from './card-art.ts';
+import { avatarSrc, backgroundSrc, itemBackgroundStyle, itemStyle, toCarouselItems } from './card-art.ts';
 import { EmptyState } from './primitives.tsx';
 import {
   CheckIcon,
@@ -17,10 +17,11 @@ import {
   StarIcon,
   TrashIcon,
 } from './icons.tsx';
-import { hostnameOf, relativeTime, type VaultItem } from '../vault/types.ts';
+import { accentOf, hostnameOf, isWeakPassword, relativeTime, type VaultItem } from '../vault/types.ts';
 import { isSecured } from '../crypto/security.ts';
-import type { CardSizePrefs } from '../vault/storage.ts';
+import type { CardSizePrefs, GmailAccount } from '../vault/storage.ts';
 import { SecurityGate } from './SecurityGate.tsx';
+import { LoginMessages } from './LoginMessages.tsx';
 import type { Tag } from '../vault/channels.ts';
 
 
@@ -40,7 +41,11 @@ function maskOf(item: VaultItem): string {
 }
 
 export interface ViewActions {
-  onCopy: (value: string, label: string) => void;
+  /**
+   * Copies a value. The item is passed wherever one is at hand so the copy
+   * counts as use; callers without an item (bulk dialogs) copy untracked.
+   */
+  onCopy: (value: string, label: string, item?: VaultItem) => void;
   onEdit: (item: VaultItem) => void;
   onDelete: (item: VaultItem) => void;
   onToggleFavorite: (item: VaultItem) => void;
@@ -68,11 +73,125 @@ interface CommonViewProps extends ViewActions {
   staleDays: number;
   /** This view's own card geometry and colour, from Settings or the panel. */
   cardSize: CardSizePrefs;
+  /** Currently selected ids, so a card can show it is selected. */
+  selectedIds?: ReadonlySet<string>;
+  /**
+   * Modifier-click on a card. `extend` is true for shift, which selects a range
+   * rather than toggling one.
+   */
+  onSelectForEdit?: (item: VaultItem, extend: boolean) => void;
+  /** Connected mailboxes, for the per-login message expander. */
+  gmailAccounts?: GmailAccount[];
+  /**
+   * Mail scope of the active channel: whether its logins show the expander at
+   * all, and which account it reads ('all' or one id). Absent means show from
+   * every account, which is also the pre-channel-settings behavior.
+   */
+  mailScope?: { show: boolean; account: string };
+}
+
+/**
+ * Whether a login gets its message expander: the channel must allow mail, the
+ * login itself must not have opted out, and at least one account must be
+ * connected. Checked in one place so the three views cannot disagree.
+ */
+function mailFor(item: VaultItem, scope: CommonViewProps['mailScope'], accounts: CommonViewProps['gmailAccounts']): boolean {
+  if (scope?.show === false) return false;
+  if (item.showMail === false) return false;
+  return (accounts ?? []).some((account) => account.enabled && account.address && account.appPassword);
+}
+
+/**
+ * Wires a card's click handler to the selection gesture.
+ *
+ * Returns a handler that does nothing when selection is unavailable, so a view
+ * rendered without it still behaves exactly as before.
+ */
+function selectionClick(
+  item: VaultItem,
+  onSelectForEdit: CommonViewProps['onSelectForEdit'],
+): ((event: { preventDefault: () => void; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => void) | undefined {
+  if (!onSelectForEdit) return undefined;
+  return (event) => {
+    // Ctrl/Cmd and shift both enter selection mode; neither does on its own,
+    // because a plain click is the open-and-copy fast path.
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      event.preventDefault();
+      onSelectForEdit(item, event.shiftKey);
+    }
+  };
 }
 
 /** Tag chips for a login, resolved against the catalogue. */
-function TagChips({ tags }: { tags: Tag[] }) {
+/**
+ * The login's image, or a letter tile when there is none.
+ *
+ * This was the missing piece behind "I changed the picture and saw no icon".
+ * `avatarSrc` has existed the whole time and is used by nothing: the card art,
+ * the editor's preview and the security-gate all read the image, but no login
+ * card ever rendered it. So the editor let you pick an avatar, showed it back to
+ * you in the preview, saved it, and then no view displayed it.
+ *
+ * Falls back through explicit avatar → card background → a hue tile derived from
+ * the label, matching avatarSrc's own order so the two cannot disagree.
+ */
+function LoginMark({ item, site, size = 34 }: { item: VaultItem; site?: string | null; size?: number }) {
+  const src = avatarSrc(item);
+  const label = labelOf(item);
+  const initial = (site || label).trim().slice(0, 1).toUpperCase() || '?';
+  const hue = accentOf(item);
+  const style = {
+    '--mark-h': String(hue),
+    width: size,
+    height: size,
+  } as React.CSSProperties;
+  if (src) {
+    return (
+      <span
+        className="login-mark"
+        style={{
+          ...style,
+          backgroundImage: `url("${src.replace(/["'()\\]/g, '\\$&')}")`,
+        }}
+        aria-hidden="true"
+      />
+    );
+  }
+  return (
+    <span className="login-mark login-mark--letter" style={style} aria-hidden="true">
+      {initial}
+    </span>
+  );
+}
+
+/**
+ * Tag chips, rendered as a compact dotted row rather than pills.
+ *
+ * Pills were the problem in Grid: a cell is ~300px wide and each pill is padded
+ * and rounded, so three tags wrapped onto three lines and pushed the username
+ * out of the cell entirely. Grid passes `compact`, which drops the text to a
+ * swatch plus the tag's initial — enough to say "this is tagged" and to
+ * distinguish two tags at a glance, with the full names in the title attribute.
+ */
+function TagChips({ tags, compact = false }: { tags: Tag[]; compact?: boolean }) {
   if (tags.length === 0) return null;
+  if (compact) {
+    return (
+      <span className="tag-dots" aria-label={`Tagged ${tags.map((tag) => tag.name).join(', ')}`}>
+        {tags.slice(0, 5).map((tag) => (
+          <span
+            key={tag.id}
+            className="tag-dots__dot"
+            title={tag.name}
+            style={{ '--tag-h': String(tag.hue) } as React.CSSProperties}
+          >
+            {tag.name.slice(0, 1).toUpperCase()}
+          </span>
+        ))}
+        {tags.length > 5 ? <span className="tag-dots__more">+{tags.length - 5}</span> : null}
+      </span>
+    );
+  }
   return (
     <>
       {tags.map((tag) => (
@@ -88,15 +207,89 @@ function TagChips({ tags }: { tags: Tag[] }) {
   );
 }
 
-/** "Password changed 3 days ago · email changed 2 months ago" */
+/**
+ * Health + attention badges in their own clear row, shared by every view.
+ *
+ * They used to sit inline inside the title line, where a login with two tags
+ * and a reused password wrapped onto three lines and pushed the username out
+ * of the card. One dedicated row below the title keeps them legible: reused,
+ * weak and old only when health badges are on, needs-attention always (it is
+ * the user's own flag, not a health guess), plus the tag chips when enabled.
+ */
+export function HealthBadges({
+  item,
+  reused,
+  stale,
+  showHealthBadges,
+  tags,
+  showTagChips,
+  compact = false,
+  secured = false,
+}: {
+  item: VaultItem;
+  reused: boolean;
+  stale: boolean;
+  showHealthBadges: boolean;
+  tags: Tag[];
+  showTagChips: boolean;
+  compact?: boolean;
+  /** Renders the 2FA pill first, inline in the row — never floating. */
+  secured?: boolean;
+}) {
+  const weak = !reused && isWeakPassword(item);
+  if (!secured && !showHealthBadges && !item.needsAttention && !(showTagChips && tags.length > 0)) return null;
+  if (!secured && showHealthBadges && !reused && !weak && !stale && !item.needsAttention && !(showTagChips && tags.length > 0)) return null;
+  return (
+    <div className="card-badges">
+      {secured ? <SecuredBadge secured inline /> : null}
+      {showHealthBadges && reused ? <span className="chip chip--warn">reused</span> : null}
+      {showHealthBadges && weak ? <span className="chip chip--warn">weak</span> : null}
+      {showHealthBadges && stale ? (
+        <span className="chip chip--muted">
+          <ClockIcon width="11" height="11" />
+          old
+        </span>
+      ) : null}
+      {item.needsAttention ? (
+        <span className="chip chip--danger">
+          <FlagIcon width="11" height="11" />
+          needs attention
+        </span>
+      ) : null}
+      {showTagChips ? <TagChips tags={tags} compact={compact} /> : null}
+    </div>
+  );
+}
+
+/**
+ * When the login's fields last changed.
+ *
+ * Both stamps are set at creation, so a new login would otherwise read
+ * "Password just now · Username just now" — two facts saying the same thing.
+ * When they match (to the second), one "Created …" replaces both. When they
+ * differ each is named after the field it actually tracks; the second one used
+ * to say "Email" while tracking `usernameUpdatedAt`, which mislabels every
+ * login whose username is not an address.
+ */
 function ModifiedNote({ item }: { item: VaultItem }) {
+  const sameSecond =
+    Math.floor(item.passwordUpdatedAt / 1000) === Math.floor(item.usernameUpdatedAt / 1000);
+  if (sameSecond) {
+    return (
+      <div className="card-row__dates">
+        <span title={new Date(item.passwordUpdatedAt).toLocaleString()}>
+          Created {relativeTime(item.passwordUpdatedAt)}
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="card-row__dates">
       <span title={new Date(item.passwordUpdatedAt).toLocaleString()}>
         Password {relativeTime(item.passwordUpdatedAt)}
       </span>
       <span title={new Date(item.usernameUpdatedAt).toLocaleString()}>
-        Email {relativeTime(item.usernameUpdatedAt)}
+        Username {relativeTime(item.usernameUpdatedAt)}
       </span>
     </div>
   );
@@ -113,6 +306,10 @@ export function AnimatedListView({
   staleDays,
   showTagChips,
   cardSize,
+  selectedIds,
+  onSelectForEdit,
+  gmailAccounts,
+  mailScope,
   onCopy,
   onEdit,
   onDelete,
@@ -163,6 +360,9 @@ export function AnimatedListView({
     <AnimatedList
       items={items}
       itemKey={(item) => item.id}
+      // No edge fades: the top and bottom gradients read as shadow lines baked
+      // onto the first and last cards rather than as scroll hints.
+      showGradients={false}
       onItemSelect={(item) => onSelect(item)}
       renderItem={(item, _index, selected) => {
         const label = labelOf(item);
@@ -183,6 +383,8 @@ export function AnimatedListView({
             data-photo={photo ? '' : undefined}
             style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
             data-flagged={item.needsAttention || undefined}
+            data-selected={selectedIds?.has(item.id) || undefined}
+            onClick={selectionClick(item, onSelectForEdit)}
             onContextMenu={(event) => onItemMenu(event, item)}
             onDoubleClick={(event) => {
               event.preventDefault();
@@ -193,20 +395,25 @@ export function AnimatedListView({
               {photo ? <div className="item__art" aria-hidden="true" /> : null}
               {photo ? <div className="card-row__scrim" aria-hidden="true" /> : null}
 
-            {secured ? (
-              <span className="card-row__secured" title="This login has a second factor">
-                <KeyShieldIcon width="15" height="15" />
-              </span>
-            ) : null}
-
-
             <div className="card-row__head">
-              {/* The avatar is replaced by the site's own name. It is what the user actually
-                recognises, it is already stored, and dropping it also removes
-                the letter-tile that was reading as a stray icon. */}
+              {/* Both, not either. The hostname is what identifies a login at a
+                glance, but setting an image on the login produced *no* visible
+                change anywhere, because the avatar had been dropped in favour of
+                the hostname outright. The image leads when there is one and the
+                hostname still labels it. */}
+              <LoginMark item={item} site={site} />
               {site ? <span className="card-row__site">{site}</span> : null}
 
               <div className="card-row__body">
+                <HealthBadges
+                  item={item}
+                  reused={reused}
+                  stale={stale}
+                  showHealthBadges={showHealthBadges}
+                  tags={itemTagsFor(item)}
+                  showTagChips={showTagChips}
+                  secured={secured}
+                />
                 <div className="card-row__title">
                   {/* The site is named by its own domain rather than an icon:
                       the domain is what the user recognises, and it is already
@@ -215,14 +422,6 @@ export function AnimatedListView({
                   {secured ? null : item.favorite ? (
                     <StarIcon width="13" height="13" filled style={{ color: 'var(--warn)' }} />
                   ) : null}
-                  {showHealthBadges && reused ? <span className="chip chip--warn">reused</span> : null}
-                  {showHealthBadges && stale ? (
-                    <span className="chip chip--muted">
-                      <ClockIcon width="11" height="11" />
-                      old
-                    </span>
-                  ) : null}
-                  {showTagChips ? <TagChips tags={itemTagsFor(item)} /> : null}
                 </div>
                 {/* The email under the title is gone; the username now lives in
                     the credential block below, on the same row as the password. */}
@@ -280,7 +479,7 @@ export function AnimatedListView({
                     aria-label="Copy username"
                     onClick={(event) => {
                       event.stopPropagation();
-                      onCopy(item.username, 'Username');
+                      onCopy(item.username, 'Username', item);
                     }}
                   >
                     <CopyIcon />
@@ -295,7 +494,7 @@ export function AnimatedListView({
                   disabled={!item.password}
                   onClick={(event) => {
                     event.stopPropagation();
-                    onCopy(item.password, 'Password');
+                    onCopy(item.password, 'Password', item);
                   }}
                 >
                   <CopyIcon />
@@ -324,8 +523,14 @@ export function AnimatedListView({
 
             <ModifiedNote item={item} />
 
-            {item.url ? (
-              <div className="card-row__actions-row">
+            {/* Delete is always available: it used to sit inside the `item.url`
+                branch below, so a login with no website had no way to be
+                removed from its own card. Only "Open site" needs a URL. */}
+            <div className="card-row__actions-row">
+              {mailFor(item, mailScope, gmailAccounts) ? (
+                <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} />
+              ) : null}
+              {item.url ? (
                 <button
                   className="btn btn--ghost btn--sm"
                   onClick={(event) => {
@@ -336,18 +541,18 @@ export function AnimatedListView({
                   <ExternalIcon width="13" height="13" />
                   Open site
                 </button>
-                <button
-                  className="btn btn--ghost btn--sm"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDelete(item);
-                  }}
-                >
-                  <TrashIcon width="13" height="13" />
-                  Delete
-                </button>
-              </div>
-            ) : null}
+              ) : null}
+              <button
+                className="btn btn--ghost btn--sm"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete(item);
+                }}
+              >
+                <TrashIcon width="13" height="13" />
+                Delete
+              </button>
+            </div>
           </div>
         );
       }}
@@ -375,6 +580,9 @@ export function AnimatedListView({
 
 export function CarouselView({
   items,
+  duplicateIds,
+  showHealthBadges,
+  staleDays,
   onCopy,
   onEdit,
   onDelete,
@@ -406,6 +614,7 @@ onSelect,
   const show = revealedId === current.id;
   const itemTags = tags.filter((tag) => current.tags.includes(tag.id));
   const photo = backgroundSrc(current);
+  const secured = isSecured(current.security);
 
   return (
     <div className="carousel-view">
@@ -452,21 +661,24 @@ onSelect,
         {photo ? <div className="item__art" aria-hidden="true" /> : null}
         {photo ? <div className="carousel-view__scrim" aria-hidden="true" /> : null}
 
+        {/* Badges sit above the name, matching Flow, List and Grid. */}
+        <HealthBadges
+          item={current}
+          reused={duplicateIds.has(current.password) && current.password !== ''}
+          stale={isStale(current, staleDays)}
+          showHealthBadges={showHealthBadges}
+          tags={itemTags}
+          showTagChips={showTagChips}
+          secured={secured}
+        />
+
 <div className="carousel-view__head">
           <span className="card-row__site">{hostnameOf(current.url) ?? labelOf(current)}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="carousel-view__name">{labelOf(current)}</div>
           </div>
-          {isSecured(current.security) ? (
-            <span title="This login has a second factor">
-              <KeyShieldIcon width="16" height="16" style={{ color: 'var(--accent-text)' }} />
-            </span>
-          ) : null}
           {current.favorite ? <StarIcon width="16" height="16" filled style={{ color: 'var(--warn)' }} /> : null}
         </div>
-
-        {/* Tags, matching the Flow and List cards. */}
-        {showTagChips && itemTags.length > 0 ? <TagChips tags={itemTags} /> : null}
 
         <div className="carousel-view__secret">
           <div className="card-row__secret-row">
@@ -475,7 +687,7 @@ onSelect,
               <button
                 className="btn btn--icon"
                 aria-label="Copy username"
-                onClick={() => onCopy(current.username, 'Username')}
+                onClick={() => onCopy(current.username, 'Username', current)}
               >
                 <CopyIcon />
               </button>
@@ -490,7 +702,7 @@ onSelect,
               className="btn btn--icon"
               aria-label="Copy password"
               disabled={!current.password}
-              onClick={() => onCopy(current.password, 'Password')}
+              onClick={() => onCopy(current.password, 'Password', current)}
             >
               <CopyIcon />
             </button>
@@ -515,7 +727,7 @@ onSelect,
         <div className="carousel-view__meta">
           <button
             className="btn btn--primary"
-            onClick={() => onCopy(current.password, 'Password')}
+            onClick={() => onCopy(current.password, 'Password', current)}
             disabled={!current.password}
           >
             <CheckIcon width="14" height="14" />
@@ -571,6 +783,10 @@ showTagChips,
   tags,
   showLetterGroups,
   cardSize,
+  selectedIds,
+  onSelectForEdit,
+  gmailAccounts,
+  mailScope,
   onEdit,
   onDelete,
   onToggleFavorite,
@@ -625,46 +841,50 @@ showTagChips,
               const show = revealed.has(item.id);
               const photo = backgroundSrc(item);
               return (
-                <div
-                  className="item"
-                  data-vault-item={item.id}
-                  data-photo={photo ? '' : undefined}
-                  key={item.id}
+          <div
+            className="item"
+            data-vault-item={item.id}
+            data-photo={photo ? '' : undefined}
+            data-selected={selectedIds?.has(item.id) || undefined}
+            key={item.id}
 style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
-                  onContextMenu={(event) => onItemMenu(event, item)}
-                  onDoubleClick={(event) => {
-                    // Matches Flow and Orbit.
-                    event.preventDefault();
-                    onEdit(item);
-                  }}
-                >
+            onContextMenu={(event) => onItemMenu(event, item)}
+            onDoubleClick={(event) => {
+              // Matches Flow and Orbit.
+              event.preventDefault();
+              onEdit(item);
+            }}
+            onClick={selectionClick(item, onSelectForEdit)}
+          >
                   {photo ? <div className="item__art" aria-hidden="true" /> : null}
                 {photo ? <div className="item__scrim" aria-hidden="true" /> : null}
 
 <button className="item__trigger" onClick={() => onSelect(item)}>
+                    <LoginMark item={item} site={hostnameOf(item.url)} size={32} />
                     <span className="card-row__site">{hostnameOf(item.url) ?? labelOf(item)}</span>
                     <span className="item__body">
+                      <HealthBadges
+                        item={item}
+                        reused={duplicateIds.has(item.password) && item.password !== ''}
+                        stale={isStale(item, staleDays)}
+                        showHealthBadges={showHealthBadges}
+                        tags={itemTagsFor(item)}
+                        showTagChips={showTagChips}
+                        secured={isSecured(item.security)}
+                      />
                       <span className="item__title">
                         {label}
                         {item.favorite ? (
                           <StarIcon width="13" height="13" filled style={{ color: 'var(--warn)' }} />
                         ) : null}
-                        {showHealthBadges && duplicateIds.has(item.password) && item.password ? (
-                          <span className="chip chip--warn">reused</span>
-                        ) : null}
-                        {showHealthBadges && isStale(item, staleDays) ? (
-                          <span className="chip chip--muted">
-                            <ClockIcon width="11" height="11" />
-                            old
-                          </span>
-                        ) : null}
-                        {/* Tags sit on the title line, matching the Flow card. */}
-                        {showTagChips ? <TagChips tags={itemTagsFor(item)} /> : null}
                       </span>
                     </span>
                   </button>
 
                   <div className="item__actions">
+                    {mailFor(item, mailScope, gmailAccounts) ? (
+                      <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} />
+                    ) : null}
                     <button
                       className="btn btn--icon"
                       data-action="favorite"
@@ -725,6 +945,303 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
         />
       ) : null}
     </div>
+  );
+}
+
+/* ==========================================================================
+   View 4 — Grid
+   ========================================================================== */
+
+/**
+ * A responsive grid of login cards.
+ *
+ * Columns are not a stored preference. The track is `auto-fill` against a cap
+ * derived from the width slider, so the card count follows the window instead of
+ * a number the user has to revisit every time they resize it. That is the whole
+ * difference from Flow: same cards, same controls, no scroll animation, and a
+ * whole screen of them at once.
+ *
+ * Deliberately does not group by letter. Grouping exists to make a long single
+ * column navigable; in a grid the eye scans spatially instead, so the headings
+ * would add structure the layout no longer needs.
+ */
+export function GridView({
+  items,
+  duplicateIds,
+  showHealthBadges,
+  staleDays,
+  showTagChips,
+  tags,
+  cardSize,
+  selectedIds,
+  onSelectForEdit,
+  gmailAccounts,
+  mailScope,
+  onEdit,
+  onDelete,
+  onToggleFavorite,
+  onToggleAttention,
+  onCopy,
+  onOpenUrl,
+  onSelect,
+  onItemMenu,
+}: CommonViewProps) {
+  const [revealed, setRevealed] = useState<Set<string>>(() => new Set());
+  const [gateItem, setGateItem] = useState<VaultItem | null>(null);
+  const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
+
+  if (items.length === 0) return null;
+
+  const toggle = (id: string) => {
+    const item = items.find((entry) => entry.id === id);
+    const showing = revealed.has(id);
+    if (!showing && item && isSecured(item.security)) {
+      setGateItem(item);
+      return;
+    }
+    setRevealed((current) => {
+      const next = new Set(current);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <div
+      className="content__inner grid-scale"
+      style={
+        {
+          '--card-scale': String(cardSize.scale),
+          '--card-surface': String(cardSize.surface),
+          '--card-radius': `${cardSize.radius}px`,
+          // The width slider is the widest one cell may become. The track keeps
+          // filling the pane below that, so shrinking the window narrows the
+          // cards and then the column count follows on its own.
+          '--card-max': `${Math.round(cardSize.width)}px`,
+          '--card-min-height': `${Math.round(cardSize.minHeight)}px`,
+        } as React.CSSProperties
+      }
+    >
+      <div className="grid">
+        {items.map((item) => {
+          const label = labelOf(item);
+          const show = revealed.has(item.id);
+          const photo = backgroundSrc(item);
+          const secured = isSecured(item.security);
+          return (
+          <div
+            key={item.id}
+            className="grid-cell"
+            data-vault-item={item.id}
+            data-photo={photo ? '' : undefined}
+            data-flagged={item.needsAttention || undefined}
+            data-selected={selectedIds?.has(item.id) || undefined}
+            style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
+            onClick={selectionClick(item, onSelectForEdit)}
+            onContextMenu={(event) => onItemMenu(event, item)}
+              onDoubleClick={(event) => {
+                event.preventDefault();
+                onEdit(item);
+              }}
+            >
+              {photo ? <div className="item__art" aria-hidden="true" /> : null}
+              {photo ? <div className="card-row__scrim" aria-hidden="true" /> : null}
+
+              <div className="grid-cell__head">
+                <LoginMark item={item} site={hostnameOf(item.url)} />
+                {item.url ? (
+                  <button
+                    type="button"
+                    className="card-row__site card-row__site--link"
+                    title={`Open ${hostnameOf(item.url)}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenUrl(item);
+                    }}
+                  >
+                    {hostnameOf(item.url)}
+                  </button>
+                ) : (
+                  <span className="card-row__site">{label}</span>
+                )}
+              </div>
+
+              <div className="grid-cell__body">
+                <HealthBadges
+                  item={item}
+                  reused={duplicateIds.has(item.password) && item.password !== ''}
+                  stale={isStale(item, staleDays)}
+                  showHealthBadges={showHealthBadges}
+                  tags={itemTagsFor(item)}
+                  showTagChips={showTagChips}
+                  compact
+                  secured={secured}
+                />
+                <div className="grid-cell__title">
+                  <span className="card-row__name">{label}</span>
+                  {!secured && item.favorite ? (
+                    <StarIcon width="13" height="13" filled style={{ color: 'var(--warn)' }} />
+                  ) : null}
+                </div>
+                <div className="grid-cell__meta">
+                  <span className="card-row__username">
+                    {item.username || hostnameOf(item.url) || 'No username'}
+                  </span>
+                </div>
+                {/* A cell is a summary, not a document, but clicking the body
+                    should still do the thing a click does everywhere else. */}
+                <button
+                  type="button"
+                  className="grid-cell__open"
+                  aria-label={`Open ${label}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelect(item);
+                  }}
+                />
+              </div>
+
+              {/* Same credential block as Flow: the eye in the action row below
+                  toggles `revealed`, and without this block it toggled nothing
+                  visible — the button flipped state and the card did not move. */}
+              <div className="card-row__secret grid-cell__secret">
+                <div className="card-row__secret-row">
+                  <span className="card-row__username">
+                    {item.username || hostnameOf(item.url) || 'No username'}
+                  </span>
+                  {item.username ? (
+                    <button
+                      className="btn btn--icon"
+                      aria-label="Copy username"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onCopy(item.username, 'Username', item);
+                    }}
+                    >
+                      <CopyIcon />
+                    </button>
+                  ) : null}
+                </div>
+                <div className="card-row__secret-row">
+                  <code className="card-row__password">{show ? item.password || '—' : maskOf(item)}</code>
+                  <button
+                    className="btn btn--icon"
+                    aria-label="Copy password"
+                    disabled={!item.password}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onCopy(item.password, 'Password', item);
+                    }}
+                  >
+                    <CopyIcon />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid-cell__actions">
+                {mailFor(item, mailScope, gmailAccounts) ? (
+                  <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} />
+                ) : null}
+                <button
+                  className="btn btn--icon"
+                  data-action="attention"
+                  aria-label={item.needsAttention ? 'Clear needs attention' : 'Mark as needing attention'}
+                  aria-pressed={item.needsAttention}
+                  style={item.needsAttention ? { color: 'var(--warn)' } : undefined}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onToggleAttention(item);
+                  }}
+                >
+                  <FlagIcon />
+                </button>
+                <button
+                  className="btn btn--icon"
+                  data-action="favorite"
+                  aria-label={item.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                  aria-pressed={item.favorite}
+                  style={item.favorite ? { color: 'var(--warn)' } : undefined}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onToggleFavorite(item);
+                  }}
+                >
+                  <StarIcon filled={item.favorite} />
+                </button>
+                <button
+                  className="btn btn--icon"
+                  aria-label="Edit login"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEdit(item);
+                  }}
+                >
+                  <EditIcon />
+                </button>
+                <button
+                  className="btn btn--icon"
+                  aria-label="Delete login"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDelete(item);
+                  }}
+                >
+                  <TrashIcon />
+                </button>
+                <button
+                  className="btn btn--icon"
+                  data-action="password"
+                  data-active={show || undefined}
+                  aria-label={show ? 'Hide password' : 'Reveal password'}
+                  aria-pressed={show}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    toggle(item.id);
+                  }}
+                >
+                  {show ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {gateItem ? (
+        <SecurityGate
+          security={gateItem.security}
+          title={`Unlock ${labelOf(gateItem)}`}
+          hint="This login has its own second factor. Clear it to reveal the password."
+          onVerified={() => {
+            setRevealed((current) => new Set(current).add(gateItem.id));
+            setGateItem(null);
+          }}
+          onCancel={() => setGateItem(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The second-factor badge, shared by every view so it reads identically
+ * wherever it appears.
+ *
+ * It used to be a bare glyph floating above the card's top edge, clipped in
+ * half by the container, at the same 15px as the icons beside it. Sitting on the
+ * edge it read as a rendering artefact rather than a status, and at that size
+ * the shield's inner detail was too fine to identify at a glance. It is now a
+ * pill in the card's own top corner, which keeps it fully inside the card, gives
+ * it room for a legible glyph, and pairs the glyph with the word so the meaning
+ * does not depend on recognising an icon.
+ */
+export function SecuredBadge({ secured, compact = false, inline = false }: { secured: boolean; compact?: boolean; inline?: boolean }) {
+  if (!secured) return null;
+  return (
+    <span className={inline ? 'secured-badge secured-badge--inline' : 'secured-badge'} data-compact={compact || undefined}>
+      <KeyShieldIcon width={13} height={13} />
+      {!compact ? <span className="secured-badge__text">2FA</span> : null}
+    </span>
   );
 }
 

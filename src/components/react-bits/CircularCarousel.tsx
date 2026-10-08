@@ -900,6 +900,9 @@ export function CircularCarousel({
                   {cardLabels && item.title ? (
                     <div className="circular-carousel__card-label" style={{ width: cardW, height: cardH }}>
                       <span className="circular-carousel__card-title">{item.title}</span>
+                      {item.subtitle ? (
+                        <span className="circular-carousel__card-sub">{item.subtitle}</span>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

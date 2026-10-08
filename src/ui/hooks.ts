@@ -133,13 +133,20 @@ export function useVault() {
     setStatus('locked');
   }, [service, sync]);
 
-  /** Wraps a mutation so the view always reflects the new ciphertext-backed state. */
+  /**
+   * Wraps a mutation so the view always reflects the new ciphertext-backed state.
+   *
+   * Returns the action's result, so callers that create something (a login id,
+   * a channel id) can use it afterwards. Callers that ignore the return value
+   * behave exactly as before.
+   */
 const mutate = useCallback(
-    async (action: () => Promise<unknown>) => {
+    async <T,>(action: () => Promise<T>): Promise<T> => {
       // Snapshot before the change, so undo has somewhere to go back to.
       pushHistory();
-      await action();
+      const result = await action();
       sync();
+      return result;
     },
     [sync, pushHistory],
   );
@@ -173,11 +180,60 @@ const redo = useCallback(async () => {
     return true;
   }, [service, restore]);
 
-/** Drops the history, e.g. after the vault is replaced wholesale. */
+  /** Drops the history, e.g. after the vault is replaced wholesale. */
 const clearHistory = useCallback(() => {
     past.current = [];
     future.current = [];
   }, []);
+
+  /**
+   * Records one use of a login (copied or edited).
+   *
+   * Deliberately outside mutate(): use counts must not push undo history —
+   * undoing "copy password" makes no sense — and must not touch appearance.
+   * Prunes entries for deleted logins and caps at 200 by recency; the service
+   * owns the items, but only the hook sees both prefs and the moment.
+   */
+  const recordUse = useCallback(
+    async (id: string, knownIds?: ReadonlySet<string>) => {
+      const prev = prefsRef.current.usage ?? {};
+      const at = Date.now();
+      const next: Record<string, { count: number; at: number }> = {};
+      next[id] = { count: (prev[id]?.count ?? 0) + 1, at };
+      const entries = Object.entries(prev)
+        .filter(([key]) => key !== id && (!knownIds || knownIds.has(key)))
+        .sort((a, b) => b[1].at - a[1].at)
+        .slice(0, 199);
+      for (const [key, value] of entries) next[key] = value;
+      const prefs = { ...prefsRef.current, usage: next };
+      prefsRef.current = normalisePreferences(prefs);
+      setPrefs(prefsRef.current);
+      await service.savePreferences(prefsRef.current);
+    },
+    [service],
+  );
+
+  /**
+   * Wipes the vault and returns the app to the create screen.
+   *
+   * This has to live here rather than calling `service.reset()` from App: the
+   * service holds the ciphertext, but this hook holds the React state (items,
+   * status, prefs, undo stacks). Resetting only the service wipes the disk and
+   * leaves every login on screen — status stays 'unlocked', items stay
+   * populated, and the user watches a "vault deleted" toast over a vault that
+   * is visibly still there.
+   */
+  const resetVault = useCallback(async () => {
+    await service.reset();
+    past.current = [];
+    future.current = [];
+    prefsRef.current = DEFAULT_PREFERENCES;
+    setPrefs(DEFAULT_PREFERENCES);
+    applyAppearance(DEFAULT_PREFERENCES);
+    setProtection(null);
+    setItems([]);
+    setStatus('absent');
+  }, [service]);
 
   /**
  * Merges a patch into the stored preferences.
@@ -213,6 +269,8 @@ const updatePrefs = useCallback(
     undo,
     redo,
     clearHistory,
+    resetVault,
+    recordUse,
     updatePrefs,
   };
 }
@@ -279,14 +337,24 @@ export function applyAppearance(prefs: VaultPreferences): void {
 }
 
 /**
- * Applies the selected channel's own accent and image on top of the global ones.
+ * Applies the selected channel's own background image over the global one.
  *
- * Channels carry their own theme, so the app re-skins while one is selected. The
- * global preference is still the fallback for anything a channel leaves blank.
+ * Deliberately does NOT touch the accent. Channels used to re-skin the whole app
+ * from their own `accent` field, which meant the accent picker in Settings and
+ * the appearance panel appeared to do nothing: every built-in channel ships with
+ * an accent (channels.ts), so a channel was almost always "custom" and the
+ * channel's colour won over the one the user had just picked. Worse, the test
+ * for whether a channel counts as custom was `channel.accent !== prefs.accent`,
+ * so the two fought each other — whichever value you set last was the one that
+ * lost.
+ *
+ * A background image has no such conflict, because there is no global "no
+ * background" preference competing with it in the other direction. So the image
+ * stays per-channel and the accent is global, which is what both the label and
+ * the picker say it is.
  */
 export function applyChannelAppearance(prefs: VaultPreferences, channel: Channel): void {
   const root = document.documentElement;
-  root.dataset.accent = channel.accent || prefs.accent;
 
   const image = channel.backgroundImage || prefs.backgroundImage;
   if (image) {
@@ -347,6 +415,59 @@ export function useToasts() {
   );
 
   return { toasts, notify, dismiss };
+}
+
+/**
+ * Ctrl/Cmd+A selects every login currently in view, and Escape clears it.
+ *
+ * Both are scoped to a guard the caller supplies, because the app has several
+ * text inputs and a global Ctrl+A there would select a login instead of an
+ * email address. The guard returns false when focus is somewhere a text
+ * selection is the sensible meaning.
+ */
+export function useSelectAllShortcuts(
+  selectAll: () => void,
+  clear: () => void,
+  guard: () => boolean,
+): void {
+  const selectRef = useRef(selectAll);
+  selectRef.current = selectAll;
+  const clearRef = useRef(clear);
+  clearRef.current = clear;
+  const guardRef = useRef(guard);
+  guardRef.current = guard;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        clearRef.current();
+        return;
+      }
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      if (event.key.toLowerCase() !== 'a') return;
+      if (!guardRef.current()) return;
+      event.preventDefault();
+      selectRef.current();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+}
+
+/**
+ * True when focus is somewhere a plain Ctrl+A should mean "select the text",
+ * not "select every login".
+ *
+ * Contenteditable elements are included because several of the app's surfaces
+ * (the notes field, the filter input) are inputs rather than text nodes, and
+ * guessing wrong here means the user loses a text selection mid-edit.
+ */
+export function typingHasFocus(): boolean {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  return (el as HTMLElement).isContentEditable === true;
 }
 
 /**

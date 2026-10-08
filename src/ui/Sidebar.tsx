@@ -24,7 +24,12 @@ import {
   PlusIcon,
 } from './icons.tsx';
 
-const ICONS: Record<string, typeof InboxIcon> = {
+/**
+ * Channel icon glyphs by key. Exported for the dock, which renders channel
+ * slots with the same glyphs so the two never disagree about what a channel
+ * looks like.
+ */
+export const CHANNEL_ICONS_MAP: Record<string, typeof InboxIcon> = {
   inbox: InboxIcon,
   star: StarIcon,
   flag: FlagIcon,
@@ -109,7 +114,13 @@ export function Sidebar({
   // picks "icons only" and still gets a wide empty rail full of padding.
   const iconOnly = labels === 'icon';
   const showLabel = labels !== 'icon' && !compact;
-  const showIcon = labels !== 'name' && !compact;
+  // Compact is an icon rail, so it keeps its icons. It used to hide them
+  // (`&& !compact` on this line) on the reasoning that a narrow rail should be
+  // as sparse as possible. The result was a rail with nothing in it at all: the
+  // label was gone, the icon was gone, and CSS hid the hue dot too, leaving a
+  // column of identical empty pills. The channel's colour is the one thing that
+  // still identifies it at that width, so the dot comes back below as well.
+  const showIcon = labels !== 'name';
 
   /** Entry ids in the order they render, per list. Used to read a drop target. */
   const listAt = useCallback(
@@ -179,7 +190,7 @@ export function Sidebar({
   });
 
   const channelRow = (channel: Channel, list: string, index: number) => {
-    const Icon = ICONS[channel.icon] ?? LayersIcon;
+    const Icon = CHANNEL_ICONS_MAP[channel.icon] ?? LayersIcon;
     const count = counts[channel.id] ?? 0;
     return (
       <div
@@ -227,7 +238,7 @@ export function Sidebar({
   );
 
   const folderRow = (folder: Folder, list: string, index: number) => {
-    const Icon = ICONS[folder.icon] ?? FolderIcon;
+    const Icon = CHANNEL_ICONS_MAP[folder.icon] ?? FolderIcon;
     const expanded = !folder.collapsed;
     const active = activeId === `folder:${folder.id}`;
     const entry = entries.find((row) => row.kind === 'folder' && row.id === folder.id);
@@ -354,16 +365,23 @@ export function Sidebar({
 
       <div className="sidebar__spacer" />
 
-      <button
-        className="sidebar__edge"
-        onClick={onToggleCompact}
-        aria-label={compact ? 'Expand sidebar' : 'Compact sidebar'}
-        data-label={compact ? 'Expand' : 'Compact'}
-      >
-        <CompactGlyph expanded={compact} />
-      </button>
-
       <div className="sidebar__footer">
+        {/* The compact toggle lives here now, not on an edge tab. The tab sat
+            half outside the rail overlapping content, was undiscoverable (a
+            22px strip with no label), and had nothing to do with the rail edge
+            once the rail could dock to any side. As a footer item it sits with
+            the other app-level controls, keeps its label, and stays reachable
+            in compact mode as an icon. */}
+        <button
+          className="nav-item"
+          onClick={onToggleCompact}
+          title={compact ? 'Expand sidebar' : 'Compact sidebar'}
+          aria-label={compact ? 'Expand sidebar' : 'Compact sidebar'}
+          aria-pressed={compact}
+        >
+          <CompactGlyph expanded={compact} />
+          {!compact ? <span>Compact</span> : null}
+        </button>
         <button className="nav-item" onClick={onOpenSettings} title="Settings">
           <SettingsGlyph />
           {!compact ? <span>Settings</span> : null}

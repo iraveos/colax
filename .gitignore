@@ -1,5 +1,12 @@
 node_modules
 dist
+dist-electron
+release
+# Packaged installers live beside the repo, never in it: a 100MB binary has
+# no business in version control.
+*.exe
+*.blockmap
+latest.yml
 *.local
 .vite.log
 .vite.err
@@ -27,3 +34,5 @@ dist
 .chk*.err
 .shot.log
 .shot.err
+# Tidied test screenshots, logs and installer leftovers live here, not in root.
+dev-artifacts/

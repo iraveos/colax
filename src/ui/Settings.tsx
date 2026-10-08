@@ -4,6 +4,7 @@ import {
   DEFAULT_PREFERENCES,
   type CardSizePrefs,
   type Density,
+  type ViewLabels,
   type SortMode,
   type ThemeMode,
   type VaultPreferences,
@@ -20,8 +21,10 @@ import { SettingsWindow, type SettingsTab } from './SettingsWindow.tsx';
 import { SecurityForm } from './SecurityForm.tsx';
 import { ChannelManager } from './ChannelManager.tsx';
 import { AlarmsPanel } from './AlarmsPanel.tsx';
-import { IntegrationsPanel } from './IntegrationsPanel.tsx';
+
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
+import { getPlatform } from '../lib/platform.ts';
+import { DockSlotsEditor } from './DockSettings.tsx';
 import {
   AlertIcon,
   BellIcon,
@@ -29,19 +32,16 @@ import {
   CloudIcon,
   DatabaseIcon,
   DownloadIcon,
-  EyeIcon,
-  EyeOffIcon,
   GridIcon,
   ImageIcon,
   InfoIcon,
-  KeyIcon,
   LayersIcon,
   LockIcon,
-  MailIcon,
   MoonIcon,
   PaletteIcon,
   RowsIcon,
   ShieldIcon,
+  SquaresIcon,
   SunIcon,
   TrashIcon,
   UploadIcon,
@@ -104,6 +104,13 @@ const VIEWS: { id: VaultView; label: string; hint: string; icon: ReactNode }[] =
   { id: 'animated', label: 'Flow', hint: 'Spring-animated cards', icon: <LayersIcon /> },
   { id: 'carousel', label: 'Orbit', hint: '3D carousel ring', icon: <GridIcon /> },
   { id: 'basic', label: 'List', hint: 'Plain grouped list', icon: <RowsIcon /> },
+  { id: 'grid', label: 'Grid', hint: 'Responsive card grid', icon: <SquaresIcon /> },
+];
+
+const VIEW_LABEL_MODES: { id: ViewLabels; label: string; hint: string }[] = [
+  { id: 'icon', label: 'Icons only', hint: 'Glyphs alone' },
+  { id: 'name', label: 'Names only', hint: 'Text alone' },
+  { id: 'both', label: 'Both', hint: 'Glyph and text' },
 ];
 
 const SORTS: { id: SortMode; label: string }[] = [
@@ -115,16 +122,21 @@ const SORTS: { id: SortMode; label: string }[] = [
 ];
 
 /**
- * The card-size shortcut on this row opens the appearance panel rather than
- * editing inline, so the summary has to describe what the panel is set to. All
- * three views scale their geometry by `scale`, so every number below is
- * multiplied by it. Flow and List treat width as a cap and height as a floor, so
- * they read differently from Orbit, whose card is a fixed width × aspect.
+ * What a view's card is currently sized to, in one line.
+ *
+ * Every view multiplies its geometry by `scale`, so the numbers here are
+ * multiplied by it too — otherwise the menu and the panel would disagree about
+ * what a card looks like. Flow, List and Grid treat width as a cap and height as
+ * a floor, so they read differently from Orbit, whose card is a fixed
+ * width × aspect.
+ *
+ * Shared between Settings and the context menu, which had drifted into two
+ * different formats for the same value.
  */
-function cardSizeSummary(view: VaultView, size: CardSizePrefs): string {
+export function cardSizeSummary(view: VaultView, size: CardSizePrefs): string {
   const width = Math.round(size.width * size.scale);
   if (view === 'carousel') return `${width} × ${Math.round(width * size.aspect)}px`;
-  return `${width}px wide · ${Math.round(size.minHeight)}px min`;
+  return `${width}px wide, ${Math.round(size.minHeight)}px min`;
 }
 
 export function Settings(props: {
@@ -295,8 +307,8 @@ export function Settings(props: {
                   onClick={() => set({ theme: option.id as ThemeMode })}
                 >
 <ThemePreview mode={option.id} />
-                  {/* Icon on its own circular plate, label beneath it: the
-                      stacked card shape from the reference layout. */}
+                  {/* Glyph and label sit inline beside the swatch: a compact
+                      chip that matches the accent row, not a stacked card. */}
                   <span className="option-card__glyph">{option.icon}</span>
                   <span className="option-card__label">{option.label}</span>
                 </button>
@@ -340,7 +352,7 @@ export function Settings(props: {
             min={0.25}
             max={2}
             step={0.25}
-            format={(v) => (v <= 0.5 ? 'Instant' : v < 0.9 ? 'Fast' : v <= 1.2 ? 'Normal' : v < 1.7 ? 'Slow' : 'Languid')}
+            format={(v) => (v <= 0.5 ? 'Languid' : v < 0.9 ? 'Slow' : v <= 1.2 ? 'Normal' : v < 1.7 ? 'Fast' : 'Instant')}
             onChange={(motionSpeed) => set({ motionSpeed })}
           />
           <Slider
@@ -417,38 +429,6 @@ export function Settings(props: {
     },
 
     {
-      id: 'background',
-      label: 'Background',
-      icon: <ImageIcon />,
-      render: () => (
-        <BackgroundSection
-          prefs={prefs}
-          onUpdate={set}
-          onNotify={onNotify}
-          maxBytes={MAX_APP_BACKGROUND_BYTES}
-        />
-      ),
-    },
-
-{
-      id: 'channels',
-      label: 'Channels',
-      icon: <RowsIcon />,
-      render: () => (
-        <ChannelManager
-          channels={prefs.channels}
-          tags={prefs.tags}
-          onEditChannel={(channelId) => {
-            if (onEditChannel) onEditChannel(channelId);
-            else onNotify('Right-click a channel in the sidebar to edit it', 'error');
-          }}
-          onTagsChange={(tags) => void onUpdate({ tags })}
-          onScrubTag={onScrubTag}
-          onNotify={onNotify}
-        />
-      ),
-    },
-    {
       id: 'layout',
       label: 'Layout',
       icon: <GridIcon />,
@@ -488,7 +468,7 @@ export function Settings(props: {
               the user is usually looking at it rather than in Settings. */}
           <Row
             label="Channel labels"
-            hint="Icons only collapses the rail to a narrow strip you read by shape. Names only drops the glyphs but keeps the colour dot, which is what tells two similar names apart."
+            hint="The sidebar rail — not the view picker below, which has its own setting. Icons only collapses the rail to a narrow strip you read by shape. Names only drops the glyphs but keeps the colour dot, which is what tells two similar names apart. (Compact mode in the sidebar footer also hides names.)"
             stacked
           >
             <div className="option-cards">
@@ -559,6 +539,82 @@ export function Settings(props: {
                 </button>
               ))}
             </div>
+          </Row>
+          <Row
+            label="View switcher labels"
+            hint="What the view picker (Flow / Orbit / List / Grid) shows — not the sidebar channels, which are set above. One click sets every view at once and clears individual overrides below; the rows underneath are for exceptions."
+            stacked
+          >
+            <div className="option-cards">
+              {VIEW_LABEL_MODES.map((mode) => (
+                <button
+                  key={mode.id}
+                  className="option-card"
+                  aria-pressed={prefs.viewLabels === mode.id}
+                  onClick={() => set({ viewLabels: mode.id, viewLabelsByView: {} })}
+                >
+                  <span>{mode.label}</span>
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-faint)' }}>{mode.hint}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="label-override">
+              {VIEWS.map((view) => {
+                const override = prefs.viewLabelsByView[view.id];
+                return (
+                  <div className="label-override__row" key={view.id}>
+                    <span className="label-override__name">{view.label}</span>
+                    <div className="segmented segmented--wrap">
+                      <button
+                        className="segmented__option"
+                        aria-pressed={!override}
+                        onClick={() => {
+                          const next = { ...prefs.viewLabelsByView };
+                          delete next[view.id];
+                          set({ viewLabelsByView: next });
+                        }}
+                      >
+                        Follow all
+                      </button>
+                      {VIEW_LABEL_MODES.map((mode) => (
+                        <button
+                          key={mode.id}
+                          className="segmented__option"
+                          aria-pressed={override === mode.id}
+                          onClick={() =>
+                            set({ viewLabelsByView: { ...prefs.viewLabelsByView, [view.id]: mode.id } })
+                          }
+                        >
+                          {mode.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Row>
+          <Row
+            label="Quick-launch dock"
+            hint="Jump targets on a bar, one keypress away. Keys work bare (no Ctrl) whenever you are not typing or in a dialog. Drag rows to reorder; every row takes its own key and icon."
+            stacked
+          >
+            <Toggle
+              label="Quick-launch dock"
+              checked={prefs.dockEnabled}
+              onChange={(dockEnabled) => set({ dockEnabled })}
+            />
+            {prefs.dockEnabled ? (
+              <DockSlotsEditor
+                slots={prefs.dockSlots}
+                channels={prefs.channels}
+                folders={prefs.folders}
+                logins={items}
+                onChange={(dockSlots) => set({ dockSlots })}
+                onNotify={onNotify}
+              />
+            ) : null}
           </Row>
           <Row label="Default view" hint="Remembered the next time you open the app." stacked>
             <div className="option-cards">
@@ -656,6 +712,41 @@ export function Settings(props: {
       ),
     },
 
+    // Background and Channels sit beneath Layout now: appearance first, then
+    // how logins are laid out, then the backdrop and the rail that holds them.
+    {
+      id: 'background',
+      label: 'Background',
+      icon: <ImageIcon />,
+      render: () => (
+        <BackgroundSection
+          prefs={prefs}
+          onUpdate={set}
+          onNotify={onNotify}
+          maxBytes={MAX_APP_BACKGROUND_BYTES}
+        />
+      ),
+    },
+
+    {
+      id: 'channels',
+      label: 'Channels',
+      icon: <RowsIcon />,
+      render: () => (
+        <ChannelManager
+          channels={prefs.channels}
+          tags={prefs.tags}
+          onEditChannel={(channelId) => {
+            if (onEditChannel) onEditChannel(channelId);
+            else onNotify('Right-click a channel in the sidebar to edit it', 'error');
+          }}
+          onTagsChange={(tags) => void onUpdate({ tags })}
+          onScrubTag={onScrubTag}
+          onNotify={onNotify}
+        />
+      ),
+    },
+
     {
       id: 'generator',
       label: 'Generator',
@@ -704,36 +795,11 @@ export function Settings(props: {
     },
 
     {
-      id: 'password',
-      label: 'Vault password',
-      icon: <KeyIcon />,
+      id: 'security',
+      label: 'Security',
+      icon: <ShieldIcon />,
       render: () => (
         <>
-          <Row label={`Vault password ${hasPassword ? 'is on' : 'is off'}`} hint={
-            hasPassword
-              ? 'Your logins can only be decrypted with it. Nothing derived from it is stored, so there is no reset link.'
-              : 'Your logins are encrypted, but the key sits in this browser next to them. Anyone who can read this profile can open the vault.'
-          }>
-            <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-              {hasPassword ? (
-                <>
-                  <button className="btn btn--secondary" onClick={() => setChanging(true)}>
-                    <KeyIcon width="14" height="14" />
-                    Change
-                  </button>
-                  <button className="btn btn--danger" onClick={() => setDisabling(true)} disabled={busy}>
-                    <EyeOffIcon width="14" height="14" />
-                    Remove
-                  </button>
-                </>
-              ) : (
-                <button className="btn btn--primary" onClick={() => setEnabling(true)} disabled={busy}>
-                  <EyeIcon width="14" height="14" />
-                  Add a password
-                </button>
-              )}
-            </div>
-          </Row>
           <Row label="Key derivation" hint="Rounds applied to your password before it can derive the vault key.">
             <span className="chip chip--accent">
               <CheckIcon width="11" height="11" />
@@ -746,16 +812,6 @@ export function Settings(props: {
               AES-256-GCM
             </span>
           </Row>
-        </>
-      ),
-    },
-
-    {
-      id: 'security',
-      label: 'Security',
-      icon: <ShieldIcon />,
-      render: () => (
-        <>
 <Row label="Auto-lock" hint="Lock after a period without activity.">
             <Select
               label="Auto-lock"
@@ -907,19 +963,9 @@ export function Settings(props: {
       ),
     },
 
-    {
-      id: 'integrations',
-      label: 'Integrations',
-      icon: <MailIcon />,
-      render: () => (
-        <IntegrationsPanel
-          gmail={prefs.gmail}
-          onChange={(gmail) => set({ gmail })}
-          onNotify={onNotify}
-        />
-      ),
-    },
-
+    // Integrations used to be a tab here. Connecting a mailbox is something done
+    // for a login while editing it, so the form moved to the login editor's
+    // Inbox section; a global tab nobody visited was where it went to be forgotten.
     {
       id: 'data',
       label: 'Data',
@@ -996,6 +1042,54 @@ export function Settings(props: {
         </>
       ),
     },
+
+    // Desktop shell settings. Rendered only inside Electron: on web there is no
+    // tray, autostart or window chrome, so these toggles would be dead controls
+    // that promise something the page cannot do.
+    ...(getPlatform().name === 'electron'
+      ? [
+          {
+            id: 'desktop',
+            label: 'Desktop',
+            icon: <LayersIcon />,
+            render: () => (
+              <>
+                <Row label="Run at startup" hint="Launch Colax when you sign in to Windows.">
+                  <Toggle
+                    label="Run at startup"
+                    checked={prefs.launchAtLogin}
+                    onChange={(launchAtLogin) => set({ launchAtLogin })}
+                  />
+                </Row>
+                <Row label="System tray" hint="Keep an icon by the clock. Right-click it to show, lock, mute, restart or quit.">
+                  <Toggle
+                    label="System tray"
+                    checked={prefs.trayEnabled}
+                    onChange={(trayEnabled) => set({ trayEnabled })}
+                  />
+                </Row>
+                <Row
+                  label="Minimise to tray on close"
+                  hint="The X button hides the window instead of quitting. Needs the tray above."
+                >
+                  <Toggle
+                    label="Minimise to tray on close"
+                    checked={prefs.closeToTray && prefs.trayEnabled}
+                    onChange={(closeToTray) => set({ closeToTray })}
+                  />
+                </Row>
+                <Row label="Mute all sounds" hint="Silences alarms and chimes. Toasts still appear. Also in the tray menu.">
+                  <Toggle
+                    label="Mute all sounds"
+                    checked={prefs.soundsMuted}
+                    onChange={(soundsMuted) => set({ soundsMuted })}
+                  />
+                </Row>
+              </>
+            ),
+          },
+        ]
+      : []),
 
     {
       id: 'about',
@@ -1352,22 +1446,28 @@ function Slider({
 }
 
 /**
- * A small light/dark chip. The full-size preview it replaced was the tallest
- * thing in the Appearance panel and made the three theme options read as
- * cards rather than choices.
+ * A small swatch per theme, matching the accent row's dot in size. The
+ * full-size preview it replaced was the tallest thing in the Appearance panel
+ * and made the three options read as cards rather than choices.
+ *
+ * System gets a half-light, half-dark swatch of its own. It used to reuse the
+ * dark gradient verbatim, so the row read as light | dark | dark and there was
+ * no way to tell the two apart without reading the labels.
  */
 function ThemePreview({ mode }: { mode: ThemeMode }) {
-  const dark = mode === 'dark' || mode === 'system';
+  const background =
+    mode === 'dark'
+      ? 'linear-gradient(140deg, hsl(220 18% 22%), hsl(220 24% 9%))'
+      : mode === 'system'
+        ? 'linear-gradient(90deg, #fff 0 50%, hsl(220 18% 22%) 50% 100%)'
+        : 'linear-gradient(140deg, #fff, hsl(210 30% 88%))';
   return (
-    <span
-      className="option-card__preview"
-      style={{ background: dark ? 'linear-gradient(140deg, hsl(220 18% 22%), hsl(220 24% 9%))' : 'linear-gradient(140deg, #fff, hsl(210 30% 88%))' }}
-    >
+    <span className="option-card__preview" style={{ background }}>
       <span
         style={{
           position: 'absolute',
-          inset: 'auto 3px 3px 3px',
-          height: 4,
+          inset: 'auto 2px 2px 2px',
+          height: 3,
           borderRadius: 2,
           background: 'var(--grad-primary)',
           opacity: 0.95,
