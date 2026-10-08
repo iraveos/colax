@@ -151,7 +151,7 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
    one too in case a UA stylesheet reinstates it. */
 /* The trailing affordance shares the input's right padding so the two line up
    with the text block rather than floating against the outer edge. */
-.brand-subtitle{font-size:var(--text-xs);font-weight:620;color:var(--text-muted);letter-spacing:.16em;margin-bottom:4px;text-transform:uppercase;opacity:.9;text-align:center}
+
 .topbar__centre{gap:var(--space-2)}
 .search__kbd{position:absolute;right:10px;top:50%;translate:0 -50%;display:flex;pointer-events:none}
 .search__clear{position:absolute;right:5px;top:50%;translate:0 -50%;display:grid;place-items:center;width:26px;height:26px;border:none;border-radius:50%;background:var(--surface-hover);color:var(--text-muted);cursor:pointer;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),transform var(--fast) var(--ease-out)}

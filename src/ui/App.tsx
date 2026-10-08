@@ -1946,10 +1946,8 @@ onCreate={vault.create}
               ) : null}
             </div>
 
-            {/* Search and the brand icon share the centre column, the icon sitting
-                directly beneath the field on the same centre line. */}
+            {/* Search sits alone in the centre column. */}
             <div className="topbar__centre">
-              <div className="brand-subtitle">Colax</div>
               <div className="search">
                 <SearchIcon className="search__icon" width="15" height="15" />
                 <input
