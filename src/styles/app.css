@@ -94,7 +94,11 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
 .nav-item:focus-visible{outline:2px solid hsl(var(--accent-h) 55% 58% / .7);outline-offset:1px}
 .nav-item:focus:not(:focus-visible){outline:none}
 .main{display:flex;flex-direction:column;min-width:0;height:100%;position:relative;isolation:isolate}
-.content{position:relative;z-index:1;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.content{position:relative;z-index:1;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+/* Same thin bar as the Flow list, so the dashboard and the views scroll alike. */
+.content::-webkit-scrollbar{width:10px}
+.content::-webkit-scrollbar-track{background:transparent}
+.content::-webkit-scrollbar-thumb{background:var(--border-strong);border:3px solid transparent;border-radius:var(--radius-full);background-clip:content-box}
 /* Flow owns its own scrolling, so it needs a bounded column to scroll inside.
    The chain has to be definite at every step: .content is a flex item with
    min-height 0, this wrapper fills it, and the AnimatedList fills the wrapper.
@@ -256,7 +260,10 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
    hidden, because the cell's whole body is one target and a reader should hear
    that as a control. */
 .grid-cell__open{position:absolute;inset:0;z-index:1;border:none;background:none;padding:0;cursor:pointer;font-size:0;color:transparent}
-.grid-cell__head,.grid-cell__body,.grid-cell__actions{position:relative;z-index:2}
+.grid-cell__head,.grid-cell__body,.grid-cell__secret,.grid-cell__actions{position:relative;z-index:2}
+/* The secret block sits above the card's click proxy, so its username and
+   password text stays selectable and its copy buttons stay clickable. */
+.grid-cell__secret{user-select:text}
 .grid-cell__actions{pointer-events:auto}
 
 /* ---- Multi-select and bulk editing ----------------------------------------

@@ -2187,7 +2187,12 @@ onCreate={vault.create}
               scrolling page, so it must not inherit that. */}
           <div
             className="content"
-            style={view !== 'basic' && activeChannel?.kind !== 'dashboard' ? { overflow: 'hidden' } : undefined}
+            style={{
+              ...(view !== 'basic' && activeChannel?.kind !== 'dashboard' ? { overflow: 'hidden' } : undefined),
+              // A bottom-docked bar floats over the page end: without clearance
+              // the dashboard's last rows scroll underneath it.
+              ...(prefs.dockEnabled && prefs.dockPos.edge === 'bottom' ? { paddingBottom: 96 } : undefined),
+            }}
           >
             {folderLocked && activeFolder ? (
               <SecurityGate

@@ -53,7 +53,7 @@ interface AnimatedItemProps {
   index: number;
   selected: boolean;
   onMouseEnter: () => void;
-  onClick: () => void;
+  onClick: (event: React.MouseEvent) => void;
 }
 
 function AnimatedItem({ children, delay, index, selected, onMouseEnter, onClick }: AnimatedItemProps) {
@@ -228,7 +228,12 @@ export function AnimatedList<T>({
             index={index}
             selected={selectedIndex === index}
             onMouseEnter={() => setSelectedIndex(index)}
-            onClick={() => select(index)}
+            // Modifier-clicks belong to multi-selection (handled on the card
+            // below): opening here as well would both open and select at once.
+            onClick={(event: React.MouseEvent) => {
+              if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+              select(index);
+            }}
           >
             <div className={`rb-animated-list__item ${itemClassName}`.trim()} {...rowProps?.(item, index)}>
               {renderItem(item, index, selectedIndex === index)}

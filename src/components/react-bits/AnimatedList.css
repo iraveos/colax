@@ -122,6 +122,16 @@
   opacity: 1;
 }
 
+/* Vault multi-selection lives on the wrapper (which owns the visible
+   border), not on the inner card: one border, drawn where the border is,
+   instead of an outline floating inside a borderless card. */
+.rb-animated-list__item[data-selected] {
+  border-color: hsl(var(--accent-h) 55% 58% / .6);
+}
+.rb-animated-list__item[data-selected]::before {
+  opacity: 1;
+}
+
 .rb-animated-list__fade {
   position: absolute;
   left: 0;

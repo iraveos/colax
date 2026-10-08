@@ -277,7 +277,14 @@ function useLoginReorder(
     onPointerDown: (event: React.PointerEvent) => {
       if (!enabled || event.button !== 0) return;
       // Buttons and fields opt out: pressing them disarms, so they never drag.
-      if ((event.target as HTMLElement).closest('button, a, input, textarea, select, [contenteditable="true"]')) {
+      // The grid's body proxy (.grid-cell__open) is the exception — it stands
+      // in for the card body, so holding it must still arm or grid dragging
+      // could never start at all.
+      if (
+        (event.target as HTMLElement).closest(
+          'button:not(.grid-cell__open), a, input, textarea, select, [contenteditable="true"]',
+        )
+      ) {
         disarm();
         return;
       }
@@ -310,6 +317,25 @@ function useLoginReorder(
   };
 
   return { enabled, dragId, rowProps, listProps };
+}
+
+/**
+ * The open fast path for a card's click proxy (list trigger, grid overlay).
+ *
+ * A plain click opens; a click with Ctrl/Cmd/Shift does nothing here and
+ * bubbles to the row's selection handler instead. Without the guard, a
+ * modifier-click both opened the login AND selected it, and in the grid —
+ * whose overlay stops everything — selection by click was impossible at all.
+ */
+function openClick(
+  item: VaultItem,
+  onSelect: (item: VaultItem) => void,
+): (event: React.MouseEvent) => void {
+  return (event) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+    event.stopPropagation();
+    onSelect(item);
+  };
 }
 
 /** Tag chips for a login, resolved against the catalogue. */
@@ -562,7 +588,12 @@ export function AnimatedListView({
       // onto the first and last cards rather than as scroll hints.
       showGradients={false}
       onItemSelect={(item) => onSelect(item)}
-      rowProps={(item) => reorder.rowProps(item)}
+      // Vault selection lives on the wrapper (which owns the visible border),
+      // not on the inner card — one border, drawn where the border is.
+      rowProps={(item) => ({
+        ...reorder.rowProps(item),
+        'data-selected': selectedIds?.has(item.id) ? '' : undefined,
+      })}
       listProps={reorder.listProps}
       renderItem={(item, _index, selected) => {
         const label = labelOf(item);
@@ -583,7 +614,6 @@ export function AnimatedListView({
             data-photo={photo ? '' : undefined}
             style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
             data-flagged={item.needsAttention || undefined}
-            data-selected={selectedIds?.has(item.id) || undefined}
             onClick={selectionClick(item, onSelectForEdit)}
             onContextMenu={(event) => onItemMenu(event, item)}
             onDoubleClick={(event) => {
@@ -1066,7 +1096,7 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
                   {photo ? <div className="item__art" aria-hidden="true" /> : null}
                 {photo ? <div className="item__scrim" aria-hidden="true" /> : null}
 
-<button className="item__trigger" onClick={() => onSelect(item)}>
+<button className="item__trigger" onClick={openClick(item, onSelect)}>
                     <LoginMark item={item} site={hostnameOf(item.url)} size={32} />
                     <span className="item__body">
                       <HealthBadges
@@ -1296,10 +1326,7 @@ export function GridView({
                   type="button"
                   className="grid-cell__open"
                   aria-label={`Open ${label}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSelect(item);
-                  }}
+                  onClick={openClick(item, onSelect)}
                 />
               </div>
 
