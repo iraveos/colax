@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   captureToDraft,
   emailProvider,
+  extractEmails,
   findSimilarTag,
   inspectCapture,
   knownSite,
@@ -40,6 +41,21 @@ test('email detection needs a dot in the domain', () => {
   assert.equal(looksLikeEmail('a@b.co'), true);
   assert.equal(looksLikeEmail('a@b'), false);
   assert.equal(looksLikeEmail('not an email'), false);
+});
+
+test('bulk paste: one address per line, in paste order', () => {
+  assert.deepEqual(extractEmails('a@x.com\nb@y.org\nc@z.net'), ['a@x.com', 'b@y.org', 'c@z.net']);
+});
+
+test('bulk paste: commas, semicolons, spaces and wrapping all work', () => {
+  assert.deepEqual(extractEmails('a@x.com, b@y.org; c@z.net'), ['a@x.com', 'b@y.org', 'c@z.net']);
+  assert.deepEqual(extractEmails('<a@x.com>, "b@y.org";'), ['a@x.com', 'b@y.org']);
+});
+
+test('bulk paste: junk is dropped and dupes collapse case-insensitively', () => {
+  assert.deepEqual(extractEmails('hello\nA@x.com\na@X.COM\nnot-an-email\na@b'), ['A@x.com']);
+  assert.deepEqual(extractEmails(''), []);
+  assert.deepEqual(extractEmails(null), []);
 });
 
 test('placeholders and masking runs are rejected, real values are not', () => {

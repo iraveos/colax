@@ -225,6 +225,30 @@ export function looksLikeEmail(value: string | null | undefined): boolean {
 }
 
 /**
+ * Pulls every email address out of a pasted block — one per line, comma- or
+ * space-separated, or prose with addresses in it.
+ *
+ * Splits on whitespace, commas and semicolons, strips surrounding wrapping
+ * (`<a@b.co>`, `"a@b.co",`), keeps what looks like an address, and dedupes
+ * case-insensitively keeping the first-seen casing. Order is the paste order,
+ * so the created logins read the way the list did.
+ */
+export function extractEmails(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of text.split(/[\s,;]+/)) {
+    const cleaned = raw.trim().replace(/^["'<(\[]+|["'>)\].,;:]+$/g, '').trim();
+    if (!cleaned || !looksLikeEmail(cleaned)) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+/**
  * Whether a captured value is one of the page's own placeholders.
  *
  * Length is ignored on purpose: a one-character password is far more likely to

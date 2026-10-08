@@ -52,7 +52,7 @@ import {
 } from './hooks.ts';
 import { useSelection } from './useSelection.ts';
 import { applyBulkEdit, bulkMenu, type BulkEdit } from './bulk-edit.ts';
-import { BulkEditDialog } from './BulkEditDialog.tsx';
+import { BulkAddDialog, BulkEditDialog } from './BulkEditDialog.tsx';
 import { formatLoginCompact, formatLoginForClipboard, formatLoginsForClipboard } from './login-format.ts';
 import { getPlatform } from '../lib/platform.ts';
 import {
@@ -138,6 +138,7 @@ export function App() {
   const selection = useSelection();
   const [bulkField, setBulkField] = useState<'title' | 'notes' | 'tags' | 'theme' | null>(null);
   const [bulkSecurity, setBulkSecurity] = useState(false);
+  const [bulkAdding, setBulkAdding] = useState(false);
   const [bulkDelete, setBulkDelete] = useState<VaultItem[] | null>(null);
   /**
    * Logins whose second factor has been cleared this session.
@@ -1980,6 +1981,10 @@ onCreate={vault.create}
             </div>
 
             <div className="topbar__actions">
+              <button className="btn btn--quiet" onClick={() => setBulkAdding(true)}>
+                <PlusIcon width="15" height="15" />
+                Bulk add
+              </button>
               <button className="btn btn--quiet" onClick={() => setEditing('new')}>
                 <PlusIcon width="15" height="15" />
                 New login
@@ -2072,6 +2077,35 @@ onCreate={vault.create}
           tags={prefs.tags}
           onApply={(edit) => void applySelectionEdit(edit)}
           onCancel={() => setBulkField(null)}
+          onNotify={notify}
+        />
+      ) : null}
+
+      {bulkAdding ? (
+        <BulkAddDialog
+          existingUsernames={new Set(vault.items.map((item) => item.username.trim().toLowerCase()).filter(Boolean))}
+          onAdd={(entries) => {
+            void vault
+              .mutate(async () => {
+                const saved = new Set(vault.items.map((item) => item.username.trim().toLowerCase()).filter(Boolean));
+                let added = 0;
+                for (const entry of entries) {
+                  // Re-checked at write time, so an address saved while the
+                  // dialog was open still cannot duplicate.
+                  if (saved.has(entry.username.toLowerCase())) continue;
+                  saved.add(entry.username.toLowerCase());
+                  await vault.service.addItem({
+                    title: entry.username.split('@')[0] || entry.username,
+                    username: entry.username,
+                    password: entry.password,
+                  });
+                  added += 1;
+                }
+                return added;
+              })
+              .then((added) => notify(added === 1 ? 'Added 1 login' : `Added ${added} logins`));
+          }}
+          onCancel={() => setBulkAdding(false)}
           onNotify={notify}
         />
       ) : null}

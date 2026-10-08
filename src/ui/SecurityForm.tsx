@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import {
   answerTooWeak,
-  currentTotpCode,
   extractTotpSeed,
   generateTotpSeed,
   hashAnswer,
@@ -43,7 +42,6 @@ export function SecurityForm({
   const [seedInput, setSeedInput] = useState('');
   const [codeInput, setCodeInput] = useState('');
   const [codeError, setCodeError] = useState('');
-  const [liveCode, setLiveCode] = useState('');
   const [qr, setQr] = useState('');
 
   /**
@@ -61,30 +59,10 @@ export function SecurityForm({
   // The seed under test: a staged one while confirming, otherwise the saved one.
   const activeSeed = stagedSeed ?? security.totp?.seed ?? null;
 
-  // The live code, re-read once a second. Cheap, and it proves the seed works
-  // before the user scans it into their phone.
-  useEffect(() => {
-    if (!activeSeed) {
-      setLiveCode('');
-      setQr('');
-      return;
-    }
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const code = await currentTotpCode(activeSeed);
-        if (!cancelled) setLiveCode(code);
-      } catch {
-        if (!cancelled) setLiveCode('');
-      }
-    };
-    void tick();
-    const id = setInterval(tick, 1000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [activeSeed]);
+  // No live "code now" display anywhere in this editor — not for saved keys
+  // and not while staging a new one either. Typing a code from the phone app
+  // into the check field below is what confirms a key works; showing the code
+  // here would just leak it onto a screen meant for changing things.
 
   useEffect(() => {
     if (!activeSeed) return;
@@ -372,14 +350,6 @@ export function SecurityForm({
                 <p className="field__note">Scan this with your authenticator app, then confirm a code below.</p>
               </div>
             ) : null}
-            <dl className="sec__facts">
-              {liveCode ? (
-                <>
-                  <dt>Code now</dt>
-                  <dd className="sec__code">{liveCode}</dd>
-                </>
-              ) : null}
-            </dl>
             <div className="field-row">
               <input
                 className="input"

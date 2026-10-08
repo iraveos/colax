@@ -211,3 +211,198 @@ function looksLikeLogin(value: string): boolean {
 function looksLikePassword(value: string): boolean {
   return value.length >= 6 && value.length <= 128 && !/^https?:\/\//i.test(value) && !value.includes('@');
 }
+
+/** A line that separates credential blocks in a bulk paste: `-` alone. */
+export function isBulkSeparator(line: string): boolean {
+  return /^[-–—]+\s*$/.test(line.trim());
+}
+
+/** Splits a bulk paste into blocks on separator lines. Empty blocks are dropped. */
+export function splitBulkBlocks(text: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (isBulkSeparator(line)) {
+      if (current.join('\n').trim()) blocks.push(current.join('\n'));
+      current = [];
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.join('\n').trim()) blocks.push(current.join('\n'));
+  return blocks;
+}
+
+/**
+ * The common top-level domains, longest first. Used to split a glued
+ * `addresspassword` token: `me@x.comhunter2` must read as `me@x.com` plus
+ * `hunter2`, never as the "address" `me@x.comhunter2`. Anything exotic falls
+ * through to the longest-plausible-prefix heuristic below.
+ */
+const GLUED_TLDS = [
+  'museum', 'travel', 'info', 'biz', 'dev', 'app', 'cloud', 'mail', 'email', 'online', 'store',
+  'blog', 'tech', 'com', 'org', 'net', 'edu', 'gov', 'mil', 'int', 'io', 'co', 'me', 'tv', 'cc',
+  'ai', 'uk', 'de', 'fr', 'es', 'it', 'nl', 'ru', 'br', 'in', 'jp', 'cn', 'au', 'ca', 'us',
+  'se', 'no', 'dk', 'fi', 'pl', 'cz', 'at', 'ch', 'be', 'ie', 'nz', 'za', 'ae', 'sa', 'eg',
+  'tr', 'gr', 'pt', 'hu', 'ro', 'il', 'ua', 'kr', 'tw', 'hk', 'sg', 'my', 'id', 'ph', 'th',
+  'vn', 'mx', 'ar', 'cl',
+];
+
+/**
+ * Splits one glued token — `me@x.comhunter2` — into address and password.
+ *
+ * Dots are scanned right to left because the TLD lives at the end:
+ * `a@b.co.ukEF12` reads as `a@b.co.uk` + `EF12`, never split at an inner
+ * label. Within one label the list order decides (`com` before `co`, so
+ * `a@gmail.comxxxx` reads as `a@gmail.com` + `xxxx`). The password half must
+ * be at least 4 characters: shorter than that, and the "password" is likelier
+ * the tail of an exotic domain — in which case this returns null and the token
+ * stays an address, never a mangled pair. Exotic-TLD glued pairs therefore
+ * come out as email-only logins rather than wrong ones.
+ */
+export function splitGluedEmail(token: string): { username: string; password: string } | null {
+  if (!token || /\s/.test(token) || !token.includes('@') || !token.includes('.')) return null;
+  const lower = token.toLowerCase();
+  const at = lower.indexOf('@');
+  if (at <= 0) return null;
+  const dots: number[] = [];
+  for (let i = at + 1; i < lower.length; i += 1) {
+    if (lower[i] === '.') dots.push(i);
+  }
+  for (let d = dots.length - 1; d >= 0; d -= 1) {
+    const run = /^[a-z]+/.exec(lower.slice(dots[d]! + 1))?.[0] ?? '';
+    for (const tld of GLUED_TLDS) {
+      if (!run.startsWith(tld)) continue;
+      const end = dots[d]! + 1 + tld.length;
+      const username = token.slice(0, end);
+      const password = token.slice(end);
+      if (!/^[^@\s]+@[^@\s]+$/.test(username)) continue;
+      // A remainder starting with a dot means this TLD matched a mid-domain
+      // label (`user@mail.io` hitting `.mail`): keep scanning other TLDs.
+      if (password.startsWith('.')) continue;
+      if (password.length >= 4) return { username, password };
+      // A known TLD with nothing (or almost nothing) behind it is just an
+      // address — stop this label rather than inventing a password.
+      if (password.length === 0) return null;
+      break;
+    }
+  }
+  return null;
+}
+
+/**
+ * Reads one bulk block — the text between two `-` lines — as a credential.
+ *
+ * In order: labelled lines (reusing the single-paste rules, so titles and urls
+ * survive), an `address password` line, a bare two-line pair in either order, a
+ * glued `addresspassword` token, then a wrapped password spread over the lines
+ * after the address (line breaks inside a password are removed, so a password
+ * that wrapped when copied reassembles). A block with an address but no
+ * password half becomes an email-only login; a block with no address at all is
+ * junk and returns null.
+ */
+export function detectBulkBlock(block: string): ClipCredentials | null {
+  const lines = block
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  if (lines.some((line) => splitLabelled(line) !== null)) return detectLabelled(lines);
+
+  let username: string | null = null;
+  const fragments: string[] = [];
+  for (const line of lines) {
+    const spaced = /^([^\s:]+@[^\s:]+)[\s:]+(\S.*)$/.exec(line);
+    if (spaced) {
+      username ??= spaced[1]!;
+      fragments.push(spaced[2]!);
+      continue;
+    }
+    const glued = splitGluedEmail(line);
+    if (glued) {
+      username ??= glued.username;
+      fragments.push(glued.password);
+      continue;
+    }
+    if (!username && /^[^\s:]+@[^\s:]+$/.test(line)) {
+      username = line;
+      continue;
+    }
+    fragments.push(line);
+  }
+  if (!username) return null;
+  // URL-looking fragments are junk, not passwords — same bar as single pastes.
+  const password = fragments
+    .filter((fragment) => !/^https?:\/\/\S+$/i.test(fragment))
+    .join('')
+    .slice(0, 256);
+  return { username, password };
+}
+
+/**
+ * Reads separator-less lines as alternating `address / password / address /
+ * password …`. Every line must be consumed — an address starts a group, and
+ * the single-token lines after it join its password — otherwise this is not a
+ * pairs paste at all and null sends the caller back to plain address-list
+ * mode. A prose line with spaces can never be a password here: one stray
+ * sentence must not turn the whole paste into wrong logins.
+ */
+export function detectBulkLines(text: string): ClipCredentials[] | null {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  const out: ClipCredentials[] = [];
+  let current: { username: string; fragments: string[] } | null = null;
+  const flush = () => {
+    if (current) {
+      out.push({ username: current.username, password: current.fragments.join('').slice(0, 256) });
+      current = null;
+    }
+  };
+  for (const line of lines) {
+    if (/^[^\s:]+@[^\s:]+$/.test(line)) {
+      flush();
+      current = { username: line, fragments: [] };
+      continue;
+    }
+    const glued = splitGluedEmail(line);
+    if (glued) {
+      flush();
+      current = { username: glued.username, fragments: [glued.password] };
+      continue;
+    }
+    // A password fragment: one token, no spaces, not a URL, not an address.
+    if (!current || /\s/.test(line) || line.length < 1 || line.length > 128 || /^https?:\/\/\S+$/i.test(line)) {
+      return null;
+    }
+    current.fragments.push(line);
+  }
+  flush();
+  // Pairs mode only when at least one password actually showed up — otherwise
+  // this is a plain address list wearing no disguise.
+  return out.some((entry) => entry.password) ? out : null;
+}
+
+/**
+ * Reads a whole bulk paste into one credential per entry, in paste order.
+ *
+ * Two shapes: blocks of `address + password` divided by `-` lines (glued,
+ * spaced, two-line, wrapped or labelled), or — with no separator lines —
+ * alternating `address / password` lines. Junk blocks are skipped. Returns
+ * null for a plain address list (or prose): the caller falls back to one
+ * login per address instead of inventing passwords.
+ */
+export function detectBulk(text: string): ClipCredentials[] | null {
+  if (!text || !text.trim()) return null;
+  if (text.split(/\r?\n/).some(isBulkSeparator)) {
+    const out: ClipCredentials[] = [];
+    for (const block of splitBulkBlocks(text)) {
+      const creds = detectBulkBlock(block);
+      if (creds) out.push(creds);
+    }
+    return out;
+  }
+  return detectBulkLines(text);
+}

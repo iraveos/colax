@@ -13,6 +13,8 @@
 import { useMemo, useState } from 'react';
 import type { VaultItem } from '../vault/types.ts';
 import type { Tag } from '../vault/channels.ts';
+import { extractEmails } from '../vault/site-intel.ts';
+import { detectBulk } from './useClipboardWatcher.ts';
 import { countAffected, type BulkEdit } from './bulk-edit.ts';
 import { formatLoginForClipboard, formatLoginsForClipboard } from './login-format.ts';
 import { Modal } from './primitives.tsx';
@@ -207,6 +209,178 @@ export function BulkEditDialog({
             <CopyIcon width="14" height="14" />
             Copy as email and password
           </button>
+        ) : null}
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Bulk-add dialog: paste addresses — or whole address+password dumps — and get
+ * one login each.
+ *
+ * Two modes, picked automatically:
+ *
+ * - Address list (no `-` lines): one login per address, empty password. Copy a
+ *   column of addresses from anywhere — one per line, or comma/space
+ *   separated, wrapping and junk tolerated.
+ * - Credential blocks (entries divided by `-` lines): each block becomes a
+ *   login *with its password*. Glued (`me@x.comhunter2`), spaced
+ *   (`me@x.com hunter2`), two-line, wrapped-across-lines and labelled shapes
+ *   are all read; line breaks inside a block join into the password.
+ *
+ * Addresses already saved in the vault are skipped rather than duplicated, and
+ * each row can be dropped before committing. New logins land untagged (so they
+ * wait in Unassigned).
+ */
+export function BulkAddDialog({
+  existingUsernames,
+  onAdd,
+  onCancel,
+  onNotify,
+}: {
+  /** Lowercased usernames already in the vault, for skip-not-duplicate. */
+  existingUsernames: ReadonlySet<string>;
+  onAdd: (items: { username: string; password: string }[]) => void;
+  onCancel: () => void;
+  onNotify: (message: string, tone?: 'ok' | 'error') => void;
+}) {
+  const [text, setText] = useState('');
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
+
+  // Credential-block mode when `-` lines divide the paste; otherwise plain
+  // address-list mode. First pasted spelling of an address wins, so a repeated
+  // address never mints two logins.
+  const parsed = useMemo(() => {
+    const bulk = detectBulk(text);
+    if (bulk !== null) {
+      const seen = new Set<string>();
+      const out: { username: string; password: string }[] = [];
+      for (const creds of bulk) {
+        const key = creds.username.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ username: creds.username, password: creds.password });
+      }
+      return out;
+    }
+    return extractEmails(text).map((email) => ({ username: email, password: '' }));
+  }, [text]);
+  const isPairs = useMemo(() => detectBulk(text) !== null, [text]);
+  const fresh = useMemo(
+    () =>
+      parsed.filter(
+        (entry) => !existingUsernames.has(entry.username.toLowerCase()) && !removed.has(entry.username.toLowerCase()),
+      ),
+    [parsed, existingUsernames, removed],
+  );
+  const skipped = removed.size;
+  const alreadySaved = useMemo(
+    () => parsed.filter((entry) => existingUsernames.has(entry.username.toLowerCase())),
+    [parsed, existingUsernames],
+  );
+
+  async function pasteFromClipboard() {
+    try {
+      setText(await navigator.clipboard.readText());
+    } catch {
+      onNotify('Could not read the clipboard — paste with Ctrl+V instead', 'error');
+    }
+  }
+
+  return (
+    <Modal
+      title="Bulk add logins"
+      onClose={onCancel}
+      wide
+      footer={
+        <>
+          <button type="button" className="btn btn--secondary" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn--primary"
+            disabled={fresh.length === 0}
+            onClick={() => {
+              onAdd(fresh);
+              onCancel();
+            }}
+          >
+            {fresh.length > 0 ? `Add ${fresh.length} login${fresh.length === 1 ? '' : 's'}` : 'Add'}
+          </button>
+        </>
+      }
+    >
+      <div className="bulk">
+        <p className="bulk__lead">
+          Paste addresses — one per line — and each becomes its own login. Passwords come along
+          too when they follow their address line by line, or in blocks divided by <code>-</code> lines
+          (glued, spaced, two-line, wrapped or labelled). Saved addresses are skipped, junk ignored.
+        </p>
+        <div className="field">
+          <label className="field__label" htmlFor="bulk-emails">
+            {isPairs ? 'Addresses + passwords' : 'Email addresses'}
+          </label>
+          <textarea
+            id="bulk-emails"
+            className="input"
+            value={text}
+            onChange={(event) => {
+              setText(event.target.value);
+              setRemoved(new Set());
+            }}
+            placeholder={'ana@example.comhunter2\n-\nben@example.org\ns3cr3t'}
+            rows={6}
+            spellCheck={false}
+          />
+        </div>
+        <div className="field-row">
+          <button type="button" className="btn btn--secondary btn--sm" onClick={() => void pasteFromClipboard()}>
+            Paste from clipboard
+          </button>
+          {text ? (
+            <button type="button" className="btn btn--quiet btn--sm" onClick={() => { setText(''); setRemoved(new Set()); }}>
+              Clear
+            </button>
+          ) : null}
+        </div>
+        {parsed.length > 0 ? (
+          <p className="field__hint">
+            {fresh.length} new{alreadySaved.length > 0 ? ` · ${alreadySaved.length} already saved (skipped)` : ''}
+            {skipped > 0 ? ` · ${skipped} removed` : ''} · junk ignored
+          </p>
+        ) : text.trim() ? (
+          <p className="field__hint">
+            {isPairs ? 'No address + password pairs found in those blocks yet.' : 'No addresses found in that text yet.'}
+          </p>
+        ) : null}
+        {fresh.length > 0 ? (
+          <ul className="inbox__list" style={{ maxHeight: 220 }}>
+            {fresh.map((entry) => (
+              <li key={entry.username.toLowerCase()} className="inbox__message" style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <span className="inbox__meta" style={{ flex: 1 }}>
+                  {entry.username}
+                  {entry.password ? (
+                    <span className="inbox__summary inbox__summary--full" style={{ fontFamily: 'var(--font-mono)' }}>
+                      {entry.password}
+                    </span>
+                  ) : null}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn--quiet btn--sm"
+                  aria-label={`Drop ${entry.username}`}
+                  onClick={() => setRemoved((current) => new Set(current).add(entry.username.toLowerCase()))}
+                >
+                  Drop
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {alreadySaved.length > 0 ? (
+          <p className="field__hint">Skipped (already in the vault): {alreadySaved.map((entry) => entry.username).join(', ')}</p>
         ) : null}
       </div>
     </Modal>

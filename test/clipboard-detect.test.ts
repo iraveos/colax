@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detect } from '../src/ui/useClipboardWatcher.ts';
+import { detect, detectBulk, detectBulkLines, splitGluedEmail } from '../src/ui/useClipboardWatcher.ts';
 import { formatLoginCompact, formatLoginForClipboard } from '../src/ui/login-format.ts';
 
 /**
@@ -184,4 +184,68 @@ test('a labelled title beats a bare leading line', () => {
   const out = detect('Stray line\ntitle: Real Name\nemail: me@x.com\npassword: hunter2');
   // Two unlabelled lines means no bare title; the labelled one still wins.
   assert.equal(out?.title, 'Real Name');
+});
+
+test('a glued address+password splits on the real TLD', () => {
+  assert.deepEqual(splitGluedEmail('me@x.comhunter2'), { username: 'me@x.com', password: 'hunter2' });
+  // `com` wins over `co`: the longest *valid* TLD, not the longest letters.
+  assert.deepEqual(splitGluedEmail('a@gmail.comxxxx'), { username: 'a@gmail.com', password: 'xxxx' });
+  // The TLD lives at the end: multi-label domains split at the outer label.
+  assert.deepEqual(splitGluedEmail('a@b.co.ukEF12'), { username: 'a@b.co.uk', password: 'EF12' });
+  // A mid-domain label never counts (`user@mail.io` is one address, not a pair).
+  assert.equal(splitGluedEmail('user@mail.io'), null);
+  assert.equal(splitGluedEmail('a@b.com'), null);
+  assert.equal(splitGluedEmail('not-an-email'), null);
+});
+
+test('separator-less alternating address/password lines pair up', () => {
+  assert.deepEqual(detectBulkLines('a@x.com\nhunter2\nb@y.org\ns3cr3t'), [
+    { username: 'a@x.com', password: 'hunter2' },
+    { username: 'b@y.org', password: 's3cr3t' },
+  ]);
+  // Wrapped fragments rejoin; a trailing lone address keeps an empty password.
+  assert.deepEqual(detectBulkLines('a@x.com\nhu\nnter2\nb@y.org'), [
+    { username: 'a@x.com', password: 'hunter2' },
+    { username: 'b@y.org', password: '' },
+  ]);
+  // Prose with spaces is never a password: back to list mode, not wrong logins.
+  assert.equal(detectBulkLines('a@x.com\nsome stray words\nb@y.org'), null);
+  // Pure address lists are not pairs mode either.
+  assert.equal(detectBulkLines('a@x.com\nb@y.org'), null);
+});
+
+test('bulk mode accepts alternating lines with no separators', () => {
+  assert.deepEqual(detectBulk('a@x.com\nhunter2\nb@y.org\ns3cr3t'), [
+    { username: 'a@x.com', password: 'hunter2' },
+    { username: 'b@y.org', password: 's3cr3t' },
+  ]);
+});
+
+test('bulk paste without separators is not bulk mode', () => {
+  assert.equal(detectBulk('a@x.com\nb@y.org'), null);
+});
+
+test('bulk paste reads glued, spaced, wrapped and lone blocks', () => {
+  const text = [
+    'ann@gmail.coms3cr3t',
+    '-',
+    'ben@gmail.com    hu',
+    'nter2',
+    '-',
+    'cara@gmail.com',
+    'zzzz',
+    '-',
+    'dan@gmail.com hunter2',
+    '-',
+    'just some junk',
+    '-',
+    'eve@gmail.com',
+  ].join('\n');
+  assert.deepEqual(detectBulk(text), [
+    { username: 'ann@gmail.com', password: 's3cr3t' },
+    { username: 'ben@gmail.com', password: 'hunter2' },
+    { username: 'cara@gmail.com', password: 'zzzz' },
+    { username: 'dan@gmail.com', password: 'hunter2' },
+    { username: 'eve@gmail.com', password: '' },
+  ]);
 });

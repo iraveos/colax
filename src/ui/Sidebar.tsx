@@ -253,6 +253,8 @@ export function Sidebar({
       key={id}
       className="sidebar__rule sidebar__rule--row"
       role="separator"
+      aria-label="Separator — drag to move, right-click for options"
+      title="Separator — drag to move, right-click for options"
       {...rowProps(list, index, id)}
       onContextMenu={(event) => {
         event.preventDefault();
