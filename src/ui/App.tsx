@@ -19,7 +19,7 @@ import { captureToDraft, findSimilarTag, suggestTagsForDraft } from '../vault/si
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
 import { FolderEditor } from './FolderEditor.tsx';
-import { detect as detectClipboard, useClipboardWatcher } from './useClipboardWatcher.ts';
+import { detect as detectClipboard, detectBulk, useClipboardWatcher } from './useClipboardWatcher.ts';
 import { useAlarms, playAlarmSound } from './useAlarms.ts';
 import { useCaptureOffer, type PendingCapture } from './useCaptureOffer.ts';
 import type { GmailAccount, SortMode, VaultView } from '../vault/storage.ts';
@@ -1438,11 +1438,12 @@ label: 'Settings',
 
   /* ---- Paste to create ----------------------------------------------------
      Click the vault body, Ctrl+V a copied email+password, and a new Unassigned
-     login is created from it. Reads the event's clipboard data directly, so no
-     permission prompt is involved; only fires outside text fields, menus and
-     dialogs, so pasting into a form never creates anything. An exact
-     username+password duplicate is reported instead of duplicated — pasting
-     twice must not fork the login. */
+     login is created from it — or one login per entry when the paste holds
+     several (alternating address/password lines, or `-`-divided blocks).
+     Reads the event's clipboard data directly, so no permission prompt is
+     involved; only fires outside text fields, menus and dialogs, so pasting
+     into a form never creates anything. An exact username+password duplicate
+     is reported instead of duplicated — pasting twice must not fork the login. */
   useEffect(() => {
     if (vault.status !== 'unlocked') return;
     const onPaste = (event: ClipboardEvent) => {
@@ -1456,6 +1457,47 @@ label: 'Settings',
       }
       const text = event.clipboardData?.getData('text') ?? '';
       if (!text.trim()) return;
+      // Several credentials at once win over the single-pair read: alternating
+      // address/password lines or `-`-divided blocks each mint their own login.
+      // Exact duplicates (in the vault or inside the paste) are skipped, and a
+      // paste of nothing-new is reported rather than silently dropped.
+      const bulk = detectBulk(text);
+      if (bulk && bulk.length > 0) {
+        event.preventDefault();
+        const seen = new Set(
+          vault.items.map((entry) => `${entry.username}\n${entry.password}`),
+        );
+        const fresh = bulk.filter((creds) => {
+          const key = `${creds.username}\n${creds.password}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        if (fresh.length === 0) {
+          notify('Those logins are already in the vault', 'error');
+          return;
+        }
+        void vault
+          .mutate(async () => {
+            for (const creds of fresh) {
+              await vault.service.addItem({
+                title: creds.title?.trim() || creds.username.split('@')[0] || 'Pasted login',
+                username: creds.username,
+                password: creds.password,
+                url: creds.url ?? '',
+                notes: creds.notes ?? '',
+              });
+            }
+          })
+          .then(() =>
+            notify(
+              fresh.length === 1
+                ? 'Created login in Unassigned'
+                : `Created ${fresh.length} logins in Unassigned`,
+            ),
+          );
+        return;
+      }
       const creds = detectClipboard(text);
       if (!creds) return;
       event.preventDefault();
