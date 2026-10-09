@@ -1305,6 +1305,7 @@ to{transform:translate(0)}
    while a drag is actually over it. */
 .sidebar__folder-children[data-collapsed],.sidebar__folder-children:empty{min-height:8px}
 .sidebar__folder-children[data-folder-drop]:hover{outline:1px dashed var(--border-strong);outline-offset:2px;border-radius:var(--radius-sm)}
+.sidebar__folder-empty{font-size:var(--text-xs);color:var(--text-faint);padding:5px var(--space-2);border:1px dashed var(--border);border-radius:var(--radius-sm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nav-item--folder{cursor:pointer;user-select:none}
 .nav-item__chevron{display:grid;place-items:center;width:18px;height:18px;border-radius:var(--radius-sm);color:var(--text-faint);transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
 .nav-item__chevron:hover{background:var(--surface-hover);color:var(--text)}

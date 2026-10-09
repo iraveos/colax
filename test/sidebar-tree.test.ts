@@ -131,6 +131,13 @@ test('moving preserves every channel exactly once', () => {
   assert.deepEqual([...seen].sort(), ['channel:a@f1', 'channel:b@f1', 'channel:c@root']);
 });
 
+test('an empty folder stays in the tree so it can receive drops', () => {
+  const out = normaliseSidebar([], CHANNELS, FOLDERS);
+  const folder = out.find((e) => e.kind === 'folder' && e.id === 'f1');
+  assert.ok(folder, 'empty folder must survive normalisation');
+  assert.deepEqual(folder.kind === 'folder' ? folder.children : null, []);
+});
+
 test('builtin channels are all present in the normalised tree', () => {
   const out = normaliseSidebar([], BUILTIN_CHANNELS, []);
   const ids = out.filter((e) => e.kind === 'channel').map((e) => e.id);
