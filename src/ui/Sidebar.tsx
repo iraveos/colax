@@ -137,11 +137,12 @@ export function Sidebar({
   const hiddenFolderIds = new Set(hiddenFolders);
   // Every channel hidden (or none present at all): the rail would render just
   // the footer, so say where the channels went instead of looking broken.
+  // Folders always render — even empty — so a new folder is visible the
+  // moment it is created instead of vanishing until something lands in it.
   const railEmpty = entries.every((entry) => {
     if (entry.kind === 'separator') return true;
     if (entry.kind === 'channel') return hidden.has(entry.id);
-    if (hiddenFolderIds.has(entry.id)) return true;
-    return !entry.children.some((child) => child.kind !== 'channel' || !hidden.has(child.id));
+    return hiddenFolderIds.has(entry.id);
   });
 
   // Icon-only is a rail you read by shape, so it behaves like compact mode even
@@ -286,6 +287,12 @@ export function Sidebar({
     const childCount = entry && entry.kind === 'folder'
       ? entry.children.reduce((total, child) => (child.kind === 'channel' ? total + (counts[child.id] ?? 0) : total), 0)
       : 0;
+    // Whether anything inside would actually paint. Drives the empty hint,
+    // never visibility: an empty folder still renders its header.
+    const hasVisibleChildren =
+      !!entry &&
+      entry.kind === 'folder' &&
+      entry.children.some((child) => child.kind !== 'channel' || !hidden.has(child.id));
 
     return (
       <div key={folder.id} className="sidebar__folder">
@@ -374,6 +381,11 @@ export function Sidebar({
                 return channel ? channelRow(channel, folder.id, childIndex) : null;
               })
             : null}
+          {expanded && !hasVisibleChildren ? (
+            <div className="sidebar__folder-empty" aria-hidden="true">
+              Empty — drag channels here
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -398,13 +410,11 @@ export function Sidebar({
           if (entry.kind === 'folder') {
             // A hidden folder hides with its whole subtree. Unhiding happens
             // in Settings › Hidden, which lists every hidden thing at once.
+            // Anything else renders even when empty: hiding empty folders is
+            // what made new folders invisible the moment they were created.
             if (hiddenFolderIds.has(entry.id)) return null;
             const folder = folderById.get(entry.id);
             if (!folder) return null;
-            // A folder left with nothing visible hides with its children.
-            // Un-hiding happens in Settings, which lists every channel.
-            const visible = entry.children.some((child) => child.kind !== 'channel' || !hidden.has(child.id));
-            if (!visible) return null;
             return folderRow(folder, 'root', index);
           }
           const channel = channelById.get(entry.id);
