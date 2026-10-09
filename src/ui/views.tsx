@@ -1543,36 +1543,7 @@ function groupByLetter(items: VaultItem[]) {
   return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
-/**
- * Actionable security summary for the weak channel: what is wrong and a
- * Select-all path straight into bulk review, instead of a bare filter plus
- * badges. Informative by the numbers, not by painting cards red.
- */
-export function WeakSummary({
-  total,
-  reused,
-  stale,
-  onSelectAll,
-}: {
-  total: number;
-  reused: number;
-  stale: number;
-  onSelectAll: () => void;
-}) {
-  return (
-    <div className="weak-strip" role="note">
-      <span className="weak-strip__text">
-        <b>
-          {total} to review
-        </b>{' '}
-        — {reused} reused · {stale} stale. Select them all, then right-click for bulk actions.
-      </span>
-      <button type="button" className="btn btn--secondary btn--sm" onClick={onSelectAll}>
-        Select all {total}
-      </button>
-    </div>
-  );
-}
+
 
 export function ViewEmptyState({
   query,

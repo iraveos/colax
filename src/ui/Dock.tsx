@@ -83,26 +83,19 @@ export function Dock({
   onSlotMenu?: (event: ReactMouseEvent, slotId: string) => void;
 }) {
   // Free placement: press anywhere on the bar's chrome and the bar follows the
-  // pointer live, snapping its edge as it goes; release drops it, clamped on
-  // screen. A press without movement is not a drag, so slot clicks are
-  // unaffected — the threshold is what keeps the two gestures from fighting.
-  // Moves are folded through one rAF slot, so a fast pointer cannot queue more
-  // position writes than frames can paint (that backlog was the visible lag).
+  // pointer live; release drops it exactly there, clamped on screen. The
+  // nearest edge only decides row-vs-column orientation, never the spot. A
+  // press without movement is not a drag, so slot clicks are unaffected — the
+  // threshold is what keeps the two gestures from fighting. Moves are folded
+  // through one rAF slot, so a fast pointer cannot queue more position writes
+  // than frames can paint (that backlog was the visible lag).
   const dragFrom = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
   const raf = useRef(0);
   const clamp01 = (value: number) => Math.min(0.94, Math.max(0.06, value));
-  // Edge-anchored: a fixed margin off the snapped edge, centred on the other
-  // axis. The old model centred on both axes, which left a dead band between
-  // the bar and the edge it claimed to dock to.
-  const anchored =
-    pos.edge === 'top'
-      ? { left: `${pos.fx * 100}%`, top: 10, translate: '-50% 0' }
-      : pos.edge === 'bottom'
-        ? { left: `${pos.fx * 100}%`, bottom: 10, translate: '-50% 0' }
-        : pos.edge === 'left'
-          ? { top: `${pos.fy * 100}%`, left: 10, translate: '0 -50%' }
-          : { top: `${pos.fy * 100}%`, right: 10, translate: '0 -50%' };
+  // Free placement: the bar sits exactly where it was dropped, centred on the
+  // pointer. The snapped edge only decides row-vs-column orientation, never
+  // pins the bar to a margin — every dock roams the whole screen.
 
   useEffect(
     () => () => {
@@ -133,7 +126,11 @@ export function Dock({
       className="dock"
       data-edge={pos.edge}
       aria-label="Quick launch"
-      style={anchored as React.CSSProperties}
+      style={{
+        left: `${pos.fx * 100}%`,
+        top: `${pos.fy * 100}%`,
+        translate: '-50% -50%',
+      } as React.CSSProperties}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();

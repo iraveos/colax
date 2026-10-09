@@ -98,10 +98,7 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
 .content::-webkit-scrollbar{width:10px}
 .content::-webkit-scrollbar-track{background:transparent}
 .content::-webkit-scrollbar-thumb{background:var(--border-strong);border:3px solid transparent;border-radius:var(--radius-full);background-clip:content-box}
-/* Weak-channel summary: the numbers plus the way forward, in one slim line. */
-.weak-strip{display:flex;align-items:center;gap:var(--space-3);flex-shrink:0;padding:var(--space-2) var(--space-6);border-bottom:1px solid hsl(42 82% 56% / .3);background:hsl(42 82% 56% / .07);font-size:var(--text-xs);min-width:0}
-.weak-strip__text{flex:1;min-width:0;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.weak-strip__text b{color:var(--text)}
+
 /* Flow owns its own scrolling, so it needs a bounded column to scroll inside.
    The chain has to be definite at every step: .content is a flex item with
    min-height 0, this wrapper fills it, and the AnimatedList fills the wrapper.
@@ -1079,8 +1076,8 @@ to{transform:translate(0)}
    Without this the numbers read as decoration and the user has to hunt the
    sidebar for the view they already have the count for. Hover stays flat —
    no lift, no glow. */
-.stat--link{cursor:pointer;text-align:left;transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease)}
-.stat--link:hover{background:var(--surface-hover);border-color:var(--border-strong)}
+.stat--link{cursor:pointer;text-align:left;transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease),transform var(--fast) var(--ease-out)}
+.stat--link:hover{background:var(--surface-hover);border-color:hsl(var(--accent-h) 55% 60% / .45);transform:translateY(-2px)}
 .stat--link:focus-visible{outline:2px solid var(--border-focus);outline-offset:2px}
 .stat__icon{color:var(--text-faint)}
 .dash-section{display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-5);border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card)}
@@ -1360,12 +1357,13 @@ body.is-reordering,body.is-reordering *{user-select:none !important;cursor:grabb
    breakdown menu slides up as it opens, so each insight reads as one tappable
    section and the popover feels attached to it. */
 .dash-card:hover{transform:translateY(-4px);border-color:hsl(var(--accent-h) 55% 60% / .45);box-shadow:0 16px 36px -20px hsl(var(--accent-h) 70% 55% / .6),var(--shadow-md)}
-.dash-card:hover .dash-pop,.dash-card:focus-within .dash-pop{animation:dash-pop-in var(--normal) var(--ease-out)}
-@keyframes dash-pop-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+.dash-card:hover .dash-pop,.dash-card:focus-within .dash-pop{animation:dash-pop-in var(--normal) var(--ease-out);transform-origin:top center}
+@keyframes dash-pop-in{from{opacity:0;transform:translateY(-10px) scale(.98)}to{opacity:1;transform:none}}
 /* Inner visuals wake up with the card: bars brighten instead of sitting flat. */
 .dash-card:hover .dash-bars__fill,.dash-card:hover .dash-spark__bar:not([data-empty]){filter:brightness(1.18)}
 @media (prefers-reduced-motion:reduce){.dash-card,.dash-pop,.stat,.view-menu__panel{animation:none;transition:none}.dash-card:hover{transform:none}}
-.dash-pop{position:absolute;left:var(--space-3);right:var(--space-3);top:calc(100% - 6px);z-index:40;display:none;flex-direction:column;gap:var(--space-2);max-height:320px;padding:var(--space-3);border:1px solid var(--border-strong);border-radius:var(--radius-md);background:var(--surface);box-shadow:var(--shadow-lg)}
+.dash-pop{position:absolute;left:var(--space-3);right:var(--space-3);top:calc(100% - 6px);z-index:40;display:none;flex-direction:column;gap:var(--space-2);max-height:320px;padding:var(--space-3);border:1px solid var(--border-strong);border-radius:var(--radius-md);background:var(--surface);box-shadow:0 24px 60px -16px hsl(0 0% 0% / .55),var(--shadow-lg)}
+.dash-pop:before{content:"";position:absolute;top:-1px;left:14px;right:14px;height:2px;border-radius:var(--radius-full);background:var(--grad-primary);pointer-events:none}
 .dash-card:hover .dash-pop,.dash-card:focus-within .dash-pop{display:flex}
 .dash-pop--wide{max-height:380px}
 .dash-pop__about{margin:0;font-size:var(--text-xs);line-height:1.55;color:var(--text-muted)}

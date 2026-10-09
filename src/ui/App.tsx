@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { estimateStrength } from '../crypto/passwords.ts';
-import { findReusedPasswords, hostnameOf, isWeakPassword, staleDaysFor, type VaultItem } from '../vault/types.ts';
+import { findReusedPasswords, hostnameOf, isWeakPassword, type VaultItem } from '../vault/types.ts';
 import {
   applyChannel,
   createChannel,
@@ -37,7 +37,7 @@ import { ContextMenu, hideChromeMenu, type ChromeElementId, type ContextMenuStat
 import { ChannelEditor } from './ChannelEditor.tsx';
 import { Alert, Modal, Toasts } from './primitives.tsx';
 import { BulkSecurityDialog, hasSecurityFactor, withoutSecurityFactor } from './BulkSecurityDialog.tsx';
-import { AnimatedListView, BasicView, CarouselView, GridView, ViewEmptyState, WeakSummary, type ViewActions } from './views.tsx';
+import { AnimatedListView, BasicView, CarouselView, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
 import { LoginMessages } from './LoginMessages.tsx';
 import { MailboxWindow } from './MailboxWindow.tsx';
 import {
@@ -563,22 +563,7 @@ const visible = useMemo(() => {
     );
   }, [vault.items, activeChannel, activeFolder, sidebarBase, channelLookup, query, searchScope, prefs.sort, prefs.pinFavorites, prefs.manualOrder, staleDays]);
 
-  /**
-   * What's actually wrong in the weak channel right now: reused and stale
-   * counts over the current view. The channel used to be just a filter plus
-   * badges; the strip above the list now states the problem and offers
-   * Select-all into bulk review.
-   */
-  const weakStats = useMemo(() => {
-    if (activeChannel?.kind !== 'weak' || activeFolder) return null;
-    const reused = visible.filter((item) => item.password && duplicateIds.has(item.password)).length;
-    const stale = visible.filter((item) => {
-      if (!item.password) return false;
-      const threshold = staleDaysFor(item, staleDays);
-      return threshold > 0 && Date.now() - item.passwordUpdatedAt > threshold * 86_400_000;
-    }).length;
-    return { reused, stale };
-  }, [activeChannel, activeFolder, visible, duplicateIds, staleDays]);
+
 
   /**
    * Drops a dragged login at a flat position in the current view and records
@@ -2387,14 +2372,6 @@ onCreate={vault.create}
                 : undefined),
             }}
           >
-            {!folderLocked && activeChannel?.kind === 'weak' && !activeFolder && visible.length > 0 ? (
-              <WeakSummary
-                total={visible.length}
-                reused={weakStats?.reused ?? 0}
-                stale={weakStats?.stale ?? 0}
-                onSelectAll={() => selection.selectAll(visible)}
-              />
-            ) : null}
             {folderLocked && activeFolder ? (
               <SecurityGate
                 security={activeFolder.security}
