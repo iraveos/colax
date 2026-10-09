@@ -165,6 +165,18 @@ export function newDockId(): string {
   return `dock_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/**
+ * Where a fresh bar spawns: the middle, unless a bar already sits there, in
+ * which case the emptiest lane wins. Without this every new dock landed
+ * exactly atop the last one and several bars read as one stuck line.
+ */
+export function freeDockSpot(docks: { pos: { edge: string; fx: number; fy: number } }[]): DockPlacement {
+  const taken = docks.filter((dock) => dock.pos.edge === 'bottom').map((dock) => dock.pos.fx);
+  const lanes = [0.5, 0.3, 0.7, 0.15, 0.85];
+  const fx = lanes.find((lane) => taken.every((t) => Math.abs(t - lane) > 0.12)) ?? 0.5;
+  return { edge: 'bottom', fx, fy: 0.78 };
+}
+
 export const DEFAULT_DOCK_SLOTS: DockSlotConfig[] = [
   { kind: 'view', ref: 'animated', key: '1' },
   { kind: 'view', ref: 'carousel', key: '2' },

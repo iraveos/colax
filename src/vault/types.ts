@@ -78,6 +78,12 @@ export interface VaultItem {
   passwordUpdatedAt: number;
   /** When the email or username last changed. */
   usernameUpdatedAt: number;
+  /**
+   * Rotation reminder for this login alone, in days. 0 follows the global
+   * "flag stale passwords" setting; anything else overrides it here only. Set
+   * in the login editor's Reminders section — presets or any manual count.
+   */
+  reminderDays: number;
 }
 
 /**
@@ -119,6 +125,7 @@ backgroundImage: '',
     updatedAt: now,
     passwordUpdatedAt: now,
     usernameUpdatedAt: now,
+    reminderDays: 0,
   };
 }
 
@@ -139,6 +146,10 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     showMail: raw.showMail !== false,
     mailFilter: raw.mailFilter === 'matched' || raw.mailFilter === 'recent' ? raw.mailFilter : 'auto',
     accentHue: typeof raw.accentHue === 'number' ? raw.accentHue : null,
+    reminderDays:
+      typeof raw.reminderDays === 'number' && Number.isFinite(raw.reminderDays)
+        ? Math.max(0, Math.floor(raw.reminderDays))
+        : 0,
     // Records saved before security existed have none. Normalised to the empty
     // shape rather than left undefined so callers never branch on it.
     // Shared helper, so a new factor cannot be forgotten here the way passcode
@@ -270,7 +281,6 @@ export function normalizeUrl(url: string): string {
  * skipped so "a1"/"a2" do not flag every short password as a family.
  */
 export function findWeakItems(items: VaultItem[], staleAfterDays = 180): VaultItem[] {
-  const cutoff = Date.now() - staleAfterDays * 86_400_000;
   const usage = new Map<string, number>();
   const patterns = new Map<string, number>();
   for (const item of items) {
@@ -282,7 +292,8 @@ export function findWeakItems(items: VaultItem[], staleAfterDays = 180): VaultIt
   return items.filter((item) => {
     if (item.password === '') return false;
     if ((usage.get(item.password) ?? 0) > 1) return true;
-    if (item.passwordUpdatedAt < cutoff) return true;
+    const threshold = staleDaysFor(item, staleAfterDays);
+    if (threshold > 0 && item.passwordUpdatedAt < Date.now() - threshold * 86_400_000) return true;
     if (estimateStrength(item.password).score <= 1) return true;
     const stem = patternStem(item.password);
     if (stem && (patterns.get(stem) ?? 0) > 1) return true;
@@ -303,6 +314,15 @@ function patternStem(password: string): string {
  */
 export function isWeakPassword(item: Pick<VaultItem, 'password'>): boolean {
   return item.password !== '' && estimateStrength(item.password).score <= 1;
+}
+
+/**
+ * Days before this login's password counts as stale: its own reminder when
+ * set, else the global setting. Every stale check in the app goes through
+ * here so the editor's per-login choice is honored everywhere at once.
+ */
+export function staleDaysFor(item: Pick<VaultItem, 'reminderDays'>, globalDays: number): number {
+  return item.reminderDays > 0 ? Math.floor(item.reminderDays) : globalDays;
 }
 
 /** Passwords used by more than one login. Keyed by password so callers can match on `item.password`. */

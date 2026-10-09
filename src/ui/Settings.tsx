@@ -2,6 +2,7 @@ import { useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ACCENT_PRESETS,
   DEFAULT_PREFERENCES,
+  freeDockSpot,
   MAX_DOCKS,
   newDockId,
   type CardSizePrefs,
@@ -584,10 +585,7 @@ export function Settings(props: {
                 className="btn btn--secondary btn--sm"
                 onClick={() =>
                   set({
-                    docks: [
-                      ...prefs.docks,
-                      { id: newDockId(), slots: [], pos: { edge: 'bottom', fx: 0.5, fy: 0.78 }, enabled: true },
-                    ],
+                    docks: [...prefs.docks, { id: newDockId(), slots: [], pos: freeDockSpot(prefs.docks), enabled: true }],
                   })
                 }
               >

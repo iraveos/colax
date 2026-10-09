@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalisePreferences, DEFAULT_PREFERENCES, MAX_DOCKS, MAX_DOCK_SLOTS } from '../src/vault/storage.ts';
+import { freeDockSpot, normalisePreferences, DEFAULT_PREFERENCES, MAX_DOCKS, MAX_DOCK_SLOTS } from '../src/vault/storage.ts';
 import { normaliseItem, emptyItem } from '../src/vault/types.ts';
 
 /** A mutable copy of the defaults, so a test can corrupt one field. */
@@ -164,6 +164,13 @@ test('a legacy single bar migrates into docks', () => {
   assert.deepEqual(out.docks[0]?.pos, { edge: 'left', fx: 0.06, fy: 0.5 });
   assert.deepEqual(out.docks[0]?.slots.map((slot) => slot.ref), ['grid']);
   assert.equal((out as unknown as Record<string, unknown>).dockSlots, undefined);
+});
+
+test('fresh docks spawn away from settled bars', () => {
+  const at = (fx: number) => ({ pos: { edge: 'bottom', fx, fy: 0.94 } });
+  assert.equal(freeDockSpot([]).fx, 0.5);
+  assert.equal(freeDockSpot([at(0.5)]).fx, 0.3);
+  assert.equal(freeDockSpot([at(0.5), at(0.3), at(0.7), at(0.15), at(0.85)]).fx, 0.5);
 });
 
 test('several docks survive, capped at MAX_DOCKS', () => {

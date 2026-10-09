@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalisePreferences, DEFAULT_PREFERENCES } from '../src/vault/storage.ts';
-import { emptyItem, findWeakItems, isWeakPassword, normaliseItem } from '../src/vault/types.ts';
+import { emptyItem, findWeakItems, isWeakPassword, normaliseItem, staleDaysFor } from '../src/vault/types.ts';
 import type { VaultItem } from '../src/vault/types.ts';
 
 /** A mutable copy of the defaults, so a test can corrupt one field. */
@@ -78,4 +78,21 @@ test('short shared stems do not group', () => {
 test('logins show mail unless explicitly opted out', () => {
   assert.equal(normaliseItem({ ...emptyItem('x', 1000) }).showMail, true);
   assert.equal(normaliseItem({ ...emptyItem('x', 1000), showMail: false }).showMail, false);
+});
+
+test('a per-login reminder overrides the global stale threshold', () => {
+  assert.equal(staleDaysFor({ reminderDays: 0 }, 180), 180);
+  assert.equal(staleDaysFor({ reminderDays: 30 }, 180), 30);
+  assert.equal(normaliseItem({ ...emptyItem('x', 1000) }).reminderDays, 0);
+  assert.equal(normaliseItem({ ...emptyItem('x', 1000), reminderDays: 45.7 }).reminderDays, 45);
+  assert.equal(normaliseItem({ ...emptyItem('x', 1000), reminderDays: -5 }).reminderDays, 0);
+});
+
+test('stale flagging follows the login reminder, not just the global', () => {
+  const old = Date.now() - 40 * 86_400_000;
+  const strict = login({ passwordUpdatedAt: old, reminderDays: 30 });
+  const lax = login({ passwordUpdatedAt: old, reminderDays: 0 });
+  // Strong unique passwords: only age can flag them.
+  assert.ok(findWeakItems([strict], 180).includes(strict), '30-day reminder flags a 40-day password');
+  assert.ok(!findWeakItems([lax], 180).includes(lax), 'global 180 days spares it');
 });

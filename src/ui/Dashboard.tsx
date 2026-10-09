@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { estimateStrength } from '../crypto/passwords.ts';
-import { findWeakItems, hostnameOf, type VaultItem } from '../vault/types.ts';
+import { findWeakItems, hostnameOf, staleDaysFor, type VaultItem } from '../vault/types.ts';
 import { isSecured } from '../crypto/security.ts';
 import { applyChannel, CHANNEL_KIND_LABELS, createTag, DEFAULT_TAG_SEEDS, ensureDefaultTags, type Channel, type Tag } from '../vault/channels.ts';
 import type { VaultPreferences } from '../vault/storage.ts';
@@ -75,10 +75,11 @@ export function Dashboard({
     // Counting strength alone here made the dashboard report zero weak logins
     // while the sidebar it links to reported four, because reuse was missing.
     const weak = findWeakItems(items, prefs.passwordAgeDays);
-    const stale =
-      prefs.passwordAgeDays > 0
-        ? items.filter((item) => item.password !== '' && now - item.passwordUpdatedAt > prefs.passwordAgeDays * DAY)
-        : [];
+    const stale = items.filter((item) => {
+      if (item.password === '') return false;
+      const threshold = staleDaysFor(item, prefs.passwordAgeDays);
+      return threshold > 0 && now - item.passwordUpdatedAt > threshold * DAY;
+    });
     const staleEmail =
       prefs.emailAgeDays > 0
         ? items.filter((item) => item.username !== '' && now - item.usernameUpdatedAt > prefs.emailAgeDays * DAY)

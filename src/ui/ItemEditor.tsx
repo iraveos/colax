@@ -30,6 +30,7 @@ import { InboxSection } from './InboxSection.tsx';
 import type { GmailAccount } from '../vault/storage.ts';
 import type { GmailMessage } from './useGmail.ts';
 import {
+  BellIcon,
   CopyIcon,
   DiceIcon,
   EditIcon,
@@ -195,6 +196,7 @@ const SECTIONS = [
   { id: 'identity', label: 'Identity', hint: 'What this login is called and where it lives.', Icon: KeyIcon },
   { id: 'credentials', label: 'Credentials', hint: 'The secrets. Nothing here leaves this device.', Icon: LockIcon },
   { id: 'security', label: 'Security', hint: 'Optional second factor for this login alone.', Icon: ShieldIcon },
+  { id: 'reminders', label: 'Reminders', hint: 'When this login asks for a fresh password.', Icon: BellIcon },
   { id: 'organise', label: 'Organise', hint: 'Tags and the dates behind the health warnings.', Icon: TagIcon },
   { id: 'appearance', label: 'Appearance', hint: 'Icon, colours and images.', Icon: PaletteIcon },
   { id: 'notes', label: 'Notes', hint: 'Anything else worth remembering.', Icon: EditIcon },
@@ -216,6 +218,7 @@ export function ItemEditor({
   gmailAccounts,
   onGmailAccountsChange,
   onCacheMail,
+  staleDays = 180,
 }: {
   item: VaultItem | null;
   /** Global tag catalogue, so new tags can be created inline. */
@@ -248,6 +251,8 @@ export function ItemEditor({
   onGmailAccountsChange: (next: GmailAccount[]) => void;
   /** Persists inbox reads into the message cache. */
   onCacheMail?: (accountId: string, messages: GmailMessage[]) => void;
+  /** Global stale-password threshold, for the "follow global" hint. */
+  staleDays?: number;
 }) {
   const [draft, setDraft] = useState<Partial<VaultItem>>(item ?? {});
   const [revealed, setRevealed] = useState(false);
@@ -429,6 +434,66 @@ export function ItemEditor({
         onNotify={onNotify}
         label={draft.title || 'login'}
       />
+    ),
+
+    reminders: (
+      <>
+        <div className="field">
+          <span className="field__label">Rotation reminder</span>
+          <div className="segmented segmented--wrap" role="radiogroup" aria-label="Rotation reminder">
+            {(
+              [
+                [0, 'Follow global', `Settings flags stale passwords after ${staleDays} days`],
+                [30, '30 days', 'Flagged a month after each change'],
+                [60, '60 days', 'Flagged two months after each change'],
+                [90, '90 days', 'Flagged three months after each change'],
+                [180, '6 months', 'Flagged half a year after each change'],
+              ] as const
+            ).map(([days, label, hint]) => (
+              <button
+                key={days}
+                type="button"
+                role="radio"
+                aria-checked={(draft.reminderDays ?? 0) === days}
+                className="segmented__option"
+                aria-pressed={(draft.reminderDays ?? 0) === days}
+                title={hint}
+                onClick={() => patch({ reminderDays: days })}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="field__note">
+            Overrides the global stale-password setting for this login only. The stale badge, the
+            Weak channel and the dashboard all follow it.
+          </p>
+        </div>
+        <div className="field">
+          <label className="field__label" htmlFor="reminder-custom">
+            Or set manually (days)
+          </label>
+          <div className="field-row">
+            <input
+              id="reminder-custom"
+              className="input input--mono"
+              type="number"
+              min={0}
+              max={3650}
+              value={draft.reminderDays ?? 0}
+              onChange={(event) => {
+                const next = Math.max(0, Math.min(3650, Math.floor(Number(event.target.value) || 0)));
+                patch({ reminderDays: next });
+              }}
+            />
+          </div>
+          <p className="field__note">
+            {(draft.reminderDays ?? 0) <= 0
+              ? `Following the global setting (${staleDays} days).`
+              : `Flags this password after ${draft.reminderDays} days — around ${new Date((draft.passwordUpdatedAt ?? Date.now()) + (draft.reminderDays ?? 0) * 86_400_000).toLocaleDateString()}.`}
+          </p>
+        </div>
+      </>
     ),
 
     organise: (

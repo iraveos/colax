@@ -422,18 +422,20 @@ export function applyChannel(channel: Channel, items: VaultItem[], staleAfterDay
       // guessable on its own, or following the same pattern as another login
       // (summer2023/summer2024 and friends). Counting only reuse+age here made
       // the Weak tile say 4 while this channel listed 2 for the same vault.
+      // Staleness honors each login's own reminder when set, else the global.
       const reused = findReusedPasswords(items);
+      const now = Date.now();
       const patterns = new Map<string, number>();
       for (const item of items) {
         if (!item.password) continue;
         const stem = weakPatternStem(item.password);
         if (stem) patterns.set(stem, (patterns.get(stem) ?? 0) + 1);
       }
-      const cutoff = staleAfterDays > 0 ? Date.now() - staleAfterDays * 86_400_000 : 0;
       list = items.filter((item) => {
         if (item.password === '') return false;
         if (reused.has(item.password)) return true;
-        if (staleAfterDays > 0 && item.passwordUpdatedAt < cutoff) return true;
+        const threshold = item.reminderDays > 0 ? item.reminderDays : staleAfterDays;
+        if (threshold > 0 && item.passwordUpdatedAt < now - threshold * 86_400_000) return true;
         if (estimateStrength(item.password).score <= 1) return true;
         const stem = weakPatternStem(item.password);
         if (stem && (patterns.get(stem) ?? 0) > 1) return true;

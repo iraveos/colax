@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { estimateStrength } from '../crypto/passwords.ts';
-import { findReusedPasswords, hostnameOf, isWeakPassword, type VaultItem } from '../vault/types.ts';
+import { findReusedPasswords, hostnameOf, isWeakPassword, staleDaysFor, type VaultItem } from '../vault/types.ts';
 import {
   applyChannel,
   createChannel,
@@ -15,7 +15,7 @@ import {
   type Folder,
   type SidebarEntry,
 } from '../vault/channels.ts';
-import { MAX_DOCKS, mergeMailCache, newDockId } from '../vault/storage.ts';
+import { freeDockSpot, MAX_DOCKS, mergeMailCache, newDockId } from '../vault/storage.ts';
 import { captureToDraft, findSimilarTag, suggestTagsForDraft } from '../vault/site-intel.ts';
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
@@ -572,10 +572,11 @@ const visible = useMemo(() => {
   const weakStats = useMemo(() => {
     if (activeChannel?.kind !== 'weak' || activeFolder) return null;
     const reused = visible.filter((item) => item.password && duplicateIds.has(item.password)).length;
-    const stale =
-      staleDays > 0
-        ? visible.filter((item) => Date.now() - item.passwordUpdatedAt > staleDays * 86_400_000).length
-        : 0;
+    const stale = visible.filter((item) => {
+      if (!item.password) return false;
+      const threshold = staleDaysFor(item, staleDays);
+      return threshold > 0 && Date.now() - item.passwordUpdatedAt > threshold * 86_400_000;
+    }).length;
     return { reused, stale };
   }, [activeChannel, activeFolder, visible, duplicateIds, staleDays]);
 
@@ -755,6 +756,15 @@ const visible = useMemo(() => {
         label: 'Manage channels',
         icon: <RowsIcon />,
         onSelect: () => openSettings('channels'),
+      },
+      {
+        kind: 'item',
+        label: 'Hide sidebar',
+        icon: <EyeOffIcon />,
+        onSelect: () => {
+          void vault.updatePrefs({ showSidebar: false });
+          notify('Hidden — the recovery pill sits on the same edge');
+        },
       },
       {
         kind: 'item',
@@ -1860,7 +1870,7 @@ label: 'Settings',
                   const fresh = {
                     id: newDockId(),
                     slots: [],
-                    pos: { edge: 'bottom' as const, fx: 0.5, fy: 0.78 },
+                    pos: freeDockSpot(prefs.docks),
                     enabled: true,
                   };
                   void vault
@@ -1878,7 +1888,7 @@ label: 'Settings',
                     ...dock,
                     id: newDockId(),
                     slots: dock.slots.map((slot) => ({ ...slot })),
-                    pos: { ...dock.pos, fy: Math.max(0.06, dock.pos.fy - 0.12) },
+                    pos: { ...freeDockSpot(prefs.docks), edge: dock.pos.edge },
                   };
                   void vault.updatePrefs({ docks: [...prefs.docks, fresh] }).then(() => notify('Dock duplicated'));
                 },
@@ -2256,7 +2266,20 @@ onCreate={vault.create}
             if (prefs.clearClipboardOnLock) void navigator.clipboard.writeText('').catch(() => {});
           }}
         />
-        ) : null}
+        ) : (
+          // Recovery follows the rail: a pill hugging the edge the sidebar
+          // hid from, wherever that edge currently is — not a fixed corner.
+          <button
+            type="button"
+            className="btn btn--secondary rail-recovery"
+            data-edge={prefs.sidebarPosition}
+            onClick={() => void vault.updatePrefs({ showSidebar: true })}
+            title="Show sidebar"
+          >
+            <RowsIcon width="15" height="15" />
+            <span>Sidebar</span>
+          </button>
+        )}
 
 <main className="main">
           <header className="topbar">
@@ -2383,7 +2406,7 @@ onCreate={vault.create}
                 onCancel={() => setActiveId('all')}
               />
             ) : activeChannel?.kind === 'dashboard' ? (
-              <div className="content__inner content__inner--wide">
+              <div className="content__inner content__inner--dash">
                 <Dashboard
                   channels={channels}
                   tags={prefs.tags}
@@ -2783,6 +2806,7 @@ onCreate={vault.create}
           onCommitTags={(next) => void vault.updatePrefs({ tags: next })}
           generatorOptions={prefs.passwordGenerator}
           onGeneratorOptionsChange={(next) => void vault.updatePrefs({ passwordGenerator: next })}
+          staleDays={prefs.passwordAgeDays}
           verified={editing === 'new' || verifiedItems.has(editing.id)}
           onRequestUnlock={() => {
             // Reached only when the editor was opened for a secured login

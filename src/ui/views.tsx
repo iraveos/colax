@@ -19,7 +19,7 @@ import {
   StarIcon,
   TrashIcon,
 } from './icons.tsx';
-import { accentOf, hostnameOf, isWeakPassword, relativeTime, type VaultItem } from '../vault/types.ts';
+import { accentOf, hostnameOf, isWeakPassword, relativeTime, staleDaysFor, type VaultItem } from '../vault/types.ts';
 import { isSecured } from '../crypto/security.ts';
 import type { CachedMailMessage, CardSizePrefs, GmailAccount } from '../vault/storage.ts';
 import type { GmailMessage } from './useGmail.ts';
@@ -30,8 +30,9 @@ import type { Tag } from '../vault/channels.ts';
 
 /** `days` of 0 switches the stale check off entirely. */
 function isStale(item: VaultItem, days: number): boolean {
-  if (days <= 0) return false;
-  return Date.now() - item.passwordUpdatedAt > days * 86_400_000;
+  const effective = staleDaysFor(item, days);
+  if (effective <= 0) return false;
+  return Date.now() - item.passwordUpdatedAt > effective * 86_400_000;
 }
 
 /** Shared label so every view agrees on what a login is called. */
