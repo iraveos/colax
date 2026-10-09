@@ -23,10 +23,25 @@ export interface DockSlot {
   Icon: ComponentType<{ width?: number | string; height?: number | string }>;
   /** Uploaded or remote image overriding the glyph, when the user set one. */
   imageUrl?: string;
+  /** Channel/folder hue, for the signature dot on navigation slots. */
+  hue?: number;
   /** The key that jumps here, as shown on the badge. */
   key: string;
   active: boolean;
   onJump: () => void;
+}
+
+/**
+ * Which family a slot belongs to, read off its `kind:ref` id. Families render
+ * separated by dividers, so views, navigation, logins and mailboxes read as
+ * groups rather than one undifferentiated row.
+ */
+function slotFamily(id: string): string {
+  const kind = id.split(':')[0];
+  if (kind === 'view') return 'views';
+  if (kind === 'login') return 'logins';
+  if (kind === 'mailbox') return 'mail';
+  return 'go';
 }
 
 /**
@@ -74,6 +89,17 @@ export function Dock({
   const dragging = useRef(false);
   const raf = useRef(0);
   const clamp01 = (value: number) => Math.min(0.94, Math.max(0.06, value));
+  // Edge-anchored: a fixed margin off the snapped edge, centred on the other
+  // axis. The old model centred on both axes, which left a dead band between
+  // the bar and the edge it claimed to dock to.
+  const anchored =
+    pos.edge === 'top'
+      ? { left: `${pos.fx * 100}%`, top: 10, translate: '-50% 0' }
+      : pos.edge === 'bottom'
+        ? { left: `${pos.fx * 100}%`, bottom: 10, translate: '-50% 0' }
+        : pos.edge === 'left'
+          ? { top: `${pos.fy * 100}%`, left: 10, translate: '0 -50%' }
+          : { top: `${pos.fy * 100}%`, right: 10, translate: '0 -50%' };
 
   useEffect(
     () => () => {
@@ -104,11 +130,7 @@ export function Dock({
       className="dock"
       data-edge={pos.edge}
       aria-label="Quick launch"
-      style={{
-        left: `${pos.fx * 100}%`,
-        top: `${pos.fy * 100}%`,
-        translate: '-50% -50%',
-      }}
+      style={anchored as React.CSSProperties}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -147,9 +169,14 @@ export function Dock({
       }}
       onPointerCancel={endDrag}
     >
-      {slots.map((slot) => {
+      {slots.flatMap((slot, index) => {
         const Icon = slot.Icon;
-        return (
+        const divider =
+          index > 0 && slotFamily(slots[index - 1]!.id) !== slotFamily(slot.id) ? (
+            <span key={`${slot.id}__div`} className="dock__div" aria-hidden="true" />
+          ) : null;
+        return [
+          divider,
           <button
             key={slot.id}
             type="button"
@@ -158,14 +185,21 @@ export function Dock({
             title={`${slot.label} (${slot.key}) — ${slot.hint}`}
             onClick={slot.onJump}
           >
+            {typeof slot.hue === 'number' ? (
+              <span
+                className="dock__dot"
+                aria-hidden="true"
+                style={{ background: `hsl(${slot.hue} 55% 60%)` }}
+              />
+            ) : null}
             {slot.imageUrl ? (
               <img className="dock__image" src={slot.imageUrl} alt="" aria-hidden="true" draggable={false} />
             ) : (
               <Icon width="17" height="17" />
             )}
             <span className="dock__label">{slot.label}</span>
-          </button>
-        );
+          </button>,
+        ];
       })}
     </nav>
   );

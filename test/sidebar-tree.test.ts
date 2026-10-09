@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normaliseSidebar,
+  describeChannel,
   moveChannelToFolder,
   moveManualOrder,
   BUILTIN_CHANNELS,
@@ -155,4 +156,13 @@ test('the first drag seeds from the screen, untouched pairs keep order', () => {
 
 test('unknown and dead ids never corrupt the order', () => {
   assert.deepEqual(moveManualOrder(['a', 'gone'], ['a', 'b'], ['a', 'b'], 'b', 0), ['b', 'a']);
+});
+
+test('the workspace strip explains each channel', () => {
+  const tags = [{ id: 't1', name: 'Work' }];
+  assert.equal(describeChannel({ kind: 'all', tagIds: [] }, []), 'Everything in the vault');
+  assert.equal(describeChannel({ kind: 'favorites', tagIds: [] }, []), 'Starred logins, pinned on top');
+  assert.equal(describeChannel({ kind: 'weak', tagIds: [] }, []), 'Passwords worth a rotation');
+  assert.equal(describeChannel({ kind: 'tags', tagIds: ['t1', 'missing'] }, tags as never), 'Tagged Work');
+  assert.equal(describeChannel({ kind: 'tags', tagIds: [] }, []), 'Tagged logins');
 });

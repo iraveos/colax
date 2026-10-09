@@ -7,6 +7,7 @@ import {
   createTag,
   normaliseChannels,
   normaliseSidebar,
+  describeChannel,
   moveChannelToFolder,
   moveManualOrder,
   CHANNEL_ACCENTS,
@@ -37,7 +38,7 @@ import { ContextMenu, hideChromeMenu, type ChromeElementId, type ContextMenuStat
 import { ChannelEditor } from './ChannelEditor.tsx';
 import { Alert, Modal, Toasts } from './primitives.tsx';
 import { BulkSecurityDialog, hasSecurityFactor, withoutSecurityFactor } from './BulkSecurityDialog.tsx';
-import { AnimatedListView, BasicView, CarouselView, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
+import { AnimatedListView, BasicView, CarouselView, ChannelStrip, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
 import { LoginMessages } from './LoginMessages.tsx';
 import { MailboxWindow } from './MailboxWindow.tsx';
 import {
@@ -136,6 +137,13 @@ export function App() {
 
   const [activeId, setActiveId] = useState('all');
   const [query, setQuery] = useState('');
+  /** Search covers the active channel; 'all' widens it to the whole vault. */
+  const [searchScope, setSearchScope] = useState<'channel' | 'all'>('channel');
+  // A new channel is a new scope: searching the whole vault must not leak
+  // across channel switches.
+  useEffect(() => {
+    setSearchScope('channel');
+  }, [activeId]);
   const [editing, setEditing] = useState<VaultItem | null | 'new'>(null);
   // Multi-selection, plus which bulk dialog (if any) is open over it.
   const selection = useSelection();
@@ -418,7 +426,7 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
 /** How long a password may go unchanged before the weak/stale view counts it. */
   const staleDays = prefs.passwordAgeDays;
 
-/** Keyed by channel id, for the sidebar badges. The dashboard is a summary
+  /** Keyed by channel id, for the sidebar badges. The dashboard is a summary
    *  screen rather than a filtered list, so it gets no count. Folders sum
    *  their children. */
   const channelCounts = useMemo(() => {
@@ -484,11 +492,13 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
 const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
 
-    // A query searches the whole vault rather than just the active channel, so
-    // the sidebar filter does not silently hide the thing you searched for. The
-    // channel only narrows the list when nothing is typed.
+    // A query searches inside the active channel; "entire vault" widens it.
+    // (This used to always search everything, but a channel then read as a
+    // filter that mysteriously stopped filtering the moment you typed.)
     let list: VaultItem[];
-    if (activeFolder) {
+    if (needle && searchScope === 'all' && !activeFolder) {
+      list = vault.items;
+    } else if (activeFolder) {
       const entry = sidebarBase.find((row) => row.kind === 'folder' && row.id === activeFolder.id);
       const seen = new Set<string>();
       list = [];
@@ -552,7 +562,23 @@ const visible = useMemo(() => {
         (field ?? '').toLowerCase().includes(needle),
       ),
     );
-  }, [vault.items, activeChannel, activeFolder, sidebarBase, channelLookup, query, prefs.sort, prefs.pinFavorites, prefs.manualOrder, staleDays]);
+  }, [vault.items, activeChannel, activeFolder, sidebarBase, channelLookup, query, searchScope, prefs.sort, prefs.pinFavorites, prefs.manualOrder, staleDays]);
+
+  /**
+   * What's actually wrong in the weak channel right now: reused and stale
+   * counts over the current view. The channel used to be just a filter plus
+   * badges; the strip above the list now states the problem and offers
+   * Select-all into bulk review.
+   */
+  const weakStats = useMemo(() => {
+    if (activeChannel?.kind !== 'weak' || activeFolder) return null;
+    const reused = visible.filter((item) => item.password && duplicateIds.has(item.password)).length;
+    const stale =
+      staleDays > 0
+        ? visible.filter((item) => Date.now() - item.passwordUpdatedAt > staleDays * 86_400_000).length
+        : 0;
+    return { reused, stale };
+  }, [activeChannel, activeFolder, visible, duplicateIds, staleDays]);
 
   /**
    * Drops a dragged login at a flat position in the current view and records
@@ -1334,6 +1360,12 @@ tags: prefs.tags,
         },
         {
           kind: 'item',
+          label: item.needsAttention ? 'Clear needs attention' : 'Flag as needing attention',
+          icon: <FlagIcon />,
+          onSelect: () => void toggleAttention(item),
+        },
+        {
+          kind: 'item',
           label: 'Edit login',
           icon: <EditIcon />,
           // Gated like every other route into the editor: a secured login
@@ -1376,7 +1408,7 @@ tags: prefs.tags,
     // out of this list froze the card menu's Card-size submenu on whatever the
     // sizes were at first render: it opened the tuner for the wrong view and
     // described numbers that no longer matched.
-    [copy, duplicateIds, toggleFavorite, openUrl, requestDelete, requestEdit, cardSizeMenu, touchLogin],
+    [copy, duplicateIds, toggleFavorite, toggleAttention, openUrl, requestDelete, requestEdit, cardSizeMenu, touchLogin],
   );
 
   const appMenu = useCallback((): MenuItem[] => {
@@ -1667,6 +1699,7 @@ label: 'Settings',
           hint: `Folder: ${folder.name}`,
           Icon,
           imageUrl: slot.icon,
+          hue: folder.hue,
           key: slot.key,
           active: activeFolder?.id === folder.id,
           onJump: () => setActiveId(`folder:${folder.id}`),
@@ -1732,6 +1765,7 @@ label: 'Settings',
           hint: `Channel: ${channel.name}`,
           Icon,
           imageUrl: slot.icon,
+          hue: channel.hue,
           key: slot.key,
           active: activeId === channel.id,
           onJump: () => setActiveId(channel.id),
@@ -1833,6 +1867,57 @@ label: 'Settings',
     // Suppressed inside any text field so Ctrl+A still selects text there.
     () => !typingHasFocus() && !showSettings && !editing,
   );
+
+  /* ---- Workspace scroll memory ----------------------------------------------
+     Cards keep their scroll position per channel and view: switching away and
+     back lands where you were, instead of at the top every time. Selection
+     needs no such help — it already lives outside any one channel. */
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const scrollMemory = useRef<Record<string, number>>({});
+  const scrollKey = useRef('');
+  useEffect(() => {
+    const el = contentRef.current;
+    if (el && scrollKey.current) scrollMemory.current[scrollKey.current] = el.scrollTop;
+    const key = `${activeId}|${view}`;
+    scrollKey.current = key;
+    if (el) el.scrollTop = scrollMemory.current[key] ?? 0;
+  }, [activeId, view]);
+
+  /* ---- Channel jumping ------------------------------------------------------
+     Alt+1..9 jumps to the first nine visible channels in rail order, folders
+     included. Bare digits belong to the dock; Alt keeps the two systems from
+     ever claiming one press. */
+  useEffect(() => {
+    if (vault.status !== 'unlocked') return;
+    const flat: string[] = [];
+    for (const entry of sidebarBase) {
+      if (entry.kind === 'channel') {
+        if (!prefs.hiddenChannels.includes(entry.id)) flat.push(entry.id);
+      } else if (entry.kind === 'folder') {
+        if (prefs.hiddenFolders.includes(entry.id)) continue;
+        for (const child of entry.children) {
+          if (child.kind === 'channel' && !prefs.hiddenChannels.includes(child.id)) flat.push(child.id);
+        }
+      }
+      if (flat.length >= 9) break;
+    }
+    const ids = flat.slice(0, 9);
+    if (ids.length === 0) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey) return;
+      if (!/^[1-9]$/.test(event.key)) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], .ctx-menu, .modal, .settings-window')) {
+        return;
+      }
+      const id = ids[Number(event.key) - 1];
+      if (!id) return;
+      event.preventDefault();
+      setActiveId(id);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [vault.status, sidebarBase, prefs.hiddenChannels, prefs.hiddenFolders]);
 
   /* ---- Selection and bulk actions -----------------------------------------
      These have to sit above the boot/lock early returns below, not beside the
@@ -2196,6 +2281,7 @@ onCreate={vault.create}
               scrolling page, so it must not inherit that. */}
           <div
             className="content"
+            ref={contentRef}
             style={{
               ...(view !== 'basic' && activeChannel?.kind !== 'dashboard' ? { overflow: 'hidden' } : undefined),
               // A bottom-docked bar floats over the page end: without clearance
@@ -2203,6 +2289,51 @@ onCreate={vault.create}
               ...(prefs.dockEnabled && prefs.dockPos.edge === 'bottom' ? { paddingBottom: 96 } : undefined),
             }}
           >
+            {!folderLocked && (activeFolder || (activeChannel && activeChannel.kind !== 'dashboard')) ? (
+              <ChannelStrip
+                hue={activeFolder ? activeFolder.hue : (activeChannel?.hue ?? 212)}
+                name={activeFolder ? activeFolder.name : (activeChannel?.name ?? '')}
+                explanation={
+                  activeFolder
+                    ? (() => {
+                        const entry = sidebarBase.find(
+                          (row) => row.kind === 'folder' && row.id === activeFolder.id,
+                        );
+                        const n =
+                          entry && entry.kind === 'folder'
+                            ? entry.children.filter((child) => child.kind === 'channel').length
+                            : 0;
+                        return `${n} channel${n === 1 ? '' : 's'}`;
+                      })()
+                    : describeChannel(activeChannel!, prefs.tags)
+                }
+                countText={
+                  query.trim()
+                    ? `${visible.length} result${visible.length === 1 ? '' : 's'} for "${query.trim()}"`
+                    : `${visible.length} login${visible.length === 1 ? '' : 's'}`
+                }
+                weakText={
+                  weakStats && (weakStats.reused > 0 || weakStats.stale > 0)
+                    ? `${weakStats.reused} reused · ${weakStats.stale} stale`
+                    : null
+                }
+                scopeButton={
+                  query.trim()
+                    ? searchScope === 'channel'
+                      ? { label: 'Search entire vault', onClick: () => setSearchScope('all') }
+                      : {
+                          label: `Back to ${activeFolder ? activeFolder.name : (activeChannel?.name ?? '')}`,
+                          onClick: () => setSearchScope('channel'),
+                        }
+                    : null
+                }
+                onSelectAll={
+                  activeChannel?.kind === 'weak' && !activeFolder && visible.length > 0
+                    ? () => selection.selectAll(visible)
+                    : null
+                }
+              />
+            ) : null}
             {folderLocked && activeFolder ? (
               <SecurityGate
                 security={activeFolder.security}
@@ -2247,7 +2378,12 @@ onCreate={vault.create}
               </div>
             ) : showEmpty ? (
               <div className="content__inner">
-                <ViewEmptyState query={query} screen={activeChannel ? activeChannel.id : `folder:${activeFolder?.id ?? ''}`} onAdd={() => setEditing('new')} />
+                <ViewEmptyState
+                  query={query}
+                  screen={activeChannel ? activeChannel.id : `folder:${activeFolder?.id ?? ''}`}
+                  onAdd={() => setEditing('new')}
+                  onSearchAll={query.trim() && searchScope === 'channel' ? () => setSearchScope('all') : null}
+                />
               </div>
             ) : view === 'animated' ? (
               // data-flow-scroll bounds this wrapper to the content area. Without
@@ -2776,6 +2912,7 @@ onCreate={vault.create}
 {[
               ['Focus search', ['/']],
               ['New login', ['N']],
+              ['Switch channel', ['Alt', '1–9']],
               ['Lock vault', ['L']],
               ['Cycle view', ['V']],
               ['Undo', ['Ctrl', 'Z']],

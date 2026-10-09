@@ -8,6 +8,7 @@ import {
   CheckIcon,
   ClockIcon,
   CopyIcon,
+  DotsIcon,
   EditIcon,
   ExternalIcon,
   EyeIcon,
@@ -624,10 +625,6 @@ export function AnimatedListView({
   onOpenExternal,
   onCopy,
   onEdit,
-  onDelete,
-  onToggleFavorite,
-  onToggleAttention,
-  onOpenUrl,
   onSelect,
   onItemMenu,
   onReorderLogins,
@@ -747,32 +744,6 @@ export function AnimatedListView({
               <div className="card-row__actions">
                 <button
                   className="btn btn--icon"
-                  data-action="attention"
-                  aria-label={item.needsAttention ? 'Clear needs attention' : 'Mark as needing attention'}
-                  aria-pressed={item.needsAttention}
-                  style={item.needsAttention ? { color: 'var(--warn)' } : undefined}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggleAttention(item);
-                  }}
-                >
-                  <FlagIcon filled={item.needsAttention} />
-                </button>
-                <button
-                  className="btn btn--icon"
-                  data-action="favorite"
-                  aria-label={item.favorite ? 'Remove from favorites' : 'Add to favorites'}
-                  aria-pressed={item.favorite}
-                  style={item.favorite ? { color: 'var(--warn)' } : undefined}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggleFavorite(item);
-                  }}
-                >
-                  <StarIcon filled={item.favorite} />
-                </button>
-                <button
-                  className="btn btn--icon"
                   data-action="edit"
                   aria-label="Edit login"
                   onClick={(event) => {
@@ -781,6 +752,18 @@ export function AnimatedListView({
                   }}
                 >
                   <EditIcon />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--icon"
+                  aria-label={`More actions for ${label}`}
+                  title="More actions"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onItemMenu(event, item);
+                  }}
+                >
+                  <DotsIcon />
                 </button>
               </div>
             </div>
@@ -806,17 +789,9 @@ export function AnimatedListView({
               </div>
               <div className="card-row__secret-row">
                 <code className="card-row__password">{show ? item.password || '—' : maskOf(item)}</code>
-                <button
-                  className="btn btn--icon"
-                  aria-label="Copy password"
-                  disabled={!item.password}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onCopy(item.password, 'Password', item);
-                  }}
-                >
-                  <CopyIcon />
-                </button>
+                {/* No copy button here on purpose: the labelled Copy below is
+                    the one obvious copy, and a second one for the same field
+                    is exactly the duplication to avoid. */}
                 <button
                   className="btn btn--icon"
                   aria-label={show ? 'Hide password' : 'Reveal password'}
@@ -826,7 +801,7 @@ export function AnimatedListView({
                     event.stopPropagation();
                     toggle(item.id);
                   }}
->
+                >
                 {show ? <EyeOffIcon /> : <EyeIcon />}
               </button>
               </div>
@@ -841,35 +816,26 @@ export function AnimatedListView({
 
             <ModifiedNote item={item} />
 
-            {/* Delete is always available: it used to sit inside the `item.url`
-                branch below, so a login with no website had no way to be
-                removed from its own card. Only "Open site" needs a URL. */}
+            {/* One obvious primary (Copy) plus the overflow menu: Open site,
+                Delete, favorite and attention all live one click deeper in
+                the card menu instead of competing as icons. */}
             <div className="card-row__actions-row">
               {mailFor(item, mailScope, gmailAccounts) ? (
                 <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
               ) : null}
-              {item.url ? (
+              {item.password ? (
                 <button
-                  className="btn btn--ghost btn--sm"
+                  type="button"
+                  className="btn btn--secondary btn--sm"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onOpenUrl(item);
+                    onCopy(item.password, 'Password', item);
                   }}
                 >
-                  <ExternalIcon width="13" height="13" />
-                  Open site
+                  <CopyIcon width="13" height="13" />
+                  Copy
                 </button>
               ) : null}
-              <button
-                className="btn btn--ghost btn--sm"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onDelete(item);
-                }}
-              >
-                <TrashIcon width="13" height="13" />
-                Delete
-              </button>
             </div>
           </div>
         );
@@ -1107,9 +1073,8 @@ showTagChips,
   mailCache,
   onCacheMail,
   onOpenExternal,
+  onCopy,
   onEdit,
-  onDelete,
-  onToggleFavorite,
   onSelect,
   onItemMenu,
   onReorderLogins,
@@ -1213,29 +1178,21 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
                     {mailFor(item, mailScope, gmailAccounts) ? (
                       <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                     ) : null}
-                    <button
-                      className="btn btn--icon"
-                      data-action="favorite"
-                  aria-label={item.favorite ? 'Remove from favorites' : 'Add to favorites'}
-                      aria-pressed={item.favorite}
-                      style={item.favorite ? { color: 'var(--warn)' } : undefined}
-                      onClick={() => onToggleFavorite(item)}
-                    >
-                      <StarIcon filled={item.favorite} />
-                    </button>
+                    {item.password ? (
+                      <button
+                        type="button"
+                        className="btn btn--secondary btn--sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onCopy(item.password, 'Password', item);
+                        }}
+                      >
+                        <CopyIcon width="13" height="13" />
+                        Copy
+                      </button>
+                    ) : null}
                     <button className="btn btn--icon" aria-label="Edit login" onClick={() => onEdit(item)}>
                       <EditIcon />
-                    </button>
-                    <button className="btn btn--icon" aria-label="Delete login" onClick={() => onDelete(item)}>
-                      <TrashIcon />
-                    </button>
-                    <button
-                      className="btn btn--icon"
-                      aria-label="Copy password"
-                      disabled={!item.password}
-                      onClick={() => onSelect(item)}
-                    >
-                      <CopyIcon />
                     </button>
                     <button
                       className="btn btn--icon"
@@ -1245,6 +1202,18 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
                       onClick={() => toggle(item.id)}
                     >
                       {show ? <EyeOffIcon /> : <EyeIcon />}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--icon"
+                      aria-label={`More actions for ${label}`}
+                      title="More actions"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onItemMenu(event, item);
+                      }}
+                    >
+                      <DotsIcon />
                     </button>
                   </div>
 
@@ -1309,9 +1278,6 @@ export function GridView({
   onCacheMail,
   onOpenExternal,
   onEdit,
-  onDelete,
-  onToggleFavorite,
-  onToggleAttention,
   onCopy,
   onSelect,
   onItemMenu,
@@ -1469,32 +1435,6 @@ export function GridView({
                 ) : null}
                 <button
                   className="btn btn--icon"
-                  data-action="attention"
-                  aria-label={item.needsAttention ? 'Clear needs attention' : 'Mark as needing attention'}
-                  aria-pressed={item.needsAttention}
-                  style={item.needsAttention ? { color: 'var(--warn)' } : undefined}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggleAttention(item);
-                  }}
-                >
-                  <FlagIcon />
-                </button>
-                <button
-                  className="btn btn--icon"
-                  data-action="favorite"
-                  aria-label={item.favorite ? 'Remove from favorites' : 'Add to favorites'}
-                  aria-pressed={item.favorite}
-                  style={item.favorite ? { color: 'var(--warn)' } : undefined}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggleFavorite(item);
-                  }}
-                >
-                  <StarIcon filled={item.favorite} />
-                </button>
-                <button
-                  className="btn btn--icon"
                   aria-label="Edit login"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -1502,16 +1442,6 @@ export function GridView({
                   }}
                 >
                   <EditIcon />
-                </button>
-                <button
-                  className="btn btn--icon"
-                  aria-label="Delete login"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDelete(item);
-                  }}
-                >
-                  <TrashIcon />
                 </button>
                 <button
                   className="btn btn--icon"
@@ -1525,6 +1455,18 @@ export function GridView({
                   }}
                 >
                   {show ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--icon"
+                  aria-label={`More actions for ${label}`}
+                  title="More actions"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onItemMenu(event, item);
+                  }}
+                >
+                  <DotsIcon />
                 </button>
               </div>
             </motion.div>
@@ -1581,14 +1523,72 @@ function groupByLetter(items: VaultItem[]) {
   return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
+/**
+ * The workspace header strip: one line saying what is on screen.
+ *
+ * The rail names the channel; this says what the name means, how many logins
+ * are showing, and — for the weak channel — what is actually wrong, with a
+ * Select-all path into bulk review. The channel's hue dot carries its visual
+ * signature into the workspace without re-theming anything.
+ */
+export function ChannelStrip({
+  hue,
+  name,
+  explanation,
+  countText,
+  weakText,
+  scopeButton,
+  onSelectAll,
+}: {
+  hue: number;
+  name: string;
+  explanation: string;
+  /** "12 logins", or "3 results for …" while searching. */
+  countText: string;
+  /** Reused/stale breakdown, for the weak channel. */
+  weakText?: string | null;
+  /** Scope toggle while searching ("Search entire vault" / "Back to …"). */
+  scopeButton?: { label: string; onClick: () => void } | null;
+  /** Bulk-review path for the weak channel. */
+  onSelectAll?: (() => void) | null;
+}) {
+  return (
+    <div className="channel-strip">
+      <span
+        className="channel-strip__dot"
+        aria-hidden="true"
+        style={{ background: `hsl(${hue} 55% 60%)` }}
+      />
+      <span className="channel-strip__name">{name}</span>
+      {explanation ? <span className="channel-strip__explain">{explanation}</span> : null}
+      <span className="channel-strip__count">{countText}</span>
+      {weakText ? <span className="channel-strip__weak">{weakText}</span> : null}
+      <span className="channel-strip__spacer" />
+      {onSelectAll ? (
+        <button type="button" className="btn btn--quiet btn--sm" onClick={onSelectAll}>
+          Select all
+        </button>
+      ) : null}
+      {scopeButton ? (
+        <button type="button" className="btn btn--quiet btn--sm" onClick={scopeButton.onClick}>
+          {scopeButton.label}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function ViewEmptyState({
   query,
   screen,
   onAdd,
+  onSearchAll,
 }: {
   query: string;
   screen: string;
   onAdd: () => void;
+  /** Offered when a channel-scoped search finds nothing. */
+  onSearchAll?: (() => void) | null;
 }) {
   const title = query
     ? 'No matches'
@@ -1599,7 +1599,7 @@ export function ViewEmptyState({
         : 'Your vault is empty';
 
   const text = query
-    ? `Nothing matches "${query}". Try a different search.`
+    ? `Nothing matches "${query}" here. Try a different search.`
     : screen === 'favorites'
       ? 'Star a login to pin it to the top of every view.'
       : screen === 'weak'
@@ -1615,6 +1615,10 @@ export function ViewEmptyState({
         screen === 'all' && !query ? (
           <button className="btn btn--primary" onClick={onAdd}>
             Add a login
+          </button>
+        ) : query && onSearchAll ? (
+          <button className="btn btn--secondary" onClick={onSearchAll}>
+            Search entire vault
           </button>
         ) : undefined
       }

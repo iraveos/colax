@@ -282,6 +282,15 @@ export const TrashIcon = (props: IconProps) => (
   </Icon>
 );
 
+/** Overflow menu: what did not fit the card as a button lives behind this. */
+export const DotsIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <circle cx="12" cy="5.5" r="1.15" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="18.5" r="1.15" fill="currentColor" stroke="none" />
+  </Icon>
+);
+
 export const EditIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M12.5 20.5H20" />

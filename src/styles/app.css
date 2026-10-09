@@ -94,18 +94,28 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
 .nav-item:focus-visible{outline:2px solid hsl(var(--accent-h) 55% 58% / .7);outline-offset:1px}
 .nav-item:focus:not(:focus-visible){outline:none}
 .main{display:flex;flex-direction:column;min-width:0;height:100%;position:relative;isolation:isolate}
-.content{position:relative;z-index:1;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+.content{position:relative;z-index:1;flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
 /* Same thin bar as the Flow list, so the dashboard and the views scroll alike. */
 .content::-webkit-scrollbar{width:10px}
 .content::-webkit-scrollbar-track{background:transparent}
 .content::-webkit-scrollbar-thumb{background:var(--border-strong);border:3px solid transparent;border-radius:var(--radius-full);background-clip:content-box}
+/* The workspace header strip: channel signature, scope and counts in one
+   slim line. Static, not sticky — it scrolls with the page everywhere, which
+   is what keeps it free of the Flow/Orbit height contracts. */
+.channel-strip{display:flex;align-items:center;gap:var(--space-2);flex-shrink:0;padding:var(--space-2) var(--space-6);border-bottom:1px solid var(--card-hairline);font-size:var(--text-xs);min-width:0}
+.channel-strip__dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.channel-strip__name{font-weight:650;color:var(--text);white-space:nowrap}
+.channel-strip__explain{color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.channel-strip__count{color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.channel-strip__weak{color:var(--warn);white-space:nowrap}
+.channel-strip__spacer{flex:1;min-width:var(--space-2)}
 /* Flow owns its own scrolling, so it needs a bounded column to scroll inside.
    The chain has to be definite at every step: .content is a flex item with
    min-height 0, this wrapper fills it, and the AnimatedList fills the wrapper.
    Given an auto-height parent the list's `height: 100%` resolves to auto, the
    inner scroller grows to fit every card, and `overscroll-behavior: contain`
    on that inner element then eats the wheel instead of passing it up. */
-[data-flow-scroll]{display:flex;flex-direction:column;height:100%;min-height:0}
+[data-flow-scroll]{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
 [data-flow-scroll] > .rb-animated-list{flex:1 1 auto;min-height:0}
 /* Same reason as the rail: the topbar's own fill plus a bottom border put a
    hard line under the header. The page scrolls beneath it, so nothing was ever
@@ -222,6 +232,10 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
 .rb-animated-list__item,.item{width:100%;min-height:var(--card-min-height,0);border-radius:var(--card-radius,var(--radius-lg))}
 .rb-animated-list__item,.item,.grid-cell{background:var(--card-bg,var(--glass))}
 .item:hover,.grid-cell:hover{background:var(--card-bg-strong,var(--glass-strong))}
+/* Cards against atmosphere: a stronger edge plus a faint top highlight keeps
+   account text readable over any background image, in either theme. Hover and
+   drag states below keep winning — they all outrank this. */
+.item,.grid-cell,.rb-animated-list__item{border-color:var(--border-strong);box-shadow:inset 0 1px 0 hsl(0 0% 100% / .07),var(--card-shadow)}
 
 /* ---- Grid view ------------------------------------------------------------
    The track is auto-fill against a minmax floor rather than a stored column
@@ -368,6 +382,11 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 .dock__slot:hover{background:var(--surface-hover);color:var(--text)}
 .dock__slot[aria-pressed=true]{border-color:hsl(var(--accent-h) 50% 58% / .45);background:var(--accent-soft);color:var(--accent-text)}
 .dock__label{line-height:1}
+/* Family dividers: views, navigation, logins and mail read as groups. */
+.dock__div{width:1px;align-self:stretch;flex-shrink:0;background:var(--border-strong);margin:6px 3px}
+.dock[data-edge=left] .dock__div,.dock[data-edge=right] .dock__div{width:auto;height:1px;align-self:auto;margin:3px 6px}
+/* Channel signature dot: navigation slots carry their channel's hue. */
+.dock__dot{position:absolute;top:5px;left:5px;width:7px;height:7px;border-radius:50%;box-shadow:0 0 0 2px hsl(0 0% 0% / .25);flex-shrink:0}
 /* Custom slot image: same box as the glyph it replaces, so swapping between
    the two never moves the label or the badge. */
 .dock__image{width:17px;height:17px;border-radius:5px;object-fit:cover;flex-shrink:0}
@@ -526,16 +545,16 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 [data-transparency='reduced'] .secured-badge{background:var(--surface);backdrop-filter:none}
 .card-row__body{flex:1;min-width:0}
 .card-row__title{display:flex;align-items:center;gap:var(--space-2);min-width:0}
-.card-row__name{font-size:var(--text-base);font-weight:620;letter-spacing:-.018em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-row__name{font-size:var(--text-base);font-weight:680;letter-spacing:-.018em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .card-row__meta{font-size:var(--text-sm);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .card-row__actions{display:flex;gap:2px;flex-shrink:0}
-.card-row__secret{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-2) var(--space-2) var(--space-3);border-radius:var(--radius-md);background:var(--bg-deep);transition:box-shadow var(--normal) var(--ease)}
+.card-row__secret{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-2) var(--space-2) var(--space-3);border:1px solid var(--card-hairline);border-radius:var(--radius-md);background:var(--bg-deep);transition:box-shadow var(--normal) var(--ease),border-color var(--fast) var(--ease)}
 .card-row__password{flex:1;min-width:0;font-family:var(--font-mono);font-size:var(--text-sm);letter-spacing:-.01em;word-break:break-all;user-select:all}
 .card-row__foot{display:flex;align-items:center;gap:var(--space-3);margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--border)}
 .card-row__label{font-size:var(--text-xs);font-weight:640;letter-spacing:.05em;text-transform:uppercase;color:var(--text-faint);flex-shrink:0}
 /* The username now shares the password's treatment: monospaced, same size, so
    the two read as one credential block rather than a heading and a subheading. */
-.card-row__username{flex:1;min-width:0;font-family:var(--font-mono);font-size:var(--text-base);letter-spacing:-.01em;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:all}
+.card-row__username{flex:1;min-width:0;font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:-.01em;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:all}
 .item__trigger{display:flex;align-items:flex-start;gap:var(--space-3);flex:1;min-width:0;text-align:left;padding:0}
 /* The mark lines up with the first line of text rather than the top of the
    button, so it sits beside the title instead of floating above it. */
@@ -544,7 +563,7 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 .item__peek{flex-basis:100%;display:flex;align-items:center;padding:var(--space-3) var(--space-4);margin-top:var(--space-3);border-radius:var(--radius-md);background:var(--bg-deep);font-family:var(--font-mono);font-size:var(--text-sm);word-break:break-all;user-select:all;animation:expand var(--normal) var(--ease-out) both}
 @keyframes expand{0%{opacity:0;transform:translateY(-4px)}
 }
-.carousel-view{position:relative;display:flex;flex-direction:column;height:100%;min-height:0}
+.carousel-view{position:relative;display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
 .carousel-view__stage{position:relative;flex:1;min-height:0}
 .carousel-view__panel{flex-shrink:0;width:min(620px,calc(100% - var(--space-8)));margin:0 auto;padding:var(--space-4) var(--space-5);border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--glass-strong);backdrop-filter:blur(14px) saturate(140%);box-shadow:var(--card-shadow);animation:orbit-panel-in var(--normal) var(--ease-out) both;transition:border-color var(--normal) var(--ease),background var(--normal) var(--ease)}
 .carousel-view__panel:hover{border-color:var(--border-strong);background:var(--surface-raised)}
@@ -634,7 +653,7 @@ textarea.input{min-height:88px;resize:vertical;line-height:1.6}
 .avatar{display:grid;place-items:center;width:40px;height:40px;border-radius:var(--radius-md);font-size:var(--text-base);font-weight:640;color:#fff;flex-shrink:0;text-transform:uppercase;user-select:none;box-shadow:inset 0 1px #ffffff40}
 .avatar--lg{width:48px;height:48px;font-size:var(--text-xl);border-radius:var(--radius-lg)}
 .item__body{flex:1;min-width:0}
-.item__title{display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-base);font-weight:580;letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item__title{display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-base);font-weight:650;letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item__meta{display:block;font-size:var(--text-sm);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item__actions{display:flex;align-items:center;gap:var(--space-1);opacity:0;transition:opacity var(--fast) var(--ease)}
 .item:hover .item__actions,.item:focus-within .item__actions{opacity:1}

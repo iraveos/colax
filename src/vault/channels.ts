@@ -452,6 +452,36 @@ export function applyChannel(channel: Channel, items: VaultItem[], staleAfterDay
 }
 
 /**
+ * One line saying what a channel holds, for the workspace header strip.
+ *
+ * The rail already names the channel; this says what the name *means*, so a
+ * channel reads as a workspace with its own scope rather than a bare filter.
+ */
+export function describeChannel(channel: Pick<Channel, 'kind' | 'tagIds'>, tags: Tag[]): string {
+  switch (channel.kind) {
+    case 'all':
+      return 'Everything in the vault';
+    case 'favorites':
+      return 'Starred logins, pinned on top';
+    case 'attention':
+      return 'Flagged for follow-up';
+    case 'weak':
+      return 'Passwords worth a rotation';
+    case 'unassigned':
+      return 'Logins still waiting for a tag';
+    case 'dashboard':
+      return '';
+    case 'tags':
+    default: {
+      const names = channel.tagIds
+        .map((id) => tags.find((tag) => tag.id === id)?.name)
+        .filter((name): name is string => Boolean(name));
+      return names.length > 0 ? `Tagged ${names.join(', ')}` : 'Tagged logins';
+    }
+  }
+}
+
+/**
  * Sanitises stored channels, preserving the user's order.
  *
  * Unlike an earlier version this does not force the built-ins to the front:
