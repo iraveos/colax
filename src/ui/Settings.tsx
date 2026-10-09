@@ -26,6 +26,7 @@ import { AlarmsPanel } from './AlarmsPanel.tsx';
 
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import { buildStamp, getPlatform } from '../lib/platform.ts';
+import { applyChannel } from '../vault/channels.ts';
 import { DockSlotsEditor } from './DockSettings.tsx';
 import {
   AlertIcon,
@@ -738,94 +739,184 @@ export function Settings(props: {
       ),
     },
 
-    // Hidden items: everything right-clicked away (or toggled off in Layout),
-    // in one place with a way back each. This tab is the reason hiding can
-    // never strand anyone: every hidden button is listed here with its Show.
+    // Visibility manager: every hideable button, bar, channel and folder —
+    // hidden or not, with counts where they mean something. Right-click hides
+    // things where they live; this tab manages both directions, which is what
+    // keeps hiding from ever stranding anyone.
     {
       id: 'hidden',
       label: 'Hidden',
       icon: <EyeOffIcon />,
       render: () => {
-        const rows: { key: string; label: string; where: string; show: () => void }[] = [];
-        if (prefs.showNewLoginButton === false)
-          rows.push({ key: 'new-login', label: 'New login button', where: 'Topbar', show: () => set({ showNewLoginButton: true }) });
-        if (prefs.showBulkAddButton === false)
-          rows.push({ key: 'bulk-add', label: 'Bulk add button', where: 'Topbar', show: () => set({ showBulkAddButton: true }) });
-        prefs.docks.forEach((dock, index) => {
-          if (!dock.enabled)
-            rows.push({
-              key: `dock:${dock.id}`,
-              label: prefs.docks.length > 1 ? `Dock ${index + 1}` : 'Quick-launch dock',
-              where: 'Floating bar',
-              show: () =>
-                set({ docks: prefs.docks.map((entry) => (entry.id === dock.id ? { ...entry, enabled: true } : entry)) }),
-            });
+        type VisRow = {
+          key: string;
+          label: string;
+          detail: string;
+          hidden: boolean;
+          toggle: () => void;
+        };
+        const showAllPatch = () => ({
+          showNewLoginButton: true,
+          showBulkAddButton: true,
+          docks: prefs.docks.map((entry) => ({ ...entry, enabled: true })),
+          showNewChannelButton: true,
+          showSettingsButton: true,
+          showLockButton: true,
+          showShortcuts: true,
+          showCompactButton: true,
+          showHideSidebarButton: true,
+          showSidebar: true,
+          hiddenChannels: [] as string[],
+          hiddenFolders: [] as string[],
         });
-        if (!prefs.showNewChannelButton)
-          rows.push({ key: 'sidebar-add', label: 'New channel button', where: 'Sidebar', show: () => set({ showNewChannelButton: true }) });
-        if (prefs.showSettingsButton === false)
-          rows.push({ key: 'footer-settings', label: 'Settings button', where: 'Sidebar footer', show: () => set({ showSettingsButton: true }) });
-        if (!prefs.showLockButton)
-          rows.push({ key: 'footer-lock', label: 'Lock button', where: 'Sidebar footer', show: () => set({ showLockButton: true }) });
-        if (!prefs.showShortcuts)
-          rows.push({ key: 'footer-shortcuts', label: 'Shortcuts button', where: 'Sidebar footer', show: () => set({ showShortcuts: true }) });
-        if (!prefs.showCompactButton)
-          rows.push({ key: 'footer-compact', label: 'Compact button', where: 'Sidebar footer', show: () => set({ showCompactButton: true }) });
-        if (prefs.showHideSidebarButton === false)
-          rows.push({ key: 'footer-hide', label: 'Hide-sidebar button', where: 'Sidebar footer', show: () => set({ showHideSidebarButton: true }) });
-        if (prefs.showSidebar === false)
-          rows.push({ key: 'sidebar', label: 'Sidebar', where: 'Channel rail', show: () => set({ showSidebar: true }) });
-        for (const id of prefs.hiddenChannels) {
-          const channel = prefs.channels.find((entry) => entry.id === id);
-          rows.push({
-            key: `channel:${id}`,
-            label: `Channel: ${channel?.name ?? id}`,
-            where: 'Sidebar',
-            show: () => set({ hiddenChannels: prefs.hiddenChannels.filter((entry) => entry !== id) }),
-          });
-        }
-        for (const id of prefs.hiddenFolders) {
-          const folder = prefs.folders.find((entry) => entry.id === id);
-          rows.push({
-            key: `folder:${id}`,
-            label: `Folder: ${folder?.name ?? id}`,
-            where: 'Sidebar',
-            show: () => set({ hiddenFolders: prefs.hiddenFolders.filter((entry) => entry !== id) }),
-          });
-        }
-        if (rows.length === 0)
-          return <p className="field__hint">Nothing is hidden. Right-click any topbar, sidebar or dock button to hide it straight from where it lives.</p>;
+        const rows: VisRow[] = [
+          {
+            key: 'new-login',
+            label: 'New login button',
+            detail: 'Topbar',
+            hidden: prefs.showNewLoginButton === false,
+            toggle: () => set({ showNewLoginButton: prefs.showNewLoginButton === false }),
+          },
+          {
+            key: 'bulk-add',
+            label: 'Bulk add button',
+            detail: 'Topbar',
+            hidden: prefs.showBulkAddButton === false,
+            toggle: () => set({ showBulkAddButton: prefs.showBulkAddButton === false }),
+          },
+          ...prefs.docks.map((dock, index) => ({
+            key: `dock:${dock.id}`,
+            label: prefs.docks.length > 1 ? `Dock ${index + 1}` : 'Quick-launch dock',
+            detail: `Floating bar · ${dock.slots.length} slot${dock.slots.length === 1 ? '' : 's'} · ${dock.pos.edge} edge`,
+            hidden: !dock.enabled,
+            toggle: () =>
+              set({ docks: prefs.docks.map((entry) => (entry.id === dock.id ? { ...entry, enabled: !entry.enabled } : entry)) }),
+          })),
+          {
+            key: 'sidebar-add',
+            label: 'New channel button',
+            detail: 'Sidebar',
+            hidden: !prefs.showNewChannelButton,
+            toggle: () => set({ showNewChannelButton: !prefs.showNewChannelButton }),
+          },
+          {
+            key: 'footer-settings',
+            label: 'Settings button',
+            detail: 'Sidebar footer',
+            hidden: prefs.showSettingsButton === false,
+            toggle: () => set({ showSettingsButton: prefs.showSettingsButton === false }),
+          },
+          {
+            key: 'footer-lock',
+            label: 'Lock button',
+            detail: 'Sidebar footer',
+            hidden: !prefs.showLockButton,
+            toggle: () => set({ showLockButton: !prefs.showLockButton }),
+          },
+          {
+            key: 'footer-shortcuts',
+            label: 'Shortcuts button',
+            detail: 'Sidebar footer',
+            hidden: !prefs.showShortcuts,
+            toggle: () => set({ showShortcuts: !prefs.showShortcuts }),
+          },
+          {
+            key: 'footer-compact',
+            label: 'Compact button',
+            detail: 'Sidebar footer',
+            hidden: !prefs.showCompactButton,
+            toggle: () => set({ showCompactButton: !prefs.showCompactButton }),
+          },
+          {
+            key: 'footer-hide',
+            label: 'Hide-sidebar button',
+            detail: 'Sidebar footer',
+            hidden: prefs.showHideSidebarButton === false,
+            toggle: () => set({ showHideSidebarButton: prefs.showHideSidebarButton === false }),
+          },
+          {
+            key: 'sidebar',
+            label: 'Sidebar',
+            detail: 'Channel rail',
+            hidden: prefs.showSidebar === false,
+            toggle: () => set({ showSidebar: prefs.showSidebar === false }),
+          },
+          ...prefs.channels.map((channel) => {
+            const isHidden = prefs.hiddenChannels.includes(channel.id);
+            let count = 0;
+            try {
+              count = applyChannel(channel, items, prefs.passwordAgeDays).length;
+            } catch {
+              count = 0;
+            }
+            return {
+              key: `channel:${channel.id}`,
+              label: channel.name || 'Channel',
+              detail: `Sidebar channel · ${count} login${count === 1 ? '' : 's'}`,
+              hidden: isHidden,
+              toggle: () =>
+                set({
+                  hiddenChannels: isHidden
+                    ? prefs.hiddenChannels.filter((entry) => entry !== channel.id)
+                    : [...prefs.hiddenChannels, channel.id],
+                }),
+            };
+          }),
+          ...prefs.folders.map((folder) => {
+            const isHidden = prefs.hiddenFolders.includes(folder.id);
+            const entry = prefs.sidebar.find((row) => row.kind === 'folder' && row.id === folder.id);
+            const kids =
+              entry && entry.kind === 'folder'
+                ? entry.children.filter((child) => child.kind === 'channel').length
+                : 0;
+            return {
+              key: `folder:${folder.id}`,
+              label: folder.name || 'Folder',
+              detail: `Sidebar folder · ${kids} channel${kids === 1 ? '' : 's'}`,
+              hidden: isHidden,
+              toggle: () =>
+                set({
+                  hiddenFolders: isHidden
+                    ? prefs.hiddenFolders.filter((entry) => entry !== folder.id)
+                    : [...prefs.hiddenFolders, folder.id],
+                }),
+            };
+          }),
+        ];
+        const hiddenRows = rows.filter((row) => row.hidden);
+        const visibleRows = rows.filter((row) => !row.hidden);
         return (
           <>
-            {rows.length > 1 ? (
-              <Row label="Show everything" hint="Brings back every hidden button and bar at once.">
-                <button
-                  className="btn btn--secondary"
-                  onClick={() =>
-                    set({
-                      showNewLoginButton: true,
-                      showBulkAddButton: true,
-                      docks: prefs.docks.map((entry) => ({ ...entry, enabled: true })),
-                      showNewChannelButton: true,
-                      showSettingsButton: true,
-                      showLockButton: true,
-                      showShortcuts: true,
-                      showCompactButton: true,
-                      showHideSidebarButton: true,
-                      showSidebar: true,
-                      hiddenChannels: [],
-                      hiddenFolders: [],
-                    })
-                  }
-                >
-                  Show all {rows.length}
-                </button>
-              </Row>
-            ) : null}
-            {rows.map((row) => (
-              <Row key={row.key} label={row.label} hint={row.where}>
-                <button className="btn btn--secondary" onClick={row.show}>
-                  Show
+            <p className="field__hint">
+              Every hideable button, bar, channel and folder. Right-click hides things where they
+              live; here manages both directions.
+            </p>
+            {hiddenRows.length > 0 ? (
+              <>
+                <div className="setting__label">Hidden ({hiddenRows.length})</div>
+                {hiddenRows.length > 1 ? (
+                  <Row label="Show everything" hint="Brings back every hidden button, bar, channel and folder at once.">
+                    <button className="btn btn--secondary" onClick={() => set(showAllPatch())}>
+                      Show all {hiddenRows.length}
+                    </button>
+                  </Row>
+                ) : null}
+                {hiddenRows.map((row) => (
+                  <Row key={row.key} label={row.label} hint={row.detail}>
+                    <button className="btn btn--secondary" onClick={row.toggle}>
+                      Show
+                    </button>
+                  </Row>
+                ))}
+              </>
+            ) : (
+              <p className="field__hint">Nothing is hidden.</p>
+            )}
+            <div className="setting__label">Visible ({visibleRows.length})</div>
+            {visibleRows.map((row) => (
+              <Row key={row.key} label={row.label} hint={row.detail}>
+                <button className="btn btn--quiet" onClick={row.toggle}>
+                  Hide
                 </button>
               </Row>
             ))}
