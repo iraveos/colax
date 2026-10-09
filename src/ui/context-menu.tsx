@@ -283,6 +283,19 @@ export type ChromeElementId =
   | 'footer-compact'
   | 'footer-hide';
 
+/**
+ * Labels for hideable card buttons, by the `data-hide-id` views render.
+ * Unknown ids fall back to the raw id, so a button added later still reads.
+ */
+export const HIDDEN_BUTTON_LABELS: Record<string, string> = {
+  'card-copy': 'Copy button',
+  'card-edit': 'Edit button',
+  'card-reveal': 'Reveal button',
+  'card-menu': 'More-actions button',
+  'card-copy-user': 'Copy-username button',
+  'card-copy-pass': 'Copy-password button',
+};
+
 export const CHROME_ELEMENTS: Record<ChromeElementId, { label: string; where: string }> = {
   'new-login': { label: 'New login button', where: 'Topbar' },
   'bulk-add': { label: 'Bulk add button', where: 'Topbar' },

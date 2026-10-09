@@ -71,6 +71,8 @@ export interface ViewActions {
   showOrbitLabels?: boolean;
   /** List only: group rows under their first letter. */
   showLetterGroups?: boolean;
+  /** Card button ids hidden by right-click. Views hide those buttons. */
+  hiddenButtons?: string[];
   /**
    * Drag a login to a flat position in the current view, switching sorting to
    * the custom drag order. Offered by Flow, List and Grid (press and hold a
@@ -452,6 +454,15 @@ function openClick(
   };
 }
 
+/**
+ * Whether a card button is hidden by right-click. Every hideable button also
+ * renders `data-hide-id`/`data-hide-label`, which is what offers Hide in the
+ * first place — the attribute and the check cannot drift apart.
+ */
+function hideAttrs(id: string, label: string) {
+  return { 'data-hide-id': id, 'data-hide-label': label };
+}
+
 /** Tag chips for a login, resolved against the catalogue. */
 /**
  * The login's image, or a letter tile when there is none.
@@ -648,11 +659,13 @@ export function AnimatedListView({
   onSelect,
   onItemMenu,
   onReorderLogins,
+  hiddenButtons,
   tags,
 }: CommonViewProps) {
   // Ids whose password has been explicitly revealed. Everything else is masked, so
   // opening the vault never puts every credential on screen at once.
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set());
+  const gone = (id: string) => hiddenButtons?.includes(id) ?? false;
   // A login with its own second factor has to clear it before its password shows.
   const [gateItem, setGateItem] = useState<VaultItem | null>(null);
   const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
@@ -762,29 +775,35 @@ export function AnimatedListView({
                     the credential block below, on the same row as the password. */}
               </div>
               <div className="card-row__actions">
-                <button
-                  className="btn btn--icon"
-                  data-action="edit"
-                  aria-label="Edit login"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onEdit(item);
-                  }}
-                >
-                  <EditIcon />
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--icon"
-                  aria-label={`More actions for ${label}`}
-                  title="More actions"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onItemMenu(event, item);
-                  }}
-                >
-                  <DotsIcon />
-                </button>
+                {!gone('card-edit') ? (
+                  <button
+                    className="btn btn--icon"
+                    data-action="edit"
+                    aria-label="Edit login"
+                    {...hideAttrs('card-edit', 'Edit button')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onEdit(item);
+                    }}
+                  >
+                    <EditIcon />
+                  </button>
+                ) : null}
+                {!gone('card-menu') ? (
+                  <button
+                    type="button"
+                    className="btn btn--icon"
+                    aria-label={`More actions for ${label}`}
+                    title="More actions"
+                    {...hideAttrs('card-menu', 'More-actions button')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onItemMenu(event, item);
+                    }}
+                  >
+                    <DotsIcon />
+                  </button>
+                ) : null}
               </div>
             </div>
 
@@ -794,10 +813,11 @@ export function AnimatedListView({
             <div className="card-row__secret">
               <div className="card-row__secret-row">
                 <span className="card-row__username">{item.username || hostnameOf(item.url) || 'No username'}</span>
-                {item.username ? (
+                {item.username && !gone('card-copy-user') ? (
                   <button
                     className="btn btn--icon"
                     aria-label="Copy username"
+                    {...hideAttrs('card-copy-user', 'Copy-username button')}
                     onClick={(event) => {
                       event.stopPropagation();
                       onCopy(item.username, 'Username', item);
@@ -812,18 +832,21 @@ export function AnimatedListView({
                 {/* No copy button here on purpose: the labelled Copy below is
                     the one obvious copy, and a second one for the same field
                     is exactly the duplication to avoid. */}
-                <button
-                  className="btn btn--icon"
-                  aria-label={show ? 'Hide password' : 'Reveal password'}
-                  aria-pressed={show}
-                  data-active={show || undefined}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    toggle(item.id);
-                  }}
-                >
-                {show ? <EyeOffIcon /> : <EyeIcon />}
-              </button>
+                {!gone('card-reveal') ? (
+                  <button
+                    className="btn btn--icon"
+                    aria-label={show ? 'Hide password' : 'Reveal password'}
+                    aria-pressed={show}
+                    data-active={show || undefined}
+                    {...hideAttrs('card-reveal', 'Reveal button')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggle(item.id);
+                    }}
+                  >
+                  {show ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+                ) : null}
               </div>
             </div>
 
@@ -843,10 +866,11 @@ export function AnimatedListView({
               {mailFor(item, mailScope, gmailAccounts) ? (
                 <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
               ) : null}
-              {item.password ? (
+              {item.password && !gone('card-copy') ? (
                 <button
                   type="button"
                   className="btn btn--secondary btn--sm"
+                  {...hideAttrs('card-copy', 'Copy button')}
                   onClick={(event) => {
                     event.stopPropagation();
                     onCopy(item.password, 'Password', item);
@@ -1098,6 +1122,7 @@ showTagChips,
   onSelect,
   onItemMenu,
   onReorderLogins,
+  hiddenButtons,
 }: CommonViewProps) {
   // Ids whose password has been explicitly revealed. Everything else is masked, so
   // opening the vault never puts every credential on screen at once.
@@ -1105,6 +1130,7 @@ showTagChips,
   // A login with its own second factor has to clear it before its password shows.
   const [gateItem, setGateItem] = useState<VaultItem | null>(null);
   const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
+  const gone = (id: string) => hiddenButtons?.includes(id) ?? false;
   const showGroups = showLetterGroups !== false;
   const groups = showGroups ? groupByLetter(items) : [['', items] as [string, VaultItem[]]];
   // Flat render order, across letter groups, so a drop lands globally.
@@ -1198,10 +1224,11 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
                     {mailFor(item, mailScope, gmailAccounts) ? (
                       <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                     ) : null}
-                    {item.password ? (
+                    {item.password && !gone('card-copy') ? (
                       <button
                         type="button"
                         className="btn btn--secondary btn--sm"
+                        {...hideAttrs('card-copy', 'Copy button')}
                         onClick={(event) => {
                           event.stopPropagation();
                           onCopy(item.password, 'Password', item);
@@ -1211,30 +1238,43 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
                         Copy
                       </button>
                     ) : null}
-                    <button className="btn btn--icon" aria-label="Edit login" onClick={() => onEdit(item)}>
-                      <EditIcon />
-                    </button>
-                    <button
-                      className="btn btn--icon"
-                      data-active={show || undefined}
-                      aria-label={show ? 'Hide password' : 'Reveal password'}
-                      aria-pressed={show}
-                      onClick={() => toggle(item.id)}
-                    >
-                      {show ? <EyeOffIcon /> : <EyeIcon />}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn--icon"
-                      aria-label={`More actions for ${label}`}
-                      title="More actions"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onItemMenu(event, item);
-                      }}
-                    >
-                      <DotsIcon />
-                    </button>
+                    {!gone('card-edit') ? (
+                      <button
+                        className="btn btn--icon"
+                        aria-label="Edit login"
+                        {...hideAttrs('card-edit', 'Edit button')}
+                        onClick={() => onEdit(item)}
+                      >
+                        <EditIcon />
+                      </button>
+                    ) : null}
+                    {!gone('card-reveal') ? (
+                      <button
+                        className="btn btn--icon"
+                        data-active={show || undefined}
+                        aria-label={show ? 'Hide password' : 'Reveal password'}
+                        aria-pressed={show}
+                        {...hideAttrs('card-reveal', 'Reveal button')}
+                        onClick={() => toggle(item.id)}
+                      >
+                        {show ? <EyeOffIcon /> : <EyeIcon />}
+                      </button>
+                    ) : null}
+                    {!gone('card-menu') ? (
+                      <button
+                        type="button"
+                        className="btn btn--icon"
+                        aria-label={`More actions for ${label}`}
+                        title="More actions"
+                        {...hideAttrs('card-menu', 'More-actions button')}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onItemMenu(event, item);
+                        }}
+                      >
+                        <DotsIcon />
+                      </button>
+                    ) : null}
                   </div>
 
                   {show ? (
@@ -1302,10 +1342,12 @@ export function GridView({
   onSelect,
   onItemMenu,
   onReorderLogins,
+  hiddenButtons,
 }: CommonViewProps) {
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set());
   const [gateItem, setGateItem] = useState<VaultItem | null>(null);
   const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
+  const gone = (id: string) => hiddenButtons?.includes(id) ?? false;
   const reorder = useLoginReorder(
     items.map((entry) => entry.id),
     onReorderLogins,
@@ -1420,10 +1462,11 @@ export function GridView({
                   <span className="card-row__username">
                     {item.username || hostnameOf(item.url) || 'No username'}
                   </span>
-                  {item.username ? (
+                  {item.username && !gone('card-copy-user') ? (
                     <button
                       className="btn btn--icon"
                       aria-label="Copy username"
+                      {...hideAttrs('card-copy-user', 'Copy-username button')}
                     onClick={(event) => {
                       event.stopPropagation();
                       onCopy(item.username, 'Username', item);
@@ -1435,17 +1478,20 @@ export function GridView({
                 </div>
                 <div className="card-row__secret-row">
                   <code className="card-row__password">{show ? item.password || '—' : maskOf(item)}</code>
-                  <button
-                    className="btn btn--icon"
-                    aria-label="Copy password"
-                    disabled={!item.password}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onCopy(item.password, 'Password', item);
-                    }}
-                  >
-                    <CopyIcon />
-                  </button>
+                  {!gone('card-copy-pass') ? (
+                    <button
+                      className="btn btn--icon"
+                      aria-label="Copy password"
+                      disabled={!item.password}
+                      {...hideAttrs('card-copy-pass', 'Copy-password button')}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onCopy(item.password, 'Password', item);
+                      }}
+                    >
+                      <CopyIcon />
+                    </button>
+                  ) : null}
                 </div>
               </div>
 
@@ -1453,41 +1499,50 @@ export function GridView({
                 {mailFor(item, mailScope, gmailAccounts) ? (
                   <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                 ) : null}
-                <button
-                  className="btn btn--icon"
-                  aria-label="Edit login"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onEdit(item);
-                  }}
-                >
-                  <EditIcon />
-                </button>
-                <button
-                  className="btn btn--icon"
-                  data-action="password"
-                  data-active={show || undefined}
-                  aria-label={show ? 'Hide password' : 'Reveal password'}
-                  aria-pressed={show}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    toggle(item.id);
-                  }}
-                >
-                  {show ? <EyeOffIcon /> : <EyeIcon />}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--icon"
-                  aria-label={`More actions for ${label}`}
-                  title="More actions"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onItemMenu(event, item);
-                  }}
-                >
-                  <DotsIcon />
-                </button>
+                {!gone('card-edit') ? (
+                  <button
+                    className="btn btn--icon"
+                    aria-label="Edit login"
+                    {...hideAttrs('card-edit', 'Edit button')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onEdit(item);
+                    }}
+                  >
+                    <EditIcon />
+                  </button>
+                ) : null}
+                {!gone('card-reveal') ? (
+                  <button
+                    className="btn btn--icon"
+                    data-action="password"
+                    data-active={show || undefined}
+                    aria-label={show ? 'Hide password' : 'Reveal password'}
+                    aria-pressed={show}
+                    {...hideAttrs('card-reveal', 'Reveal button')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggle(item.id);
+                    }}
+                  >
+                    {show ? <EyeOffIcon /> : <EyeIcon />}
+                  </button>
+                ) : null}
+                {!gone('card-menu') ? (
+                  <button
+                    type="button"
+                    className="btn btn--icon"
+                    aria-label={`More actions for ${label}`}
+                    title="More actions"
+                    {...hideAttrs('card-menu', 'More-actions button')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onItemMenu(event, item);
+                    }}
+                  >
+                    <DotsIcon />
+                  </button>
+                ) : null}
               </div>
             </motion.div>
           );

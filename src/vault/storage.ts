@@ -434,6 +434,11 @@ export interface VaultPreferences {
    */
   hiddenFolders: string[];
   /**
+   * Card button ids hidden by right-click (copy, edit, reveal, …), anywhere
+   * they render. Shown again from Settings › Hidden.
+   */
+  hiddenButtons: string[];
+  /**
    * The user's own login order, as ids. Dragging a login in the List or Grid
    * view writes here and switches sorting to `manual`. Ids never seen stay at
    * the end in title order, so new logins need no bookkeeping.
@@ -565,6 +570,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   showUnassignedChannel: true,
   hiddenChannels: [],
   hiddenFolders: [],
+  hiddenButtons: [],
   manualOrder: [],
   showNewChannelButton: true,
   showCompactButton: true,
@@ -684,6 +690,9 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     : [];
   merged.hiddenFolders = Array.isArray(merged.hiddenFolders)
     ? [...new Set(merged.hiddenFolders.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+    : [];
+  merged.hiddenButtons = Array.isArray(merged.hiddenButtons)
+    ? [...new Set(merged.hiddenButtons.filter((id): id is string => typeof id === 'string' && id.length > 0))]
     : [];
   merged.manualOrder = Array.isArray(merged.manualOrder)
     ? [...new Set(merged.manualOrder.filter((id): id is string => typeof id === 'string' && id.length > 0))]

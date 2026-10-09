@@ -1515,6 +1515,28 @@ label: 'Settings',
         return;
       }
       event.preventDefault();
+      // Any button carrying data-hide-id offers Hide on top of whatever menu
+      // would otherwise open. The button hides everywhere it renders; the
+      // Hidden tab brings it back.
+      const hideEntry = (): MenuItem[] => {
+        const el = target?.closest?.('[data-hide-id]') as HTMLElement | null;
+        const id = el?.dataset.hideId;
+        if (!id || prefs.hiddenButtons.includes(id)) return [];
+        const label = (el?.dataset.hideLabel || id).toLowerCase();
+        return [
+          {
+            kind: 'item' as const,
+            label: `Hide ${label}`,
+            icon: <EyeOffIcon />,
+            onSelect: () => {
+              void vault
+                .updatePrefs({ hiddenButtons: [...prefs.hiddenButtons, id] })
+                .then(() => notify('Hidden — bring it back in Settings › Hidden'));
+            },
+          },
+          { kind: 'separator' as const },
+        ];
+      };
       const itemEl = target?.closest('[data-vault-item]') as HTMLElement | null;
       if (event.shiftKey) {
         event.preventDefault();
@@ -1535,15 +1557,15 @@ label: 'Settings',
           // bulk action to rows the user had forgotten they had selected.
           const bulk = bulkRef.current;
           if (bulk.has(item.id) && bulk.size > 1) {
-            setMenu({ x: event.clientX, y: event.clientY, items: selectionMenuRef.current });
+            setMenu({ x: event.clientX, y: event.clientY, items: [...hideEntry(), ...selectionMenuRef.current] });
             return;
           }
           selection.clear();
-          setMenu({ x: event.clientX, y: event.clientY, items: itemMenu(item) });
+          setMenu({ x: event.clientX, y: event.clientY, items: [...hideEntry(), ...itemMenu(item)] });
           return;
         }
       }
-      setMenu({ x: event.clientX, y: event.clientY, items: appMenu() });
+      setMenu({ x: event.clientX, y: event.clientY, items: [...hideEntry(), ...appMenu()] });
     };
     window.addEventListener('contextmenu', onContextMenu);
     return () => window.removeEventListener('contextmenu', onContextMenu);
@@ -1552,7 +1574,7 @@ label: 'Settings',
     // and re-add this window listener on every click of a selection, which also
     // risks losing the very gesture that is still being handled.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vault.status, vault.items, vault, itemMenu, appMenu, selection]);
+  }, [vault.status, vault.items, vault, prefs, notify, itemMenu, appMenu, selection]);
 
   /* ---- Paste to create ----------------------------------------------------
      Click the vault body, Ctrl+V a copied email+password, and a new Unassigned
@@ -2179,6 +2201,8 @@ onCreate={vault.create}
     // Drag-reorder for the List and Grid views; Flow and Orbit ignore it but
     // still follow the custom order through sorting.
     onReorderLogins: moveLogin,
+    // Card buttons hidden by right-click, everywhere they render.
+    hiddenButtons: prefs.hiddenButtons,
     ...viewActions,
   };
 

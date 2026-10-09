@@ -502,7 +502,7 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 .content__inner--wide{max-width:1180px}
 /* The dashboard breathes: full width with roomy rhythm so every section gets
    its own comfortable viewing space. */
-.content__inner--dash{max-width:min(1440px,100% - var(--space-8));padding:var(--space-8) var(--space-6) var(--space-12)}
+.content__inner--dash{max-width:none;padding:var(--space-6) var(--space-8) var(--space-12)}
 .content__inner--dash .dashboard{gap:var(--space-6)}
 .content__inner--dash .dash-hero{padding:var(--space-8)}
 .content__inner--dash .stat-row{grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:var(--space-3)}
