@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detect, detectBulk, detectBulkLines, splitGluedEmail } from '../src/ui/useClipboardWatcher.ts';
+import { detect, detectBulk, detectBulkLines, markClipboardSelfWritten, splitGluedEmail, takeClipboardSelfWrite } from '../src/ui/useClipboardWatcher.ts';
 import { formatLoginCompact, formatLoginForClipboard } from '../src/ui/login-format.ts';
 
 /**
@@ -212,6 +212,16 @@ test('separator-less alternating address/password lines pair up', () => {
   assert.equal(detectBulkLines('a@x.com\nsome stray words\nb@y.org'), null);
   // Pure address lists are not pairs mode either.
   assert.equal(detectBulkLines('a@x.com\nb@y.org'), null);
+});
+
+test('our own shares never come back as offers', () => {
+  const text = 'GitHub\nemail: me@x.com\npassword: hunter2';
+  // Sanity: the share format IS detectable, which is exactly the hazard.
+  assert.ok(detect(text) !== null);
+  assert.equal(takeClipboardSelfWrite(text), false);
+  markClipboardSelfWritten(text);
+  assert.equal(takeClipboardSelfWrite(text), true, 'first sight consumed');
+  assert.equal(takeClipboardSelfWrite(text), false, 'a later copy counts again');
 });
 
 test('bulk mode accepts alternating lines with no separators', () => {

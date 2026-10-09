@@ -1441,10 +1441,6 @@ body.is-reordering,body.is-reordering *{user-select:none !important;cursor:grabb
 .sec__head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
 .sec__title{margin:0;font-size:var(--text-sm);font-weight:620}
 .sec__badge{padding:2px 8px;border-radius:var(--radius-full);background:var(--surface-active);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint);white-space:nowrap}
-.sec__facts{display:grid;grid-template-columns:auto 1fr;gap:4px var(--space-3);margin:0;align-items:center}
-.sec__facts dt{font-size:var(--text-xs);color:var(--text-faint)}
-.sec__facts dd{margin:0;min-width:0;overflow-wrap:anywhere}
-.sec__code{font-family:var(--font-mono);font-size:var(--text-lg);letter-spacing:.1em;font-variant-numeric:tabular-nums}
 .sec__error{margin:0;font-size:var(--text-xs);color:var(--danger)}
 .sec__questions{display:flex;flex-direction:column;gap:var(--space-2);margin:0;padding:0;list-style:none}
 .sec__questions li{display:flex;flex-direction:column;gap:var(--space-2)}

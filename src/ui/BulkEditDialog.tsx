@@ -14,7 +14,7 @@ import { useMemo, useState } from 'react';
 import type { VaultItem } from '../vault/types.ts';
 import type { Tag } from '../vault/channels.ts';
 import { extractEmails } from '../vault/site-intel.ts';
-import { detectBulk } from './useClipboardWatcher.ts';
+import { detectBulk, markClipboardSelfWritten } from './useClipboardWatcher.ts';
 import { countAffected, type BulkEdit } from './bulk-edit.ts';
 import { formatLoginForClipboard, formatLoginsForClipboard } from './login-format.ts';
 import { Modal } from './primitives.tsx';
@@ -86,6 +86,7 @@ export function BulkEditDialog({
 
   const share = async () => {
     const text = formatLoginsForClipboard(items);
+    markClipboardSelfWritten(text);
     try {
       await navigator.clipboard.writeText(text);
       onNotify(items.length === 1 ? 'Login copied' : `${items.length} logins copied`);
@@ -200,8 +201,10 @@ export function BulkEditDialog({
             type="button"
             className="btn btn--quiet bulk__share"
             onClick={() => {
+              const text = formatLoginForClipboard(items[0]!);
+              markClipboardSelfWritten(text);
               void navigator.clipboard
-                .writeText(formatLoginForClipboard(items[0]!))
+                .writeText(text)
                 .then(() => onNotify('Login copied'))
                 .catch(() => onNotify('Could not reach the clipboard', 'error'));
             }}

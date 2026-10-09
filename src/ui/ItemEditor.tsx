@@ -26,6 +26,7 @@ import { createTag, type Tag } from '../vault/channels.ts';
 import { readImageFile } from './card-art.ts';
 import { Alert, Modal, StrengthMeter, Toggle } from './primitives.tsx';
 import { formatLoginCompact } from './login-format.ts';
+import { markClipboardSelfWritten } from './useClipboardWatcher.ts';
 import { InboxSection } from './InboxSection.tsx';
 import type { GmailAccount } from '../vault/storage.ts';
 import type { GmailMessage } from './useGmail.ts';
@@ -499,15 +500,17 @@ export function ItemEditor({
               disabled={!draft.username && !draft.password}
               title="Copy a short share block for this login"
               onClick={() => {
+                // Marked before writing: without this the clipboard watcher
+                // reads our own share back and offers to save a duplicate.
+                const text = formatLoginCompact({
+                  title: draft.title ?? '',
+                  username: draft.username ?? '',
+                  password: passwordLocked ? '' : (draft.password ?? ''),
+                  totpSecret: draft.totpSecret,
+                });
+                markClipboardSelfWritten(text);
                 void navigator.clipboard
-                  .writeText(
-                    formatLoginCompact({
-                      title: draft.title ?? '',
-                      username: draft.username ?? '',
-                      password: passwordLocked ? '' : (draft.password ?? ''),
-                      totpSecret: draft.totpSecret,
-                    }),
-                  )
+                  .writeText(text)
                   .then(() => onNotify('Login shared — paste it to a friend with Colax'))
                   .catch(() => onNotify('Could not reach the clipboard'));
               }}

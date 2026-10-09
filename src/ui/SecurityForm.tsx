@@ -15,7 +15,7 @@ import {
   type SecurityQuestion,
 } from '../crypto/security.ts';
 import { PlusIcon, TrashIcon, XIcon } from './icons.tsx';
-import { Modal } from './primitives.tsx';
+import { Modal, Select } from './primitives.tsx';
 
 /** The authenticator URI a phone app scans. */
 export function otpauthUrl(seed: string, label: string): string {
@@ -539,18 +539,12 @@ export function SecurityForm({
 
         <div className="sec__add">
           <div className="field-row">
-            <select
-              className="select__trigger"
+            <Select
+              label="Question"
               value={newPrompt}
-              onChange={(event) => setNewPrompt(event.target.value)}
-              aria-label="Question"
-            >
-              {QUESTION_PROMPTS.map((prompt) => (
-                <option key={prompt} value={prompt}>
-                  {prompt}
-                </option>
-              ))}
-            </select>
+              options={QUESTION_PROMPTS.map((prompt) => ({ value: prompt, label: prompt }))}
+              onChange={(next) => setNewPrompt(next)}
+            />
           </div>
           <div className="field-row">
             <input

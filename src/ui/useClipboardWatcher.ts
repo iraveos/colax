@@ -12,6 +12,30 @@ export interface ClipCredentials {
 }
 
 /**
+ * Clipboard texts the app itself just wrote (Share, bulk share). Copying a
+ * login out and offering to save it straight back is how Share minted
+ * duplicates — with auto-save it did not even ask first. Call sites mark what
+ * they write; the watcher consumes the mark on first sight instead of
+ * detecting. Marks expire after 15 seconds, well past the 2.5s poll cadence,
+ * so a user re-copying the same text later is still detected normally.
+ */
+const selfWrites: { text: string; at: number }[] = [];
+
+export function markClipboardSelfWritten(text: string): void {
+  selfWrites.push({ text, at: Date.now() });
+  if (selfWrites.length > 8) selfWrites.shift();
+}
+
+/** True once for marked text: consumes the mark so a later copy counts again. */
+export function takeClipboardSelfWrite(text: string): boolean {
+  const now = Date.now();
+  const index = selfWrites.findIndex((entry) => entry.text === text && now - entry.at < 15_000);
+  if (index === -1) return false;
+  selfWrites.splice(index, 1);
+  return true;
+}
+
+/**
  * Watches the clipboard for what looks like a copied login and offers to save
  * it. Off by default; the user turns it on in Settings.
  *
@@ -47,6 +71,11 @@ export function useClipboardWatcher({
         return; // Permission denied or document not focused: nothing to offer.
       }
       if (cancelled || !text || text === seen.current) return;
+      // Our own share, coming back around: never offer to save it.
+      if (takeClipboardSelfWrite(text)) {
+        seen.current = text;
+        return;
+      }
       const creds = detect(text);
       if (!creds) return;
       seen.current = text;

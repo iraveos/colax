@@ -20,7 +20,7 @@ import { captureToDraft, findSimilarTag, suggestTagsForDraft } from '../vault/si
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
 import { FolderEditor } from './FolderEditor.tsx';
-import { detect as detectClipboard, detectBulk, useClipboardWatcher } from './useClipboardWatcher.ts';
+import { detect as detectClipboard, detectBulk, markClipboardSelfWritten, useClipboardWatcher } from './useClipboardWatcher.ts';
 import { useAlarms, playAlarmSound } from './useAlarms.ts';
 import { useCaptureOffer, type PendingCapture } from './useCaptureOffer.ts';
 import type { DockSlotConfig, DockState, GmailAccount, SortMode, VaultPreferences, VaultView } from '../vault/storage.ts';
@@ -1333,15 +1333,14 @@ tags: prefs.tags,
           icon: <ShareIcon />,
           disabled: !item.password && !item.username,
           onSelect: () => {
-            void copy(
-              formatLoginCompact({
-                title: item.title,
-                username: item.username,
-                password: item.password,
-                totpSecret: item.totpSecret,
-              }),
-              'Login shared',
-            );
+            const text = formatLoginCompact({
+              title: item.title,
+              username: item.username,
+              password: item.password,
+              totpSecret: item.totpSecret,
+            });
+            markClipboardSelfWritten(text);
+            void copy(text, 'Login shared');
             touchLogin(item.id);
           },
         },
@@ -2002,6 +2001,7 @@ label: 'Settings',
       selectedItems.length === 1
         ? formatLoginForClipboard(selectedItems[0]!)
         : formatLoginsForClipboard(selectedItems);
+    markClipboardSelfWritten(text);
     await copy(text, selectedItems.length === 1 ? 'Login' : `${selectedItems.length} logins`);
   }, [copy, selectedItems]);
 
