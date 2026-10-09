@@ -2271,18 +2271,9 @@ onCreate={vault.create}
             {/* The lead slot is a spacer — unless the sidebar is hidden, in
                 which case it carries the way back, so Settings stays
                 reachable. */}
-            <div className="topbar__lead">
-              {prefs.showSidebar === false ? (
-                <button
-                  className="btn btn--secondary"
-                  onClick={() => void vault.updatePrefs({ showSidebar: true })}
-                  title="Show sidebar"
-                >
-                  <RowsIcon width="15" height="15" />
-                  <span>Sidebar</span>
-                </button>
-              ) : null}
-            </div>
+            {/* The lead slot is a spacer. Sidebar recovery lives in the floating
+                pill on the rail's own edge, next to where it hid from. */}
+            <div className="topbar__lead" />
 
             {/* Search sits alone in the centre column. */}
             <div className="topbar__centre">
