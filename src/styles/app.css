@@ -972,25 +972,38 @@ to{transform:translate(0)}
    ---------------------------------------------------------------------- */
 .dashboard{display:flex;flex-direction:column;gap:var(--space-5);padding-bottom:var(--space-6)}
 
-.dash-hero{position:relative;overflow:hidden;display:flex;align-items:flex-end;justify-content:space-between;gap:var(--space-6);flex-wrap:wrap;padding:var(--space-8) var(--space-6);border:1px solid hsl(var(--accent-h) 45% 55% / .28);border-radius:var(--radius-xl);background:linear-gradient(135deg,hsl(var(--accent-h) 48% 46% / .16),transparent 55%),var(--card);box-shadow:0 24px 60px -30px hsl(var(--accent-h) 70% 50% / .35)}
-.dash-hero:before{content:"";position:absolute;top:-70px;right:-50px;width:240px;height:240px;background:radial-gradient(closest-side,hsl(var(--accent-h) 75% 58% / .28),transparent);pointer-events:none}
-.dash-hero__text{position:relative;flex:1;min-width:260px}
-.dash-hero__eyebrow{display:inline-block;margin:0 0 var(--space-3);padding:3px 10px;border:1px solid var(--card-hairline-strong);border-radius:var(--radius-full);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted)}
-.dash-hero__title{margin:0;font-family:var(--font-display);font-size:clamp(2rem,4vw,2.9rem);font-weight:600;line-height:1.06;letter-spacing:-.02em;color:var(--text)}
-.dash-hero__count{font-variant-numeric:tabular-nums;color:var(--warn);margin-right:.28em}
-.dash-hero__what{color:var(--text-muted)}
-.dash-hero__hint{margin:var(--space-3) 0 0;max-width:52ch;font-size:var(--text-sm);line-height:1.6;color:var(--text-muted)}
-.dash-hero__action{position:relative;display:inline-flex;align-items:center;gap:var(--space-2);padding:10px var(--space-5);border:none;border-radius:var(--radius-full);background:var(--grad-primary);color:#fff;font-size:var(--text-sm);font-weight:620;white-space:nowrap;box-shadow:0 10px 26px -12px hsl(var(--accent-h) 80% 55% / .7);transition:transform var(--fast) var(--ease-out),box-shadow var(--fast) var(--ease)}
-.dash-hero__action:hover{transform:translateY(-1px);box-shadow:0 16px 32px -12px hsl(var(--accent-h) 80% 55% / .8)}
+/* ---- Command Center -----------------------------------------------------
+   Compact, editorial, restrained: one small header, a security summary with a
+   single champagne action, four metric tiles, ranked attention, recent
+   activity and two condensed insight cards. Champagne marks primary actions;
+   red and coral mark genuine warnings; nothing glows.
+   ---------------------------------------------------------------------- */
+.cc-head{display:flex;align-items:flex-end;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+.cc-eyebrow{margin:0 0 var(--space-1);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint)}
+.cc-title{margin:0;font-family:var(--font-display);font-size:1.7rem;font-weight:600;letter-spacing:-.02em;color:var(--text)}
+.cc-sub{margin:var(--space-1) 0 0;font-size:var(--text-sm);color:var(--text-muted)}
+.cc-status{display:inline-flex;align-items:center;gap:var(--space-2);padding:5px 12px;border:1px solid var(--card-hairline);border-radius:var(--radius-full);font-size:var(--text-xs);font-weight:600;color:var(--text-muted);white-space:nowrap}
+.cc-status__dot{width:7px;height:7px;border-radius:50%;background:hsl(152 46% 52%)}
 
-/* Coverage bar. The one animated element on the screen: the width changes as
-   the user acts, and a bar that jumped would not read as progress. */
-.dash-bar{height:6px;border-radius:var(--radius-full);background:var(--surface);overflow:hidden}
-.dash-bar__fill{height:100%;border-radius:inherit;background:var(--grad-primary);box-shadow:0 0 12px hsl(var(--accent-h) 75% 58% / .6);transition:width var(--slow) var(--ease-out)}
-.dash-bar[data-clean] .dash-bar__fill{background:hsl(152 46% 52%)}
+/* Champagne primary action. Reserved for the one action per screen that moves
+   work forward — never a decorative tint. */
+.btn--champagne{display:inline-flex;align-items:center;gap:var(--space-2);padding:8px var(--space-4);border:1px solid hsl(38 76% 66% / .5);border-radius:var(--radius-full);background:linear-gradient(135deg,hsl(40 72% 58%),hsl(32 74% 46%));color:#201503;font-size:var(--text-sm);font-weight:650;white-space:nowrap;transition:filter var(--fast) var(--ease)}
+.btn--champagne:hover{filter:brightness(1.08)}
+.btn--champagne:focus-visible{outline:2px solid var(--border-focus);outline-offset:2px}
 
-.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:var(--space-2)}
-/* Staggered entrance, the second motion idea on this screen. */
+/* Security summary: the count that matters, plainly stated. */
+.cc-security{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap;padding:var(--space-4) var(--space-5);border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card)}
+.cc-security__body{display:flex;align-items:center;gap:var(--space-4);min-width:0}
+.cc-security__count{font-family:var(--font-display);font-size:2rem;font-weight:600;font-variant-numeric:tabular-nums;line-height:1}
+.cc-security__count[data-severity=high]{color:var(--danger)}
+.cc-security__count[data-severity=medium]{color:var(--warn)}
+.cc-security__count[data-severity=low]{color:var(--text-muted)}
+.cc-security__label{display:block;font-size:var(--text-sm);font-weight:600;color:var(--text)}
+.cc-security__detail{display:block;font-size:var(--text-xs);color:var(--text-faint)}
+.cc-security__calm{margin:0;font-size:var(--text-sm);color:var(--text-muted)}
+
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:var(--space-2)}
+/* Staggered entrance, the one motion idea on this screen. */
 .stat{display:flex;flex-direction:column;gap:2px;padding:var(--space-3) var(--space-4);border:1px solid var(--card-hairline);border-radius:var(--radius-md);background:var(--card);animation:stat-in var(--normal) var(--ease-out) both}
 .stat__value{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
 .stat__label{font-size:var(--text-xs);color:var(--text-faint)}
@@ -1008,14 +1021,7 @@ to{transform:translate(0)}
 .dash-issue__detail{font-size:var(--text-xs);color:var(--text-faint)}
 .dash-issue__count{font-size:var(--text-sm);font-variant-numeric:tabular-nums;color:var(--text-muted)}
 
-.dash-reminders{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--space-2)}
-.dash-reminder{display:grid;grid-template-columns:1fr auto;grid-template-areas:"label count" "select select";gap:var(--space-1) var(--space-2);padding:var(--space-3);border:1px solid var(--card-hairline);border-radius:var(--radius-md);background:var(--card)}
-.dash-reminder__label{grid-area:label;font-size:var(--text-sm);font-weight:560}
-.dash-reminder__count{grid-area:count;font-size:var(--text-xs);color:var(--text-faint)}
-.dash-reminder .select__trigger{grid-area:select}
 
-.dash-create{display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-3);flex-wrap:wrap}
-.dash-create .input{flex:1;min-width:160px}
 
 /* ---- Insights ----------------------------------------------------------
    A 2x2 grid of small cards. Each shows a proportion rather than a bare
@@ -1023,6 +1029,7 @@ to{transform:translate(0)}
    many" — the exact counts live in the stat row above.
    ---------------------------------------------------------------------- */
 .dash-insights{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:var(--space-3)}
+.dash-insights--duo{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
 .dash-card{display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-4);border:1px solid var(--card-hairline);border-radius:var(--radius-md);background:var(--bg-deep)}
 .dash-card__title{margin:0;font-size:var(--text-sm);font-weight:600}
 .dash-card__empty{margin:0;font-size:var(--text-xs);line-height:1.6;color:var(--text-faint)}
@@ -1051,30 +1058,14 @@ to{transform:translate(0)}
 .dash-spark__bar{display:block;width:100%;min-height:2px;border-radius:2px;background:var(--grad-primary);transition:height var(--normal) var(--ease-out)}
 .dash-spark__bar[data-empty]{background:var(--border-strong)}
 
-.dash-bars{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}
-.dash-bars li{display:grid;grid-template-columns:minmax(0,7rem) 1fr auto;align-items:center;gap:var(--space-2);font-size:var(--text-xs)}
-.dash-bars__label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)}
-.dash-bars__track{height:6px;border-radius:var(--radius-full);background:var(--surface);overflow:hidden}
-.dash-bars__fill{display:block;height:100%;border-radius:inherit;background:var(--grad-primary)}
-.dash-bars b{font-weight:600;color:var(--text-muted);font-variant-numeric:tabular-nums}
-
-.dash-reuse{display:flex;flex-direction:column;gap:var(--space-2);margin:0;padding:0;list-style:none}
-.dash-reuse li{display:flex;align-items:baseline;gap:var(--space-2);font-size:var(--text-xs)}
-.dash-reuse__count{font-weight:700;color:var(--danger);font-variant-numeric:tabular-nums;flex-shrink:0}
-.dash-reuse__sites{min-width:0;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* 120px let the seventh tile wrap onto its own row, leaving a gap beside it. */
-.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:var(--space-2)}
-.stat{display:flex;flex-direction:column;gap:2px;padding:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--glass)}
 /* A tile that leads somewhere says so on hover, and takes focus like a control.
    Without this the numbers read as decoration and the user has to hunt the
-   sidebar for the view they already have the count for. */
-.stat--link{cursor:pointer;text-align:left;transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease),transform var(--fast) var(--ease-out),box-shadow var(--fast) var(--ease)}
-.stat--link:hover{background:var(--surface-hover);border-color:hsl(var(--accent-h) 55% 60% / .45);transform:translateY(-2px);box-shadow:0 12px 26px -16px hsl(var(--accent-h) 70% 55% / .55)}
+   sidebar for the view they already have the count for. Hover stays flat —
+   no lift, no glow. */
+.stat--link{cursor:pointer;text-align:left;transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease)}
+.stat--link:hover{background:var(--surface-hover);border-color:var(--border-strong)}
 .stat--link:focus-visible{outline:2px solid var(--border-focus);outline-offset:2px}
-.stat--link:active{transform:scale(.985)}
 .stat__icon{color:var(--text-faint)}
-.stat__value{font-size:var(--text-2xl);font-weight:660;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.05}
-.stat__label{font-size:var(--text-xs);color:var(--text-faint)}
 .dash-section{display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-5);border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card)}
 .dash-section__head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap}
 .dash-section__title{margin:0;font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:-.01em}
@@ -1356,7 +1347,7 @@ body.is-reordering,body.is-reordering *{user-select:none !important;cursor:grabb
 @keyframes dash-pop-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
 /* Inner visuals wake up with the card: bars brighten instead of sitting flat. */
 .dash-card:hover .dash-bars__fill,.dash-card:hover .dash-spark__bar:not([data-empty]){filter:brightness(1.18)}
-@media (prefers-reduced-motion:reduce){.dash-card,.dash-pop,.view-menu__panel{animation:none;transition:none}.dash-card:hover{transform:none}}
+@media (prefers-reduced-motion:reduce){.dash-card,.dash-pop,.stat,.view-menu__panel{animation:none;transition:none}.dash-card:hover{transform:none}}
 .dash-pop{position:absolute;left:var(--space-3);right:var(--space-3);top:calc(100% - 6px);z-index:40;display:none;flex-direction:column;gap:var(--space-2);max-height:320px;padding:var(--space-3);border:1px solid var(--border-strong);border-radius:var(--radius-md);background:var(--surface);box-shadow:var(--shadow-lg)}
 .dash-card:hover .dash-pop,.dash-card:focus-within .dash-pop{display:flex}
 .dash-pop--wide{max-height:380px}
@@ -1365,15 +1356,12 @@ body.is-reordering,body.is-reordering *{user-select:none !important;cursor:grabb
 .dash-pop__group{display:flex;flex-direction:column;gap:2px;padding-bottom:var(--space-1);border-bottom:1px solid var(--card-hairline)}
 .dash-pop__group:last-child{border-bottom:none}
 .dash-pop__group-title{font-size:var(--text-xs);font-weight:660;color:var(--text)}
-.dash-pop__group-title--danger{color:var(--danger)}
 .dash-pop__row{display:flex;align-items:center;gap:var(--space-2);width:100%;padding:5px 8px;border-radius:var(--radius-sm);text-align:left;flex-shrink:0}
 .dash-pop__row:hover{background:var(--surface-hover)}
-.dash-pop__rank{display:grid;place-items:center;flex-shrink:0;width:20px;height:20px;border-radius:50%;background:var(--surface-active);font-size:10px;font-weight:700;color:var(--text-muted)}
+
 .dash-pop__name{flex:1;min-width:0;font-size:var(--text-sm);font-weight:540;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dash-pop__meta{flex-shrink:0;max-width:55%;font-size:var(--text-xs);color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dash-pop__muted{font-size:var(--text-xs);color:var(--text-faint)}
-.dash-pop__more{align-self:flex-start;padding:4px 8px;border-radius:var(--radius-sm);font-size:var(--text-xs);font-weight:600;color:var(--accent-text)}
-.dash-pop__more:hover{background:var(--surface-hover)}
 .dash-reminder__logins{display:flex;flex-direction:column;gap:2px;grid-column:1 / -1;max-height:190px;overflow-y:auto;overscroll-behavior:contain;padding-top:var(--space-1)}
 .dash-reminder{grid-template-areas:"label count" "select select" "logins logins"}
 .dash-reminder__logins{grid-area:logins}

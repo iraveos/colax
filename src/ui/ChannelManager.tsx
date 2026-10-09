@@ -7,7 +7,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { applyChannel, CHANNEL_KIND_LABELS, type Channel, type Tag } from '../vault/channels.ts';
+import { applyChannel, CHANNEL_KIND_LABELS, createTag, type Channel, type Tag } from '../vault/channels.ts';
 import type { VaultItem } from '../vault/types.ts';
 import { EditIcon, EyeIcon, EyeOffIcon, PlusIcon, TagIcon, TrashIcon } from './icons.tsx';
 
@@ -60,6 +60,19 @@ export function ChannelManager({
   }
   const [editingTag, setEditingTag] = useState<string | null>(null);
   const [hueFor, setHueFor] = useState<string | null>(null);
+  const [newTagName, setNewTagName] = useState('');
+
+  function addTag() {
+    const trimmed = newTagName.trim();
+    if (!trimmed) return;
+    if (tags.some((tag) => tag.name.toLowerCase() === trimmed.toLowerCase())) {
+      onNotify(`"${trimmed}" already exists`);
+      return;
+    }
+    onTagsChange([...tags, createTag(trimmed, tags)]);
+    setNewTagName('');
+    onNotify(`Tag "${trimmed}" created`);
+  }
 
   const tagName = (tagId: string) => tags.find((tag) => tag.id === tagId)?.name ?? 'Missing tag';
   const usesTag = (tagId: string) => channels.filter((channel) => channel.tagIds.includes(tagId));
@@ -174,11 +187,30 @@ export function ChannelManager({
         Tags
       </div>
 
+      <div className="field-row" style={{ marginBottom: 'var(--space-2)' }}>
+        <input
+          className="input"
+          value={newTagName}
+          placeholder="New tag name"
+          aria-label="New tag name"
+          onChange={(event) => setNewTagName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              addTag();
+            }
+          }}
+        />
+        <button type="button" className="btn btn--secondary btn--sm" onClick={addTag} disabled={!newTagName.trim()}>
+          Add
+        </button>
+      </div>
+
       {tags.length === 0 ? (
         <div className="alert alert--info">
           <TagIcon width="16" height="16" />
           <span>
-            No tags yet. Add one from a login&apos;s editor — then attach it to a channel and only logins
+            No tags yet. Create one above, or from a login&apos;s editor — then attach it to a channel and only logins
             carrying it will show there.
           </span>
         </div>

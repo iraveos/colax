@@ -2413,28 +2413,10 @@ onCreate={vault.create}
                   items={vault.items}
                   prefs={prefs}
                   usage={prefs.usage}
-                  onEditChannel={(channelId) => setEditingChannel(channelId)}
-                  onNewChannel={() => setEditingChannel('new')}
                   onSelectChannel={(id) => setActiveId(id)}
                   onOpenLogin={(item) => requestEdit(item)}
-                  onTagsChange={(tags) => {
-                    // A new tag can become a channel automatically.
-                    if (prefs.autoTagChannel && tags.length > prefs.tags.length) {
-                      const fresh = tags.filter((tag) => !prefs.tags.some((old) => old.id === tag.id));
-                      if (fresh.length > 0) {
-                        const added = fresh.map((tag) =>
-                          createChannel(tag.name, { kind: 'tags', tagIds: [tag.id], hue: tag.hue }),
-                        );
-                        void vault.updatePrefs({ tags, channels: [...channels, ...added] });
-                        notify(`Channel created for ${fresh.length === 1 ? fresh[0]!.name : `${fresh.length} tags`}`);
-                        return;
-                      }
-                    }
-                    void vault.updatePrefs({ tags });
-                  }}
-                  onScrubTag={(tagId) => void scrubTag(tagId)}
-                  onUpdate={(patch) => void vault.updatePrefs(patch)}
-                  onNotify={notify}
+                  onOpenSettings={(tab) => openSettings(tab)}
+                  onAddLogin={() => setEditing('new')}
                 />
               </div>
             ) : showEmpty ? (
