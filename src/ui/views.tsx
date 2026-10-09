@@ -154,6 +154,12 @@ function selectionClick(
 function useLoginReorder(
   flatIds: string[],
   onReorder?: (activeId: string, toIndex: number, flatIds: string[]) => void,
+  /**
+   * Grid only: cells sit side by side, so the slot reads both axes (below the
+   * middle band inserts after; inside the band, left/right decides) instead of
+   * the single vertical half a list row uses.
+   */
+  twoDimensional = false,
 ) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [armedId, setArmedId] = useState<string | null>(null);
@@ -272,6 +278,13 @@ function useLoginReorder(
     });
   };
 
+  const slotOf = (id: string, x: number, y: number, rect: DOMRect): { id: string; after: boolean } => {
+    if (!twoDimensional) return { id, after: y - rect.top > rect.height / 2 };
+    const dx = x - (rect.left + rect.width / 2);
+    const dy = y - (rect.top + rect.height / 2);
+    return { id, after: dy > rect.height / 4 || (Math.abs(dy) <= rect.height / 4 && dx > 0) };
+  };
+
   const rowProps = (item: VaultItem) => ({
     'data-armed': enabled && armedId === item.id && dragId !== item.id ? '' : undefined,
     'data-dragging': dragId === item.id ? '' : undefined,
@@ -306,10 +319,13 @@ function useLoginReorder(
       // Already dragging: track the pointer, wherever it roams.
       if (dragging.current) {
         const row = (event.currentTarget as HTMLElement).closest('[data-vault-item]') as HTMLElement | null;
-        if (ghost.current && row) {
-          ghost.current.style.width = `${row.offsetWidth}px`;
-          ghost.current.style.transform = `translate(${event.clientX - 24}px, ${event.clientY - 20}px)`;
-        }
+      if (ghost.current && row) {
+        // Bounding rect, not offsetWidth: the views zoom their cards, and
+        // offsetWidth reports unzoomed layout pixels while the pointer speaks
+        // viewport pixels — mixing them sizes the ghost wrong at any scale.
+        ghost.current.style.width = `${row.getBoundingClientRect().width}px`;
+        ghost.current.style.transform = `translate(${event.clientX - 24}px, ${event.clientY - 20}px)`;
+      }
         // Edge auto-scroll so long lists stay reachable mid-drag.
         const box = scroller.current;
         if (box && box.scrollHeight > box.clientHeight + 4) {
@@ -359,18 +375,18 @@ function useLoginReorder(
           ';position:fixed;left:0;top:0;z-index:200;pointer-events:none;opacity:.88;margin:0;';
         document.body.appendChild(clone);
         ghost.current = clone;
-        ghost.current.style.width = `${row.offsetWidth}px`;
+        ghost.current.style.width = `${row.getBoundingClientRect().width}px`;
         ghost.current.style.transform = `translate(${event.clientX - 24}px, ${event.clientY - 20}px)`;
       }
       const hit = document.elementFromPoint(event.clientX, event.clientY);
       const target = hit?.closest?.('[data-vault-item]');
       const id = target?.getAttribute?.('data-vault-item') ?? null;
-      if (!id || id === press.id) {
+      if (!id || id === dragging.current) {
         markOver(null, false);
         return;
       }
-      const rect = (target as HTMLElement).getBoundingClientRect();
-      markOver(id, event.clientY - rect.top > rect.height / 2);
+      const slot = slotOf(id, event.clientX, event.clientY, (target as HTMLElement).getBoundingClientRect());
+      markOver(slot.id, slot.after);
     },
     onPointerUp: () => {
       if (armTimer.current) {
@@ -1307,6 +1323,8 @@ export function GridView({
   const reorder = useLoginReorder(
     items.map((entry) => entry.id),
     onReorderLogins,
+    // Cells sit side by side: drop slots read both axes.
+    true,
   );
 
   if (items.length === 0) return null;
@@ -1391,11 +1409,13 @@ export function GridView({
                     <StarIcon width="13" height="13" filled style={{ color: 'var(--warn)' }} />
                   ) : null}
                 </div>
-                <div className="grid-cell__meta">
-                  <span className="card-row__username">
-                    {item.username || hostnameOf(item.url) || 'No username'}
-                  </span>
-                </div>
+                {/* The site only: the username already lives in the credential
+                    block below, and showing it twice is what the meta line did. */}
+                {hostnameOf(item.url) ? (
+                  <div className="grid-cell__meta">
+                    <span className="card-row__username">{hostnameOf(item.url)}</span>
+                  </div>
+                ) : null}
                 {/* A cell is a summary, not a document, but clicking the body
                     should still do the thing a click does everywhere else. */}
                 <button

@@ -1158,7 +1158,9 @@ to{transform:translate(0)}
    to the active state, and a touch more weight than a filter row. */
 .sidebar__row[data-dashboard] .nav-item{font-weight:600}
 .sidebar__row[data-dashboard] .nav-item__dot{display:none}
-.nav-item__icon{display:grid;place-items:center;flex-shrink:0;opacity:.85;transition:opacity var(--fast) var(--ease),color var(--fast) var(--ease),transform var(--fast) var(--ease-out)}
+.nav-item__icon{display:grid;place-items:center;flex-shrink:0;width:26px;height:26px;border-radius:8px;background:hsl(var(--channel-h,212) 48% 55% / .14);color:hsl(var(--channel-h,212) 55% 70%);opacity:.9;transition:opacity var(--fast) var(--ease),color var(--fast) var(--ease),transform var(--fast) var(--ease-out),background var(--fast) var(--ease)}
+.nav-item:hover .nav-item__icon{background:hsl(var(--channel-h,212) 48% 55% / .22)}
+.nav-item[aria-current=true] .nav-item__icon{background:hsl(var(--accent-h) 55% 58% / .18)}
 .nav-item:hover .nav-item__icon{opacity:1;transform:scale(1.06)}
 .nav-item[aria-current=true] .nav-item__icon{opacity:1;color:var(--accent-text)}
 .nav-item__label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
