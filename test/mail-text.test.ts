@@ -77,3 +77,17 @@ test('html strips to readable text without scripts', () => {
   const out = stripHtml('<style>.x{}</style><p>Hello <b>World</b></p><!-- c --><p>Line&nbsp;2 &amp; co</p>');
   assert.equal(out, 'Hello World\nLine 2 & co');
 });
+
+test('images vanish whole, alt text included', () => {
+  const out = stripHtml('<p>Hi</p><img src="cid:logo" alt="Company logo"><p>Bye</p>');
+  assert.equal(out, 'Hi\nBye');
+  assert.ok(!out.includes('logo'), 'no stray alt words left behind');
+});
+
+test('links unwrap to text, bare long URLs drop out', () => {
+  const long = `https://tracker.example.com/click?${'x'.repeat(80)}`;
+  assert.equal(stripHtml(`<p>Read <a href="${long}">the report</a> today</p>`), 'Read the report today');
+  assert.equal(stripHtml(`<p>Visit <a href="${long}">${long}</a> now</p>`), 'Visit now');
+  assert.equal(stripHtml('<p>See <a href="https://x.co/a">https://x.co/a</a></p>'), 'See https://x.co/a');
+  assert.equal(stripHtml('<p>Go <a href="https://x.co"></a> home</p>'), 'Go home');
+});

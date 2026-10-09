@@ -60,23 +60,32 @@ export function Generator({
   const [mode, setMode] = useState<'random' | 'passphrase'>('random');
   const [value, setValue] = useState('');
   const [revealed, setRevealed] = useState(false);
+  // Word count lives beside the character length, not inside it: the two
+  // modes measure different things, and sharing one field meant the words
+  // slider wrote a word count into the character-length preference (and a
+  // later visit to random mode inherited nonsense).
+  const [words, setWords] = useState(() => Math.max(3, Math.min(10, Math.round(options.length / 7))));
 
-  const roll = (nextMode = mode) => {
+  useEffect(() => {
     try {
-      setValue(
-        nextMode === 'random' ? generatePassword(options) : generatePassphrase(Math.ceil(options.length / 7)),
-      );
+      setValue(mode === 'random' ? generatePassword(options) : generatePassphrase(words));
+    } catch {
+      setValue('');
+    }
+  }, [options, mode, words]);
+
+  const roll = () => {
+    try {
+      setValue(mode === 'random' ? generatePassword(options) : generatePassphrase(words));
     } catch {
       setValue('');
     }
   };
 
-  useEffect(roll, [options, mode]);
-
   const sets: [keyof GeneratorOptions, string][] = [
-    ['lower', 'aâ€“z'],
-    ['upper', 'Aâ€“Z'],
-    ['digits', '0â€“9'],
+    ['lower', 'a-z'],
+    ['upper', 'A-Z'],
+    ['digits', '0-9'],
     ['symbols', '!@#'],
   ];
 
@@ -104,7 +113,7 @@ export function Generator({
       </div>
 
       <div className="gen__preview">
-        <span className="gen__value">{revealed ? value : 'â€¢'.repeat(value.length)}</span>
+        <span className="gen__value">{revealed ? value : '•'.repeat(value.length)}</span>
         <button type="button" className="btn btn--icon" onClick={() => setRevealed((r) => !r)} aria-label="Toggle visibility">
           {revealed ? <EyeOffIcon /> : <EyeIcon />}
         </button>
@@ -128,20 +137,15 @@ export function Generator({
             type="range"
             min={mode === 'random' ? 8 : 3}
             max={mode === 'random' ? 64 : 10}
-            value={options.length}
-            onChange={(event) =>
-              onOptionsChange({
-                ...options,
-                length:
-                  mode === 'random'
-                    ? Number(event.target.value)
-                    : Math.max(3, Math.round(Number(event.target.value) / 7)),
-              })
-            }
-            aria-label="Length"
+            value={mode === 'random' ? options.length : words}
+            onChange={(event) => {
+              if (mode === 'random') onOptionsChange({ ...options, length: Number(event.target.value) });
+              else setWords(Number(event.target.value));
+            }}
+            aria-label={mode === 'random' ? 'Length' : 'Words'}
           />
           <span className="slider-row__value">
-            {mode === 'random' ? options.length : `${Math.max(3, Math.round(options.length / 7))} words`}
+            {mode === 'random' ? options.length : `${words} words`}
           </span>
         </div>
       </div>
@@ -159,7 +163,7 @@ export function Generator({
             </div>
           ))}
           <div className="toggle-row">
-            <span className="toggle-row__text">Avoid look-alikes (l, 1, O, 0)</span>
+            <span className="toggle-row__text">Avoid look-alikes (l, 1, I, O, 0, o)</span>
             <Toggle
               label="Avoid look-alikes"
               checked={options.avoidAmbiguous}
@@ -169,7 +173,7 @@ export function Generator({
         </div>
       ) : (
         <div className="field__note" style={{ marginBottom: 'var(--space-4)' }}>
-          A passphrase of {Math.max(3, Math.round(options.length / 7))} words from this list gives far more
+          A passphrase of {words} words from this list gives far more
           entropy than a short random string, and is easier to type.
         </div>
       )}

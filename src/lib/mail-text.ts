@@ -173,6 +173,19 @@ export function stripHtml(html: string): string {
       // Scripts, styles and comments never reach the reader.
       .replace(/<(script|style)[\s\S]*?<\/\1\s*>/gi, '')
       .replace(/<!--[\s\S]*?-->/g, '')
+      // Images carry no readable text: the tag goes whole, alt text included.
+      // Otherwise every logo and tracking pixel leaves stray words ("logo",
+      // "spacer") scattered through the message.
+      .replace(/<img\b[^>]*>/gi, '')
+      // Links unwrap to their text — unless the text IS a bare long URL, in
+      // which case the link was a tracking or redirect hop and the URL alone
+      // reads as garbage. Short links stay; labelled links keep their label.
+      .replace(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/gi, (_match, inner: string) => {
+        const text = String(inner).replace(/<[^>]+>/g, '').trim();
+        if (!text) return '';
+        if (/^https?:\/\/\S+$/i.test(text) && text.length > 60) return '';
+        return text;
+      })
       // Block boundaries become line breaks before the tags go.
       .replace(/<\/(p|div|tr|table|ul|ol|li|h[1-6]|blockquote|br|hr)[^>]*>/gi, '\n')
       .replace(/<br[^>]*>/gi, '\n')
