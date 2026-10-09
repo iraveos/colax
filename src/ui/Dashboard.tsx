@@ -90,6 +90,65 @@ export function Dashboard({
     };
   }, [items, prefs.passwordAgeDays, prefs.emailCheckDays]);
 
+  /**
+   * Actual reuse clusters, not just a count.
+   *
+   * Knowing a password is shared is less useful than knowing which logins
+   * share it, because that is the set you have to fix together.
+   */
+  const reuseClusters = useMemo(() => {
+    const byPassword = new Map<string, VaultItem[]>();
+    for (const item of items) {
+      if (!item.password) continue;
+      const group = byPassword.get(item.password);
+      if (group) group.push(item);
+      else byPassword.set(item.password, [item]);
+    }
+    return [...byPassword.values()]
+      .filter((group) => group.length > 1)
+      .map((group) => group.slice().sort((a, b) => a.title.localeCompare(b.title)))
+      .sort((a, b) => b.length - a.length);
+  }, [items]);
+
+  /** The sites carrying the most logins, for spotting where risk is pooled. */
+  const allDomains = useMemo(() => {
+    const byHost = new Map<string, { count: number; logins: VaultItem[] }>();
+    for (const item of items) {
+      const host = hostnameOf(item.url);
+      if (!host) continue;
+      // Collapse subdomains so login.example.com and example.com are one row.
+      const parts = host.split('.');
+      const registrable = parts.length > 2 ? parts.slice(-2).join('.') : host;
+      const entry = byHost.get(registrable);
+      if (entry) {
+        entry.count += 1;
+        entry.logins.push(item);
+      } else {
+        byHost.set(registrable, { count: 1, logins: [item] });
+      }
+    }
+    return [...byHost.entries()]
+      .map(([host, value]) => ({ host, count: value.count, logins: value.logins }))
+      .sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
+  }, [items]);
+  const topDomains = useMemo(() => allDomains.slice(0, 8), [allDomains]);
+
+  /**
+   * Most-used logins by copy/edit count, top 5 shown and scrollable to 20.
+   * Count first, recency second, so a login used fifty times last year still
+   * outranks one used twice today. Deleted logins are skipped, never rendered
+   * as dead rows.
+   */
+  const mostUsed = useMemo(() => {
+    const source = usage ?? {};
+    const byId = new Map(items.map((item) => [item.id, item]));
+    return Object.entries(source)
+      .sort((a, b) => b[1].count - a[1].count || b[1].at - a[1].at)
+      .map(([id]) => ({ item: byId.get(id), stat: source[id]! }))
+      .filter((entry): entry is { item: VaultItem; stat: { count: number; at: number } } => Boolean(entry.item))
+      .slice(0, 20);
+  }, [items, usage]);
+
   const idOf = (kind: Channel['kind']) =>
     channels.find((channel) => channel.kind === kind)?.id ?? 'all';
 
@@ -319,63 +378,67 @@ export function Dashboard({
         </section>
       ) : null}
 
-      {/* Prioritized attention list. Only applicable issues render, worst
-          first; each row opens the view holding those logins. */}
-      {issues.length > 0 ? (
-        <section className="dash-section">
-          <header className="dash-section__head">
-            <div>
-              <h2 className="dash-section__title">Needs your attention</h2>
-              <p className="dash-section__hint">Worst first. Each row opens the matching view.</p>
-            </div>
-          </header>
-          <div className="dash-issues">
-            {issues.map((issue) => (
-              <button className="dash-issue" key={issue.key} data-severity={issue.severity} onClick={() => onSelectChannel(issue.channel)}>
-                <span className="dash-issue__bar" aria-hidden="true" />
-                <span className="dash-issue__body">
-                  <span className="dash-issue__label">{issue.label}</span>
-                  <span className="dash-issue__detail">{issue.detail}</span>
-                </span>
-                <span className="dash-issue__count">{issue.count}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {/* Recent activity: real usage first, nothing invented. */}
-      {!empty ? (
-        <section className="dash-section">
-          <header className="dash-section__head">
-            <div>
-              <h2 className="dash-section__title">Recent Logins</h2>
-              <p className="dash-section__hint">What you have actually touched lately.</p>
-            </div>
-          </header>
-          {recentLogins.length === 0 ? (
-            <p className="dash-card__empty">No activity yet — copy or edit a login and it appears here.</p>
-          ) : (
-            <div className="dash-list">
-              {recentLogins.map(({ item, at, uses }) => (
-                <div className="dash-row" key={item.id}>
-                  <button
-                    className="dash-row__name"
-                    onClick={() => onOpenLogin(item)}
-                    title={`Edit ${labelOf(item)}`}
-                  >
-                    {labelOf(item)}
-                  </button>
-                  <span className="dash-row__meta">
-                    {item.username || hostnameOf(item.url) || ''}
-                    {uses > 0 ? ` · ${uses} use${uses === 1 ? '' : 's'}` : ''}
-                  </span>
-                  <span className="dash-row__count">{relativeTime(at)}</span>
+      {/* Attention beside recent: the two lists you act on, side by side on a
+          PC screen, stacked on narrow ones. */}
+      {!empty && (issues.length > 0 || recentLogins.length > 0) ? (
+        <div className="dash-grid">
+          <div className="dash-grid__main">
+            {issues.length > 0 ? (
+              <section className="dash-section">
+                <header className="dash-section__head">
+                  <div>
+                    <h2 className="dash-section__title">Needs your attention</h2>
+                    <p className="dash-section__hint">Worst first. Each row opens the matching view.</p>
+                  </div>
+                </header>
+                <div className="dash-issues">
+                  {issues.map((issue) => (
+                    <button className="dash-issue" key={issue.key} data-severity={issue.severity} onClick={() => onSelectChannel(issue.channel)}>
+                      <span className="dash-issue__bar" aria-hidden="true" />
+                      <span className="dash-issue__body">
+                        <span className="dash-issue__label">{issue.label}</span>
+                        <span className="dash-issue__detail">{issue.detail}</span>
+                      </span>
+                      <span className="dash-issue__count">{issue.count}</span>
+                    </button>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
+              </section>
+            ) : null}
+          </div>
+          <div className="dash-grid__side">
+            <section className="dash-section">
+              <header className="dash-section__head">
+                <div>
+                  <h2 className="dash-section__title">Recent Logins</h2>
+                  <p className="dash-section__hint">What you have actually touched lately.</p>
+                </div>
+              </header>
+              {recentLogins.length === 0 ? (
+                <p className="dash-card__empty">No activity yet — copy or edit a login and it appears here.</p>
+              ) : (
+                <div className="dash-list">
+                  {recentLogins.map(({ item, at, uses }) => (
+                    <div className="dash-row" key={item.id}>
+                      <button
+                        className="dash-row__name"
+                        onClick={() => onOpenLogin(item)}
+                        title={`Edit ${labelOf(item)}`}
+                      >
+                        {labelOf(item)}
+                      </button>
+                      <span className="dash-row__meta">
+                        {item.username || hostnameOf(item.url) || ''}
+                        {uses > 0 ? ` · ${uses} use${uses === 1 ? '' : 's'}` : ''}
+                      </span>
+                      <span className="dash-row__count">{relativeTime(at)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        </div>
       ) : null}
 
       {/* Condensed insights: strength distribution and the 30-day timeline.
@@ -389,7 +452,7 @@ export function Dashboard({
               <p className="dash-section__hint">How guessable passwords are, and what changed lately.</p>
             </div>
           </header>
-          <div className="dash-insights dash-insights--duo">
+          <div className="dash-insights">
             <article className="dash-card" tabIndex={0}>
               <h3 className="dash-card__title">Password strength</h3>
               <div className="dash-strength" role="img" aria-label={`Password strength across ${strengthBands.withPassword} logins`}>
@@ -458,34 +521,201 @@ export function Dashboard({
                 </>
               )}
             </article>
+
+            <article className="dash-card" tabIndex={0}>
+              <h3 className="dash-card__title">Most logins per site</h3>
+              {topDomains.length === 0 ? (
+                <p className="dash-card__empty">No websites saved yet.</p>
+              ) : (
+                <ul className="dash-bars">
+                  {topDomains.map((entry) => (
+                    <li key={entry.host}>
+                      <span className="dash-bars__label">{entry.host}</span>
+                      <span className="dash-bars__track">
+                        <span className="dash-bars__fill" style={{ width: `${(entry.count / topDomains[0]!.count) * 100}%` }} />
+                      </span>
+                      <b>{entry.count}</b>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="dash-pop" role="dialog" aria-label="Sites with the most logins">
+                <p className="dash-pop__about">
+                  What this is: where your logins cluster. The site with the most logins is where one
+                  breach hurts most — hover to see every site, click a login to open it.
+                </p>
+                <div className="dash-pop__scroll">
+                  {allDomains.length === 0 ? (
+                    <span className="dash-pop__muted">No websites saved yet.</span>
+                  ) : (
+                    allDomains.map((entry) => (
+                      <div className="dash-pop__group" key={entry.host}>
+                        <span className="dash-pop__group-title">
+                          {entry.host} · {entry.count}
+                        </span>
+                        {entry.logins.map((item) => (
+                          <button key={item.id} type="button" className="dash-pop__row" onClick={() => onOpenLogin(item)} title={`Edit ${labelOf(item)}`}>
+                            <span className="dash-pop__name">{labelOf(item)}</span>
+                            <span className="dash-pop__meta">{item.username}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </article>
+
+            {/* Reuse clusters. The actionable one: each row is one password and
+                every login that shares it. */}
+            <article className="dash-card" tabIndex={0}>
+              <h3 className="dash-card__title">Reused passwords</h3>
+              {reuseClusters.length === 0 ? (
+                <p className="dash-card__empty">
+                  {strengthBands.withPassword === 0 ? 'No passwords stored yet.' : 'Nothing is reused. Good.'}
+                </p>
+              ) : (
+                <ul className="dash-reuse">
+                  {reuseClusters.slice(0, 5).map((group, index) => (
+                    <li key={index}>
+                      <span className="dash-reuse__count">{group.length}&times;</span>
+                      <span className="dash-reuse__sites">
+                        {group.map((item) => item.title || item.username || hostnameOf(item.url) || 'Untitled').join(', ')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="dash-pop" role="dialog" aria-label="Reused passwords breakdown">
+                <p className="dash-pop__about">
+                  What this is: every password used more than once, and the logins sharing it. Fix one
+                  group at a time — each row below opens its login. These logins also sit in the
+                  “Weak or reused” channel.
+                </p>
+                <div className="dash-pop__scroll">
+                  {reuseClusters.length === 0 ? (
+                    <span className="dash-pop__muted">Nothing is reused. Good.</span>
+                  ) : (
+                    reuseClusters.map((group, index) => (
+                      <div className="dash-pop__group" key={index}>
+                        <span className="dash-pop__group-title dash-pop__group-title--danger">
+                          Shared by {group.length}
+                        </span>
+                        {group.map((item) => (
+                          <button key={item.id} type="button" className="dash-pop__row" onClick={() => onOpenLogin(item)} title={`Edit ${labelOf(item)}`}>
+                            <span className="dash-pop__name">{labelOf(item)}</span>
+                            <span className="dash-pop__meta">{item.username || hostnameOf(item.url) || ''}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </article>
+
+            {/* Most used: top 5 by copy/edit count, hover for a big scrollable menu to 20. */}
+            <article className="dash-card" tabIndex={0}>
+              <h3 className="dash-card__title">Most used</h3>
+              {mostUsed.length === 0 ? (
+                <p className="dash-card__empty">Copy or edit a login and it climbs here.</p>
+              ) : (
+                <ul className="dash-reuse">
+                  {mostUsed.slice(0, 5).map(({ item, stat }) => (
+                    <li key={item.id}>
+                      <button type="button" className="dash-pop__row" onClick={() => onOpenLogin(item)} title={`Edit ${labelOf(item)} — used ${stat.count} time${stat.count === 1 ? '' : 's'}`}>
+                        <span className="dash-reuse__count">{stat.count}&times;</span>
+                        <span className="dash-reuse__sites">{labelOf(item)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {mostUsed.length > 0 ? (
+                <p className="dash-card__foot">
+                  Top {Math.min(5, mostUsed.length)} of {mostUsed.length} · hover for all {mostUsed.length}
+                </p>
+              ) : null}
+              <div className="dash-pop dash-pop--wide" role="dialog" aria-label="Most used logins">
+                <p className="dash-pop__about">
+                  What this is: the logins you copy or edit most. Count first, recency second — hovering
+                  shows the top 5 above, this menu scrolls to 20. Click one to open it.
+                </p>
+                <div className="dash-pop__scroll">
+                  {mostUsed.length === 0 ? (
+                    <span className="dash-pop__muted">Nothing used yet. Copy a password and it appears here.</span>
+                  ) : (
+                    mostUsed.map(({ item, stat }, index) => (
+                      <button key={item.id} type="button" className="dash-pop__row" onClick={() => onOpenLogin(item)} title={`Edit ${labelOf(item)}`}>
+                        <span className="dash-pop__rank">{index + 1}</span>
+                        <span className="dash-pop__name">{labelOf(item)}</span>
+                        <span className="dash-pop__meta">
+                          {stat.count} use{stat.count === 1 ? '' : 's'}
+                          {item.username ? ` · ${item.username}` : ''}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </article>
           </div>
         </section>
       ) : null}
 
-      {/* Email review stays a slim list: it is the only direct route to these
-          logins, and the attention row above points here in spirit. */}
-      {health.emailCheck.length > 0 ? (
-        <section className="dash-section">
-          <header className="dash-section__head">
-            <div>
-              <h2 className="dash-section__title">Email review</h2>
-              <p className="dash-section__hint">Addresses untouched past the check window. Open one to update it.</p>
-            </div>
-          </header>
-          <div className="dash-list">
-            {health.emailCheck.slice(0, 8).map((item) => (
-              <div className="dash-row" key={item.id}>
-                <button className="dash-row__name" onClick={() => onOpenLogin(item)} title={`Edit ${item.title || item.username || 'login'}`}>
-                  {item.title || item.username || hostnameOf(item.url) || 'Untitled'}
-                </button>
-                <span className="dash-row__meta">{item.username}</span>
+      {/* Review lists side by side on wide screens: the only direct routes to
+          these logins. Email review keeps its slim list; second factors get
+          theirs back — every login carrying its own factor, open one to
+          change it. */}
+      {health.emailCheck.length > 0 || health.withTotp.length > 0 ? (
+        <div className="dash-grid">
+          {health.emailCheck.length > 0 ? (
+            <section className="dash-section dash-grid__main">
+              <header className="dash-section__head">
+                <div>
+                  <h2 className="dash-section__title">Email review</h2>
+                  <p className="dash-section__hint">Addresses untouched past the check window. Open one to update it.</p>
+                </div>
+              </header>
+              <div className="dash-list">
+                {health.emailCheck.slice(0, 8).map((item) => (
+                  <div className="dash-row" key={item.id}>
+                    <button className="dash-row__name" onClick={() => onOpenLogin(item)} title={`Edit ${item.title || item.username || 'login'}`}>
+                      {item.title || item.username || hostnameOf(item.url) || 'Untitled'}
+                    </button>
+                    <span className="dash-row__meta">{item.username}</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          {health.emailCheck.length > 8 ? (
-            <p className="dash-card__empty">+{health.emailCheck.length - 8} more in the vault.</p>
+              {health.emailCheck.length > 8 ? (
+                <p className="dash-card__empty">+{health.emailCheck.length - 8} more in the vault.</p>
+              ) : null}
+            </section>
           ) : null}
-        </section>
+          {health.withTotp.length > 0 ? (
+            <section className="dash-section dash-grid__side">
+              <header className="dash-section__head">
+                <div>
+                  <h2 className="dash-section__title">Second factors</h2>
+                  <p className="dash-section__hint">Every login carrying its own factor. Open one to change it.</p>
+                </div>
+              </header>
+              <div className="dash-list">
+                {health.withTotp.slice(0, 8).map((item) => (
+                  <div className="dash-row" key={item.id}>
+                    <button className="dash-row__name" onClick={() => onOpenLogin(item)} title={`Edit ${item.title || item.username || 'login'}`}>
+                      {item.title || item.username || hostnameOf(item.url) || 'Untitled'}
+                    </button>
+                    <span className="dash-row__meta">{item.username}</span>
+                  </div>
+                ))}
+              </div>
+              {health.withTotp.length > 8 ? (
+                <p className="dash-card__empty">+{health.withTotp.length - 8} more in the vault.</p>
+              ) : null}
+            </section>
+          ) : null}
+        </div>
       ) : null}
 
       {/* Summaries with shortcuts. Tag/channel editing and reminder windows

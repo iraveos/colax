@@ -192,6 +192,119 @@ export function Generator({
   );
 }
 
+/**
+ * Rotation reminder picker: presets from minutes to months, plus any manual
+ * count in minutes, hours or days. Stored as fractional days — 15 minutes is
+ * 15/1440 — so every stale check in the app follows it with no conversion.
+ */
+type ReminderUnit = 'minute' | 'hour' | 'day';
+
+const UNIT_MINUTES: Record<ReminderUnit, number> = { minute: 1, hour: 60, day: 1440 };
+
+function inferReminderUnit(days: number): ReminderUnit {
+  if (days <= 0) return 'day';
+  const minutes = days * 1440;
+  if (minutes < 60) return 'minute';
+  if (minutes < 2880) return 'hour';
+  return 'day';
+}
+
+const REMINDER_PRESETS: { label: string; days: number; unit: ReminderUnit; hint: string }[] = [
+  { label: 'Follow global', days: 0, unit: 'day', hint: 'Uses the global stale-password setting' },
+  { label: '15 min', days: 15 / 1440, unit: 'minute', hint: 'Flagged a quarter hour after each change' },
+  { label: '1 hour', days: 1 / 24, unit: 'hour', hint: 'Flagged an hour after each change' },
+  { label: '12 hours', days: 0.5, unit: 'hour', hint: 'Flagged half a day after each change' },
+  { label: '1 day', days: 1, unit: 'day', hint: 'Flagged a day after each change' },
+  { label: '7 days', days: 7, unit: 'day', hint: 'Flagged a week after each change' },
+  { label: '30 days', days: 30, unit: 'day', hint: 'Flagged a month after each change' },
+  { label: '90 days', days: 90, unit: 'day', hint: 'Flagged three months after each change' },
+];
+
+function ReminderPanel({
+  value,
+  passwordUpdatedAt,
+  staleDays,
+  onChange,
+}: {
+  value: number;
+  passwordUpdatedAt: number;
+  staleDays: number;
+  onChange: (days: number) => void;
+}) {
+  const [unit, setUnit] = useState<ReminderUnit>(() => inferReminderUnit(value));
+  const shown = Math.round((value / (UNIT_MINUTES[unit] / 1440)) * 100) / 100;
+  return (
+    <>
+      <div className="field">
+        <span className="field__label">Rotation reminder</span>
+        <div className="segmented segmented--wrap" role="radiogroup" aria-label="Rotation reminder">
+          {REMINDER_PRESETS.map((preset) => {
+            // Rounded on save, so exact equality cannot spot a preset back.
+            const active = Math.abs(value - preset.days) < 1e-6;
+            return (
+              <button
+                key={preset.label}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                className="segmented__option"
+                aria-pressed={active}
+                title={preset.hint}
+                onClick={() => {
+                  setUnit(preset.unit);
+                  onChange(preset.days);
+                }}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
+        <p className="field__note">
+          Overrides the global stale-password setting for this login only. The stale badge, the
+          Weak channel and the dashboard all follow it.
+        </p>
+      </div>
+      <div className="field">
+        <span className="field__label">Or set manually</span>
+        <div className="field-row">
+          <div className="segmented" role="radiogroup" aria-label="Reminder unit">
+            {(Object.keys(UNIT_MINUTES) as ReminderUnit[]).map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={unit === option}
+                className="segmented__option"
+                aria-pressed={unit === option}
+                onClick={() => setUnit(option)}
+              >
+                {option === 'minute' ? 'Min' : option === 'hour' ? 'Hours' : 'Days'}
+              </button>
+            ))}
+          </div>
+          <input
+            className="input input--mono"
+            type="number"
+            min={0}
+            value={shown}
+            aria-label={`Reminder every (in ${unit}s)`}
+            onChange={(event) => {
+              const num = Math.max(0, Number(event.target.value) || 0);
+              onChange((num * UNIT_MINUTES[unit]) / 1440);
+            }}
+          />
+        </div>
+        <p className="field__note">
+          {value <= 0
+            ? `Following the global setting (${staleDays} days).`
+            : `Flags this password around ${new Date(passwordUpdatedAt + value * 86_400_000).toLocaleString()}.`}
+        </p>
+      </div>
+    </>
+  );
+}
+
 const SECTIONS = [
   { id: 'identity', label: 'Identity', hint: 'What this login is called and where it lives.', Icon: KeyIcon },
   { id: 'credentials', label: 'Credentials', hint: 'The secrets. Nothing here leaves this device.', Icon: LockIcon },
@@ -437,63 +550,12 @@ export function ItemEditor({
     ),
 
     reminders: (
-      <>
-        <div className="field">
-          <span className="field__label">Rotation reminder</span>
-          <div className="segmented segmented--wrap" role="radiogroup" aria-label="Rotation reminder">
-            {(
-              [
-                [0, 'Follow global', `Settings flags stale passwords after ${staleDays} days`],
-                [30, '30 days', 'Flagged a month after each change'],
-                [60, '60 days', 'Flagged two months after each change'],
-                [90, '90 days', 'Flagged three months after each change'],
-                [180, '6 months', 'Flagged half a year after each change'],
-              ] as const
-            ).map(([days, label, hint]) => (
-              <button
-                key={days}
-                type="button"
-                role="radio"
-                aria-checked={(draft.reminderDays ?? 0) === days}
-                className="segmented__option"
-                aria-pressed={(draft.reminderDays ?? 0) === days}
-                title={hint}
-                onClick={() => patch({ reminderDays: days })}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <p className="field__note">
-            Overrides the global stale-password setting for this login only. The stale badge, the
-            Weak channel and the dashboard all follow it.
-          </p>
-        </div>
-        <div className="field">
-          <label className="field__label" htmlFor="reminder-custom">
-            Or set manually (days)
-          </label>
-          <div className="field-row">
-            <input
-              id="reminder-custom"
-              className="input input--mono"
-              type="number"
-              min={0}
-              max={3650}
-              value={draft.reminderDays ?? 0}
-              onChange={(event) => {
-                const next = Math.max(0, Math.min(3650, Math.floor(Number(event.target.value) || 0)));
-                patch({ reminderDays: next });
-              }}
-            />
-          </div>
-          <p className="field__note">
-            {(draft.reminderDays ?? 0) <= 0
-              ? `Following the global setting (${staleDays} days).`
-              : `Flags this password after ${draft.reminderDays} days — around ${new Date((draft.passwordUpdatedAt ?? Date.now()) + (draft.reminderDays ?? 0) * 86_400_000).toLocaleDateString()}.`}
-          </p>
-        </div>
-      </>
+      <ReminderPanel
+        value={draft.reminderDays ?? 0}
+        passwordUpdatedAt={draft.passwordUpdatedAt ?? Date.now()}
+        staleDays={staleDays}
+        onChange={(reminderDays) => patch({ reminderDays })}
+      />
     ),
 
     organise: (

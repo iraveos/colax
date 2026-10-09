@@ -79,9 +79,10 @@ export interface VaultItem {
   /** When the email or username last changed. */
   usernameUpdatedAt: number;
   /**
-   * Rotation reminder for this login alone, in days. 0 follows the global
-   * "flag stale passwords" setting; anything else overrides it here only. Set
-   * in the login editor's Reminders section — presets or any manual count.
+   * Rotation reminder for this login alone, in days — fractional, so minutes
+   * and hours work too (15 minutes is 15/1440). 0 follows the global "flag
+   * stale passwords" setting; anything else overrides it here only. Set in
+   * the login editor's Reminders section — presets or any manual count.
    */
   reminderDays: number;
 }
@@ -148,7 +149,7 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     accentHue: typeof raw.accentHue === 'number' ? raw.accentHue : null,
     reminderDays:
       typeof raw.reminderDays === 'number' && Number.isFinite(raw.reminderDays)
-        ? Math.max(0, Math.floor(raw.reminderDays))
+        ? Math.max(0, Math.round(raw.reminderDays * 1e6) / 1e6)
         : 0,
     // Records saved before security existed have none. Normalised to the empty
     // shape rather than left undefined so callers never branch on it.
@@ -322,7 +323,7 @@ export function isWeakPassword(item: Pick<VaultItem, 'password'>): boolean {
  * here so the editor's per-login choice is honored everywhere at once.
  */
 export function staleDaysFor(item: Pick<VaultItem, 'reminderDays'>, globalDays: number): number {
-  return item.reminderDays > 0 ? Math.floor(item.reminderDays) : globalDays;
+  return item.reminderDays > 0 ? item.reminderDays : globalDays;
 }
 
 /** Passwords used by more than one login. Keyed by password so callers can match on `item.password`. */

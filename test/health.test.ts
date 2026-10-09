@@ -83,9 +83,19 @@ test('logins show mail unless explicitly opted out', () => {
 test('a per-login reminder overrides the global stale threshold', () => {
   assert.equal(staleDaysFor({ reminderDays: 0 }, 180), 180);
   assert.equal(staleDaysFor({ reminderDays: 30 }, 180), 30);
+  // Fractional days carry minutes and hours: 15 minutes survives the round trip.
+  assert.equal(staleDaysFor({ reminderDays: 15 / 1440 }, 180), 15 / 1440);
   assert.equal(normaliseItem({ ...emptyItem('x', 1000) }).reminderDays, 0);
-  assert.equal(normaliseItem({ ...emptyItem('x', 1000), reminderDays: 45.7 }).reminderDays, 45);
+  assert.equal(normaliseItem({ ...emptyItem('x', 1000), reminderDays: 45.7 }).reminderDays, 45.7);
   assert.equal(normaliseItem({ ...emptyItem('x', 1000), reminderDays: -5 }).reminderDays, 0);
+});
+
+test('a minutes-scale reminder flags within the hour', () => {
+  const old = Date.now() - 20 * 60_000;
+  const quick = login({ passwordUpdatedAt: old, reminderDays: 15 / 1440 });
+  const slow = login({ passwordUpdatedAt: old, reminderDays: 0 });
+  assert.ok(findWeakItems([quick], 180).includes(quick), '15-minute reminder flags a 20-minute password');
+  assert.ok(!findWeakItems([slow], 180).includes(slow), 'global 180 days spares it');
 });
 
 test('stale flagging follows the login reminder, not just the global', () => {
