@@ -2,6 +2,8 @@ import { useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ACCENT_PRESETS,
   DEFAULT_PREFERENCES,
+  MAX_DOCKS,
+  newDockId,
   type CardSizePrefs,
   type Density,
   type SortMode,
@@ -536,25 +538,61 @@ export function Settings(props: {
             </div>
           </Row>
           <Row
-            label="Quick-launch dock"
-            hint="Jump targets on a bar, one keypress away. Keys work bare (no Ctrl) whenever you are not typing or in a dialog. Drag rows to reorder; every row takes its own key and icon."
+            label="Quick-launch docks"
+            hint="Jump targets on bars, one keypress away — have one bar or several, each dragged anywhere. Keys work bare (no Ctrl) whenever you are not typing or in a dialog; the first bar wins a key two bars claim."
             stacked
           >
-            <Toggle
-              label="Quick-launch dock"
-              checked={prefs.dockEnabled}
-              onChange={(dockEnabled) => set({ dockEnabled })}
-            />
-            {prefs.dockEnabled ? (
-              <DockSlotsEditor
-                slots={prefs.dockSlots}
-                channels={prefs.channels}
-                folders={prefs.folders}
-                logins={items}
-                mailboxes={prefs.gmailAccounts}
-                onChange={(dockSlots) => set({ dockSlots })}
-                onNotify={onNotify}
-              />
+            {prefs.docks.map((dock, index) => (
+              <div className="dock-manager" key={dock.id}>
+                <div className="dock-manager__head">
+                  <span className="dock-manager__name">Dock {index + 1}</span>
+                  <Toggle
+                    label={`Show dock ${index + 1}`}
+                    checked={dock.enabled}
+                    onChange={(enabled) =>
+                      set({ docks: prefs.docks.map((entry) => (entry.id === dock.id ? { ...entry, enabled } : entry)) })
+                    }
+                  />
+                  {prefs.docks.length > 1 ? (
+                    <button
+                      type="button"
+                      className="btn btn--quiet btn--sm"
+                      onClick={() => set({ docks: prefs.docks.filter((entry) => entry.id !== dock.id) })}
+                    >
+                      Delete
+                    </button>
+                  ) : null}
+                </div>
+                {dock.enabled ? (
+                  <DockSlotsEditor
+                    slots={dock.slots}
+                    channels={prefs.channels}
+                    folders={prefs.folders}
+                    logins={items}
+                    mailboxes={prefs.gmailAccounts}
+                    onChange={(slots) =>
+                      set({ docks: prefs.docks.map((entry) => (entry.id === dock.id ? { ...entry, slots } : entry)) })
+                    }
+                    onNotify={onNotify}
+                  />
+                ) : null}
+              </div>
+            ))}
+            {prefs.docks.length < MAX_DOCKS ? (
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm"
+                onClick={() =>
+                  set({
+                    docks: [
+                      ...prefs.docks,
+                      { id: newDockId(), slots: [], pos: { edge: 'bottom', fx: 0.5, fy: 0.78 }, enabled: true },
+                    ],
+                  })
+                }
+              >
+                + New dock
+              </button>
             ) : null}
           </Row>
           <Row label="Default view" hint="Remembered the next time you open the app." stacked>
@@ -715,8 +753,16 @@ export function Settings(props: {
           rows.push({ key: 'new-login', label: 'New login button', where: 'Topbar', show: () => set({ showNewLoginButton: true }) });
         if (prefs.showBulkAddButton === false)
           rows.push({ key: 'bulk-add', label: 'Bulk add button', where: 'Topbar', show: () => set({ showBulkAddButton: true }) });
-        if (!prefs.dockEnabled)
-          rows.push({ key: 'dock', label: 'Quick-launch dock', where: 'Floating bar', show: () => set({ dockEnabled: true }) });
+        prefs.docks.forEach((dock, index) => {
+          if (!dock.enabled)
+            rows.push({
+              key: `dock:${dock.id}`,
+              label: prefs.docks.length > 1 ? `Dock ${index + 1}` : 'Quick-launch dock',
+              where: 'Floating bar',
+              show: () =>
+                set({ docks: prefs.docks.map((entry) => (entry.id === dock.id ? { ...entry, enabled: true } : entry)) }),
+            });
+        });
         if (!prefs.showNewChannelButton)
           rows.push({ key: 'sidebar-add', label: 'New channel button', where: 'Sidebar', show: () => set({ showNewChannelButton: true }) });
         if (prefs.showSettingsButton === false)
@@ -761,7 +807,7 @@ export function Settings(props: {
                     set({
                       showNewLoginButton: true,
                       showBulkAddButton: true,
-                      dockEnabled: true,
+                      docks: prefs.docks.map((entry) => ({ ...entry, enabled: true })),
                       showNewChannelButton: true,
                       showSettingsButton: true,
                       showLockButton: true,

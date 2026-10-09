@@ -142,11 +142,12 @@ function selectionClick(
  * Login drag-reorder shared by the Flow, List and Grid views.
  *
  * No grip and no HTML5 backend: press and hold anywhere on a login except its
- * buttons, then move. The 180ms hold is what keeps this from fighting clicks
- * and text selection — quick presses behave exactly as before, and pressing a
- * button disarms the row, so controls never drag. Past the hold the pointer is
- * captured, a ghost follows it, the row underneath gets a before/after
- * indicator, list edges auto-scroll, and release commits. Rows render as
+ * buttons, then move. The short hold is what keeps this from fighting clicks
+ * and text selection — quick presses behave exactly as before, selection is
+ * locked off from the hold until release, and pressing a button disarms the
+ * row, so controls never drag. Past the hold, the pointer is captured, a
+ * ghost follows it, the row underneath gets a before/after indicator, list
+ * edges auto-scroll, and release commits. Rows render as
  * motion `layout` elements upstream, so the reorder animates smoothly instead
  * of snapping. (HTML5 dragging was tried first and dropped: flipping the
  * `draggable` attribute mid-gesture is timing-sensitive per engine, while
@@ -183,11 +184,21 @@ function useLoginReorder(
   liveRef.current.flatIds = flatIds;
   liveRef.current.onReorder = onReorder;
 
+  /** How long a press must held before it arms a drag. Short enough to feel
+      instant, long enough that clicks and text selection win the race. */
+  const HOLD_MS = 120;
+
+  /** While armed or dragging, nothing on screen may start a text selection. */
+  const setReordering = (on: boolean) => {
+    document.body.classList.toggle('is-reordering', on);
+  };
+
   useEffect(
     () => () => {
       if (armTimer.current) window.clearTimeout(armTimer.current);
       ghost.current?.remove();
       ghost.current = null;
+      document.body.classList.remove('is-reordering');
     },
     [],
   );
@@ -205,6 +216,7 @@ function useLoginReorder(
     pending.current = null;
     armedRef.current = null;
     setArmedId(null);
+    setReordering(false);
   };
 
   // Commits (or cancels) an in-flight drag. Shared by the row's own pointer-up
@@ -220,6 +232,7 @@ function useLoginReorder(
     setDragId(null);
     setArmedId(null);
     setOver(null);
+    setReordering(false);
     if (!commit || !active) return;
     const slot = overRef.current;
     overRef.current = null;
@@ -248,14 +261,17 @@ function useLoginReorder(
     setDragId(null);
     setArmedId(null);
     setOver(null);
+    setReordering(false);
   };
 
   // Backstop: releases and interruptions the row itself never hears must still
   // end the drag. Without this an off-window release left a ghost behind that
-  // looked exactly like a duplicated login.
+  // looked exactly like a duplicated login — and a press abandoned off-row
+  // left a stale armed ring behind.
   useEffect(() => {
     const onUp = () => {
       if (dragging.current) finishDrag(true);
+      else disarm();
     };
     const onCancel = () => {
       if (dragging.current || pending.current) cancelDrag();
@@ -313,7 +329,10 @@ function useLoginReorder(
         armTimer.current = 0;
         armedRef.current = item.id;
         setArmedId(item.id);
-      }, 180);
+        // From here until release, selection is off: holding must never
+        // select text and drag at once.
+        setReordering(true);
+      }, HOLD_MS);
     },
     onPointerMove: (event: React.PointerEvent) => {
       if (!enabled) return;
@@ -1524,56 +1543,32 @@ function groupByLetter(items: VaultItem[]) {
 }
 
 /**
- * The workspace header strip: one line saying what is on screen.
- *
- * The rail names the channel; this says what the name means, how many logins
- * are showing, and — for the weak channel — what is actually wrong, with a
- * Select-all path into bulk review. The channel's hue dot carries its visual
- * signature into the workspace without re-theming anything.
+ * Actionable security summary for the weak channel: what is wrong and a
+ * Select-all path straight into bulk review, instead of a bare filter plus
+ * badges. Informative by the numbers, not by painting cards red.
  */
-export function ChannelStrip({
-  hue,
-  name,
-  explanation,
-  countText,
-  weakText,
-  scopeButton,
+export function WeakSummary({
+  total,
+  reused,
+  stale,
   onSelectAll,
 }: {
-  hue: number;
-  name: string;
-  explanation: string;
-  /** "12 logins", or "3 results for …" while searching. */
-  countText: string;
-  /** Reused/stale breakdown, for the weak channel. */
-  weakText?: string | null;
-  /** Scope toggle while searching ("Search entire vault" / "Back to …"). */
-  scopeButton?: { label: string; onClick: () => void } | null;
-  /** Bulk-review path for the weak channel. */
-  onSelectAll?: (() => void) | null;
+  total: number;
+  reused: number;
+  stale: number;
+  onSelectAll: () => void;
 }) {
   return (
-    <div className="channel-strip">
-      <span
-        className="channel-strip__dot"
-        aria-hidden="true"
-        style={{ background: `hsl(${hue} 55% 60%)` }}
-      />
-      <span className="channel-strip__name">{name}</span>
-      {explanation ? <span className="channel-strip__explain">{explanation}</span> : null}
-      <span className="channel-strip__count">{countText}</span>
-      {weakText ? <span className="channel-strip__weak">{weakText}</span> : null}
-      <span className="channel-strip__spacer" />
-      {onSelectAll ? (
-        <button type="button" className="btn btn--quiet btn--sm" onClick={onSelectAll}>
-          Select all
-        </button>
-      ) : null}
-      {scopeButton ? (
-        <button type="button" className="btn btn--quiet btn--sm" onClick={scopeButton.onClick}>
-          {scopeButton.label}
-        </button>
-      ) : null}
+    <div className="weak-strip" role="note">
+      <span className="weak-strip__text">
+        <b>
+          {total} to review
+        </b>{' '}
+        — {reused} reused · {stale} stale. Select them all, then right-click for bulk actions.
+      </span>
+      <button type="button" className="btn btn--secondary btn--sm" onClick={onSelectAll}>
+        Select all {total}
+      </button>
     </div>
   );
 }

@@ -2,9 +2,8 @@
  * The dock's slot manager: reorder, add, remove, rekey and re-icon every slot.
  *
  * Rows drag to reorder with a grip handle. Reordering is by index swap on drop
- * rather than live insertion-mark sorting: with at most eight rows, press-drag
- * precision matters less than the operation being obvious and undoable by
- * dragging back.
+ * rather than live insertion-mark sorting: press-drag precision matters less
+ * than the operation being obvious and undoable by dragging back.
  *
  * Deleting a channel does not delete its slot from prefs (normalization cannot
  * see the channel list), so a slot whose channel is gone renders here as

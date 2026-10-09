@@ -72,12 +72,15 @@ export function Dock({
   pos,
   onPosChange,
   onMenu,
+  onSlotMenu,
 }: {
   slots: DockSlot[];
   pos: DockPlacement;
   onPosChange: (next: DockPlacement) => void;
   /** Right-click: the dock's own settings menu. */
   onMenu: (event: ReactMouseEvent) => void;
+  /** Right-click on one slot: its own menu (customize, …). */
+  onSlotMenu?: (event: ReactMouseEvent, slotId: string) => void;
 }) {
   // Free placement: press anywhere on the bar's chrome and the bar follows the
   // pointer live, snapping its edge as it goes; release drops it, clamped on
@@ -184,6 +187,15 @@ export function Dock({
             aria-pressed={slot.active}
             title={`${slot.label} (${slot.key}) — ${slot.hint}`}
             onClick={slot.onJump}
+            onContextMenu={
+              onSlotMenu
+                ? (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onSlotMenu(event, slot.id);
+                  }
+                : undefined
+            }
           >
             {typeof slot.hue === 'number' ? (
               <span

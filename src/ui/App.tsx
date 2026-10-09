@@ -7,7 +7,6 @@ import {
   createTag,
   normaliseChannels,
   normaliseSidebar,
-  describeChannel,
   moveChannelToFolder,
   moveManualOrder,
   CHANNEL_ACCENTS,
@@ -16,7 +15,7 @@ import {
   type Folder,
   type SidebarEntry,
 } from '../vault/channels.ts';
-import { mergeMailCache } from '../vault/storage.ts';
+import { MAX_DOCKS, mergeMailCache, newDockId } from '../vault/storage.ts';
 import { captureToDraft, findSimilarTag, suggestTagsForDraft } from '../vault/site-intel.ts';
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
@@ -24,7 +23,7 @@ import { FolderEditor } from './FolderEditor.tsx';
 import { detect as detectClipboard, detectBulk, useClipboardWatcher } from './useClipboardWatcher.ts';
 import { useAlarms, playAlarmSound } from './useAlarms.ts';
 import { useCaptureOffer, type PendingCapture } from './useCaptureOffer.ts';
-import type { GmailAccount, SortMode, VaultPreferences, VaultView } from '../vault/storage.ts';
+import type { DockSlotConfig, DockState, GmailAccount, SortMode, VaultPreferences, VaultView } from '../vault/storage.ts';
 import { LockScreen } from './LockScreen.tsx';
 import { ItemEditor } from './ItemEditor.tsx';
 import { AppearancePanel } from './AppearancePanel.tsx';
@@ -38,7 +37,7 @@ import { ContextMenu, hideChromeMenu, type ChromeElementId, type ContextMenuStat
 import { ChannelEditor } from './ChannelEditor.tsx';
 import { Alert, Modal, Toasts } from './primitives.tsx';
 import { BulkSecurityDialog, hasSecurityFactor, withoutSecurityFactor } from './BulkSecurityDialog.tsx';
-import { AnimatedListView, BasicView, CarouselView, ChannelStrip, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
+import { AnimatedListView, BasicView, CarouselView, GridView, ViewEmptyState, WeakSummary, type ViewActions } from './views.tsx';
 import { LoginMessages } from './LoginMessages.tsx';
 import { MailboxWindow } from './MailboxWindow.tsx';
 import {
@@ -1651,17 +1650,18 @@ label: 'Settings',
 
   useViewShortcuts((next) => void vault.updatePrefs({ view: next }));
 
-  /* ---- Dock ---------------------------------------------------------------
-     Slots come from prefs.dockSlots, in bar order: views, channels, and the
+  /* ---- Docks ----------------------------------------------------------------
+     Each bar resolves its own slots, in bar order: views, channels, and the
      inbox. The inbox slot selects the dashboard channel, which is where
      connected-mail messages render — the dock does not fetch mail itself, so
      enabling it adds no polling. A channel slot whose channel is gone renders
      nothing rather than a dead button (normalization cannot know the channel
      list, so the filter lives here where channels are visible). */
-  const dockSlots: DockSlot[] = useMemo(() => {
-    const dashboardId = channelLookup.find((channel) => channel.kind === 'dashboard')?.id;
-    const resolved: DockSlot[] = [];
-    for (const slot of prefs.dockSlots) {
+  const buildDockSlots = useCallback(
+    (configs: DockSlotConfig[]): DockSlot[] => {
+      const dashboardId = channelLookup.find((channel) => channel.kind === 'dashboard')?.id;
+      const resolved: DockSlot[] = [];
+      for (const slot of configs) {
       const id = `${slot.kind}:${slot.ref || slot.kind}`;
       if (slot.kind === 'view') {
         const option = VIEW_OPTIONS.find((entry) => entry.id === slot.ref);
@@ -1773,7 +1773,25 @@ label: 'Settings',
       }
     }
     return resolved;
-  }, [prefs.dockSlots, prefs.gmailAccounts, channelLookup, folders, view, activeChannel, activeFolder, activeId, selection, vault, viewActions, copy, mailboxFor, requestEdit]);
+    },
+    [prefs.gmailAccounts, channelLookup, folders, view, activeChannel, activeFolder, activeId, selection, vault, viewActions, copy, mailboxFor, requestEdit],
+  );
+
+  /** One resolved bar per stored dock. */
+  const dockModels = useMemo(
+    () => prefs.docks.map((dock) => ({ dock, slots: buildDockSlots(dock.slots) })),
+    [prefs.docks, buildDockSlots],
+  );
+
+  /** Patches one bar, leaving the others alone. */
+  const patchDock = useCallback(
+    (dockId: string, patch: Partial<DockState>) => {
+      void vault.updatePrefs({
+        docks: prefs.docks.map((dock) => (dock.id === dockId ? { ...dock, ...patch } : dock)),
+      });
+    },
+    [vault, prefs.docks],
+  );
 
   /**
    * The dock's own menu: position, a route to full configuration, and hide.
@@ -1792,7 +1810,6 @@ label: 'Settings',
       const patches: Record<ChromeElementId, Partial<VaultPreferences>> = {
         'new-login': { showNewLoginButton: false },
         'bulk-add': { showBulkAddButton: false },
-        dock: { dockEnabled: false },
         'sidebar-add': { showNewChannelButton: false },
         'footer-settings': { showSettingsButton: false },
         'footer-lock': { showLockButton: false },
@@ -1805,48 +1822,87 @@ label: 'Settings',
     [vault, notify],
   );
 
-  const dockMenu = useCallback((): MenuItem[] => {
-    // Canonical spots per edge; dragging refines from here freely.
-    const positions = [
-      { id: 'bottom', label: 'Bottom', fx: 0.5, fy: 0.94 },
-      { id: 'top', label: 'Top', fx: 0.5, fy: 0.06 },
-      { id: 'left', label: 'Left', fx: 0.06, fy: 0.5 },
-      { id: 'right', label: 'Right', fx: 0.94, fy: 0.5 },
-    ] as const;
-    return [
-      {
-        kind: 'submenu',
-        label: 'Dock position',
-        heading: 'Dock position',
-        items: positions.map((position) => ({
-          kind: 'item' as const,
-          label: position.label,
-          checked: prefs.dockPos.edge === position.id,
-          onSelect: () =>
-            void vault.updatePrefs({
-              dockPos: { edge: position.id, fx: position.fx, fy: position.fy },
-            }),
-        })),
-      },
-      {
-        kind: 'item',
-        label: 'Configure dock…',
-        icon: <SettingsIcon />,
-        onSelect: () => openSettings('layout'),
-      },
-      { kind: 'separator' },
-      {
-        kind: 'item',
-        label: 'Hide dock',
-        onSelect: () => hideChrome('dock'),
-      },
-      {
-        kind: 'item',
-        label: 'Show hidden items…',
-        onSelect: () => openSettings('hidden'),
-      },
-    ];
-  }, [prefs.dockPos, hideChrome, openSettings]);
+  const dockMenu = useCallback(
+    (dockId: string): MenuItem[] => {
+      const dock = prefs.docks.find((entry) => entry.id === dockId);
+      // Canonical spots per edge; dragging refines from here freely.
+      const positions = [
+        { id: 'bottom', label: 'Bottom', fx: 0.5, fy: 0.94 },
+        { id: 'top', label: 'Top', fx: 0.5, fy: 0.06 },
+        { id: 'left', label: 'Left', fx: 0.06, fy: 0.5 },
+        { id: 'right', label: 'Right', fx: 0.94, fy: 0.5 },
+      ] as const;
+      return [
+        {
+          kind: 'submenu',
+          label: 'Dock position',
+          heading: 'Dock position',
+          items: positions.map((position) => ({
+            kind: 'item' as const,
+            label: position.label,
+            checked: dock?.pos.edge === position.id,
+            onSelect: () => patchDock(dockId, { pos: { edge: position.id, fx: position.fx, fy: position.fy } }),
+          })),
+        },
+        {
+          kind: 'item',
+          label: 'Configure dock…',
+          icon: <SettingsIcon />,
+          onSelect: () => openSettings('layout'),
+        },
+        ...(prefs.docks.length < MAX_DOCKS
+          ? [
+              {
+                kind: 'item' as const,
+                label: 'New dock',
+                icon: <PlusIcon />,
+                onSelect: () => {
+                  const fresh = {
+                    id: newDockId(),
+                    slots: [],
+                    pos: { edge: 'bottom' as const, fx: 0.5, fy: 0.78 },
+                    enabled: true,
+                  };
+                  void vault
+                    .updatePrefs({ docks: [...prefs.docks, fresh] })
+                    .then(() => notify('New dock added — fill it in Settings › Layout'));
+                },
+              },
+              {
+                kind: 'item' as const,
+                label: 'Duplicate this dock',
+                icon: <CopyIcon />,
+                onSelect: () => {
+                  if (!dock) return;
+                  const fresh = {
+                    ...dock,
+                    id: newDockId(),
+                    slots: dock.slots.map((slot) => ({ ...slot })),
+                    pos: { ...dock.pos, fy: Math.max(0.06, dock.pos.fy - 0.12) },
+                  };
+                  void vault.updatePrefs({ docks: [...prefs.docks, fresh] }).then(() => notify('Dock duplicated'));
+                },
+              },
+            ]
+          : []),
+        { kind: 'separator' },
+        {
+          kind: 'item',
+          label: 'Hide this dock',
+          onSelect: () => {
+            patchDock(dockId, { enabled: false });
+            notify('Hidden — bring it back in Settings › Hidden');
+          },
+        },
+        {
+          kind: 'item',
+          label: 'Show hidden items…',
+          onSelect: () => openSettings('hidden'),
+        },
+      ];
+    },
+    [prefs.docks, patchDock, openSettings, vault, notify],
+  );
 
   // Stable across renders on purpose: it reads only the DOM, so re-creating it
   // would re-subscribe the key listener on every render (each keystroke while
@@ -1860,7 +1916,14 @@ label: 'Settings',
       !document.querySelector('.ctx-menu, .modal, .settings-window, .tuner, .editor-window'),
     [],
   );
-  useDockShortcuts(prefs.dockEnabled ? dockSlots : [], dockGuard);
+  // Every enabled bar contributes its keys. Two bars claiming one key cannot
+  // both win; the first bar's slot takes it, and the settings rows (which
+  // check keys per bar) stay honest for the common single-bar case.
+  const dockShortcutSlots = useMemo(
+    () => dockModels.filter((model) => model.dock.enabled).flatMap((model) => model.slots),
+    [dockModels],
+  );
+  useDockShortcuts(dockShortcutSlots, dockGuard);
   useSelectAllShortcuts(
     () => selection.selectAll(visible),
     () => selection.clear(),
@@ -2243,6 +2306,16 @@ onCreate={vault.create}
                   </span>
                 )}
               </div>
+              {query.trim() && searchScope === 'all' ? (
+                <button
+                  type="button"
+                  className="btn btn--quiet btn--sm"
+                  title="Back to searching the active channel"
+                  onClick={() => setSearchScope('channel')}
+                >
+                  Entire vault ×
+                </button>
+              ) : null}
             </div>
 
             <div className="topbar__actions">
@@ -2286,52 +2359,17 @@ onCreate={vault.create}
               ...(view !== 'basic' && activeChannel?.kind !== 'dashboard' ? { overflow: 'hidden' } : undefined),
               // A bottom-docked bar floats over the page end: without clearance
               // the dashboard's last rows scroll underneath it.
-              ...(prefs.dockEnabled && prefs.dockPos.edge === 'bottom' ? { paddingBottom: 96 } : undefined),
+              ...(prefs.docks.some((dock) => dock.enabled && dock.pos.edge === 'bottom')
+                ? { paddingBottom: 96 }
+                : undefined),
             }}
           >
-            {!folderLocked && (activeFolder || (activeChannel && activeChannel.kind !== 'dashboard')) ? (
-              <ChannelStrip
-                hue={activeFolder ? activeFolder.hue : (activeChannel?.hue ?? 212)}
-                name={activeFolder ? activeFolder.name : (activeChannel?.name ?? '')}
-                explanation={
-                  activeFolder
-                    ? (() => {
-                        const entry = sidebarBase.find(
-                          (row) => row.kind === 'folder' && row.id === activeFolder.id,
-                        );
-                        const n =
-                          entry && entry.kind === 'folder'
-                            ? entry.children.filter((child) => child.kind === 'channel').length
-                            : 0;
-                        return `${n} channel${n === 1 ? '' : 's'}`;
-                      })()
-                    : describeChannel(activeChannel!, prefs.tags)
-                }
-                countText={
-                  query.trim()
-                    ? `${visible.length} result${visible.length === 1 ? '' : 's'} for "${query.trim()}"`
-                    : `${visible.length} login${visible.length === 1 ? '' : 's'}`
-                }
-                weakText={
-                  weakStats && (weakStats.reused > 0 || weakStats.stale > 0)
-                    ? `${weakStats.reused} reused · ${weakStats.stale} stale`
-                    : null
-                }
-                scopeButton={
-                  query.trim()
-                    ? searchScope === 'channel'
-                      ? { label: 'Search entire vault', onClick: () => setSearchScope('all') }
-                      : {
-                          label: `Back to ${activeFolder ? activeFolder.name : (activeChannel?.name ?? '')}`,
-                          onClick: () => setSearchScope('channel'),
-                        }
-                    : null
-                }
-                onSelectAll={
-                  activeChannel?.kind === 'weak' && !activeFolder && visible.length > 0
-                    ? () => selection.selectAll(visible)
-                    : null
-                }
+            {!folderLocked && activeChannel?.kind === 'weak' && !activeFolder && visible.length > 0 ? (
+              <WeakSummary
+                total={visible.length}
+                reused={weakStats?.reused ?? 0}
+                stale={weakStats?.stale ?? 0}
+                onSelectAll={() => selection.selectAll(visible)}
               />
             ) : null}
             {folderLocked && activeFolder ? (
@@ -2345,7 +2383,7 @@ onCreate={vault.create}
                 onCancel={() => setActiveId('all')}
               />
             ) : activeChannel?.kind === 'dashboard' ? (
-              <div className="content__inner">
+              <div className="content__inner content__inner--wide">
                 <Dashboard
                   channels={channels}
                   tags={prefs.tags}
@@ -2501,16 +2539,38 @@ onCreate={vault.create}
         </Modal>
       ) : null}
 
-      {/* The dock only exists on the unlocked vault screen: it jumps between
+      {/* Docks only exist on the unlocked vault screen: they jump between
           views and the inbox, none of which exist before unlock. */}
-      {prefs.dockEnabled ? (
-        <Dock
-          slots={dockSlots}
-          pos={prefs.dockPos}
-          onPosChange={(dockPos) => void vault.updatePrefs({ dockPos })}
-          onMenu={(event) => setMenu({ x: event.clientX, y: event.clientY, items: dockMenu() })}
-        />
-      ) : null}
+      {dockModels
+        .filter((model) => model.dock.enabled)
+        .map((model) => (
+          <Dock
+            key={model.dock.id}
+            slots={model.slots}
+            pos={model.dock.pos}
+            onPosChange={(pos) => patchDock(model.dock.id, { pos })}
+            onMenu={(event) => setMenu({ x: event.clientX, y: event.clientY, items: dockMenu(model.dock.id) })}
+            onSlotMenu={(event) =>
+              setMenu({
+                x: event.clientX,
+                y: event.clientY,
+                items: [
+                  {
+                    kind: 'item',
+                    label: 'Customize this bar…',
+                    icon: <SettingsIcon />,
+                    onSelect: () => openSettings('layout'),
+                  },
+                  {
+                    kind: 'item',
+                    label: 'Show hidden items…',
+                    onSelect: () => openSettings('hidden'),
+                  },
+                ],
+              })
+            }
+          />
+        ))}
 
       <ContextMenu state={menu} onClose={() => setMenu(null)} />
       <ViewContextMenu

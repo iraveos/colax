@@ -276,7 +276,6 @@ function MenuLayer({
 export type ChromeElementId =
   | 'new-login'
   | 'bulk-add'
-  | 'dock'
   | 'sidebar-add'
   | 'footer-settings'
   | 'footer-lock'
@@ -287,7 +286,6 @@ export type ChromeElementId =
 export const CHROME_ELEMENTS: Record<ChromeElementId, { label: string; where: string }> = {
   'new-login': { label: 'New login button', where: 'Topbar' },
   'bulk-add': { label: 'Bulk add button', where: 'Topbar' },
-  dock: { label: 'Quick-launch dock', where: 'Floating bar' },
   'sidebar-add': { label: 'New channel button', where: 'Sidebar' },
   'footer-settings': { label: 'Settings button', where: 'Sidebar footer' },
   'footer-lock': { label: 'Lock button', where: 'Sidebar footer' },

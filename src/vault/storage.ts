@@ -146,6 +146,25 @@ export interface DockSlotConfig {
  */
 export const MAX_DOCK_SLOTS = 24;
 
+/** How many quick-launch bars may exist at once. */
+export const MAX_DOCKS = 4;
+
+/**
+ * One quick-launch bar: its slots, its spot, whether it shows. Several may
+ * exist — a views bar at the bottom and a mail bar on the side, for example —
+ * each dragged, configured and hidden independently.
+ */
+export interface DockState {
+  id: string;
+  slots: DockSlotConfig[];
+  pos: DockPlacement;
+  enabled: boolean;
+}
+
+export function newDockId(): string {
+  return `dock_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export const DEFAULT_DOCK_SLOTS: DockSlotConfig[] = [
   { kind: 'view', ref: 'animated', key: '1' },
   { kind: 'view', ref: 'carousel', key: '2' },
@@ -314,7 +333,8 @@ export interface VaultPreferences {
   /** Shows the keyboard shortcuts entry in the sidebar. Also in Settings › About. */
   showShortcuts: boolean;
   /**
-   * Quick-launch dock slots, in bar order.
+   * Quick-launch bars, in no particular order — each carries its own slots,
+   * spot and visibility.
    *
    * Each slot jumps somewhere (a view, a channel, the inbox) on click or on
    * its key. Keys are single characters pressed bare (no modifier), matched
@@ -324,9 +344,7 @@ export interface VaultPreferences {
    * dock, the badges, the listener and the settings rows cannot disagree
    * about which key means what.
    */
-  dockEnabled: boolean;
-  dockSlots: DockSlotConfig[];
-  dockPos: DockPlacement;
+  docks: DockState[];
   /**
    * Per-login use counts: incremented on copy and on edit, read by the
    * Frequently-used panel and the untouched-login scan.
@@ -505,9 +523,14 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   expandOnOpen: false,
   compactSidebar: false,
   showShortcuts: false,
-  dockEnabled: true,
-  dockSlots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })),
-  dockPos: { edge: 'bottom', fx: 0.5, fy: 0.94 },
+  docks: [
+    {
+      id: 'main',
+      slots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })),
+      pos: { edge: 'bottom', fx: 0.5, fy: 0.94 },
+      enabled: true,
+    },
+  ],
   usage: {},
   trayEnabled: true,
   closeToTray: true,
@@ -564,6 +587,68 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   gmailAccounts: [],
   mailCache: {},
 };
+
+/**
+ * One bar's placement as clamped fractions. Anything outside 0–1 (a
+ * hand-edited record, a resize across monitors) is pulled back on screen
+ * rather than stranding the bar where no pointer can reach it.
+ */
+export function normaliseDockPos(raw: unknown): DockPlacement {
+  const record = (raw ?? {}) as Partial<DockPlacement>;
+  const edge = record.edge === 'top' || record.edge === 'left' || record.edge === 'right' ? record.edge : 'bottom';
+  const clamp = (value: unknown, fallback: number) =>
+    typeof value === 'number' && Number.isFinite(value) ? Math.min(0.94, Math.max(0.06, value)) : fallback;
+  return { edge, fx: clamp(record.fx, 0.5), fy: clamp(record.fy, edge === 'top' ? 0.06 : 0.94) };
+}
+
+/**
+ * One bar's slots: at most MAX_DOCK_SLOTS, each with a valid kind, a valid
+ * view ref, a unique single-character key, a short label and a safe icon.
+ * Anything else falls back slot by slot, so a hand-edited or partially-written
+ * record cannot leave a slot unreachable, two slots fighting over one key, or
+ * a javascript: URL smuggled in as an icon. Empty in, defaults out.
+ */
+export function normaliseDockSlots(raw: unknown): DockSlotConfig[] {
+  const list = Array.isArray(raw) ? raw : [];
+  const seen = new Set<string>();
+  // Single-character jump keys: digits first, then letters.
+  const fallbackKeys = [...'123456789abcdefghijklmnopqrstuvwxyz'].slice(0, MAX_DOCK_SLOTS);
+  const clean: DockSlotConfig[] = [];
+  for (const entry of list.slice(0, MAX_DOCK_SLOTS)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const kind = (entry as { kind?: unknown }).kind;
+    if (kind !== 'view' && kind !== 'channel' && kind !== 'folder' && kind !== 'login' && kind !== 'inbox' && kind !== 'mailbox') continue;
+    const ref = typeof (entry as { ref?: unknown }).ref === 'string' ? (entry as { ref: string }).ref : '';
+    if (kind === 'view' && !(['animated', 'carousel', 'basic', 'grid'] as const).includes(ref as VaultView)) continue;
+    if ((kind === 'channel' || kind === 'folder' || kind === 'login' || kind === 'mailbox') && !ref) continue;
+    if (kind === 'inbox' && clean.some((slot) => slot.kind === 'inbox')) continue;
+    if (clean.some((slot) => slot.kind === kind && slot.ref === ref)) continue;
+    const rawAction = (entry as { action?: unknown }).action;
+    const action: DockLoginAction | undefined =
+      kind === 'login' && typeof rawAction === 'string' && (DOCK_LOGIN_ACTIONS as readonly string[]).includes(rawAction)
+        ? (rawAction as DockLoginAction)
+        : undefined;
+    const rawKey = typeof (entry as { key?: unknown }).key === 'string' ? (entry as { key: string }).key.trim() : '';
+    let key = rawKey.length === 1 && !seen.has(rawKey.toLowerCase()) ? rawKey : '';
+    if (!key) {
+      const free = fallbackKeys.find((candidate) => !seen.has(candidate));
+      if (!free) continue;
+      key = free;
+    }
+    seen.add(key.toLowerCase());
+    const rawLabel = typeof (entry as { label?: unknown }).label === 'string' ? (entry as { label: string }).label.trim() : '';
+    const rawIcon = typeof (entry as { icon?: unknown }).icon === 'string' ? (entry as { icon: string }).icon.trim() : '';
+    clean.push({
+      kind,
+      ref,
+      ...(rawLabel ? { label: rawLabel.slice(0, 24) } : {}),
+      key,
+      ...(rawIcon.startsWith('data:image/') || rawIcon.startsWith('https://') ? { icon: rawIcon } : {}),
+      ...(action ? { action } : {}),
+    });
+  }
+  return clean.length > 0 ? clean : DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot }));
+}
 
 /**
  * Merges stored preferences over the defaults and coerces anything stale.
@@ -783,12 +868,6 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.viewLabelsByView = viewLabelsByView;
   merged.sidebarPosition = oneOf(merged.sidebarPosition, ['left', 'right', 'top', 'bottom'] as const, 'left');
 
-  // Dock slots: at most MAX_DOCK_SLOTS, each with a valid kind, a valid view ref,
-  // a unique single-character key, a short label and a safe icon. Anything
-  // else falls back slot by slot, so a hand-edited or partially-written record
-  // cannot leave a slot unreachable, two slots fighting over one key, or a
-  // javascript: URL smuggled in as an icon.
-  merged.dockEnabled = Boolean(merged.dockEnabled);
   // Use counts: plain objects with numeric fields only, capped at 200 by
   // recency so the record cannot grow without bound. Pruning by id happens on
   // write (which sees the items); load only validates shape.
@@ -805,60 +884,51 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     entries.sort((a, b) => b[1].at - a[1].at);
     merged.usage = Object.fromEntries(entries.slice(0, 200));
   }
-  // Free placement as clamped fractions. Anything outside 0–1 (a hand-edited
-  // record, a resize across monitors) is pulled back on screen rather than
-  // stranding the bar where no pointer can reach it.
-  {
-    const raw = (merged.dockPos ?? {}) as Partial<DockPlacement>;
-    const edge = raw.edge === 'top' || raw.edge === 'left' || raw.edge === 'right' ? raw.edge : 'bottom';
-    const clamp = (value: unknown, fallback: number) =>
-      typeof value === 'number' && Number.isFinite(value) ? Math.min(0.94, Math.max(0.06, value)) : fallback;
-    merged.dockPos = { edge, fx: clamp(raw.fx, 0.5), fy: clamp(raw.fy, edge === 'top' ? 0.06 : 0.94) };
-  }
   merged.trayEnabled = Boolean(merged.trayEnabled);
   merged.closeToTray = Boolean(merged.closeToTray);
   merged.launchAtLogin = Boolean(merged.launchAtLogin);
   merged.soundsMuted = Boolean(merged.soundsMuted);
+  // Quick-launch bars. Stored docks win; otherwise the pre-multi-dock single
+  // bar migrates into the first dock, so nothing is lost in the upgrade. At
+  // least one dock always survives: an empty list restores the default bar.
   {
-    const raw = Array.isArray(merged.dockSlots) ? merged.dockSlots : [];
-    const seen = new Set<string>();
-    // Single-character jump keys: digits first, then letters.
-    const fallbackKeys = [...'123456789abcdefghijklmnopqrstuvwxyz'].slice(0, MAX_DOCK_SLOTS);
-    const clean: DockSlotConfig[] = [];
-    for (const entry of raw.slice(0, MAX_DOCK_SLOTS)) {
+    const legacy = merged as Partial<VaultPreferences> & {
+      dockEnabled?: unknown;
+      dockSlots?: unknown;
+      dockPos?: unknown;
+    };
+    // Stored docks win — but only when the stored record actually carried
+    // them. Reading `merged` here would see the defaults backfilled over a
+    // legacy record and skip its migration every time.
+    const storedDocks = Array.isArray((stored as Partial<VaultPreferences> | undefined | null)?.docks)
+      ? ((stored as Partial<VaultPreferences>)!.docks as DockState[])
+      : [];
+    const clean: DockState[] = [];
+    for (const entry of storedDocks.slice(0, MAX_DOCKS)) {
       if (!entry || typeof entry !== 'object') continue;
-      const kind = (entry as { kind?: unknown }).kind;
-      if (kind !== 'view' && kind !== 'channel' && kind !== 'folder' && kind !== 'login' && kind !== 'inbox' && kind !== 'mailbox') continue;
-      const ref = typeof (entry as { ref?: unknown }).ref === 'string' ? (entry as { ref: string }).ref : '';
-      if (kind === 'view' && !(['animated', 'carousel', 'basic', 'grid'] as const).includes(ref as VaultView)) continue;
-      if ((kind === 'channel' || kind === 'folder' || kind === 'login' || kind === 'mailbox') && !ref) continue;
-      if (kind === 'inbox' && clean.some((slot) => slot.kind === 'inbox')) continue;
-      if (clean.some((slot) => slot.kind === kind && slot.ref === ref)) continue;
-      const rawAction = (entry as { action?: unknown }).action;
-      const action: DockLoginAction | undefined =
-        kind === 'login' && typeof rawAction === 'string' && (DOCK_LOGIN_ACTIONS as readonly string[]).includes(rawAction)
-          ? (rawAction as DockLoginAction)
-          : undefined;
-      const rawKey = typeof (entry as { key?: unknown }).key === 'string' ? (entry as { key: string }).key.trim() : '';
-      let key = rawKey.length === 1 && !seen.has(rawKey.toLowerCase()) ? rawKey : '';
-      if (!key) {
-        const free = fallbackKeys.find((candidate) => !seen.has(candidate));
-        if (!free) continue;
-        key = free;
-      }
-      seen.add(key.toLowerCase());
-      const rawLabel = typeof (entry as { label?: unknown }).label === 'string' ? (entry as { label: string }).label.trim() : '';
-      const rawIcon = typeof (entry as { icon?: unknown }).icon === 'string' ? (entry as { icon: string }).icon.trim() : '';
+      const record = entry as unknown as Record<string, unknown>;
+      const id = typeof record.id === 'string' && record.id ? record.id : newDockId();
+      const slots = normaliseDockSlots(record.slots);
+      if (slots.length === 0) continue;
       clean.push({
-        kind,
-        ref,
-        ...(rawLabel ? { label: rawLabel.slice(0, 24) } : {}),
-        key,
-        ...(rawIcon.startsWith('data:image/') || rawIcon.startsWith('https://') ? { icon: rawIcon } : {}),
-        ...(action ? { action } : {}),
+        id,
+        slots,
+        pos: normaliseDockPos(record.pos),
+        enabled: record.enabled !== false,
       });
     }
-    merged.dockSlots = clean.length > 0 ? clean : DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot }));
+    if (clean.length === 0) {
+      clean.push({
+        id: 'main',
+        slots: normaliseDockSlots(legacy.dockSlots),
+        pos: normaliseDockPos(legacy.dockPos),
+        enabled: legacy.dockEnabled !== false,
+      });
+    }
+    merged.docks = clean;
+    delete legacy.dockEnabled;
+    delete legacy.dockSlots;
+    delete legacy.dockPos;
   }
 
   // Reminder windows. Anything at 0 switches that check off.
