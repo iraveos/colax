@@ -1,3 +1,5 @@
+In short just click on setup and you'll find the app in desktop/startup windows menu
+
 # Aegis Vault
 
 A local-first, zero-knowledge password vault. Runs in the browser today; the core is
