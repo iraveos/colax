@@ -7,8 +7,9 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { fetchGmailOnce, gmailOpenUrl, useGmail, type GmailMessage } from './useGmail.ts';
+import { gmailOpenUrl, imapUidOf, listGmailOnce, useGmail, type GmailMessage } from './useGmail.ts';
 import { gmailHexOf } from '../lib/mail-text.ts';
+import { FullMail } from './FullMail.tsx';
 import { useFullBody } from './useFullBody.ts';
 import type { CachedMailMessage, GmailAccount } from '../vault/storage.ts';
 import { relativeTime } from '../vault/types.ts';
@@ -54,7 +55,9 @@ export function MailboxWindow({
     if (!expandedId || !canFullBody) return;
     if (requested.current.has(expandedId)) return;
     const message = all.find((entry) => `${account.id}:${entry.id}` === expandedId);
-    if (!message || !gmailHexOf(message.id)) return;
+    // Feed ids resolve by Gmail id, IMAP rows by UID — anything else has no
+    // addressable body and skips the fetch instead of erroring.
+    if (!message || (!gmailHexOf(message.id) && !imapUidOf(message.id))) return;
     requested.current.add(expandedId);
     loadFullBody(
       expandedId,
@@ -178,9 +181,14 @@ export function MailboxWindow({
                         Collapse
                       </button>
                     </span>
-                    {canFullBody && gmailHexOf(message.id) ? (
+                    {canFullBody && (gmailHexOf(message.id) || imapUidOf(message.id)) ? (
                       fullBodies[key]?.status === 'ok' ? (
-                        <span className="full-mail">{fullBodies[key]?.text}</span>
+                        <FullMail
+                          html={fullBodies[key]?.html}
+                          text={fullBodies[key]?.text}
+                          images={fullBodies[key]?.images}
+                          onOpenExternal={onOpenExternal}
+                        />
                       ) : fullBodies[key]?.status === 'error' ? (
                         <span className="field__hint">
                           {fullBodies[key]?.error}{' '}
@@ -225,6 +233,6 @@ export async function refreshMailbox(
   account: GmailAccount,
   onCacheMessages?: (accountId: string, messages: GmailMessage[]) => void,
 ): Promise<void> {
-  const found = await fetchGmailOnce(account.address, account.appPassword, undefined, undefined, undefined, account.id);
+  const { messages: found } = await listGmailOnce(account.address, account.appPassword, account.id);
   if (found.length > 0) onCacheMessages?.(account.id, found);
 }

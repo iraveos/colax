@@ -11,9 +11,19 @@
 import { useState } from 'react';
 import { getPlatform } from '../lib/platform.ts';
 
+export interface FullBodyImage {
+  cid: string;
+  mime: string;
+  dataUrl: string;
+}
+
 export interface FullBodyState {
   status: 'loading' | 'ok' | 'error';
   text?: string;
+  /** Raw HTML body, when the message carries one. Sanitized at render. */
+  html?: string;
+  /** Inline images referenced by the HTML, by content id. */
+  images?: FullBodyImage[];
   error?: string;
 }
 
@@ -38,7 +48,7 @@ export function useFullBody() {
         setBodies((previous) => ({
           ...previous,
           [key]: result.ok
-            ? { status: 'ok', text: result.text ?? '' }
+            ? { status: 'ok', text: result.text ?? '', html: result.html, images: result.images }
             : { status: 'error', error: result.error ?? 'Could not load the full message.' },
         }));
       })

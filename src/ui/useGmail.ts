@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GmailAccount } from '../vault/storage.ts';
+import { feedIdOfDecimal, imapUidOf } from '../lib/mail-text.ts';
+import { getPlatform } from '../lib/platform.ts';
+
+export { imapUidOf };
 
 export interface GmailMessage {
   id: string;
@@ -76,6 +80,67 @@ export async function fetchGmailOnce(
 }
 
 /**
+ * Lists one mailbox: the Atom feed first (it carries snippets), IMAP second.
+ *
+ * The feed answers 401/403/empty since Google shut Basic-auth feed access
+ * down, which used to read as "no messages" with no recourse. Where the feed
+ * fails and the desktop shell is present, the same app password lists unread
+ * headers straight over IMAP instead — no snippets, but real mail. The web
+ * build has no IMAP, so there the feed error stands as the error.
+ */
+export async function listGmailOnce(
+  address: string,
+  appPassword: string,
+  accountId = '',
+): Promise<{ messages: GmailMessage[]; error: string | null }> {
+  if (!address || !appPassword) return { messages: [], error: null };
+  let feedMessages: GmailMessage[] = [];
+  let feedError: string | null = null;
+  await fetchGmailOnce(
+    address,
+    appPassword,
+    (messages) => {
+      feedMessages = messages;
+    },
+    (error) => {
+      feedError = error;
+    },
+    undefined,
+    accountId,
+  );
+  // Mail, or a clean empty inbox, ends here. Only a feed *error* falls
+  // through to IMAP — and only where IMAP exists (desktop shell).
+  if (feedMessages.length > 0 || feedError === null) {
+    return { messages: feedMessages, error: feedError };
+  }
+  const listMail = getPlatform().mail?.listInbox;
+  if (!listMail) return { messages: [], error: feedError };
+  try {
+    const listed = await listMail({ address, appPassword, limit: 20 });
+    if (listed.ok && listed.messages) {
+      return {
+        messages: listed.messages.map((entry) => ({
+          // A reported Gmail id becomes a real feed-style id; otherwise the
+          // UID addresses the row and the UID path reads it back.
+          id: feedIdOfDecimal(entry.gmailId) ?? `imap:${entry.uid}`,
+          title: entry.subject,
+          author: entry.fromName,
+          email: entry.fromAddress,
+          summary: '',
+          issued: entry.date,
+          alternate: '',
+          accountId,
+        })),
+        error: null,
+      };
+    }
+    return { messages: [], error: listed.error ?? 'The inbox could not be read.' };
+  } catch {
+    return { messages: [], error: 'The inbox could not be read.' };
+  }
+}
+
+/**
  * Polls Gmail inbox feeds, one per enabled account.
  *
  * Google still serves the Reader-era Atom feed at this endpoint, and it accepts
@@ -129,10 +194,11 @@ export function useGmail({
     try {
       const perAccount = await Promise.all(
         live.map(async (account) => {
-          let failed: string | null = null;
-          const found = await fetchGmailOnce(account.address, account.appPassword, undefined, (message) => {
-            failed = message;
-          }, undefined, account.id);
+          const { messages: found, error: failed } = await listGmailOnce(
+            account.address,
+            account.appPassword,
+            account.id,
+          );
           return { account, found, failed };
         }),
       );

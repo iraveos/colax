@@ -26,6 +26,14 @@ export interface FullMailInput {
   from?: string;
 }
 
+export interface FullMailImage {
+  /** Content id, without brackets. Matches `cid:…` references in the HTML. */
+  cid: string;
+  mime: string;
+  /** data: URL, ready for an img src. */
+  dataUrl: string;
+}
+
 export interface FullMailResult {
   ok: boolean;
   subject?: string;
@@ -33,6 +41,35 @@ export interface FullMailResult {
   date?: string;
   /** Plain text body, capped. */
   text?: string;
+  /** Raw HTML body, when the message carries one. Sanitized in the renderer. */
+  html?: string;
+  /** Inline images referenced by the HTML, by content id. */
+  images?: FullMailImage[];
+  error?: string;
+}
+
+/** One inbox row listed over IMAP: headers only, no bodies. */
+export interface InboxListMessage {
+  /** IMAP UID within INBOX. */
+  uid: number;
+  /** Gmail X-GM-MSGID when the server reports it; else the UID addresses it. */
+  gmailId: string | null;
+  subject: string;
+  fromName: string;
+  fromAddress: string;
+  /** ISO date, possibly empty. */
+  date: string;
+}
+
+export interface InboxListInput {
+  address: string;
+  appPassword: string;
+  limit?: number;
+}
+
+export interface InboxListResult {
+  ok: boolean;
+  messages?: InboxListMessage[];
   error?: string;
 }
 
@@ -65,6 +102,8 @@ export interface PlatformAPI {
   mail?: {
     /** Fetches one message's complete plain-text body in the main process. */
     fetchFullBody(input: FullMailInput): Promise<FullMailResult>;
+    /** Lists recent unread headers over IMAP. The feed fallback when Atom fails. */
+    listInbox(input: InboxListInput): Promise<InboxListResult>;
   };
   /**
    * Desktop shell controls. Absent on web — there is no tray, autostart or

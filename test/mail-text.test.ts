@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  collectInlineImages,
   decodePartBytes,
   decodeQuotedPrintable,
+  feedIdOfDecimal,
   gmailDecimalOf,
   gmailDecimalsOf,
   gmailHexOf,
   gmailRawFallback,
+  imapUidOf,
+  pickHtmlPart,
   pickTextPart,
   stripHtml,
 } from '../src/lib/mail-text.ts';
@@ -71,6 +75,46 @@ test('the fallback query quotes sender and subject', () => {
   );
   assert.equal(gmailRawFallback('', '  '), null);
   assert.equal(gmailRawFallback(null, null), null);
+});
+
+test('a decimal Gmail id round-trips to a feed id and back', () => {
+  const feedId = feedIdOfDecimal('1699871234567890123');
+  assert.ok(feedId?.startsWith('tag:gmail.google.com,2004:'));
+  assert.deepEqual(gmailDecimalsOf(gmailHexOf(feedId!)), ['1699871234567890123']);
+  assert.equal(feedIdOfDecimal('junk'), null);
+  assert.equal(feedIdOfDecimal(''), null);
+  assert.equal(feedIdOfDecimal(null), null);
+});
+
+test('imap ids parse to UIDs, everything else does not', () => {
+  assert.equal(imapUidOf('imap:4821'), 4821);
+  assert.equal(imapUidOf('tag:gmail.google.com,2004:18f3ab02cd'), null);
+  assert.equal(imapUidOf('imap:0'), null);
+  assert.equal(imapUidOf('imap:abc'), null);
+  assert.equal(imapUidOf(''), null);
+  assert.equal(imapUidOf(null), null);
+});
+
+test('html part and inline images are picked out of the structure', () => {
+  const tree = {
+    type: 'multipart/related',
+    childNodes: [
+      {
+        type: 'multipart/alternative',
+        childNodes: [
+          { type: 'text/plain', part: '1.1', parameters: {} },
+          { type: 'text/html', part: '1.2', parameters: {} },
+        ],
+      },
+      { type: 'image/png', part: '2', id: '<logo123>', parameters: {}, size: 42000 },
+      { type: 'image/jpeg', part: '3', disposition: 'attachment', parameters: {} },
+    ],
+  };
+  assert.deepEqual(pickHtmlPart(tree), { part: '1.2' });
+  assert.deepEqual(collectInlineImages(tree), [
+    { part: '2', cid: 'logo123', mime: 'image/png', size: 42000 },
+  ]);
+  assert.equal(pickHtmlPart({ type: 'text/plain', part: '1', parameters: {} }), null);
 });
 
 test('html strips to readable text without scripts', () => {

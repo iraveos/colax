@@ -21,8 +21,9 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { fetchGmailOnce, gmailOpenUrl, type GmailMessage } from './useGmail.ts';
+import { gmailOpenUrl, imapUidOf, listGmailOnce, type GmailMessage } from './useGmail.ts';
 import { gmailHexOf } from '../lib/mail-text.ts';
+import { FullMail } from './FullMail.tsx';
 import { useFullBody } from './useFullBody.ts';
 import type { CachedMailMessage, GmailAccount } from '../vault/storage.ts';
 import type { VaultItem } from '../vault/types.ts';
@@ -87,15 +88,9 @@ export function LoginMessages({
       );
       const perAccount = await Promise.all(
         live.map(async (account) => {
-          let failed: string | null = null;
-          const found = await fetchGmailOnce(
+          const { messages: found, error: failed } = await listGmailOnce(
             account.address,
             account.appPassword,
-            undefined,
-            (message) => {
-              failed = message;
-            },
-            undefined,
             account.id,
           );
           return { account, found, failed };
@@ -189,7 +184,7 @@ export function LoginMessages({
     if (!expandedId || !canFullBody || !messages) return;
     if (requested.current.has(expandedId)) return;
     const message = messages.find((entry) => `${entry.accountId}:${entry.id}` === expandedId);
-    if (!message || !gmailHexOf(message.id)) return;
+    if (!message || (!gmailHexOf(message.id) && !imapUidOf(message.id))) return;
     const account = accounts.find((entry) => entry.id === message.accountId);
     if (!account) return;
     requested.current.add(expandedId);
@@ -366,9 +361,14 @@ export function LoginMessages({
                               Collapse
                             </button>
                           </span>
-                          {canFullBody && gmailHexOf(message.id) ? (
+                          {canFullBody && (gmailHexOf(message.id) || imapUidOf(message.id)) ? (
                             fullBodies[key]?.status === 'ok' ? (
-                              <span className="full-mail">{fullBodies[key]?.text}</span>
+                              <FullMail
+                                html={fullBodies[key]?.html}
+                                text={fullBodies[key]?.text}
+                                images={fullBodies[key]?.images}
+                                onOpenExternal={onOpenExternal}
+                              />
                             ) : fullBodies[key]?.status === 'error' ? (
                               <span className="field__hint">
                                 {fullBodies[key]?.error}{' '}

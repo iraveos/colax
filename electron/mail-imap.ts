@@ -11,10 +11,13 @@
 
 import { ImapFlow } from 'imapflow';
 import {
+  collectInlineImages,
   decodePartBytes,
   gmailDecimalsOf,
   gmailHexOf,
   gmailRawFallback,
+  imapUidOf,
+  pickHtmlPart,
   pickTextPart,
   stripHtml,
   type MailPartNode,
@@ -37,8 +40,31 @@ export interface FullMailResult {
   date?: string;
   /** Plain text body, capped. */
   text?: string;
+  /** Raw HTML body, when the message carries one. Sanitized in the renderer. */
+  html?: string;
+  /** Inline images referenced by the HTML, by content id. */
+  images?: { cid: string; mime: string; dataUrl: string }[];
   error?: string;
 }
+
+export interface InboxListMessage {
+  /** IMAP UID within INBOX. */
+  uid: number;
+  /** Gmail X-GM-MSGID when the server reports it; else the UID addresses it. */
+  gmailId: string | null;
+  subject: string;
+  fromName: string;
+  fromAddress: string;
+  /** ISO date, possibly empty. */
+  date: string;
+}
+
+/** Upper bound on inline images per message: mail, not an album. */
+const MAX_INLINE_IMAGES = 8;
+/** Largest single inline image fetched. */
+const MAX_IMAGE_BYTES = 1_000_000;
+/** What the UI ever sees of an HTML body. */
+const MAX_HTML_CHARS = 300_000;
 
 /** Upper bound on a fetched text part: mail, not attachments. */
 const MAX_TEXT_BYTES = 400_000;
@@ -49,12 +75,168 @@ function invalid(message: string): FullMailResult {
   return { ok: false, error: message };
 }
 
+/**
+ * Recent unread headers over IMAP: the listing behind every message list when
+ * the Atom feed refuses (401/403/empty — Google shut Basic-auth feed access
+ * down, so the feed is the fallback now, not the source of truth).
+ *
+ * Headers only, newest first, capped — bodies still load per opened message,
+ * exactly like the feed path, so polling stays cheap.
+ */
+export async function listInboxMail(input: {
+  address: unknown;
+  appPassword: unknown;
+  limit?: unknown;
+}): Promise<{ ok: boolean; messages?: InboxListMessage[]; error?: string }> {
+  const address = typeof input?.address === 'string' ? input.address.trim().slice(0, 320) : '';
+  const appPassword =
+    typeof input?.appPassword === 'string' ? input.appPassword.replace(/\s+/g, '').slice(0, 200) : '';
+  if (!address || !appPassword) return { ok: false, error: 'Missing mailbox credentials.' };
+  const limit =
+    typeof input?.limit === 'number' && Number.isFinite(input.limit)
+      ? Math.max(1, Math.min(50, Math.floor(input.limit)))
+      : 20;
+
+  const client = new ImapFlow({
+    host: 'imap.gmail.com',
+    port: 993,
+    secure: true,
+    logger: false,
+    auth: { user: address, pass: appPassword },
+    connectionTimeout: 15000,
+    socketTimeout: 30000,
+  });
+
+  const run = (async (): Promise<{ ok: boolean; messages?: InboxListMessage[]; error?: string }> => {
+    try {
+      await client.connect();
+    } catch {
+      return { ok: false, error: 'Could not sign in to Gmail. Check the address and the app password.' };
+    }
+    try {
+      const lock = await client.getMailboxLock('INBOX');
+      try {
+        const found = await client.search({ seen: false }, { uid: true });
+        const uids = (Array.isArray(found) ? [...found] : []).sort((a, b) => a - b).slice(-limit);
+        if (uids.length === 0) return { ok: true, messages: [] };
+        const messages: InboxListMessage[] = [];
+        for await (const fetched of client.fetch(uids, { envelope: true }, { uid: true })) {
+          if (!fetched.uid) continue;
+          const from = fetched.envelope?.from?.[0];
+          messages.push({
+            uid: fetched.uid,
+            // Gmail hands over X-GM-MSGID for free on fetch: with it the row
+            // gets a real feed-style id and everything downstream (deep
+            // links, id search, cache keys) works untouched.
+            gmailId: typeof fetched.emailId === 'string' && /^\d+$/.test(fetched.emailId) ? fetched.emailId : null,
+            subject: fetched.envelope?.subject ?? '',
+            fromName: from?.name ?? '',
+            fromAddress: from?.address ?? '',
+            date: fetched.envelope?.date ? new Date(fetched.envelope.date).toISOString() : '',
+          });
+        }
+        messages.sort((a, b) => b.uid - a.uid);
+        return { ok: true, messages };
+      } finally {
+        lock.release();
+      }
+    } finally {
+      await client.logout().catch(() => undefined);
+    }
+  })();
+
+  const timeout = new Promise<{ ok: boolean; messages?: InboxListMessage[]; error?: string }>((resolve) =>
+    setTimeout(() => resolve({ ok: false, error: 'Gmail took too long to answer. Try again.' }), 30000),
+  );
+  return Promise.race([run, timeout]);
+}
+
+/**
+ * Reads one message's envelope, text, HTML and inline images out of an
+ * already-open mailbox. Shared by the Gmail-id search and the direct UID
+ * path, so both render identically downstream.
+ */
+async function readOne(client: ImapFlow, box: string, uid: number): Promise<FullMailResult> {
+  const lock = await client.getMailboxLock(box);
+  try {
+    const meta = await client.fetchOne(uid, { bodyStructure: true, envelope: true }, { uid: true });
+    if (!meta || !meta.bodyStructure) return invalid('Message not found on the server.');
+    const structure = meta.bodyStructure as MailPartNode;
+    const pick = pickTextPart(structure);
+    if (!pick) return invalid('That message has no readable text part.');
+    const fetched = await client.fetchOne(uid, { bodyParts: [pick.part] }, { uid: true });
+    const buffer = fetched && fetched.bodyParts?.get(pick.part);
+    if (!buffer || buffer.length === 0) return invalid('The text part came back empty.');
+    const bytes = buffer.length > MAX_TEXT_BYTES ? buffer.subarray(0, MAX_TEXT_BYTES) : buffer;
+    const node = findNode(structure, pick.part);
+    const text = decodePartBytes(
+      bytes,
+      node?.encoding,
+      node?.parameters?.charset ?? node?.parameters?.CHARSET,
+    );
+    const body = (pick.html ? stripHtml(text) : text).slice(0, MAX_TEXT_CHARS);
+    // Rich body for Gmail-like rendering downstream, plus the inline images
+    // its `cid:` references point at. Plain-text-only mail skips all of this.
+    let html: string | undefined;
+    const images: { cid: string; mime: string; dataUrl: string }[] = [];
+    const htmlPick = pickHtmlPart(structure);
+    if (htmlPick) {
+      let raw = htmlPick.part === pick.part ? bytes : undefined;
+      if (!raw) {
+        const htmlFetched = await client.fetchOne(uid, { bodyParts: [htmlPick.part] }, { uid: true });
+        raw = htmlFetched && htmlFetched.bodyParts ? htmlFetched.bodyParts.get(htmlPick.part) : undefined;
+      }
+      if (raw && raw.length > 0) {
+        const hnode = findNode(structure, htmlPick.part);
+        html = decodePartBytes(
+          raw.length > MAX_TEXT_BYTES ? raw.subarray(0, MAX_TEXT_BYTES) : raw,
+          hnode?.encoding,
+          hnode?.parameters?.charset ?? hnode?.parameters?.CHARSET,
+        ).slice(0, MAX_HTML_CHARS);
+      }
+    }
+    if (html) {
+      for (const image of collectInlineImages(structure).slice(0, MAX_INLINE_IMAGES)) {
+        if (image.size > MAX_IMAGE_BYTES) continue;
+        try {
+          const got = await client.fetchOne(uid, { bodyParts: [image.part] }, { uid: true });
+          const data = got && got.bodyParts ? got.bodyParts.get(image.part) : undefined;
+          if (!data || data.length === 0 || data.length > MAX_IMAGE_BYTES) continue;
+          images.push({
+            cid: image.cid,
+            mime: image.mime,
+            dataUrl: `data:${image.mime};base64,${Buffer.from(data).toString('base64')}`,
+          });
+        } catch {
+          // One bad image never sinks the message.
+        }
+      }
+    }
+    const from = meta.envelope?.from?.[0];
+    return {
+      ok: true,
+      subject: meta.envelope?.subject ?? '',
+      from: from ? `${from.name ?? ''}${from.name && from.address ? ' · ' : ''}${from.address ?? ''}` : '',
+      date: meta.envelope?.date ? new Date(meta.envelope.date).toLocaleString() : '',
+      text: body || '(No readable text in this message.)',
+      ...(html ? { html } : {}),
+      ...(images.length > 0 ? { images } : {}),
+    };
+  } finally {
+    lock.release();
+  }
+}
+
 export async function fetchFullMail(input: FullMailInput): Promise<FullMailResult> {
   const address = typeof input?.address === 'string' ? input.address.trim().slice(0, 320) : '';
   const appPassword = typeof input?.appPassword === 'string' ? input.appPassword.replace(/\s+/g, '').slice(0, 200) : '';
   if (!address || !appPassword) return invalid('Missing mailbox credentials.');
-  const decimals = gmailDecimalsOf(gmailHexOf(input?.feedId) ?? input?.feedId ?? null);
-  if (decimals.length === 0) return invalid('That message has no addressable id.');
+  // `imap:<uid>` addresses INBOX directly; anything else goes through the
+  // Gmail-id search plus the sender/subject fallback below.
+  const directUid = imapUidOf(typeof input?.feedId === 'string' ? input.feedId : null);
+  const decimals =
+    directUid === null ? gmailDecimalsOf(gmailHexOf(input?.feedId) ?? input?.feedId ?? null) : [];
+  if (directUid === null && decimals.length === 0) return invalid('That message has no addressable id.');
 
   const client = new ImapFlow({
     host: 'imap.gmail.com',
@@ -73,6 +255,7 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
       return invalid('Could not sign in to Gmail. Check the address and the app password.');
     }
     try {
+      if (directUid !== null) return readOne(client, 'INBOX', directUid);
       // All Mail covers inbox and archive alike, but its path is
       // locale-dependent — resolve it by special-use flag, not by guessing
       // English. INBOX stays as the fallback.
@@ -130,34 +313,7 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
           `Message not found on the server (signed in OK; tried ${decimals.length} id(s) in ${where}).`,
         );
       }
-      const lock = await client.getMailboxLock(box);
-      try {
-        const meta = await client.fetchOne(uids[0]!, { bodyStructure: true, envelope: true }, { uid: true });
-        if (!meta || !meta.bodyStructure) return invalid('Could not read that message.');
-        const pick = pickTextPart(meta.bodyStructure as MailPartNode);
-        if (!pick) return invalid('That message has no readable text part.');
-        const fetched = await client.fetchOne(uids[0]!, { bodyParts: [pick.part] }, { uid: true });
-        const buffer = fetched && fetched.bodyParts?.get(pick.part);
-        if (!buffer || buffer.length === 0) return invalid('The text part came back empty.');
-        const bytes = buffer.length > MAX_TEXT_BYTES ? buffer.subarray(0, MAX_TEXT_BYTES) : buffer;
-        const node = findNode(meta.bodyStructure as MailPartNode, pick.part);
-        const text = decodePartBytes(
-          bytes,
-          node?.encoding,
-          node?.parameters?.charset ?? node?.parameters?.CHARSET,
-        );
-        const body = (pick.html ? stripHtml(text) : text).slice(0, MAX_TEXT_CHARS);
-        const from = meta.envelope?.from?.[0];
-        return {
-          ok: true,
-          subject: meta.envelope?.subject ?? '',
-          from: from ? `${from.name ?? ''}${from.name && from.address ? ' · ' : ''}${from.address ?? ''}` : '',
-          date: meta.envelope?.date ? new Date(meta.envelope.date).toLocaleString() : '',
-          text: body || '(No readable text in this message.)',
-        };
-      } finally {
-        lock.release();
-      }
+      return readOne(client, box, uids[0]!);
     } finally {
       await client.logout().catch(() => undefined);
     }

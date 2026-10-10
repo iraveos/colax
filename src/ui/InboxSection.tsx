@@ -14,7 +14,7 @@
  */
 
 import { useState } from 'react';
-import { fetchGmailOnce, useGmail, type GmailMessage } from './useGmail.ts';
+import { listGmailOnce, useGmail, type GmailMessage } from './useGmail.ts';
 import { newGmailAccountId, type GmailAccount } from '../vault/storage.ts';
 import { Toggle } from './primitives.tsx';
 import { relativeTime } from '../vault/types.ts';
@@ -56,8 +56,9 @@ export function InboxSection({
   async function test(account: GmailAccount) {
     setTesting(account.id);
     try {
-      const found = await fetchGmailOnce(account.address, account.appPassword, undefined, undefined, undefined, account.id);
-      if (found.length === 0) onNotify('Connected, but no messages were returned.', 'error');
+      const { messages: found, error: failed } = await listGmailOnce(account.address, account.appPassword, account.id);
+      if (failed) onNotify(failed, 'error');
+      else if (found.length === 0) onNotify('Connected, but no messages were returned.', 'error');
       else {
         onNotify(`Connected: ${found.length} recent message${found.length === 1 ? '' : 's'}`);
         void refresh();

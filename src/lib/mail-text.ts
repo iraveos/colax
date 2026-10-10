@@ -6,6 +6,19 @@
  * lives in electron/mail-imap.ts and calls back into these.
  */
 
+/**
+ * A message listed over IMAP carries `imap:<uid>` instead of a feed id.
+ * UIDs address INBOX directly; everything else (deep links, id search) falls
+ * back to subject matching for these.
+ */
+export function imapUidOf(id: string | undefined | null): number | null {
+  if (!id) return null;
+  const match = /^imap:(\d+)$/.exec(id.trim());
+  if (!match) return null;
+  const uid = Number(match[1]);
+  return Number.isSafeInteger(uid) && uid > 0 ? uid : null;
+}
+
 /** The hex tail of a feed id is the Gmail message id (`tag:...,2004:<hex>`). */
 export function gmailHexOf(id: string | undefined | null): string | null {
   if (!id) return null;
@@ -33,6 +46,20 @@ export function gmailRawFallback(from: string | undefined | null, subject: strin
 export function gmailDecimalOf(hex: string): string | null {
   try {
     return BigInt(`0x${hex}`).toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Feed-style id from a decimal X-GM-MSGID, so IMAP-listed rows address exactly
+ * like feed rows: deep links, id search and cache keys all work untouched.
+ */
+export function feedIdOfDecimal(decimal: string | undefined | null): string | null {
+  if (!decimal || !/^\d+$/.test(decimal)) return null;
+  try {
+    const hex = BigInt(decimal).toString(16);
+    return /^[0-9a-f]+$/i.test(hex) ? `tag:gmail.google.com,2004:${hex}` : null;
   } catch {
     return null;
   }
@@ -69,8 +96,39 @@ export interface MailPartNode {
   encoding?: string;
   size?: number;
   disposition?: string;
+  /** Content id, for matching `cid:` image references. */
+  id?: string;
   parameters?: Record<string, string>;
   childNodes?: MailPartNode[];
+}
+
+/** First text/html part that is not an attachment, for rich rendering. */
+export function pickHtmlPart(node: MailPartNode | null | undefined): { part: string } | null {
+  if (!node) return null;
+  const type = (node.type ?? '').toLowerCase();
+  const isAttachment = (node.disposition ?? '').toLowerCase() === 'attachment';
+  if (!isAttachment && type === 'text/html' && node.part) return { part: node.part };
+  for (const child of node.childNodes ?? []) {
+    const found = pickHtmlPart(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Inline (non-attachment) image parts with content ids, for `cid:` rendering. */
+export function collectInlineImages(
+  node: MailPartNode | null | undefined,
+  out: { part: string; cid: string; mime: string; size: number }[] = [],
+): { part: string; cid: string; mime: string; size: number }[] {
+  if (!node) return out;
+  const type = (node.type ?? '').toLowerCase();
+  const isAttachment = (node.disposition ?? '').toLowerCase() === 'attachment';
+  if (!isAttachment && type.startsWith('image/') && node.part) {
+    const cid = (node.id ?? '').replace(/^<|>$/g, '').trim();
+    if (cid) out.push({ part: node.part, cid, mime: type, size: node.size ?? 0 });
+  }
+  for (const child of node.childNodes ?? []) collectInlineImages(child, out);
+  return out;
 }
 
 /**

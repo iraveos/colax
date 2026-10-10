@@ -448,6 +448,13 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 .login-messages__actions{display:flex;gap:var(--space-2);flex-wrap:wrap}
 /* A whole message, fetched over IMAP: pre-wrapped, capped, selectable. */
 .full-mail{display:block;width:100%;max-height:340px;overflow-y:auto;overscroll-behavior:contain;white-space:pre-wrap;word-break:break-word;user-select:text;font-size:var(--text-sm);line-height:1.65;color:var(--text);background:var(--bg-deep);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px}
+/* Rich rendering: the message's own HTML, scrubbed. Images fit the column,
+   remote ones never load — their placeholder says where to see them. */
+.full-mail--rich{white-space:normal}
+.full-mail--rich img{max-width:100%;height:auto;border-radius:var(--radius-sm)}
+.full-mail--rich table{max-width:100%}
+.full-mail--rich a{color:var(--accent-text)}
+.full-mail__blocked{display:inline-block;margin:4px 0;padding:6px 10px;border:1px dashed var(--border-strong);border-radius:var(--radius-sm);font-size:var(--text-xs);color:var(--text-muted)}
 .inbox__summary--full{display:block;-webkit-line-clamp:unset;overflow:visible;user-select:text}
 .login-messages__body{display:flex;flex-direction:column;gap:var(--space-2);min-width:0}
 .login-messages__toolbar{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}

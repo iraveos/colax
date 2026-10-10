@@ -2481,10 +2481,20 @@ onCreate={vault.create}
             ref={contentRef}
             style={{
               ...(view !== 'basic' && activeChannel?.kind !== 'dashboard' ? { overflow: 'hidden' } : undefined),
-              // A bottom-docked bar floats over the page end: without clearance
-              // the dashboard's last rows scroll underneath it.
+              // A dock floats over the page: without clearance on its edge the
+              // content ends scroll underneath it. One rule per edge, since
+              // bars roam freely now.
               ...(prefs.docks.some((dock) => dock.enabled && dock.pos.edge === 'bottom')
                 ? { paddingBottom: 96 }
+                : undefined),
+              ...(prefs.docks.some((dock) => dock.enabled && dock.pos.edge === 'top')
+                ? { paddingTop: 72 }
+                : undefined),
+              ...(prefs.docks.some((dock) => dock.enabled && dock.pos.edge === 'left')
+                ? { paddingLeft: 96 }
+                : undefined),
+              ...(prefs.docks.some((dock) => dock.enabled && dock.pos.edge === 'right')
+                ? { paddingRight: 96 }
                 : undefined),
             }}
           >
