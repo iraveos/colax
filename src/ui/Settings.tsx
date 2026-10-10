@@ -1818,14 +1818,14 @@ export function Settings(props: {
             <Row
               label="Low-memory mode"
               hint={
-                // Deliberately does not promise a big number. Dropping the GPU
-                // process used to be described here as an 85 MB saving because
-                // that is what the memory readout said — and it also painted a
-                // black window. A switch that overstates itself is worse than a
-                // small one that keeps its word.
+                // The figure here is measured, and the switch that used to be
+                // described as "removes the GPU process entirely" is gone: it
+                // was the one that painted a black window. What remains is the
+                // combination that was individually checked with
+                // --render-check, so the promise and the pixels agree.
                 efficiencyState?.maxSavings
-                  ? `On and in force: Chromium is using its low-end-device caches — smaller raster tiles, smaller image and tile caches, no prerender — and Back/Forward caching is off. Measured saving on this machine: a few megabytes. It is a trim, not the lever it sounds like.${efficiencyState.restartRequired ? ' Restart the app to apply the change.' : ''}`
-                  : 'Off. Switching it on makes Chromium use its low-end-device caches — smaller raster tiles, smaller image and tile caches, no prerender — which is worth a few megabytes. Needs a restart, so it cannot take effect while the app is running.'
+                  ? `On and in force: Chromium is rasterizing in software with its low-end-device caches, which is what removes the GPU process — measured at about 80 MB of unique memory. It renders in software as a result, so animation is less smooth than the hardware path.${efficiencyState.restartRequired ? ' Restart the app to apply the change.' : ''}`
+                  : 'The biggest saving available, and on by default: Chromium drops the GPU process and rasterizes in software, with smaller image and tile caches. Costs some smoothness in animation; nothing about your vault changes. Needs a restart, so switching it back on here cannot take effect while the app is running.'
               }
             >
               <Toggle

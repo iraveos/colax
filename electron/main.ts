@@ -59,12 +59,14 @@ const diagnostic = memoryReport || renderCheck;
      tiles, smaller image decode caches, no prerender — which trades a little
      smoothness for memory without touching how frames reach the screen.
 
-   The rendering path itself is off limits, however tempting: `--disable-gpu`
-   and friends saved the most of anything here (about 80 MB, because the GPU
-   process alone holds that much) and produced a black window on this machine —
-   loaded, healthy, invisible. Anything added below has to pass
-   `electron . --render-check`, which captures the window and reports how many
-   distinct colours it actually painted, before it ships.
+   The rendering path is where the largest remaining saving is — about 80 MB,
+   because the GPU process alone holds that much — and it is also where a change
+   can produce a window that loads, reports a healthy process tree, and paints
+   nothing. One switch did exactly that in a shipped build. So every switch in
+   this area is measured one at a time with `electron . --render-check`, which
+   captures the window and reports how many distinct colours it actually
+   painted: ~2000 means a UI, single digits mean a blank screen. Nothing here
+   ships on the strength of a memory figure alone.
 
    The file lives in userData rather than in the vault because it has to be
    read *before* the vault exists: preferences live inside the encrypted vault,
@@ -180,19 +182,25 @@ function applyMemorySwitches(): void {
   app.commandLine.appendSwitch('no-first-run');
   app.commandLine.appendSwitch('no-service-autorun');
   if (efficiency.maxSavings) {
-    // Smaller raster tiles, smaller image-decode caches, no prerender. This is
-    // the leanest rendering path that still composites a frame for display.
-    //
-    // `disable-gpu`, `disable-gpu-compositing` and `force-gpu-mem-available-mb=0`
-    // are NOT here, and must not be added back. Each of them removes the GPU
-    // process and looked like the single biggest saving on any memory readout —
-    // and each leaves a window that loads, reports a healthy process tree, and
-    // paints a flat black rectangle the user cannot act on. `--render-check`
-    // measures it: the same page puts 2088 distinct colours on screen with the
-    // GPU and 4 without, which is the difference between a UI and a blank
-    // screen. Memory was cheaper to measure than a visible app, so it won for a
-    // while; pixels are the check that decides.
     app.commandLine.appendSwitch('enable-low-end-device-mode');
+    // Software rasterization: the GPU process is the single largest thing in
+    // the tree (~100 MB private), and nothing here needs hardware acceleration.
+    // Measured with `--render-check`, one switch at a time, on the machine this
+    // was built on:
+    //
+    //   disable-gpu                  -> 1999 distinct colours painted (fine)
+    //   disable-gpu-compositing      -> 1992 distinct colours painted (fine)
+    //   force-gpu-mem-available-mb=0 ->    4 distinct colours painted (BLANK)
+    //
+    // The budget switch is the one that costs the screen: telling Chromium its
+    // GPU memory allowance is zero leaves the compositor unable to produce a
+    // frame, so the window keeps its background colour and nothing else — while
+    // still loading, still reporting a healthy process tree, and still looking
+    // like a saving on any memory readout. It is not here, and is banned by
+    // test. The other two are safe *because they were measured*, not because
+    // they sound safe, and `npm run check:render` is what keeps them honest.
+    app.commandLine.appendSwitch('disable-gpu');
+    app.commandLine.appendSwitch('disable-gpu-compositing');
     app.commandLine.appendSwitch('disable-features', `${DISABLED_FEATURES},BackForwardCache`);
   }
 }

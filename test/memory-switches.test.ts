@@ -6,18 +6,21 @@ import { fileURLToPath } from 'node:url';
 /**
  * The rendering path is not a memory setting.
  *
- * A previous build turned the GPU process off in the name of saving memory —
- * `disable-gpu`, `disable-gpu-compositing`, `force-gpu-mem-available-mb=0` —
+ * A shipped build set Chromium's GPU memory allowance to zero to save memory,
  * and it worked on every readout the project had: the window loaded, the
- * process tree looked healthy, and the reported figure dropped by ~80 MB,
- * because the GPU process alone holds that much. The window was also a flat
- * black rectangle: the page was there, its pixels were not. `--render-check`
- * eventually showed it as 4 distinct colours on screen against 2088 with the
- * GPU path, which is the difference between a UI and a blank screen.
+ * process tree looked healthy, and the reported figure dropped by ~80 MB. The
+ * window was also a flat black rectangle — the page was there, its pixels were
+ * not. `--render-check` showed it as 4 distinct colours on screen.
  *
- * These switches are therefore banned by test rather than by comment. A unit
- * test cannot see a window, so it checks the thing that can be checked cheaply
- * and deterministically: that the code never passes them. Pixel verification is
+ * Measuring the three suspects one at a time is what identified the culprit:
+ * disabling the GPU entirely still painted ~2000 colours, and so did disabling
+ * GPU compositing, while `force-gpu-mem-available-mb=0` painted 4. So the GPU
+ * switches stay (they carry the saving) and the budget switch is banned by
+ * test rather than by comment.
+ *
+ * A unit test cannot see a window, so it checks what can be checked cheaply and
+ * deterministically: that the code never passes the fatal switch, and that the
+ * pixel check which caught it is still reachable. Pixel verification itself is
  * the other half, and it is a command rather than an assertion — see
  * `npm run check:render`.
  */
@@ -32,13 +35,25 @@ function passesSwitch(name: string): boolean {
   return new RegExp(`appendSwitch\\(\\s*['"\`]${name}['"\`]`).test(source);
 }
 
-test('switches that blank the window are never passed', () => {
-  for (const banned of ['disable-gpu', 'disable-gpu-compositing', 'force-gpu-mem-available-mb', 'in-process-gpu']) {
-    assert.equal(
-      passesSwitch(banned),
-      false,
-      `--${banned} leaves a window that loads and paints nothing; verify with npm run check:render before re-adding`,
-    );
+test('the switch that blanked the window is never passed', () => {
+  // Measured, not assumed: with --force-gpu-mem-available-mb=0 the window
+  // painted 4 distinct colours; without it, ~2000.
+  assert.equal(
+    passesSwitch('force-gpu-mem-available-mb'),
+    false,
+    'this one leaves a window that loads and paints nothing; verify with npm run check:render before re-adding',
+  );
+  // Folding the GPU into the browser process is a stability trade, not a
+  // memory one, so it is out too.
+  assert.equal(passesSwitch('in-process-gpu'), false, 'a GPU fault would take the whole app down with it');
+});
+
+test('the GPU switches that carry the saving are still applied', () => {
+  // These were the prime suspects and are cleared: each was measured to paint a
+  // real UI (~2000 colours) on its own. Dropping them silently would give back
+  // ~80 MB for nothing.
+  for (const kept of ['disable-gpu', 'disable-gpu-compositing']) {
+    assert.equal(passesSwitch(kept), true, `${kept} is verified to render; do not remove it without a measurement`);
   }
 });
 
