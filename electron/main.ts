@@ -11,7 +11,8 @@
  * tsconfig.app.json, which is the renderer project.
  */
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell, Tray } from 'electron';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { ShellSettings } from '../src/lib/platform.ts';
 import { closeMailConnections, fetchFullMail, listInboxMail } from './mail-imap.ts';
 // Inlined as a data URL by esbuild (see scripts/electron-build.mjs), so the
@@ -19,6 +20,197 @@ import { closeMailConnections, fetchFullMail, listInboxMail } from './mail-imap.
 import trayPng from '../public/colax-icon.png';
 
 const isDev = process.env.ELECTRON_RENDERER_URL !== undefined;
+/** Prints per-process memory once the window has loaded, then exits. Diagnostic only. */
+const memoryReport = process.argv.includes('--memory-report');
+
+/* ==========================================================================
+   Memory switches — read from disk, applied before anything is created
+   ==========================================================================
+
+   A Chromium app is several processes, and the figure people compare against
+   Task Manager is their sum. Most of that sum is not this app's JavaScript: it
+   is Chromium's own baseline (the browser process, a GPU process, and whatever
+   renderer processes exist). What can honestly be cut, and is cut here:
+
+   - `SpareRendererForSitePerProcess` is Chromium pre-spawning a whole renderer
+     process — tens of megabytes — so that a navigation to another site starts
+     instantly. This app loads exactly one document and never navigates, so the
+     spare process is pure waste. Disabling it is the largest single saving and
+     costs nothing at all.
+   - V8's default heap limit is generous, and a heap that is allowed to grow
+     grows. Capping old space and the semi-space makes the collector work at a
+     size this app actually uses, so peak resident memory comes down without any
+     visible difference. It is applied always, not only in low-memory mode,
+     because a vault holds kilobytes of data, not megabytes.
+   - Low-memory mode (opt-in, from Settings › Optimize) additionally forces
+     Chromium's low-end-device heuristics — smaller raster tiles, smaller image
+     decode caches, no prerender — and drops the GPU process entirely by
+     rasterizing in software. That trades a little smoothness for the last
+     chunk, which is exactly the trade the switch advertises.
+
+   The file lives in userData rather than in the vault because it has to be
+   read *before* the vault exists: preferences live inside the encrypted vault,
+   which by definition cannot be opened this early.
+   -------------------------------------------------------------------------- */
+interface EfficiencySettings {
+  maxSavings: boolean;
+}
+
+const efficiencyFile = () => join(app.getPath('userData'), 'efficiency.json');
+
+function readEfficiency(): EfficiencySettings {
+  try {
+    const raw = JSON.parse(readFileSync(efficiencyFile(), 'utf8')) as { maxSavings?: unknown };
+    // Absent or malformed means "never touched, or not readable", which takes
+    // the lean path: this is an offline vault, the trade costs a little
+    // animation smoothness, and it measured ~85 MB smaller. Only an explicit
+    // false — the user switching it off again — opts back into the GPU path.
+    return { maxSavings: raw?.maxSavings === false ? false : true };
+  } catch {
+    return { maxSavings: true };
+  }
+}
+
+function writeEfficiency(next: EfficiencySettings): void {
+  const file = efficiencyFile();
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(next), 'utf8');
+  } catch {
+    // A read-only profile keeps the setting for this session only.
+  }
+}
+
+// Report mode measures a throwaway profile: it must not read or write the
+// user's real caches, and it must not fight the running app for the profile
+// lock. Declared before anything reads a path.
+if (memoryReport) {
+  try {
+    app.setPath('userData', join(app.getPath('temp'), 'colax-memory-report'));
+  } catch {
+    // A locked-down temp dir just means the default profile is used instead.
+  }
+}
+
+const efficiency = readEfficiency();
+/**
+ * What the running process was actually started with.
+ *
+ * Compared against the stored setting to answer "will this need a restart"
+ * honestly: Chromium has already read its command line, so a toggle flipped now
+ * can only take effect on the next launch.
+ */
+const appliedAtStartup = efficiency.maxSavings;
+
+/**
+ * V8 heap caps, in megabytes.
+ *
+ * Old space is where long-lived objects live; the semi-space is the young
+ * generation V8 collects most often. A 192 MB ceiling is far above anything
+ * this app allocates (the whole vault is kilobytes) so nothing is ever evicted
+ * early, while a runaway allocation is refused instead of ballooning the
+ * process. The semi-space cap stops V8 from growing a young generation it never
+ * fills.
+ */
+const HEAP_LIMITS = '--max-old-space-size=192 --max-semi-space-size=8';
+
+/**
+ * Chromium features this app never uses, in one comma-separated switch.
+ *
+ * `appendSwitch('disable-features', …)` replaces rather than appends, so the
+ * whole list has to be assembled here — two calls would silently drop the
+ * first. Every entry below is a background service a local password vault
+ * cannot use:
+ *
+ *  - SpareRendererForSitePerProcess: a whole pre-spawned renderer process kept
+ *    warm so a *navigation* to another site starts instantly. This app loads
+ *    one document and never navigates.
+ *  - AudioServiceOutOfProcess: a utility process whose only job is sound. The
+ *    app's chimes are tiny buffers played from the renderer, and this costs a
+ *    process for nothing.
+ *  - MediaRouter / DialMediaRouteProvider: Chromecast-style casting.
+ *  - AutofillServerCommunication / OptimizationHints: network chatter to
+ *    Google, which a zero-network vault must not make anyway.
+ *  - Translate, CalculateNativeWinOcclusion: a language translation bar and a
+ *    Windows-only occlusion probe, neither reachable from this UI.
+ */
+const DISABLED_FEATURES = [
+  'SpareRendererForSitePerProcess',
+  'AudioServiceOutOfProcess',
+  'MediaRouter',
+  'DialMediaRouteProvider',
+  'AutofillServerCommunication',
+  'OptimizationHints',
+  'Translate',
+  'CalculateNativeWinOcclusion',
+].join(',');
+
+function applyMemorySwitches(): void {
+  app.commandLine.appendSwitch('js-flags', HEAP_LIMITS);
+  app.commandLine.appendSwitch('disable-features', DISABLED_FEATURES);
+  // No background network at all: no component updates, no crash uploads, no
+  // domain reliability beacons, no first-run phone-home. The vault is offline
+  // by design, so each of these is a service running for nothing.
+  app.commandLine.appendSwitch('disable-background-networking');
+  app.commandLine.appendSwitch('disable-component-update');
+  app.commandLine.appendSwitch('disable-domain-reliability');
+  app.commandLine.appendSwitch('disable-client-side-phishing-detection');
+  app.commandLine.appendSwitch('disable-default-apps');
+  app.commandLine.appendSwitch('disable-sync');
+  app.commandLine.appendSwitch('disable-breakpad');
+  app.commandLine.appendSwitch('metrics-recording-only');
+  app.commandLine.appendSwitch('no-first-run');
+  app.commandLine.appendSwitch('no-service-autorun');
+  if (efficiency.maxSavings) {
+    app.commandLine.appendSwitch('enable-low-end-device-mode');
+    app.commandLine.appendSwitch('disable-gpu');
+    app.commandLine.appendSwitch('disable-gpu-compositing');
+    // Software rasterization needs its own budget, or Chromium keeps whole
+    // tiles in memory it would otherwise hand to the GPU.
+    app.commandLine.appendSwitch('force-gpu-mem-available-mb', '0');
+    app.commandLine.appendSwitch('disable-features', `${DISABLED_FEATURES},BackForwardCache`);
+  }
+}
+
+applyMemorySwitches();
+
+/**
+ * Per-process memory, the way the OS reports it. kB in, bytes out.
+ *
+ * `getAppMetrics()` is the only API that sees the whole tree at once, which is
+ * why the Optimize panel reports from here rather than from the page's own
+ * `performance.memory` — the two agree only when the page's heap happens to be
+ * most of the app, and it never is.
+ */
+function readProcessMemory() {
+  try {
+    const processes = app.getAppMetrics().map((entry) => ({
+      type: entry.type === 'Tab' ? 'Renderer' : entry.type,
+      workingSetBytes: Math.max(0, Math.round((entry.memory?.workingSetSize ?? 0) * 1024)),
+      privateBytes: Math.max(0, Math.round((entry.memory?.privateBytes ?? 0) * 1024)),
+    }));
+    return {
+      processes,
+      totalBytes: processes.reduce((sum, entry) => sum + entry.workingSetBytes, 0),
+      /**
+       * What the app uniquely holds.
+       *
+       * Summing working sets counts Chromium's shared read-only pages — V8's
+       * snapshot, ICU data, the code itself — once *per process*, so the naive
+       * total overstates the app by roughly the size of Chromium. Private bytes
+       * do not overlap, which makes this the figure to quote in a memory claim.
+       */
+      privateTotalBytes: processes.reduce((sum, entry) => sum + entry.privateBytes, 0),
+      heapBytes: processes
+        .filter((entry) => entry.type === 'Renderer')
+        .reduce((sum, entry) => sum + entry.privateBytes, 0),
+      maxSavings: efficiency.maxSavings,
+      switches: process.argv.filter((arg) => arg.startsWith('--')).join(' '),
+    };
+  } catch {
+    return null;
+  }
+}
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -208,16 +400,20 @@ function createSplash(): BrowserWindow {
 void app.whenReady().then(() => {
   // One vault, one writer. A second instance would open its own IndexedDB
   // handle against the same profile and the two copies would silently diverge.
-  const single = app.requestSingleInstanceLock();
-  if (!single) {
-    app.quit();
-    return;
+  // Skipped in report mode, which is a throwaway measurement that must be able
+  // to run while the real app is open — and which uses its own profile dir.
+  if (!memoryReport) {
+    const single = app.requestSingleInstanceLock();
+    if (!single) {
+      app.quit();
+      return;
+    }
+    app.on('second-instance', () => {
+      // A second launch focuses the running vault instead of opening another.
+      mainWindow?.show();
+      mainWindow?.focus();
+    });
   }
-  app.on('second-instance', () => {
-    // A second launch focuses the running vault instead of opening another.
-    mainWindow?.show();
-    mainWindow?.focus();
-  });
 
   ipcMain.handle('colax:open-external', (_event, url: unknown) => {
     if (typeof url === 'string') void openExternal(url);
@@ -225,11 +421,25 @@ void app.whenReady().then(() => {
   ipcMain.handle('colax:mail-full', async (_event, input: unknown) => {
     try {
       if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };
-      const args = input as { address?: unknown; appPassword?: unknown; feedId?: unknown };
+      const args = input as {
+        address?: unknown;
+        appPassword?: unknown;
+        feedId?: unknown;
+        host?: unknown;
+        port?: unknown;
+        secure?: unknown;
+      };
       if (typeof args.address !== 'string' || typeof args.appPassword !== 'string' || typeof args.feedId !== 'string') {
         return { ok: false, error: 'Bad request.' };
       }
-      return await fetchFullMail({ address: args.address, appPassword: args.appPassword, feedId: args.feedId });
+      return await fetchFullMail({
+        address: args.address,
+        appPassword: args.appPassword,
+        feedId: args.feedId,
+        host: typeof args.host === 'string' ? args.host : undefined,
+        port: typeof args.port === 'number' ? args.port : undefined,
+        secure: typeof args.secure === 'boolean' ? args.secure : undefined,
+      });
     } catch (cause) {
       return {
         ok: false,
@@ -240,17 +450,66 @@ void app.whenReady().then(() => {
   ipcMain.handle('colax:mail-list', async (_event, input: unknown) => {
     try {
       if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };
-      const args = input as { address?: unknown; appPassword?: unknown; limit?: unknown };
+      const args = input as {
+        address?: unknown;
+        appPassword?: unknown;
+        host?: unknown;
+        port?: unknown;
+        secure?: unknown;
+        limit?: unknown;
+        beforeUid?: unknown;
+        query?: unknown;
+      };
       if (typeof args.address !== 'string' || typeof args.appPassword !== 'string') {
         return { ok: false, error: 'Bad request.' };
       }
-      return await listInboxMail({ address: args.address, appPassword: args.appPassword, limit: args.limit });
+      return await listInboxMail({
+        address: args.address,
+        appPassword: args.appPassword,
+        host: args.host,
+        port: args.port,
+        secure: args.secure,
+        limit: args.limit,
+        beforeUid: args.beforeUid,
+        query: args.query,
+      });
     } catch (cause) {
       return {
         ok: false,
         error: `Mailer error (${cause instanceof Error && cause.message ? cause.message : 'unexpected error'}).`,
       };
     }
+  });
+  /**
+   * The one renderer-driven Chromium knob.
+   *
+   * Spellcheck is on by default in Electron and loads a hunspell dictionary per
+   * detected language. A vault has exactly one place it could matter (the notes
+   * box), so the Optimize tab can switch the whole thing off and watch the
+   * process tree shrink. Session-scoped, so it applies to this window only.
+   */
+  ipcMain.handle('colax:runtime-spellcheck', (event, enabled: unknown) => {
+    event.sender.session.setSpellCheckerEnabled(enabled === true);
+  });
+  ipcMain.handle('colax:runtime-memory', () => readProcessMemory());
+  /**
+   * Reads or writes the pre-start switches.
+   *
+   * Deliberately not applied live: these are Chromium flags, and Chromium reads
+   * its command line once, before any window exists. The answer therefore says
+   * whether a restart is needed rather than pretending the change took effect.
+   */
+  ipcMain.handle('colax:runtime-efficiency', (_event, update: unknown) => {
+    if (update && typeof update === 'object' && typeof (update as { maxSavings?: unknown }).maxSavings === 'boolean') {
+      const maxSavings = (update as { maxSavings: boolean }).maxSavings;
+      efficiency.maxSavings = maxSavings;
+      writeEfficiency({ maxSavings });
+    }
+    return {
+      maxSavings: efficiency.maxSavings,
+      /** True while the stored setting differs from the one in force. */
+      restartRequired: efficiency.maxSavings !== appliedAtStartup,
+    };
   });
   ipcMain.handle('colax:shell-update', (_event, settings: unknown) => {
     if (!settings || typeof settings !== 'object') return;
@@ -264,6 +523,19 @@ void app.whenReady().then(() => {
   });
 
   const shownAt = Date.now();
+  if (memoryReport) {
+    // Measurement mode: no splash (a second window is a second renderer, which
+    // would be counted and make the figure meaningless), load, settle, report.
+    mainWindow = createWindow();
+    mainWindow.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        const report = readProcessMemory();
+        console.log('MEMORY_REPORT ' + JSON.stringify(report));
+        app.exit(0);
+      }, 4000);
+    });
+    return;
+  }
   const splash = createSplash();
   mainWindow = createWindow();
   mainWindow.once('ready-to-show', () => {

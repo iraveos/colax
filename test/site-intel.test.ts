@@ -10,9 +10,12 @@ import {
   looksLikeEmail,
   looksLikePlaceholder,
   mailboxOwnedBy,
+  loginShowsMail,
+  mailboxUsable,
   maskEmail,
   matchesLogin,
   normaliseHost,
+  planMailRestore,
   siteNameFor,
 } from '../src/vault/site-intel.ts';
 
@@ -68,6 +71,61 @@ test('sender matching is exact on address, loose on name', () => {
   assert.equal(matchesLogin({ email: 'b@x.com', author: 'Anna Smith' }, 'anna'), true);
   assert.equal(matchesLogin({ email: 'b@x.com', author: 'Bob' }, 'a@x.com'), false);
   assert.equal(matchesLogin({ email: 'b@x.com', author: 'Bob' }, ''), false);
+});
+
+test('the Messages switch repair switches on every login that is still off', () => {
+  const items = [
+    { id: 'owner', username: 'Me@Gmail.com', showMail: true },
+    { id: 'plain', username: 'other@else.com', showMail: false },
+    { id: 'blank', username: '   ', showMail: false },
+  ];
+  assert.deepEqual(planMailRestore(items), ['plain', 'blank']);
+  assert.deepEqual(planMailRestore([{ id: 'only', showMail: true }]), []);
+});
+
+test('one connected mailbox puts Messages under every login', () => {
+  const accounts = [{ address: 'me@gmail.com', appPassword: 'abcd efgh ijkl mnop', enabled: true }];
+  // The login the mailbox was connected for, and every other login alike: the
+  // button is the way into the mail, so it is not withheld from either.
+  for (const username of ['Me@Gmail.com', 'other@else.com', '', '   ']) {
+    assert.equal(loginShowsMail({ username, showMail: true }, accounts), true, `username=${username}`);
+  }
+  assert.equal(
+    loginShowsMail({ username: 'me@gmail.com', showMail: true }, accounts),
+    true,
+    'the login the mailbox was connected for still shows messages',
+  );
+});
+
+test('a login switched off by hand keeps its Messages button hidden', () => {
+  const accounts = [{ address: 'me@gmail.com', appPassword: 'x', enabled: true }];
+  assert.equal(loginShowsMail({ username: 'me@gmail.com', showMail: false }, accounts), false);
+  assert.equal(loginShowsMail({ username: 'other@else.com', showMail: false }, accounts), false);
+});
+
+test('a channel that hides mail wins over every other qualification', () => {
+  const accounts = [{ address: 'me@gmail.com', appPassword: 'x', enabled: true }];
+  assert.equal(loginShowsMail({ username: 'me@gmail.com', showMail: true }, accounts, false), false);
+});
+
+test('an unusable mailbox qualifies nobody, however it is configured', () => {
+  const item = { username: 'me@gmail.com', showMail: true };
+  assert.equal(loginShowsMail(item, []), false);
+  assert.equal(loginShowsMail(item, [{ address: 'me@gmail.com', appPassword: '   ', enabled: true }]), false);
+  assert.equal(loginShowsMail(item, [{ address: 'me@gmail.com', appPassword: 'x', enabled: false }]), false);
+  assert.equal(loginShowsMail(item, [{ address: '  ', appPassword: 'x', enabled: true }]), false);
+  // Spaces are Google's own display format for app passwords, not a typo.
+  assert.equal(
+    loginShowsMail(item, [{ address: ' me@gmail.com ', appPassword: 'abcd efgh ijkl mnop', enabled: true }]),
+    true,
+    'pasted spaces and stray whitespace are normalised, not rejected',
+  );
+  assert.equal(mailboxUsable({ address: 'a@b.c', appPassword: 'x' }), true, 'enabled defaults to true');
+});
+
+test('the repair has nothing to do without a login that is off', () => {
+  assert.deepEqual(planMailRestore([]), []);
+  assert.deepEqual(planMailRestore([{ id: 'a', showMail: true }]), []);
 });
 
 test('masking keeps two letters and the domain, hides the rest', () => {

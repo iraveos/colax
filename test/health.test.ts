@@ -75,9 +75,12 @@ test('short shared stems do not group', () => {
   assert.ok(!weak.includes(a) && !weak.includes(b));
 });
 
-test('logins show mail unless explicitly opted out', () => {
-  assert.equal(normaliseItem({ ...emptyItem('x', 1000) }).showMail, true);
+test('messages are on per login unless switched off, old records keep showing mail', () => {
+  assert.equal(emptyItem('x', 1000).showMail, true, 'new logins start opted in');
+  assert.equal(normaliseItem({ ...emptyItem('x', 1000), showMail: true }).showMail, true);
   assert.equal(normaliseItem({ ...emptyItem('x', 1000), showMail: false }).showMail, false);
+  const { showMail: _dropped, ...legacy } = emptyItem('x', 1000);
+  assert.equal(normaliseItem({ ...legacy }).showMail, true, 'records predating the toggle keep mail');
 });
 
 test('a per-login reminder overrides the global stale threshold', () => {

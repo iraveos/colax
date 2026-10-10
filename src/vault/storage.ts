@@ -22,6 +22,13 @@ import {
   type Tag,
 } from './channels.ts';
 import { EMPTY_SECURITY, normaliseSecurity, type LoginSecurity } from '../crypto/security.ts';
+import { MAIL_PROVIDERS, providerById, providerForAddress } from '../lib/mail-providers.ts';
+import {
+  normaliseOptimizeProfiles,
+  readStyle,
+  type OptimizeProfile,
+  type OptimizeStyle,
+} from './optimize.ts';
 
 /** How the vault is laid out on screen. The choice is persisted. */
 export type VaultView = 'animated' | 'carousel' | 'basic' | 'grid';
@@ -62,19 +69,17 @@ export interface CardSizePrefs {
   scale: number;
   /**
    * Card width in px, as a cap rather than a fixed width. Flow and List both
-   * stay fluid inside it, so the value means "allowed to grow this wide"; Orbit
-   * is the one view that needs a real fixed width because its ring geometry is
-   * computed from it.
+   * stay fluid inside it, so the value means "allowed to grow this wide".
    */
   width: number;
   /**
    * Floor on the card's height in px, for Flow and List. It is a minimum and
    * not a fixed height, because the cards carry a photo, a title, tag chips and
    * a credential block, and a hard height would clip whichever of those is
-   * tallest. Orbit ignores this and uses `aspect` instead.
+   * tallest.
    */
   minHeight: number;
-  /** Height as a multiple of width for Orbit; ignored elsewhere. */
+  /** Height as a multiple of width; kept for stored records, ignored by views. */
   aspect: number;
   /** Card surface tint: 0 = fully transparent, 1 = fully opaque. */
   surface: number;
@@ -83,9 +88,9 @@ export interface CardSizePrefs {
 }
 
 export const DEFAULT_CARD_SIZE: Record<VaultView, CardSizePrefs> = {
-  // Orbit was previously hard-coded to 230px wide, which read as far too small
-  // once the ring had more than a handful of logins on it.
   animated: { scale: 1, width: 560, minHeight: 132, aspect: 1, surface: 1, radius: 14 },
+  // Orbit is a fixed width × aspect card, because its ring geometry is computed
+  // from the card width, so it sizes differently from the fluid views.
   carousel: { scale: 1, width: 340, minHeight: 0, aspect: 1.35, surface: 1, radius: 20 },
   basic: { scale: 1, width: 900, minHeight: 64, aspect: 1, surface: 1, radius: 14 },
   // Grid reflows to whatever fits, so its width is the widest a single cell may
@@ -197,6 +202,20 @@ export interface GmailAccount {
   enabled: boolean;
   /** How often to re-poll, in seconds. 0 means manual only (no timer). */
   refreshSeconds: number;
+  /**
+   * Which mail host this account belongs to (see lib/mail-providers). Absent on
+   * records written before any host but Google was possible; the provider is
+   * then inferred from the address, so an old account keeps working untouched.
+   */
+  provider?: string;
+  /**
+   * Connection details. Only meaningful for a hand-configured server: when the
+   * provider has a known host, these are left empty and filled in from the
+   * preset at connect time, so a corrected preset reaches existing accounts.
+   */
+  host?: string;
+  port?: number;
+  secure?: boolean;
 }
 
 export function newGmailAccountId(): string {
@@ -259,13 +278,11 @@ export function mergeMailCache(
 }
 
 /**
- * How a view is named wherever the four views are offered as a group: the
+ * How a view is named wherever the three views are offered as a group: the
  * topbar picker, the sidebar, and the right-click menu.
  *
  * Mirrors SidebarLabels rather than reusing it, because the two are tuned
- * independently. The sidebar rail can afford to drop names to a tooltip; the
- * view switcher is the only place that says what "Orbit" is, and taking the
- * names away there leaves four unlabelled glyphs.
+ * independently.
  */
 export type ViewLabels = 'icon' | 'name' | 'both';
 
@@ -305,12 +322,35 @@ export interface VaultPreferences {
   roundness: number;
   /** Shadow depth under login cards, 0 (flat) to 1 (deep). */
   cardDepth: number;
+
+  /**
+   * Named Optimize profiles: looks the user saved so they can put the app back
+   * exactly the way it was later. Stored in preferences, so they travel with an
+   * encrypted backup and survive a reinstall.
+   */
+  optimizeProfiles: OptimizeProfile[];
+  /**
+   * The look that was in place before the first savings profile was applied.
+   * "Restore my look" restores this — background picture included — rather than
+   * guessing at the shipped defaults and losing whatever was there.
+   */
+  optimizeSnapshot: OptimizeStyle | null;
+  /**
+   * Name of the saved profile applied last, for the tick beside it. Empty when
+   * the current look came from a one-click preset or from the sliders.
+   */
+  activeOptimizeProfile: string;
+  /**
+   * Turns the desktop shell's spellchecker off. Electron loads a hunspell
+   * dictionary per language at startup whether or not a field ever needs it;
+   * this is the one Optimize switch that removes real megabytes.
+   */
+  disableSpellcheck: boolean;
   /**
    * Per-view card sizing and colour, so each of the three views can be tuned
-   * independently. The user asked for a size control on Flow, List and Orbit
-   * separately rather than one global slider, because the three views have
-   * genuinely different geometry: a ring card's width sets how much of the
-   * ring is visible, a list row's width sets the measure of the text.
+   * independently. Flow, List and Grid have genuinely different geometry:
+   * a list row's width sets the measure of the text, a grid cell's width
+   * sets how many fit per row.
    */
   cardSize: Record<VaultView, CardSizePrefs>;
   /** How the sidebar rail presents channels. */
@@ -371,6 +411,13 @@ export interface VaultPreferences {
    * about which key means what.
    */
   docks: DockState[];
+  /**
+   * Bookkeeping for the one-off Orbit repair below, not a setting anyone
+   * touches: true once a stored bar has been checked for the missing view.
+   * Without it, a user who deliberately removes the Orbit slot would find it
+   * back on the next launch, every launch.
+   */
+  orbitDockRestored?: boolean;
   /**
    * Per-login use counts: incremented on copy and on edit, read by the
    * Frequently-used panel and the untouched-login scan.
@@ -491,6 +538,23 @@ export interface VaultPreferences {
    * secrets.
    */
   mailCache: Record<string, CachedMailMessage[]>;
+  /**
+   * Whether the one-time Messages scoping has run: logins that had the
+   * expander on by old default (rather than by choice) and are not related
+   * to any connected mailbox get switched off, so a mailbox connected for
+   * one login stops putting a Messages button on every other login.
+   *
+   * Superseded by {@link mailEveryLogin}. Kept so an existing vault's flag is
+   * still round-tripped rather than dropped from the record.
+   */
+  mailOptInMigrated: boolean;
+  /**
+   * Whether the one-time repair has run: every login switches its Messages
+   * button back on (see planMailRestore), which undoes the scoping pass above
+   * for vaults that ran it. Stamped once so a login switched off later stays
+   * off.
+   */
+  mailEveryLogin: boolean;
 
   // -- Alarms
   alarms: Alarm[];
@@ -537,6 +601,10 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   density: 'comfortable',
   roundness: 1,
   cardDepth: 0.4,
+  optimizeProfiles: [],
+  optimizeSnapshot: null,
+  activeOptimizeProfile: '',
+  disableSpellcheck: false,
   cardSize: DEFAULT_CARD_SIZE,
   sidebarLabels: 'both',
   viewLabels: 'both',
@@ -621,6 +689,8 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   confirmDeletes: true,
   gmailAccounts: [],
   mailCache: {},
+  mailOptInMigrated: false,
+  mailEveryLogin: false,
 };
 
 /**
@@ -634,6 +704,36 @@ export function normaliseDockPos(raw: unknown): DockPlacement {
   const clamp = (value: unknown, fallback: number) =>
     typeof value === 'number' && Number.isFinite(value) ? Math.min(0.94, Math.max(0.06, value)) : fallback;
   return { edge, fx: clamp(record.fx, 0.5), fy: clamp(record.fy, edge === 'top' ? 0.06 : 0.94) };
+}
+
+/**
+ * Puts the Orbit view back into a bar saved while Orbit was away from the app.
+ *
+ * The view shipped, was withdrawn, then came back — and a bar written in
+ * between holds three view slots (Flow, List, Grid) with their keys 1, 2, 3.
+ * Inserting Orbit straight after Flow lands the family back on 1–4, and
+ * `normaliseDockSlots` renumbers the rest on its own: it hands out whichever
+ * single-character key is still free whenever a stored one collides.
+ *
+ * Deliberately narrow: only a bar still holding *exactly* the three views the
+ * Orbit-less build shipped — Flow, List, Grid, in that order — is touched. A
+ * bar the user has since trimmed or rearranged is theirs, and a bar already
+ * holding Orbit comes back unchanged, so this cannot double up or resurrect the
+ * slot for someone who removed it on purpose.
+ */
+function restoreOrbitSlot(raw: unknown): unknown {
+  if (!Array.isArray(raw) || raw.length >= MAX_DOCK_SLOTS) return raw;
+  const entries = raw as DockSlotConfig[];
+  const views = entries.filter(
+    (entry) => entry && typeof entry === 'object' && entry.kind === 'view',
+  );
+  const shipped = ['animated', 'basic', 'grid'] as const;
+  if (views.length !== shipped.length) return raw;
+  if (!shipped.every((ref, index) => views[index]?.ref === ref)) return raw;
+  const after = entries.indexOf(views[0]!);
+  const next = entries.slice();
+  next.splice(after + 1, 0, { kind: 'view', ref: 'carousel', key: '' });
+  return next;
 }
 
 /**
@@ -728,6 +828,8 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.clipboardCapture = Boolean(merged.clipboardCapture);
   merged.clipboardAutoSave = Boolean(merged.clipboardAutoSave);
   merged.maskEmails = merged.maskEmails !== false;
+  merged.mailOptInMigrated = Boolean(merged.mailOptInMigrated);
+  merged.mailEveryLogin = Boolean(merged.mailEveryLogin);
   // Several accounts now; the old single object migrates into the first entry
   // so a connected mailbox keeps working without reconnecting. Anything
   // malformed is dropped per account rather than wiping the whole list.
@@ -770,12 +872,31 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
             : rawCadence <= 30
               ? 30
               : 60;
+      // Which host this mailbox lives on. Accounts written before other
+      // providers existed carry no field at all, so the address decides — that
+      // is what upgrades a stored Yahoo or Outlook address from "Gmail" (where
+      // it could never connect) to its real server without a single new
+      // question. A hand-typed host is never overridden by the preset.
+      const rawHost = typeof record.host === 'string' ? record.host.trim().slice(0, 120) : '';
+      const provider =
+        typeof record.provider === 'string' && record.provider
+          ? record.provider
+          : (providerForAddress(address)?.id ?? MAIL_PROVIDERS[0]!.id);
+      const rawPort = record.port;
+      const preset = providerById(provider);
       clean.push({
         id: typeof record.id === 'string' && record.id ? record.id : newGmailAccountId(),
         address,
         appPassword,
         enabled: record.enabled !== false,
         refreshSeconds: cadence,
+        provider,
+        host: rawHost,
+        port:
+          typeof rawPort === 'number' && Number.isFinite(rawPort) && rawPort > 0 && rawPort <= 65535
+            ? Math.round(rawPort)
+            : preset.port,
+        secure: typeof record.secure === 'boolean' ? record.secure : preset.secure,
       });
     }
     merged.gmailAccounts = clean;
@@ -943,11 +1064,14 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
       ? ((stored as Partial<VaultPreferences>)!.docks as DockState[])
       : [];
     const clean: DockState[] = [];
+    // Set once the loop below has looked at every stored bar, so the repair runs
+    // a single time even if nothing else is ever saved.
+    const alreadyChecked = Boolean((stored as Partial<VaultPreferences> | undefined | null)?.orbitDockRestored);
     for (const entry of storedDocks.slice(0, MAX_DOCKS)) {
       if (!entry || typeof entry !== 'object') continue;
       const record = entry as unknown as Record<string, unknown>;
       const id = typeof record.id === 'string' && record.id ? record.id : newDockId();
-      const slots = normaliseDockSlots(record.slots);
+      const slots = normaliseDockSlots(alreadyChecked ? record.slots : restoreOrbitSlot(record.slots));
       if (slots.length === 0) continue;
       clean.push({
         id,
@@ -965,6 +1089,7 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
       });
     }
     merged.docks = clean;
+    merged.orbitDockRestored = true;
     delete legacy.dockEnabled;
     delete legacy.dockSlots;
     delete legacy.dockPos;
@@ -984,6 +1109,17 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.ambient = clampRange(merged.ambient, 0, 1, DEFAULT_PREFERENCES.ambient);
   merged.roundness = clampRange(merged.roundness, 0.6, 1.4, DEFAULT_PREFERENCES.roundness);
   merged.cardDepth = clampRange(merged.cardDepth, 0, 1, DEFAULT_PREFERENCES.cardDepth);
+  // Saved looks. Oldest-first ids are irrelevant; names are deduplicated inside
+  // the normaliser, and a style that cannot be read is dropped there too, so a
+  // truncated record can never restore a mystery look.
+  merged.disableSpellcheck = Boolean(merged.disableSpellcheck);
+  merged.optimizeProfiles = normaliseOptimizeProfiles(merged.optimizeProfiles);
+  merged.optimizeSnapshot = readStyle(merged.optimizeSnapshot);
+  merged.activeOptimizeProfile =
+    typeof merged.activeOptimizeProfile === 'string' &&
+    merged.optimizeProfiles.some((profile) => profile.name === merged.activeOptimizeProfile)
+      ? merged.activeOptimizeProfile
+      : '';
   merged.textScale = clampRange(merged.textScale, 85, 130, DEFAULT_PREFERENCES.textScale);
   merged.clearClipboardSeconds = clampRange(merged.clearClipboardSeconds, 0, 300, DEFAULT_PREFERENCES.clearClipboardSeconds);
   merged.passwordGenerator.length = Math.round(

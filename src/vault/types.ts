@@ -27,9 +27,11 @@ export interface VaultItem {
   needsAttention: boolean;
 
   /**
-   * Whether this login shows its message expander. True unless explicitly
-   * switched off in the editor, so older records (which lack the field) keep
-   * showing mail rather than silently losing it.
+   * Whether this login shows its message expander. Opt-in per login: new
+   * logins start with it off, so connecting a mailbox for one login does not
+   * put a Messages button on every other login. Older records that predate
+   * the toggle keep showing mail (see normaliseItem) rather than silently
+   * losing it.
    */
   showMail: boolean;
 
@@ -115,6 +117,8 @@ export function emptyItem(id: string, now: number = Date.now()): VaultItem {
     security: { totp: null, questions: [] },
     favorite: false,
     needsAttention: false,
+    // On by default: a connected mailbox is no use if no login offers a way
+    // into it. A login that should stay quiet is switched off in the editor.
     showMail: true,
     mailFilter: 'auto',
     tags: [],
@@ -142,9 +146,10 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     usernameUpdatedAt: typeof raw.usernameUpdatedAt === 'number' ? raw.usernameUpdatedAt : created,
     tags: Array.isArray(raw.tags) ? raw.tags.filter((tag): tag is string => typeof tag === 'string') : [],
     needsAttention: Boolean(raw.needsAttention),
-    // Absent on older records, which must keep showing mail: only an explicit
-    // false hides the expander.
-    showMail: raw.showMail !== false,
+    // Per-login *opt-out*: every login shows the Messages button, and only an
+    // explicit false hides it. Records saved before the toggle existed carry no
+    // field at all, which now means the same thing as on.
+    showMail: typeof raw.showMail === 'boolean' ? raw.showMail : true,
     mailFilter: raw.mailFilter === 'matched' || raw.mailFilter === 'recent' ? raw.mailFilter : 'auto',
     accentHue: typeof raw.accentHue === 'number' ? raw.accentHue : null,
     reminderDays:

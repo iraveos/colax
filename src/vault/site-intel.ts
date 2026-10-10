@@ -248,7 +248,7 @@ export function matchesLogin(
   const needle = username.trim().toLowerCase();
   if (!needle) return false;
   return (
-    message.email.toLowerCase() === needle || message.author.toLowerCase().includes(needle)
+    message.email.trim().toLowerCase() === needle || message.author.toLowerCase().includes(needle)
   );
 }
 
@@ -265,6 +265,67 @@ export function mailboxOwnedBy<T extends { address: string }>(
   const needle = username.trim().toLowerCase();
   if (!needle) return null;
   return accounts.find((account) => account.address.trim().toLowerCase() === needle) ?? null;
+}
+
+/** The shape of a connected mailbox this decision needs. Kept structural so it
+ *  works for stored accounts and for test doubles alike. */
+export interface MailboxLike {
+  address: string;
+  appPassword?: string;
+  enabled?: boolean;
+}
+
+/** An account that can actually be read: switched on, address and app password present. */
+export function mailboxUsable(account: MailboxLike): boolean {
+  return (
+    account.enabled !== false &&
+    account.address.trim() !== '' &&
+    (account.appPassword ?? '').replace(/\s+/g, '') !== ''
+  );
+}
+
+/**
+ * Whether one login shows its Messages button — the single rule every view
+ * reads, so the three views and the App-level Messages window cannot disagree.
+ *
+ * The rule is: *any* usable mailbox puts the button under *every* login, unless
+ * that login has been switched off by hand. It used to be the other way round —
+ * a login only qualified when its own username was a connected mailbox address,
+ * or when the user found the per-login switch buried in the editor. In practice
+ * that meant a vault could hold a working mailbox and still show no way into it
+ * from the login the mail was about, which is the one case a Messages button
+ * exists for.
+ *
+ * What the button then *reads* is still scoped: a login whose username is a
+ * connected mailbox reads that mailbox, anything else reads the channel's mail
+ * scope. See the owner branch in LoginMessages.
+ */
+export function loginShowsMail(
+  item: { username: string; showMail: boolean; mailFilter?: string },
+  accounts: MailboxLike[],
+  channelAllowsMail = true,
+): boolean {
+  if (!channelAllowsMail) return false;
+  if (item.showMail === false) return false;
+  return accounts.some(mailboxUsable);
+}
+
+/**
+ * One-time repair of the per-login Messages switch.
+ *
+ * An earlier build defaulted the expander *off* and then migrated every
+ * existing login to off as well, so vaults that predate this rule have the
+ * button hidden everywhere. New logins default on now, so the fix is to switch
+ * the flag back on for every login that is still off.
+ *
+ * Returns ids rather than writing: pure, so it is unit-testable, and the caller
+ * owns the writes and the one-time stamp. A login switched off afterwards stays
+ * off, because the stamp stops this from ever running twice.
+ */
+export function planMailRestore<TItem extends { id: string; showMail: boolean }>(
+  items: TItem[],
+): string[] {
+  return items.filter((item) => item.showMail !== true).map((item) => item.id);
 }
 
 /**

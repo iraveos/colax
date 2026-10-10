@@ -171,6 +171,24 @@ test('vault service: passwordless create, open, and adding a password later', as
   assert.equal((vault.items ?? [])[0]?.id, item.id);
 });
 
+test('vault service: setShowMail flips without touching timestamps', async () => {
+  const vault = new VaultService(new MemoryVaultStorage());
+  await vault.create(); // no password: fast device key, no PBKDF2
+  const item = await vault.addItem({ title: 'Mail', username: 'me@gmail.com', password: 'x'.repeat(20), showMail: true });
+  const before = (vault.items ?? []).find((entry) => entry.id === item.id)!;
+  const updatedAt = before.updatedAt;
+  const passwordAt = before.passwordUpdatedAt;
+
+  await vault.setShowMail(item.id, false);
+  const after = (vault.items ?? []).find((entry) => entry.id === item.id)!;
+  assert.equal(after.showMail, false);
+  assert.equal(after.updatedAt, updatedAt, 'scoping must not reorder "recently updated"');
+  assert.equal(after.passwordUpdatedAt, passwordAt, 'scoping must not reset the age clocks');
+
+  await vault.setShowMail(item.id, false);
+  assert.equal((vault.items ?? []).find((entry) => entry.id === item.id)?.showMail, false);
+});
+
 test('vault service: removing the password requires the current one', async () => {
   const vault = new VaultService(new MemoryVaultStorage());
   await vault.create(MASTER);

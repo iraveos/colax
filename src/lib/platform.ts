@@ -15,8 +15,16 @@
 /** What the tray menu can ask the renderer to do. Main handles show/restart/quit itself. */
 export type TrayAction = 'lock-now' | 'toggle-mute';
 
+/** How to reach one mailbox. Every host is IMAP, so this is all that differs. */
+export interface MailConnectionInput {
+  /** IMAP hostname. Absent falls back to Google's, for pre-provider callers. */
+  host?: string;
+  port?: number;
+  secure?: boolean;
+}
+
 /** One full-body fetch over IMAP. Credentials travel per call, never stored. */
-export interface FullMailInput {
+export interface FullMailInput extends MailConnectionInput {
   address: string;
   appPassword: string;
   /** Feed message id (`tag:...,2004:<hex>`); the hex tail addresses the mail. */
@@ -59,16 +67,65 @@ export interface InboxListMessage {
   date: string;
 }
 
-export interface InboxListInput {
+export interface InboxListInput extends MailConnectionInput {
   address: string;
   appPassword: string;
   limit?: number;
+  /**
+   * Page back past this UID.
+   *
+   * The first page is the newest `limit` messages; passing the oldest UID seen
+   * so far returns the next `limit` *older* ones, which is what makes the list
+   * unlimited: no single read has a ceiling, the list just grows as far back as
+   * the user asks to scroll.
+   */
+  beforeUid?: number;
+  /** Server-side search across subject, sender, recipient and body. */
+  query?: string;
 }
 
 export interface InboxListResult {
   ok: boolean;
   messages?: InboxListMessage[];
+  /** True when older messages exist past this page. */
+  hasMore?: boolean;
   error?: string;
+}
+
+/** One process's share of the app's memory, as the OS reports it. */
+export interface ProcessMemory {
+  /** 'Browser', 'Renderer', 'GPU', 'Utility', or a named utility process. */
+  type: string;
+  /** Working set — what the OS task manager calls "Memory". */
+  workingSetBytes: number;
+  /** Private bytes: the part this process does not share with the others. */
+  privateBytes: number;
+}
+
+/**
+ * Where the app's memory actually went.
+ *
+ * A Chromium app is several processes and the number people notice in Task
+ * Manager is the sum of all of them, which is why "the vault is using 400 MB"
+ * and "the vault's JavaScript heap is 40 MB" are both true at once. Reporting
+ * the split is the only honest way to answer "why so much, and did optimising
+ * help".
+ */
+export interface RuntimeMemory {
+  processes: ProcessMemory[];
+  /**
+   * Sum of every process's working set — the figure a task manager shows.
+   *
+   * Chromium's shared read-only pages are counted once per process here, so this
+   * is always larger than what the app uniquely holds. Quote
+   * {@link privateTotalBytes} for a memory claim, and this one for "what you
+   * will see in Task Manager".
+   */
+  totalBytes: number;
+  /** Sum of every process's private bytes: what the app uniquely holds. */
+  privateTotalBytes: number;
+  /** Sum of the JavaScript heaps the renderers report. */
+  heapBytes: number;
 }
 
 /** Desktop window-chrome settings, mirrored from prefs. */
@@ -113,6 +170,40 @@ export interface PlatformAPI {
     /** Tray menu events the shell cannot handle alone (lock, mute). Returns an unsubscribe. */
     onTrayAction(callback: (action: TrayAction) => void): () => void;
   };
+  /**
+   * Desktop-only runtime knobs and measurements. Absent on web — there is no
+   * spellchecker to switch off and no multi-process tree to measure — so call
+   * sites must feature-check before using it.
+   */
+  runtime?: {
+    /**
+     * Turns Chromium's built-in spellchecker on or off.
+     *
+     * Electron enables it by default, and it loads a hunspell dictionary per
+     * language at startup — tens of megabytes of tables that a password vault
+     * only ever needs for the notes field. Switching it off is one of the few
+     * optimisations here that moves a number the user can see.
+     */
+    setSpellcheck(enabled: boolean): void;
+    /** Per-process memory for the whole app, or null when unavailable. */
+    memory(): Promise<RuntimeMemory | null>;
+    /**
+     * Reads, or writes, the switches Chromium needs at launch.
+     *
+     * These cannot be applied while the app is running — Chromium reads its
+     * command line before any window exists — so the answer includes whether a
+     * restart is required rather than implying the change is live.
+     */
+    efficiency(update?: { maxSavings: boolean }): Promise<EfficiencyState>;
+  };
+}
+
+/** The launch-time memory switches, and whether they are in force yet. */
+export interface EfficiencyState {
+  /** Chromium's low-end-device heuristics and no GPU process. */
+  maxSavings: boolean;
+  /** True while the stored setting differs from the running process. */
+  restartRequired: boolean;
 }
 
 declare global {

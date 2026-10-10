@@ -20,7 +20,7 @@ import {
   TrashIcon,
 } from './icons.tsx';
 import { accentOf, hostnameOf, isWeakPassword, relativeTime, staleDaysFor, type VaultItem } from '../vault/types.ts';
-import { maskEmail } from '../vault/site-intel.ts';
+import { loginShowsMail, maskEmail } from '../vault/site-intel.ts';
 import { isSecured } from '../crypto/security.ts';
 import type { CachedMailMessage, CardSizePrefs, GmailAccount } from '../vault/storage.ts';
 import type { GmailMessage } from './useGmail.ts';
@@ -79,8 +79,7 @@ export interface ViewActions {
   /**
    * Drag a login to a flat position in the current view, switching sorting to
    * the custom drag order. Offered by Flow, List and Grid (press and hold a
-   * login, then move); Orbit follows the custom order through sorting but
-   * starts no drags itself. Absent means no reordering here.
+   * login, then move). Absent means no reordering here.
    */
   onReorderLogins?: (activeId: string, toIndex: number, flatIds: string[]) => void;
 }
@@ -113,14 +112,16 @@ interface CommonViewProps extends ViewActions {
 }
 
 /**
- * Whether a login gets its message expander: the channel must allow mail, the
- * login itself must not have opted out, and at least one account must be
- * connected. Checked in one place so the three views cannot disagree.
+ * Whether a login gets its message expander.
+ *
+ * The rule itself lives in `loginShowsMail` so the App-level Messages window
+ * and the tests read the same predicate. In short: a login whose own email IS
+ * a connected mailbox always shows it (that is the login the mailbox was
+ * connected for, and it reads only its own mail), and any other login shows it
+ * once it is switched on in its editor.
  */
 function mailFor(item: VaultItem, scope: CommonViewProps['mailScope'], accounts: CommonViewProps['gmailAccounts']): boolean {
-  if (scope?.show === false) return false;
-  if (item.showMail === false) return false;
-  return (accounts ?? []).some((account) => account.enabled && account.address && account.appPassword);
+  return loginShowsMail(item, accounts ?? [], scope?.show !== false);
 }
 
 /**
@@ -1196,7 +1197,7 @@ showTagChips,
 style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
             onContextMenu={(event) => onItemMenu(event, item)}
             onDoubleClick={(event) => {
-              // Matches Flow and Orbit.
+              // Matches Flow.
               event.preventDefault();
               onEdit(item);
             }}

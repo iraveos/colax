@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { freeDockSpot, normalisePreferences, DEFAULT_PREFERENCES, MAX_DOCKS, MAX_DOCK_SLOTS } from '../src/vault/storage.ts';
+import { freeDockSpot, normalisePreferences, DEFAULT_PREFERENCES, MAX_DOCKS, MAX_DOCK_SLOTS, type DockState } from '../src/vault/storage.ts';
 import { normaliseItem, emptyItem } from '../src/vault/types.ts';
 
 /** A mutable copy of the defaults, so a test can corrupt one field. */
@@ -36,6 +36,98 @@ test('an unknown kind is dropped, not kept', () => {
   assert.equal(out[0]?.ref, 'animated');
 });
 
+test('an orbit slot survives normalisation', () => {
+  const stored = base();
+  stored.docks = [
+    {
+      id: 'main',
+      enabled: true,
+      pos: { edge: 'bottom', fx: 0.5, fy: 0.94 },
+      slots: [
+        { kind: 'view', ref: 'animated', key: '1' },
+        { kind: 'view', ref: 'carousel', key: '2' },
+        { kind: 'view', ref: 'basic', key: '3' },
+      ],
+    },
+  ];
+  const out = firstSlots(stored);
+  assert.ok(out.some((slot) => slot.ref === 'carousel'), 'the orbit slot is kept');
+  assert.ok(out.some((slot) => slot.ref === 'animated'));
+  assert.ok(out.some((slot) => slot.ref === 'basic'));
+});
+
+/** A bar of the shape that was written while Orbit was out of the app. */
+const orbitlessSlots = (): DockState => ({
+  id: 'main',
+  enabled: true,
+  pos: { edge: 'bottom', fx: 0.5, fy: 0.94 },
+  slots: [
+    { kind: 'view', ref: 'animated', key: '1' },
+    { kind: 'view', ref: 'basic', key: '2' },
+    { kind: 'view', ref: 'grid', key: '3' },
+    { kind: 'inbox', ref: '', key: '4' },
+  ],
+});
+
+test('a bar saved while Orbit was gone gets the view back', () => {
+  const stored = base();
+  stored.docks = [orbitlessSlots()];
+  assert.deepEqual(
+    firstSlots(stored).map((slot) => `${slot.kind}:${slot.ref || slot.kind}:${slot.key}`),
+    ['view:animated:1', 'view:carousel:2', 'view:basic:3', 'view:grid:4', 'inbox:inbox:5'],
+    'Orbit returns between Flow and List, and the keys renumber around it',
+  );
+});
+
+test('the Orbit repair runs once, so deleting the slot again sticks', () => {
+  const repaired = normalisePreferences({ ...base(), docks: [orbitlessSlots()] });
+  assert.equal(repaired.orbitDockRestored, true, 'the check is recorded in the preferences it returns');
+  // What the dock settings write after the user removes the slot themselves:
+  // the same bar with carousel gone, now carrying the bookkeeping flag.
+  const afterDelete = normalisePreferences({
+    ...repaired,
+    docks: [{ ...orbitlessSlots(), slots: orbitlessSlots().slots.slice(0, 3) }],
+  });
+  assert.ok(
+    !afterDelete.docks[0]?.slots.some((slot) => slot.ref === 'carousel'),
+    'a bar the user has since edited is left alone',
+  );
+});
+
+test('a bar that already had Orbit is not given a second one', () => {
+  const stored = base();
+  stored.docks = [
+    {
+      ...orbitlessSlots(),
+      slots: [
+        { kind: 'view', ref: 'animated', key: '1' },
+        { kind: 'view', ref: 'carousel', key: '2' },
+        { kind: 'view', ref: 'basic', key: '3' },
+        { kind: 'view', ref: 'grid', key: '4' },
+      ],
+    },
+  ];
+  const refs = firstSlots(stored).filter((slot) => slot.ref === 'carousel');
+  assert.equal(refs.length, 1);
+});
+
+test('a bar with no view slots at all is left untouched', () => {
+  const stored = base();
+  stored.docks = [
+    {
+      ...orbitlessSlots(),
+      slots: [
+        { kind: 'channel', ref: 'ch_work', key: '1' },
+        { kind: 'inbox', ref: '', key: '2' },
+      ],
+    },
+  ];
+  assert.deepEqual(
+    firstSlots(stored).map((slot) => slot.ref || slot.kind),
+    ['ch_work', 'inbox'],
+  );
+});
+
 test('an unknown view ref is dropped', () => {
   const stored = base();
   stored.docks = [{ id: 'main', enabled: true, pos: { edge: 'bottom', fx: 0.5, fy: 0.94 }, slots: [{ kind: 'view', ref: 'coverflow', key: '1' }] }];
@@ -55,8 +147,8 @@ test('duplicate keys fall back without colliding', () => {
       pos: { edge: 'bottom', fx: 0.5, fy: 0.94 },
       slots: [
         { kind: 'view', ref: 'animated', key: 'q' },
-        { kind: 'view', ref: 'carousel', key: 'Q' },
-        { kind: 'view', ref: 'basic', key: '' },
+        { kind: 'view', ref: 'basic', key: 'Q' },
+        { kind: 'view', ref: 'grid', key: '' },
       ],
     },
   ];
@@ -107,7 +199,7 @@ test('labels cap at 24 chars and icons to safe schemes', () => {
       pos: { edge: 'bottom', fx: 0.5, fy: 0.94 },
       slots: [
         { kind: 'view', ref: 'animated', key: '1', label: 'x'.repeat(100), icon: 'javascript:alert(1)' },
-        { kind: 'view', ref: 'carousel', key: '2', icon: 'https://example.com/i.png' },
+        { kind: 'view', ref: 'basic', key: '2', icon: 'https://example.com/i.png' },
       ],
     },
   ];
@@ -252,7 +344,10 @@ test('duplicate account addresses collapse to one', () => {
   assert.equal(out.gmailAccounts.length, 1);
 });
 
-test('logins show mail unless explicitly opted out', () => {
-  assert.equal(normaliseItem({ ...emptyItem('x', 1000) }).showMail, true);
+test('messages are on per login unless switched off, old records keep showing mail', () => {
+  assert.equal(emptyItem('x', 1000).showMail, true, 'new logins start opted in');
+  assert.equal(normaliseItem({ ...emptyItem('x', 1000), showMail: true }).showMail, true);
   assert.equal(normaliseItem({ ...emptyItem('x', 1000), showMail: false }).showMail, false);
+  const { showMail: _dropped, ...legacy } = emptyItem('x', 1000);
+  assert.equal(normaliseItem({ ...legacy }).showMail, true, 'records predating the toggle keep mail');
 });

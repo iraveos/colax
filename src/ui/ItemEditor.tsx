@@ -630,18 +630,25 @@ export function ItemEditor({
         <div className="field">
           <Toggle
             label="Show messages on this login"
-            checked={draft.showMail !== false}
+            checked={draft.showMail === true}
             onChange={(showMail) => patch({ showMail })}
           />
-          <p className="field__note">The card gets a message expander matched to this login's email.</p>
+          <p className="field__note">
+            {draft.showMail === true
+              ? 'This login shows its Messages button. '
+              : 'Switched off here, so this login shows no Messages button. '}
+            A login whose email is a connected mailbox reads that mailbox — the address it was
+            connected for, never another login's mail. Every other login reads the channel's mail
+            scope, so the same mail is reachable from wherever you happen to be.
+          </p>
         </div>
-        {draft.showMail !== false ? (
+        {draft.showMail === true ? (
           <div className="field">
             <span className="field__label">Which messages</span>
             <div className="segmented" role="radiogroup" aria-label="Which messages to show">
               {(
                 [
-                  ['auto', 'Auto', 'Matched, or recent when nothing matches'],
+                  ['auto', 'Auto', 'Its mailbox, else only mail matched to this login'],
                   ['matched', 'Matched only', 'Only mail to this login'],
                   ['recent', 'Recent only', 'Everything recent, unmatched'],
                 ] as const

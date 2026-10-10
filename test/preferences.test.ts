@@ -21,6 +21,25 @@ test('an empty store yields the defaults', () => {
   assert.equal(prefs.theme, DEFAULT_PREFERENCES.theme);
   assert.equal(prefs.view, DEFAULT_PREFERENCES.view);
   assert.equal(prefs.accent, 'slate');
+  assert.equal(prefs.mailOptInMigrated, false);
+  assert.equal(prefs.mailEveryLogin, false);
+});
+
+test('the mail scoping flags survive normalisation', () => {
+  assert.equal(normalisePreferences({ mailOptInMigrated: true }).mailOptInMigrated, true);
+  assert.equal(normalisePreferences({}).mailOptInMigrated, false);
+  assert.equal(normalisePreferences({ mailEveryLogin: true }).mailEveryLogin, true);
+  assert.equal(normalisePreferences({}).mailEveryLogin, false);
+});
+
+test('a hand-edited null record cannot crash normalisation', () => {
+  // Null is not a valid object, but a partially-written or manually edited
+  // store can contain it, and normalisation is the one gate every load passes
+  // through. Deleting a retired key off null, or reading a slot off a null
+  // dock, must fall back rather than throw and take the vault down on open.
+  const out = normalisePreferences({ cardSize: null, viewLabelsByView: null, docks: [null] } as never);
+  assert.deepEqual(Object.keys(out.cardSize).sort(), ['animated', 'basic', 'carousel', 'grid']);
+  assert.equal(out.view, DEFAULT_PREFERENCES.view);
 });
 
 test('legacy accent names migrate onto the calm palette', () => {
@@ -120,10 +139,10 @@ test('the accent palette is small and calm', () => {
 
 test('preferences round-trip through storage', async () => {
   const storage = new MemoryVaultStorage();
-  const custom = normalisePreferences({ view: 'carousel', accent: 'dusk', motion: 0.5 });
+  const custom = normalisePreferences({ view: 'grid', accent: 'dusk', motion: 0.5 });
   await storage.savePreferences(custom);
   const loaded = await storage.loadPreferences();
-  assert.equal(loaded.view, 'carousel');
+  assert.equal(loaded.view, 'grid');
   assert.equal(loaded.accent, 'dusk');
   assert.equal(loaded.motion, 0.5);
 });

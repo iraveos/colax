@@ -36,3 +36,8 @@ latest.yml
 .shot.err
 # Tidied test screenshots, logs and installer leftovers live here, not in root.
 dev-artifacts/
+
+# Agent/editor metadata and the pre-extracted Electron used to work around
+# file-lock failures when packaging. Neither belongs in the repository.
+.freebuff/
+release-build/

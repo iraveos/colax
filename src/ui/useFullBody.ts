@@ -10,6 +10,7 @@
 
 import { useState } from 'react';
 import { getPlatform } from '../lib/platform.ts';
+import { normAppPassword, normMailAddress, type MailTarget } from './useGmail.ts';
 
 export interface FullBodyImage {
   cid: string;
@@ -31,19 +32,28 @@ export function useFullBody() {
   const [bodies, setBodies] = useState<Record<string, FullBodyState>>({});
   const available = typeof getPlatform().mail?.fetchFullBody === 'function';
 
-  const load = (
-    key: string,
-    address: string,
-    appPassword: string,
-    feedId: string,
-    subject?: string,
-    from?: string,
-  ) => {
+  /**
+   * Fetches one message's whole body.
+   *
+   * The target carries the account's own server, so a Yahoo or work mailbox
+   * reads its message rather than being pointed at Google's endpoint — the
+   * field that used to make any non-Gmail account look broken.
+   */
+  const load = (key: string, target: MailTarget, feedId: string, subject?: string, from?: string) => {
     const mail = getPlatform().mail;
     if (!mail) return;
     setBodies((previous) => ({ ...previous, [key]: { status: 'loading' } }));
     void mail
-      .fetchFullBody({ address, appPassword, feedId, subject, from })
+      .fetchFullBody({
+        address: normMailAddress(target.address),
+        appPassword: normAppPassword(target.appPassword),
+        host: target.host,
+        port: target.port,
+        secure: target.secure,
+        feedId,
+        subject,
+        from,
+      })
       .then((result) => {
         setBodies((previous) => ({
           ...previous,

@@ -186,14 +186,31 @@
      the blur from bleeding past the card's corners.
      ---------------------------------------------------------------------- */
   --shadow-h: 220;
-  --card-shadow: none;
+  /* Every term below is a multiple of --card-depth, so the slider fades the
+     whole stack in and out continuously. The alphas are tuned so the shipped
+     mid value (0.4) reads as a normal lift and 1 is a deliberate, deep card.
+     These three used to be hard-coded `none` while the comment above them
+     promised otherwise, which is why the Appearance depth slider and the
+     Settings "Flat cards" switch moved nothing at all: every surface that read
+     them was flat no matter what the preference said. */
+  --card-shadow:
+    0 1px 1px hsl(var(--shadow-h) 42% 2% / calc(0.52 * var(--card-depth))),
+    0 5px 12px -3px hsl(var(--shadow-h) 46% 2% / calc(0.62 * var(--card-depth))),
+    0 16px 34px -14px hsl(var(--shadow-h) 50% 2% / calc(0.7 * var(--card-depth))),
+    0 34px 70px -34px hsl(var(--shadow-h) 50% 2% / calc(0.78 * var(--card-depth)));
 
   /* Hover lift: the same stack, pushed further and a little stronger. */
-  --card-shadow-hover: none;
+  --card-shadow-hover:
+    0 1px 1px hsl(var(--shadow-h) 42% 2% / calc(0.56 * var(--card-depth))),
+    0 8px 18px -4px hsl(var(--shadow-h) 46% 2% / calc(0.72 * var(--card-depth))),
+    0 24px 48px -18px hsl(var(--shadow-h) 50% 2% / calc(0.8 * var(--card-depth))),
+    0 44px 90px -40px hsl(var(--shadow-h) 50% 2% / calc(0.88 * var(--card-depth)));
 
   /* Channels are small and sit close to the page, so they get a shorter stack
      rather than a card's full drop. */
-  --channel-shadow: none;
+  --channel-shadow:
+    0 1px 1px hsl(var(--shadow-h) 42% 2% / calc(0.4 * var(--card-depth))),
+    0 4px 10px -4px hsl(var(--shadow-h) 46% 2% / calc(0.5 * var(--card-depth)));
   --glow: 0 0 0 1px hsl(var(--accent-h) 44% 60% / 0.3), 0 12px 40px -12px hsl(var(--accent-h) 44% 60% / 0.4);
 
   --carousel-fade: hsl(220 22% 7%);
@@ -276,6 +293,22 @@
      hue up, so the card and channel shadows lighten in light mode without
      needing a second set of definitions. */
   --shadow-h: 222;
+  /* Same stack, half the alpha: on white the dark theme's alpha reads as dirt
+     rather than depth. Still a multiple of --card-depth, so the slider keeps
+     working here too. */
+  --card-shadow:
+    0 1px 1px hsl(var(--shadow-h) 40% 24% / calc(0.26 * var(--card-depth))),
+    0 5px 12px -3px hsl(var(--shadow-h) 40% 22% / calc(0.3 * var(--card-depth))),
+    0 16px 34px -14px hsl(var(--shadow-h) 42% 20% / calc(0.34 * var(--card-depth))),
+    0 34px 70px -34px hsl(var(--shadow-h) 42% 18% / calc(0.36 * var(--card-depth)));
+  --card-shadow-hover:
+    0 1px 1px hsl(var(--shadow-h) 40% 24% / calc(0.3 * var(--card-depth))),
+    0 8px 18px -4px hsl(var(--shadow-h) 40% 22% / calc(0.36 * var(--card-depth))),
+    0 24px 48px -18px hsl(var(--shadow-h) 42% 20% / calc(0.42 * var(--card-depth))),
+    0 44px 90px -40px hsl(var(--shadow-h) 42% 18% / calc(0.46 * var(--card-depth)));
+  --channel-shadow:
+    0 1px 1px hsl(var(--shadow-h) 40% 24% / calc(0.2 * var(--card-depth))),
+    0 4px 10px -4px hsl(var(--shadow-h) 40% 22% / calc(0.26 * var(--card-depth)));
   --glow: 0 0 0 1px hsl(var(--accent-h) 42% 48% / 0.22), 0 14px 40px -14px hsl(var(--accent-h) 42% 48% / 0.35);
 
   --carousel-fade: hsl(210 30% 96%);

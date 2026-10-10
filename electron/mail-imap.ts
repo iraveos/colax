@@ -36,6 +36,10 @@ export interface FullMailInput {
   appPassword: string;
   /** Message id: `imap:<uid>`, from the inbox listing. */
   feedId: string;
+  /** The account's mail server. Absent means Google's, for callers from before providers. */
+  host?: string;
+  port?: number;
+  secure?: boolean;
   /** Kept for IPC compatibility; unused — reads address the UID directly. */
   subject?: string;
   /** Kept for IPC compatibility; unused. */
@@ -84,9 +88,21 @@ const MAX_TEXT_CHARS = 200_000;
 const MAIL_IDLE_MS = 10 * 60 * 1000;
 const SWEEP_EVERY_MS = 60 * 1000;
 
+/**
+ * How to reach one mailbox. Passed in per call rather than looked up, so the
+ * main process never has to know the provider catalogue — the renderer already
+ * holds the account record and sends these three fields with every request.
+ */
+export interface MailConnection {
+  host: string;
+  port: number;
+  secure: boolean;
+}
+
 interface ManagedMailbox {
   client: ImapFlow;
   pass: string;
+  conn: MailConnection;
   ready: boolean;
   lastUsed: number;
   connecting: Promise<ImapFlow> | null;
@@ -94,15 +110,39 @@ interface ManagedMailbox {
 
 const mailboxes = new Map<string, ManagedMailbox>();
 
-function mailboxKey(address: string): string {
-  return address.trim().toLowerCase();
+/**
+ * The pool key for a mailbox: address plus server.
+ *
+ * Address alone was the key when only one host existed. Two accounts can share
+ * an address across providers (a personal and a work Google address on two
+ * Workspace tenants, or an alias served by a different host), and pooling those
+ * together would sign one of them in with the other's password.
+ */
+function mailboxKey(address: string, conn: MailConnection): string {
+  return `${address.trim().toLowerCase()}@${conn.host}:${conn.port}${conn.secure ? 's' : ''}`;
 }
 
-function makeClient(address: string, pass: string): ImapFlow {
+/** Defaults for callers that predate providers: Google's IMAP endpoint. */
+export function connectInfo(input: {
+  host?: unknown;
+  port?: unknown;
+  secure?: unknown;
+}): MailConnection {
+  const host = typeof input?.host === 'string' && input.host.trim() ? input.host.trim().slice(0, 120) : 'imap.gmail.com';
+  const rawPort = input?.port;
+  const port =
+    typeof rawPort === 'number' && Number.isFinite(rawPort) && rawPort > 0 && rawPort <= 65535
+      ? Math.round(rawPort)
+      : 993;
+  const secure = typeof input?.secure === 'boolean' ? input.secure : port !== 143;
+  return { host, port, secure };
+}
+
+function makeClient(address: string, pass: string, conn: MailConnection): ImapFlow {
   return new ImapFlow({
-    host: 'imap.gmail.com',
-    port: 993,
-    secure: true,
+    host: conn.host,
+    port: conn.port,
+    secure: conn.secure,
     logger: false,
     auth: { user: address, pass },
     connectionTimeout: 15000,
@@ -137,14 +177,21 @@ async function dropMailbox(key: string): Promise<void> {
 
 /** The connected client for a mailbox, connecting (once, shared between
     concurrent callers) when needed. Throws the raw connection error. */
-async function ensureConnected(address: string, pass: string, force = false): Promise<ImapFlow> {
-  const key = mailboxKey(address);
+async function ensureConnected(
+  address: string,
+  pass: string,
+  conn: MailConnection,
+  force = false,
+): Promise<ImapFlow> {
+  const key = mailboxKey(address, conn);
   const current = mailboxes.get(key);
-  if (current && (force || current.pass !== pass)) await dropMailbox(key);
+  const moved =
+    current && (current.conn.host !== conn.host || current.conn.port !== conn.port || current.conn.secure !== conn.secure);
+  if (current && (force || moved || current.pass !== pass)) await dropMailbox(key);
   let managed = mailboxes.get(key);
   if (!managed) {
-    const client = makeClient(address, pass);
-    managed = { client, pass, ready: false, lastUsed: Date.now(), connecting: null };
+    const client = makeClient(address, pass, conn);
+    managed = { client, pass, conn, ready: false, lastUsed: Date.now(), connecting: null };
     mailboxes.set(key, managed);
     watch(client, key, managed);
   }
@@ -188,14 +235,19 @@ export function stageOf(cause: unknown): string | null {
  * error. Non-connection failures propagate untouched, so every failure mode
  * keeps its own message.
  */
-async function runMail<T>(address: string, pass: string, work: (client: ImapFlow) => Promise<T>): Promise<T> {
+async function runMail<T>(
+  address: string,
+  pass: string,
+  conn: MailConnection,
+  work: (client: ImapFlow) => Promise<T>,
+): Promise<T> {
   let client: ImapFlow;
   try {
-    client = await ensureConnected(address, pass);
+    client = await ensureConnected(address, pass, conn);
   } catch (cause) {
     throw staged(
       'signin',
-      `Could not sign in to Gmail. Check the address and the app password. (${causeText(cause)})`,
+      `Could not sign in to ${conn.host}. Check the address and the app password for that provider. (${causeText(cause)})`,
     );
   }
   try {
@@ -203,7 +255,7 @@ async function runMail<T>(address: string, pass: string, work: (client: ImapFlow
   } catch (cause) {
     if (!isConnectionError(cause)) throw cause;
     try {
-      client = await ensureConnected(address, pass, true);
+      client = await ensureConnected(address, pass, conn, true);
     } catch (cause2) {
       throw staged('reconnect', `The connection dropped and would not come back (${causeText(cause2)}).`);
     }
@@ -244,24 +296,52 @@ function causeText(cause: unknown): string {
 export async function listInboxMail(input: {
   address: unknown;
   appPassword: unknown;
+  host?: unknown;
+  port?: unknown;
+  secure?: unknown;
   limit?: unknown;
-}): Promise<{ ok: boolean; messages?: InboxListMessage[]; error?: string }> {
+  /** Page back past this UID: only older messages come back. */
+  beforeUid?: unknown;
+  /** Server-side search across subject, sender and body text. */
+  query?: unknown;
+}): Promise<{ ok: boolean; messages?: InboxListMessage[]; hasMore?: boolean; error?: string }> {
   const address = typeof input?.address === 'string' ? input.address.trim().slice(0, 320) : '';
   const appPassword =
     typeof input?.appPassword === 'string' ? input.appPassword.replace(/\s+/g, '').slice(0, 200) : '';
   if (!address || !appPassword) return { ok: false, error: 'Missing mailbox credentials.' };
+  const conn = connectInfo(input ?? {});
+  // 100 per page rather than 50: a page is one round trip either way, and the
+  // list keeps the rest behind "Load older", so the ceiling is only about how
+  // long a single IPC answer is.
   const limit =
     typeof input?.limit === 'number' && Number.isFinite(input.limit)
-      ? Math.max(1, Math.min(50, Math.floor(input.limit)))
-      : 20;
+      ? Math.max(1, Math.min(100, Math.floor(input.limit)))
+      : 50;
+  const beforeUid =
+    typeof input?.beforeUid === 'number' && Number.isFinite(input.beforeUid) && input.beforeUid > 0
+      ? Math.floor(input.beforeUid)
+      : null;
+  // Capped and stripped of IMAP control characters: this string is handed to
+  // the server as a search term, and quoting it is the server's business.
+  const query = typeof input?.query === 'string' ? input.query.replace(/[\r\n\u0000]/g, ' ').trim().slice(0, 120) : '';
 
   try {
-    return await runMail(address, appPassword, async (client) => {
+    return await runMail(address, appPassword, conn, async (client) => {
       const lock = await client.getMailboxLock('INBOX');
       try {
-        const found = await client.search({ all: true }, { uid: true });
-        const uids = (Array.isArray(found) ? [...found] : []).sort((a, b) => a - b).slice(-limit);
-        if (uids.length === 0) return { ok: true, messages: [] };
+        // Searching by body is the slow half, so it is only used when the user
+        // actually asked for a search: a plain listing still costs one search.
+        const found = await client.search(
+          query
+            ? { or: [{ subject: query }, { from: query }, { to: query }, { body: query }] }
+            : { all: true },
+          { uid: true },
+        );
+        let uids = (Array.isArray(found) ? [...found] : []).sort((a, b) => a - b);
+        if (beforeUid !== null) uids = uids.filter((uid) => uid < beforeUid);
+        const hasMore = uids.length > limit;
+        uids = uids.slice(-limit);
+        if (uids.length === 0) return { ok: true, messages: [], hasMore: false };
         const messages: InboxListMessage[] = [];
         for await (const fetched of client.fetch(uids, { envelope: true }, { uid: true })) {
           if (!fetched.uid) continue;
@@ -275,7 +355,7 @@ export async function listInboxMail(input: {
           });
         }
         messages.sort((a, b) => b.uid - a.uid);
-        return { ok: true, messages };
+        return { ok: true, messages, hasMore };
       } finally {
         lock.release();
       }
@@ -382,6 +462,7 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
   const address = typeof input?.address === 'string' ? input.address.trim().slice(0, 320) : '';
   const appPassword = typeof input?.appPassword === 'string' ? input.appPassword.replace(/\s+/g, '').slice(0, 200) : '';
   if (!address || !appPassword) return invalid('Missing mailbox credentials.');
+  const conn = connectInfo((input ?? {}) as { host?: unknown; port?: unknown; secure?: unknown });
   // Listings address INBOX UIDs directly; anything else is a row saved before
   // the rebuild, which no longer addresses anything.
   const uid = imapUidOf(typeof input?.feedId === 'string' ? input.feedId : null);
@@ -389,7 +470,7 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
     return invalid('That saved message is from an older version. Refresh the list and open it again.');
   }
   try {
-    return await runMail(address, appPassword, (client) => readOne(client, 'INBOX', uid));
+    return await runMail(address, appPassword, conn, (client) => readOne(client, 'INBOX', uid));
   } catch (cause) {
     // Sign-in and reconnect texts arrive final; anything else already carries
     // its own stage message from the read.

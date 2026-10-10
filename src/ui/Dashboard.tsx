@@ -44,6 +44,7 @@ export function Dashboard({
   usage,
   onSelectChannel,
   onOpenLogin,
+  onOpenMailbox,
   onOpenSettings,
   onAddLogin,
   onNewChannel,
@@ -58,6 +59,8 @@ export function Dashboard({
   onSelectChannel: (channelId: string) => void;
   /** Opens one login in the editor (gated like everywhere else). */
   onOpenLogin: (item: VaultItem) => void;
+  /** Opens one connected mailbox's messages window. Absent: the mail panel hides. */
+  onOpenMailbox?: (accountId: string) => void;
   /** Jumps to a settings tab for management (tags, reminder windows). */
   onOpenSettings: (tab: string) => void;
   /** Starts a new login. Shown only when the vault is empty. */
@@ -237,6 +240,47 @@ export function Dashboard({
     return out;
   }, [items, usage]);
 
+  /**
+   * The newest mail already on this device, newest first, from the cache the
+   * message expanders fill. Deliberately not a new fetch: a dashboard that hits
+   * the network on every visit is the opposite of what this screen is for, and
+   * the cache is exactly the mail the user has already seen.
+   */
+  const recentMail = useMemo(() => {
+    const accounts = prefs.gmailAccounts ?? [];
+    if (accounts.length === 0) return [];
+    const byId = new Map(accounts.map((account) => [account.id, account]));
+    const rows: { key: string; title: string; from: string; at: number; accountId: string }[] = [];
+    for (const [accountId, messages] of Object.entries(prefs.mailCache ?? {})) {
+      if (!byId.has(accountId)) continue;
+      for (const message of messages) {
+        const at = Date.parse(message.issued || '');
+        if (Number.isNaN(at)) continue;
+        rows.push({
+          key: `${accountId}:${message.id}`,
+          title: message.title || '(no subject)',
+          from: message.author || message.email || 'Unknown sender',
+          at,
+          accountId,
+        });
+      }
+    }
+    return rows.sort((a, b) => b.at - a.at).slice(0, 6);
+  }, [prefs.gmailAccounts, prefs.mailCache]);
+
+  /** The address behind one account id, for the mail list's second column. */
+  const byIdAddress = (accountId: string) =>
+    (prefs.gmailAccounts ?? []).find((account) => account.id === accountId)?.address ?? '';
+
+  /** Connected mailboxes that are switched on and hold credentials. */
+  const liveMailboxes = useMemo(
+    () =>
+      (prefs.gmailAccounts ?? []).filter(
+        (account) => account.enabled && account.address.trim() !== '' && account.appPassword.replace(/\s+/g, '') !== '',
+      ),
+    [prefs.gmailAccounts],
+  );
+
   /** Everything wrong, ranked. Only applicable issues are listed. */
   const issues = useMemo<Issue[]>(() => {
     const list: Issue[] = [];
@@ -314,26 +358,59 @@ export function Dashboard({
       .sort((a, b) => b.count - a.count || a.channel.name.localeCompare(b.channel.name));
   }, [channels, items, prefs.passwordAgeDays]);
 
-  /** Share of the vault with nothing serious wrong with it. */
-  const covered =
-    health.total === 0
-      ? 0
-      : Math.max(
-          0,
-          Math.round(
-            ((health.total -
-              issues.filter((issue) => issue.severity !== 'low').reduce((sum, issue) => sum + issue.count, 0)) /
-              health.total) *
-              100,
-          ),
-        );
+  /**
+   * How many logins carry at least one issue, and how many are clear.
+   *
+   * Unique logins, not summed issue counts: one login can be weak AND stale AND
+   * flagged, and summing them could push the clear count negative — clamped at
+   * 0, which then reads as "everything is broken" when it is not.
+   */
+  const troubledCount = (() => {
+    const troubled = new Set<string>();
+    for (const item of [...health.weak, ...health.stale, ...health.emailCheck]) troubled.add(item.id);
+    for (const item of items) if (item.needsAttention) troubled.add(item.id);
+    return troubled.size;
+  })();
 
+  /** Share of the vault with nothing serious wrong with it, 0–100. */
+  const covered = health.total === 0 ? 0 : Math.max(0, Math.round(((health.total - troubledCount) / health.total) * 100));
+
+  /**
+   * The four tiles, each with a second line that says what the number means
+   * rather than leaving a bare count. Every one navigates to the view behind it.
+   */
   const metrics = [
-    { label: 'Total Logins', value: health.total, channel: idOf('all') },
-    { label: 'Favorites', value: health.favorites, channel: idOf('favorites') },
-    { label: 'Weak Passwords', value: health.weak.length, channel: idOf('weak') },
-    { label: 'Untagged Logins', value: health.untagged.length, channel: 'unassigned' },
+    {
+      label: 'Total Logins',
+      value: health.total,
+      channel: idOf('all'),
+      note: `${health.withTotp.length} with a second factor`,
+    },
+    {
+      label: 'Favorites',
+      value: health.favorites,
+      channel: idOf('favorites'),
+      note: health.favorites === 0 ? 'Star a login to pin it here' : 'Pinned to the top of the list',
+    },
+    {
+      label: 'Weak Passwords',
+      value: health.weak.length,
+      channel: idOf('weak'),
+      note: health.weak.length === 0 ? 'Nothing short, reused or guessable' : 'Short, reused or guessable',
+    },
+    {
+      label: 'Untagged Logins',
+      value: health.untagged.length,
+      channel: 'unassigned',
+      note: health.untagged.length === 0 ? 'Everything is filed' : 'Nothing to search them by',
+    },
   ];
+
+  // The ring's arc: a full circle is 2πr with r = 26 in a 64-unit viewBox.
+  const RING_RADIUS = 26;
+  const ringLength = 2 * Math.PI * RING_RADIUS;
+  const ringFilled = (covered / 100) * ringLength;
+  const scoreLabel = covered >= 90 ? 'Excellent' : covered >= 70 ? 'Good' : covered >= 40 ? 'Needs work' : 'At risk';
 
   return (
     <div className="dashboard">
@@ -383,10 +460,39 @@ export function Dashboard({
             )}
           </div>
           <div className="cc-security__foot">
-            <div className="dash-coverage" role="img" aria-label={`${covered}% of the vault in good shape`}>
-              <span style={{ width: `${covered}%` }} />
+            {/* A ring rather than a bar: one number, readable from across the
+                desk, and the label says what the number means. */}
+            <div
+              className="dash-score"
+              role="img"
+              aria-label={`Vault score ${covered} out of 100 — ${scoreLabel}`}
+              data-band={covered >= 90 ? 'good' : covered >= 70 ? 'fair' : 'poor'}
+            >
+              <svg viewBox="0 0 64 64" aria-hidden="true">
+                <circle className="dash-score__track" cx="32" cy="32" r={RING_RADIUS} />
+                <circle
+                  className="dash-score__fill"
+                  cx="32"
+                  cy="32"
+                  r={RING_RADIUS}
+                  strokeDasharray={`${ringFilled} ${ringLength}`}
+                />
+              </svg>
+              <span className="dash-score__value">{covered}</span>
             </div>
-            <span className="cc-security__cover">{covered}% in good shape</span>
+            <span className="cc-security__cover">
+              <b>
+                Vault score {covered}/100 · {scoreLabel}
+              </b>
+              {/* Deliberately "no password problem", not "clear of everything":
+                  untagged logins appear in the attention list below but are a
+                  tidiness item, not a weakness, and counting them here would
+                  make a fresh vault score zero the moment it was created. */}
+              <span>
+                {health.total - troubledCount} of {health.total} login{health.total === 1 ? '' : 's'} with no
+                password problem.
+              </span>
+            </span>
           </div>
         </section>
       ) : null}
@@ -405,6 +511,7 @@ export function Dashboard({
           >
             <span className="stat__value">{metric.value}</span>
             <span className="stat__label">{metric.label}</span>
+            <span className="stat__note">{metric.note}</span>
           </button>
         ))}
       </div>
@@ -484,6 +591,64 @@ export function Dashboard({
             </section>
           </div>
         </div>
+      ) : null}
+
+      {/* Mail, when there is any. This is the cache the message expanders have
+          already filled — nothing is fetched from here, so opening the dashboard
+          never costs a network round trip. */}
+      {(prefs.gmailAccounts ?? []).length > 0 && onOpenMailbox ? (
+        <section className="dash-section">
+          <header className="dash-section__head">
+            <div>
+              <h2 className="dash-section__title">Recent mail</h2>
+              <p className="dash-section__hint">
+                {liveMailboxes.length === 0
+                  ? 'No mailbox is switched on. A login whose email is a connected mailbox reads its own mail from its card.'
+                  : `The newest messages already read from ${liveMailboxes.length === 1 ? 'your mailbox' : `${liveMailboxes.length} mailboxes`}. Open one to read it in full.`}
+              </p>
+            </div>
+            {liveMailboxes.length > 0 ? (
+              <button
+                type="button"
+                className="btn btn--secondary btn--sm"
+                onClick={() => onOpenMailbox(liveMailboxes[0]!.id)}
+              >
+                Open inbox
+              </button>
+            ) : (
+              <button type="button" className="btn btn--secondary btn--sm" onClick={() => onOpenSettings('channels')}>
+                Set up mail
+              </button>
+            )}
+          </header>
+          {recentMail.length === 0 ? (
+            <p className="dash-card__empty">
+              {liveMailboxes.length === 0
+                ? 'Connect a mailbox in a login\u2019s editor, or open a login\u2019s Messages button, and what is read lands here.'
+                : 'Nothing cached yet. Open a login’s Messages button and the newest mail appears here.'}
+            </p>
+          ) : (
+            <div className="dash-list">
+              {recentMail.map((message) => (
+                <div className="dash-row" key={message.key}>
+                  <button
+                    type="button"
+                    className="dash-row__name"
+                    title={`Open ${message.title}`}
+                    onClick={() => onOpenMailbox(message.accountId)}
+                  >
+                    {message.title}
+                  </button>
+                  <span className="dash-row__meta" title={message.from}>
+                    {prefs.maskEmails ? maskEmail(message.from) : message.from}
+                    {byIdAddress(message.accountId) ? ` · ${byIdAddress(message.accountId)}` : ''}
+                  </span>
+                  <span className="dash-row__count">{relativeTime(message.at)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       ) : null}
 
       {/* Condensed insights: strength distribution and the 30-day timeline.

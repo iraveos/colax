@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ACCENT_PRESETS,
   DEFAULT_PREFERENCES,
@@ -24,6 +24,21 @@ import { SecurityForm } from './SecurityForm.tsx';
 import { ChannelManager } from './ChannelManager.tsx';
 import { AlarmsPanel } from './AlarmsPanel.tsx';
 
+import {
+  BALANCED_STYLE,
+  cleanProfileName,
+  FULL_DETAIL_STYLE,
+  MAX_OPTIMIZE_PROFILES,
+  MAX_SAVINGS_STYLE,
+  newOptimizeProfileId,
+  optimisationsOn,
+  OPTIMISATION_COUNT,
+  snapshotStyle,
+  stylePatch,
+  type OptimizeProfile,
+  type OptimizeStyle,
+} from '../vault/optimize.ts';
+import { formatBytes, useEfficiency } from './useEfficiency.ts';
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import { buildStamp, getPlatform } from '../lib/platform.ts';
 import { applyChannel } from '../vault/channels.ts';
@@ -180,6 +195,144 @@ export function Settings(props: {
 
   const hasPassword = protection === 'password';
   const set = (patch: Partial<VaultPreferences>) => void onUpdate(patch);
+
+  /* ---- Optimize ---------------------------------------------------------
+     One place to trade eye-candy for CPU, GPU and battery. The app's real
+     recurring costs are the animated mesh background, the frosted-glass
+     blurs, the spring animations, and background mail polling — so each
+     switch writes one of those *existing* preferences rather than a parallel
+     "performance mode" flag. That keeps the panel honest: what the switches
+     say is exactly what the rest of the app already reads.
+     -------------------------------------------------------------------- */
+  const optimizationsOn = optimisationsOn(prefs);
+  const [profileName, setProfileName] = useState('');
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  // The window owns which tab is showing, so it reports every switch back here.
+  // Measuring only while Optimize is actually on screen keeps the readout from
+  // walking the document on a tab nobody is looking at.
+  const [liveTab, setLiveTab] = useState(tab ?? '');
+  /**
+   * The launch-time memory switches as the shell reports them.
+   *
+   * Read once when the Optimize tab opens rather than mirrored into prefs:
+   * the truth lives in the main process on disk, because it has to be readable
+   * before the vault exists. A second copy in prefs could only disagree.
+   */
+  const [efficiencyState, setEfficiencyState] = useState<{ maxSavings: boolean; restartRequired: boolean } | null>(null);
+  useEffect(() => {
+    const runtime = getPlatform().runtime;
+    if (!open || liveTab !== 'optimize' || !runtime?.efficiency) return;
+    let active = true;
+    void runtime.efficiency().then((state) => {
+      if (active) setEfficiencyState(state);
+    });
+    return () => {
+      active = false;
+    };
+  }, [open, liveTab]);
+
+  const toggleMaxSavings = async (maxSavings: boolean) => {
+    const runtime = getPlatform().runtime;
+    if (!runtime?.efficiency) return;
+    const state = await runtime.efficiency({ maxSavings });
+    setEfficiencyState(state);
+    onNotify(
+      state.restartRequired
+        ? `Low-memory mode ${maxSavings ? 'on' : 'off'} — restart Colax to apply it`
+        : `Low-memory mode ${maxSavings ? 'on' : 'off'}`,
+    );
+  };
+  // A shortcut can jump straight to a tab without the user clicking it, and the
+  // window honours that internally — so mirror it here too, or the readout would
+  // sit blank after "Settings › Optimize" was reached from a sidebar menu.
+  useEffect(() => {
+    if (tab) setLiveTab(tab);
+  }, [tab]);
+  const efficiency = useEfficiency(open && liveTab === 'optimize');
+
+  /**
+   * Applies a whole look.
+   *
+   * The first time anything is traded away the current look is snapshotted
+   * first, so "Restore my look" can put the background picture, every slider and
+   * the mail cadence back — something the old fixed reset could not do, because
+   * "Maximum savings" deleted the picture and nothing recorded what it was.
+   */
+  const applyStyle = (style: OptimizeStyle, note: string, appliedProfile = '') => {
+    const patch: Partial<VaultPreferences> = {
+      ...stylePatch(prefs, style),
+      activeOptimizeProfile: appliedProfile,
+    };
+    const next = { ...prefs, ...patch } as VaultPreferences;
+    // Only the first trade-away is recorded: everything after it is savings on
+    // top of savings, and re-snapshotting would replace the real "before" with
+    // an already-reduced look.
+    if (!prefs.optimizeSnapshot && optimisationsOn(next) > optimizationsOn) {
+      patch.optimizeSnapshot = snapshotStyle(prefs);
+    }
+    set(patch);
+    onNotify(note);
+  };
+
+  /** Puts back the snapshot if there is one, else the shipped full-detail look. */
+  const restoreLook = () => {
+    const target = prefs.optimizeSnapshot ?? FULL_DETAIL_STYLE;
+    set({ ...stylePatch(prefs, target), optimizeSnapshot: null, activeOptimizeProfile: '' });
+    onNotify(prefs.optimizeSnapshot ? 'Your look is back' : 'Appearance restored to full detail');
+  };
+
+  const saveProfile = () => {
+    const name = cleanProfileName(profileName);
+    if (prefs.optimizeProfiles.some((profile) => profile.name.toLowerCase() === name.toLowerCase())) {
+      onNotify(`A profile called "${name}" already exists — rename or delete it first.`, 'error');
+      return;
+    }
+    if (prefs.optimizeProfiles.length >= MAX_OPTIMIZE_PROFILES) {
+      onNotify(`That is all ${MAX_OPTIMIZE_PROFILES} profiles — delete one to make room.`, 'error');
+      return;
+    }
+    const profile: OptimizeProfile = {
+      id: newOptimizeProfileId(),
+      name,
+      createdAt: Date.now(),
+      style: snapshotStyle(prefs),
+    };
+    set({
+      optimizeProfiles: [profile, ...prefs.optimizeProfiles],
+      activeOptimizeProfile: name,
+    });
+    setProfileName('');
+    onNotify(`Saved "${name}"`);
+  };
+
+  const renameProfile = (profile: OptimizeProfile) => {
+    const name = cleanProfileName(renameDraft, profile.name);
+    if (
+      name.toLowerCase() !== profile.name.toLowerCase() &&
+      prefs.optimizeProfiles.some((entry) => entry.name.toLowerCase() === name.toLowerCase())
+    ) {
+      onNotify(`"${name}" is already taken.`, 'error');
+      return;
+    }
+    set({
+      optimizeProfiles: prefs.optimizeProfiles.map((entry) =>
+        entry.id === profile.id ? { ...entry, name } : entry,
+      ),
+      activeOptimizeProfile:
+        prefs.activeOptimizeProfile === profile.name ? name : prefs.activeOptimizeProfile,
+    });
+    setRenamingId(null);
+    onNotify(`Renamed to "${name}"`);
+  };
+
+  const deleteProfile = (profile: OptimizeProfile) => {
+    set({
+      optimizeProfiles: prefs.optimizeProfiles.filter((entry) => entry.id !== profile.id),
+      activeOptimizeProfile: prefs.activeOptimizeProfile === profile.name ? '' : prefs.activeOptimizeProfile,
+    });
+    onNotify(`Deleted "${profile.name}"`);
+  };
 
   /* ---- Data helpers --------------------------------------------------- */
 
@@ -642,7 +795,10 @@ export function Settings(props: {
               onChange={(pinFavorites) => set({ pinFavorites })}
             />
           </Row>
-          <Row label="Expand on select" hint="Open a login's details when you pick it.">
+          <Row
+            label="Expand on select"
+            hint="Picking a login normally just copies its password. With this on it also opens the login's details, so one click lands you on the whole record instead of only the clipboard. The copy still happens either way."
+          >
             <Toggle
               label="Expand on select"
               checked={prefs.expandOnOpen}
@@ -1333,6 +1489,380 @@ export function Settings(props: {
       : []),
 
     {
+      id: 'optimize',
+      label: 'Optimize',
+      icon: <WrenchIcon />,
+      render: () => (
+        <>
+          <Row
+            label="One-click profiles"
+            hint="Applies a whole set of resource-saving settings at once. Your logins, tags, mailboxes and layout are never touched — only how much the app animates and repaints."
+            stacked
+          >
+            <div className="optimize-presets">
+              <button className="btn btn--secondary" onClick={() => applyStyle(BALANCED_STYLE, 'Balanced profile applied')}>
+                Balanced
+              </button>
+              <button className="btn btn--primary" onClick={() => applyStyle(MAX_SAVINGS_STYLE, 'Maximum savings applied')}>
+                Maximum savings
+              </button>
+              <button className="btn btn--quiet" onClick={restoreLook}>
+                Restore my look
+              </button>
+            </div>
+            <p className="field__hint">
+              <b>
+                {optimizationsOn} of {OPTIMISATION_COUNT}
+              </b>{' '}
+              optimisations on right now.
+              {optimizationsOn === 0 ? ' Everything is running at full detail.' : ''}{' '}
+              {prefs.optimizeSnapshot
+                ? 'Restore my look puts back exactly what was here before you traded anything away.'
+                : 'Trading anything away records what you had first, so Restore my look can undo it.'}
+            </p>
+          </Row>
+
+          {/* Saved looks (#3). Each one is the whole style above, stored in
+              preferences so it travels with a backup. */}
+          <Row
+            label="Saved profiles"
+            hint="Store the look above under a name and put it back later — after a reset, a new machine, or a friend's install. Profiles live in the vault, so an encrypted backup carries them."
+            stacked
+          >
+            <div className="optimize-save">
+              <input
+                className="input"
+                value={profileName}
+                onChange={(event) => setProfileName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') saveProfile();
+                }}
+                placeholder="Name this look, e.g. Evening focus"
+                maxLength={40}
+                aria-label="Profile name"
+              />
+              <button
+                type="button"
+                className="btn btn--secondary"
+                onClick={saveProfile}
+                disabled={prefs.optimizeProfiles.length >= MAX_OPTIMIZE_PROFILES}
+              >
+                Save current
+              </button>
+            </div>
+            {prefs.optimizeProfiles.length === 0 ? (
+              <p className="field__hint">
+                Nothing saved yet. Set the switches below how you like them, name the look and save it.
+              </p>
+            ) : (
+              <ul className="optimize-profiles">
+                {prefs.optimizeProfiles.map((profile) => {
+                  const active = prefs.activeOptimizeProfile === profile.name;
+                  const renaming = renamingId === profile.id;
+                  const saved = new Date(profile.createdAt).toLocaleDateString();
+                  return (
+                    <li className="optimize-profile" key={profile.id} data-active={active || undefined}>
+                      {renaming ? (
+                        <input
+                          className="input"
+                          value={renameDraft}
+                          autoFocus
+                          maxLength={40}
+                          onChange={(event) => setRenameDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') renameProfile(profile);
+                            if (event.key === 'Escape') setRenamingId(null);
+                          }}
+                          aria-label={`New name for ${profile.name}`}
+                        />
+                      ) : (
+                        <span className="optimize-profile__name">
+                          {active ? <CheckIcon width="12" height="12" /> : null}
+                          {profile.name}
+                          <span className="optimize-profile__meta">saved {saved}</span>
+                        </span>
+                      )}
+                      <span className="optimize-profile__actions">
+                        {renaming ? (
+                          <>
+                            <button type="button" className="btn btn--quiet btn--sm" onClick={() => renameProfile(profile)}>
+                              Save name
+                            </button>
+                            <button type="button" className="btn btn--quiet btn--sm" onClick={() => setRenamingId(null)}>
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="btn btn--primary btn--sm"
+                              onClick={() => applyStyle(profile.style, `Applied "${profile.name}"`, profile.name)}
+                              disabled={active}
+                            >
+                              Apply
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--quiet btn--sm"
+                              onClick={() => {
+                                setRenamingId(profile.id);
+                                setRenameDraft(profile.name);
+                              }}
+                            >
+                              Rename
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--quiet btn--sm"
+                              title={`Update "${profile.name}" to the look on screen now`}
+                              onClick={() => {
+                                set({
+                                  optimizeProfiles: prefs.optimizeProfiles.map((entry) =>
+                                    entry.id === profile.id
+                                      ? { ...entry, style: snapshotStyle(prefs), createdAt: Date.now() }
+                                      : entry,
+                                  ),
+                                });
+                                onNotify(`"${profile.name}" updated to the current look`);
+                              }}
+                            >
+                              Overwrite
+                            </button>
+                            <button type="button" className="btn btn--quiet btn--sm" onClick={() => deleteProfile(profile)}>
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Row>
+
+          {/* The measurements (#4/#8). Real numbers, so "did that help" is a
+              question with an answer instead of a shrug. */}
+          <Row
+            label="What it costs right now"
+            hint="Measured on this machine, not estimated. Two totals are shown because they answer different questions. “Task manager” is what the system reports for the app group: it adds up every process, and Chromium's shared read-only pages (the engine's own code and data) get counted once per process, so it always reads high. “Unique to Colax” is the part that does not overlap between processes, which is the honest figure for how much memory this app actually takes."
+            stacked
+          >
+            <div className="optimize-metrics">
+              <div className="optimize-metric">
+                <span className="optimize-metric__value">
+                  {efficiency.snapshot ? formatBytes(efficiency.snapshot.totalBytes) : '—'}
+                </span>
+                <span className="optimize-metric__label">
+                  {efficiency.snapshot?.totalBytes === null || efficiency.snapshot === null
+                    ? 'Task manager (desktop only)'
+                    : 'Task manager, all processes'}
+                </span>
+              </div>
+              <div className="optimize-metric">
+                <span className="optimize-metric__value">
+                  {efficiency.snapshot ? formatBytes(efficiency.snapshot.privateBytes) : '—'}
+                </span>
+                <span className="optimize-metric__label">Unique to Colax</span>
+              </div>
+              <div className="optimize-metric">
+                <span className="optimize-metric__value">
+                  {efficiency.snapshot ? formatBytes(efficiency.snapshot.heapBytes) : '—'}
+                </span>
+                <span className="optimize-metric__label">Page JavaScript heap</span>
+              </div>
+              <div className="optimize-metric">
+                <span className="optimize-metric__value">{efficiency.snapshot?.nodes ?? '—'}</span>
+                <span className="optimize-metric__label">Elements on screen</span>
+              </div>
+              <div className="optimize-metric">
+                <span className="optimize-metric__value">
+                  {efficiency.snapshot?.blurred ?? '—'}
+                </span>
+                <span className="optimize-metric__label">Blurred surfaces</span>
+              </div>
+            </div>
+            {efficiency.snapshot && efficiency.snapshot.processes.length > 0 ? (
+              <ul className="optimize-breakdown">
+                {efficiency.snapshot.processes.map((process, index) => (
+                  <li key={`${process.type}-${index}`}>
+                    <span>{process.type}</span>
+                    <b title="Private bytes / working set">
+                      {formatBytes(process.privateBytes)} / {formatBytes(process.workingSetBytes)}
+                    </b>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <div className="optimize-measure">
+              <button type="button" className="btn btn--secondary btn--sm" onClick={() => void efficiency.measure()} disabled={efficiency.measuring}>
+                {efficiency.measuring ? <span className="spinner" /> : null}
+                Measure again
+              </button>
+              <span className="field__hint" style={{ margin: 0 }}>
+                Measure before and after flipping a switch to see what it actually bought.
+              </span>
+            </div>
+          </Row>
+
+          <Row
+            label="Reduce motion"
+            hint="Stops the spring and entrance animations. The biggest win on a large vault, and the one that helps most on battery."
+          >
+            <Toggle
+              label="Reduce motion"
+              checked={prefs.motion <= 0.001}
+              onChange={(on) => set({ motion: on ? 0 : 1, motionSpeed: on ? 0.25 : 1 })}
+            />
+          </Row>
+
+          <Row
+            label="Quiet the background"
+            hint="Fades out the animated mesh gradient behind everything. It is the single heaviest thing the app repaints, so this is the switch to reach for first."
+          >
+            <Toggle
+              label="Quiet the background"
+              checked={prefs.ambient <= 0.05}
+              onChange={(on) => set({ ambient: on ? 0 : 1 })}
+            />
+          </Row>
+
+          <Row
+            label="Reduce transparency"
+            hint="Drops the frosted-glass blur on the topbar, dock and dialogs for flat, opaque surfaces. Blur is a per-frame GPU cost everywhere it appears."
+          >
+            <Toggle
+              label="Reduce transparency"
+              checked={prefs.reduceTransparency}
+              onChange={(reduceTransparency) => set({ reduceTransparency })}
+            />
+          </Row>
+
+          <Row label="Compact layout" hint="Tighter spacing, so more fits on screen and less is painted while scrolling.">
+            <Toggle
+              label="Compact layout"
+              checked={prefs.density === 'compact'}
+              onChange={(on) => set({ density: on ? 'compact' : 'comfortable' })}
+            />
+          </Row>
+
+          <Row label="Flat cards" hint="Removes the drop shadows under login cards. Cheap on its own, and it compounds with the others.">
+            <Toggle
+              label="Flat cards"
+              checked={prefs.cardDepth <= 0.05}
+              onChange={(on) => set({ cardDepth: on ? 0 : DEFAULT_PREFERENCES.cardDepth })}
+            />
+          </Row>
+
+          <Row
+            label="Slower mail polling"
+            hint={
+              prefs.gmailAccounts.length === 0
+                ? 'Nothing to poll — no mailbox is connected, so no background check is running. Connect one and this becomes a choice.'
+                : 'Stretches every connected mailbox to a 15-minute refresh. Mail reads immediately when you open a login, so this only affects background checks.'
+            }
+          >
+            <Toggle
+              label="Slower mail polling"
+              // Nothing connected means nothing polls, so the saving is already
+              // in place — shown as a locked "on" rather than an off switch that
+              // could never be reached, which is what kept the counter off its
+              // own total on a fresh install.
+              checked={
+                prefs.gmailAccounts.length === 0 ||
+                prefs.gmailAccounts.every((account) => account.refreshSeconds >= 300)
+              }
+              disabled={prefs.gmailAccounts.length === 0}
+              onChange={(on) =>
+                set({
+                  gmailAccounts: prefs.gmailAccounts.map((account) => ({
+                    ...account,
+                    refreshSeconds: on ? 900 : 300,
+                  })),
+                })
+              }
+            />
+          </Row>
+
+          {/* Always rendered, unlike before. It used to disappear with the
+              picture, so "Remove background image" could never be the on-state
+              of anything and the counter could never reach its own total. */}
+          <Row
+            label="Remove background image"
+            hint={
+              prefs.backgroundImage
+                ? 'A full-bleed photo is decoded once and repainted under everything. Removing it is the largest single saving, but you lose the picture. Save a profile first if you want it back exactly.'
+                : 'Nothing to remove — there is no background picture, so this saving is already in place.'
+            }
+          >
+            <Toggle
+              label="Remove background image"
+              checked={prefs.backgroundImage === ''}
+              disabled={prefs.backgroundImage === ''}
+              onChange={() =>
+                set({
+                  backgroundImage: '',
+                  backgroundOpacity: DEFAULT_PREFERENCES.backgroundOpacity,
+                  backgroundBlur: DEFAULT_PREFERENCES.backgroundBlur,
+                  backgroundDim: DEFAULT_PREFERENCES.backgroundDim,
+                })
+              }
+            />
+          </Row>
+
+          {/* The launch-time switches. They are Chromium flags, so the only
+              honest thing to show is what is in force now and whether a restart
+              is still owed — never a switch that pretends to apply live. */}
+          {getPlatform().runtime?.efficiency ? (
+            <Row
+              label="Low-memory mode"
+              hint={
+                efficiencyState?.maxSavings
+                  ? `On and in force. Chromium is rasterizing in software with low-end-device caches, which is what removes the GPU process entirely — measured at about 85 MB of unique memory saved.${efficiencyState.restartRequired ? ' Restart the app to apply the change.' : ''}`
+                  : 'The single biggest saving available, and on by default: Chromium drops the GPU process and rasterizes in software, with smaller image and tile caches. Costs a little smoothness in animation; nothing about your vault changes. Needs a restart, so flipping it back on here cannot take effect while the app is running.'
+              }
+            >
+              <Toggle
+                label="Low-memory mode"
+                checked={efficiencyState?.maxSavings === true}
+                onChange={(on) => void toggleMaxSavings(on)}
+              />
+            </Row>
+          ) : null}
+
+          <Row
+            label="Disable spellcheck"
+            hint={
+              getPlatform().runtime?.setSpellcheck
+                ? 'The desktop shell loads a spell-check dictionary per language at startup. Only the notes box ever uses it, and switching it off frees several megabytes of tables that are otherwise resident the whole time the app is open.'
+                : 'Desktop only — a browser page has no spellcheck dictionary of its own to switch off.'
+            }
+          >
+            <Toggle
+              label="Disable spellcheck"
+              checked={prefs.disableSpellcheck}
+              onChange={(disableSpellcheck) => set({ disableSpellcheck })}
+            />
+          </Row>
+
+          <Row
+            label="Reset optimisations"
+            hint={
+              prefs.optimizeSnapshot
+                ? 'Puts back the look that was here before anything was traded away — background picture, sliders, mail cadence and all.'
+                : 'Restores every value this panel touches to its shipped default. Nothing here is destructive.'
+            }
+          >
+            <button className="btn btn--quiet" onClick={restoreLook}>
+              Reset
+            </button>
+          </Row>
+        </>
+      ),
+    },
+
+    {
       id: 'about',
       label: 'About',
       icon: <InfoIcon />,
@@ -1394,6 +1924,7 @@ export function Settings(props: {
         open={open}
         tabs={tabs}
         onClose={onClose}
+        onNavigate={setLiveTab}
         tab={tab}
         speed={prefs.motionSpeed}
         hideDividers={hideDividers}

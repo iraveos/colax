@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GmailAccount } from '../vault/storage.ts';
+import { resolveConnection } from './../lib/mail-providers.ts';
 import { imapUidOf } from '../lib/mail-text.ts';
 import { getPlatform } from '../lib/platform.ts';
 
@@ -24,6 +25,28 @@ export function credHash(value: string): string {
   let hash = 5381;
   for (let i = 0; i < value.length; i += 1) hash = ((hash << 5) + hash + value.charCodeAt(i)) | 0;
   return (hash >>> 0).toString(36);
+}
+
+/**
+ * Normalises mailbox credentials before any network use.
+ *
+ * Google displays app passwords in spaced groups ("xxxx xxxx xxxx xxxx") and
+ * users paste them with the spaces still in — authenticating with the spaces
+ * always fails. Addresses may carry stray whitespace from the editor. Both
+ * are trimmed here, at the single choke point every read goes through, so the
+ * editor, the per-login expander and the mailbox window cannot disagree.
+ */
+export function normMailAddress(value: string): string {
+  return value.trim();
+}
+
+export function normAppPassword(value: string): string {
+  return value.replace(/\s+/g, '');
+}
+
+/** True when an account has enough (normalised) credentials to attempt a read. */
+export function hasMailCreds(account: Pick<GmailAccount, 'address' | 'appPassword'>): boolean {
+  return normMailAddress(account.address) !== '' && normAppPassword(account.appPassword) !== '';
 }
 
 /**
@@ -61,11 +84,13 @@ export async function fetchGmailOnce(
   setLoading?: (loading: boolean) => void,
   accountId = '',
 ): Promise<GmailMessage[]> {
-  if (!address || !appPassword) return [];
+  const cleanAddress = normMailAddress(address);
+  const cleanPassword = normAppPassword(appPassword);
+  if (!cleanAddress || !cleanPassword) return [];
   setLoading?.(true);
   try {
     const response = await fetch(FEED_URL, {
-      headers: { Authorization: `Basic ${btoa(`${address}:${appPassword}`)}` },
+      headers: { Authorization: `Basic ${btoa(`${cleanAddress}:${cleanPassword}`)}` },
     });
     if (response.status === 401) {
       setError?.('Google rejected that login. Check the address and the app password (not the normal password).');
@@ -82,8 +107,15 @@ export async function fetchGmailOnce(
     setError?.(null);
     return messages;
   } catch {
+    // The old wording blamed the origin and suggested "serving" the vault. That
+    // advice never worked: Google sends no CORS headers, so *no* browser page
+    // can read mail.google.com directly, whatever origin it runs from. Say what
+    // is actually true and point at the path that does work.
+    const desktopMail = Boolean(getPlatform().mail?.listInbox);
     setError?.(
-      'Could not reach Gmail. The browser blocks this request unless the page is allowed to call mail.google.com, so run the vault from a served origin or allow it in your browser settings.',
+      desktopMail
+        ? 'Could not reach your mail server. Check your connection and try again.'
+        : 'This browser build cannot read Gmail directly — Google only allows server-side access, so a web page is blocked no matter where it is served from. Mail works in the desktop app, which connects over IMAP. Everything else in the vault is unaffected.',
     );
     return [];
   } finally {
@@ -99,35 +131,111 @@ export async function fetchGmailOnce(
  * failures, or unread-only emptiness that hid the real mailbox. The web
  * build has no IMAP, so there the feed is the only read available.
  */
+/** The connection fields every read needs, taken from a stored account. */
+export interface MailTarget {
+  address: string;
+  appPassword: string;
+  host?: string;
+  port?: number;
+  secure?: boolean;
+}
+
+/** A stored account in the shape the read helpers want. */
+export function mailTargetOf(account: {
+  address: string;
+  appPassword: string;
+  provider?: string;
+  host?: string;
+  port?: number;
+  secure?: boolean;
+}): MailTarget {
+  const connection = resolveConnection(account);
+  return {
+    address: normMailAddress(account.address),
+    appPassword: normAppPassword(account.appPassword),
+    host: connection.host,
+    port: connection.port,
+    secure: connection.secure,
+  };
+}
+
+/**
+ * One page of a mailbox, newest first.
+ *
+ * `beforeUid` asks for the page *older* than the oldest message already held,
+ * which is how the list reaches past any single read: the server is asked for
+ * the next slice each time rather than the same first page. `query` is a real
+ * server-side search, so it reaches the whole mailbox, not just what has been
+ * fetched.
+ */
+export async function listGmailPage(
+  target: MailTarget,
+  accountId = '',
+  options: { limit?: number; beforeUid?: number; query?: string } = {},
+): Promise<{ messages: GmailMessage[]; hasMore: boolean; error: string | null }> {
+  const cleanAddress = normMailAddress(target.address);
+  const cleanPassword = normAppPassword(target.appPassword);
+  if (!cleanAddress || !cleanPassword) return { messages: [], hasMore: false, error: null };
+  const listMail = getPlatform().mail?.listInbox;
+  if (!listMail) return { messages: [], hasMore: false, error: null };
+  try {
+    const listed = await listMail({
+      address: cleanAddress,
+      appPassword: cleanPassword,
+      host: target.host,
+      port: target.port,
+      secure: target.secure,
+      limit: options.limit ?? 50,
+      beforeUid: options.beforeUid,
+      query: options.query,
+    });
+    if (listed.ok && listed.messages) {
+      return {
+        messages: listed.messages.map((entry) => ({
+          id: `imap:${entry.uid}`,
+          title: entry.subject,
+          author: entry.fromName,
+          email: entry.fromAddress,
+          summary: '',
+          issued: entry.date,
+          alternate: '',
+          accountId,
+        })),
+        hasMore: listed.hasMore === true,
+        error: null,
+      };
+    }
+    return { messages: [], hasMore: false, error: listed.error ?? 'The inbox could not be read.' };
+  } catch {
+    return { messages: [], hasMore: false, error: 'The inbox could not be read.' };
+  }
+}
+
+/**
+ * One mailbox's newest page, in the shape the rest of the app already uses.
+ *
+ * Kept as the simple entry point every existing caller uses — the per-login
+ * expander, the login cards, the mailbox window — so paging could be added
+ * underneath without touching them.
+ */
 export async function listGmailOnce(
   address: string,
   appPassword: string,
   accountId = '',
+  target?: MailTarget,
 ): Promise<{ messages: GmailMessage[]; error: string | null }> {
-  if (!address || !appPassword) return { messages: [], error: null };
+  const connection = target ?? mailTargetOf({ address, appPassword });
+  const cleanAddress = normMailAddress(address);
+  const cleanPassword = normAppPassword(appPassword);
+  if (!cleanAddress || !cleanPassword) return { messages: [], error: null };
   const listMail = getPlatform().mail?.listInbox;
   if (listMail) {
-    try {
-      const listed = await listMail({ address, appPassword, limit: 20 });
-      if (listed.ok && listed.messages) {
-        return {
-          messages: listed.messages.map((entry) => ({
-            id: `imap:${entry.uid}`,
-            title: entry.subject,
-            author: entry.fromName,
-            email: entry.fromAddress,
-            summary: '',
-            issued: entry.date,
-            alternate: '',
-            accountId,
-          })),
-          error: null,
-        };
-      }
-      return { messages: [], error: listed.error ?? 'The inbox could not be read.' };
-    } catch {
-      return { messages: [], error: 'The inbox could not be read.' };
-    }
+    const page = await listGmailPage(
+      { ...connection, address: cleanAddress, appPassword: cleanPassword },
+      accountId,
+      { limit: 50 },
+    );
+    return { messages: page.messages, error: page.error };
   }
   let feedMessages: GmailMessage[] = [];
   let feedError: string | null = null;
@@ -198,7 +306,7 @@ export function useGmail({
     // A hidden window needs no fresh mail: skip the whole round trip (and, on
     // desktop, the IMAP connections behind it) until it is visible again.
     if (typeof document !== 'undefined' && document.hidden) return;
-    const live = creds.current.filter((account) => account.enabled && account.address && account.appPassword);
+    const live = creds.current.filter((account) => account.enabled && hasMailCreds(account));
     if (live.length === 0) {
       setMessages([]);
       return;
@@ -246,18 +354,18 @@ export function useGmail({
   // length: correcting a wrong password with another of the same length must
   // still refetch, or fixed credentials silently keep showing the old error.
   const liveKey = accounts
-    .filter((account) => account.enabled && account.address && account.appPassword)
-    .map((account) => `${account.id}|${account.address.toLowerCase()}|${credHash(account.appPassword)}|${account.refreshSeconds}`)
+    .filter((account) => account.enabled && hasMailCreds(account))
+    .map((account) => `${account.id}|${normMailAddress(account.address).toLowerCase()}|${credHash(normAppPassword(account.appPassword))}|${account.refreshSeconds}`)
     .sort()
     .join(';');
   const autoKey = accounts
-    .filter((account) => account.enabled && account.address && account.appPassword)
+    .filter((account) => account.enabled && hasMailCreds(account))
     .map((account) => `${account.id}:${account.refreshSeconds}`)
     .sort()
     .join(';');
 
   useEffect(() => {
-    const live = creds.current.filter((account) => account.enabled && account.address && account.appPassword);
+    const live = creds.current.filter((account) => account.enabled && hasMailCreds(account));
     if (live.length === 0) {
       setMessages([]);
       setError(null);

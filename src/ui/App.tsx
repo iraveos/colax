@@ -16,7 +16,7 @@ import {
   type SidebarEntry,
 } from '../vault/channels.ts';
 import { freeDockSpot, MAX_DOCKS, mergeMailCache, newDockId } from '../vault/storage.ts';
-import { captureToDraft, findSimilarTag, suggestTagsForDraft } from '../vault/site-intel.ts';
+import { captureToDraft, findSimilarTag, mailboxOwnedBy, planMailRestore, suggestTagsForDraft } from '../vault/site-intel.ts';
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
 import { FolderEditor } from './FolderEditor.tsx';
@@ -40,6 +40,7 @@ import { BulkSecurityDialog, hasSecurityFactor, withoutSecurityFactor } from './
 import { AnimatedListView, BasicView, CarouselView, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
 import { LoginMessages } from './LoginMessages.tsx';
 import { MailboxWindow } from './MailboxWindow.tsx';
+import { MailCenter } from './MailCenter.tsx';
 import {
   useAutoLock,
   useClipboard,
@@ -515,7 +516,10 @@ const visible = useMemo(() => {
         }
       }
     } else {
-      list = needle ? vault.items : applyChannel(activeChannel!, vault.items, staleDays);
+      // Channel-scoped (and folder-scoped above): the channel filters first,
+      // the text query filters second. Searching the whole vault is what the
+      // explicit "entire vault" scope is for.
+      list = applyChannel(activeChannel!, vault.items, staleDays);
     }
 
     // The drag order, as an index map. Ids never dragged stay after every
@@ -1076,7 +1080,7 @@ const visible = useMemo(() => {
    *
    * Switches the view first, so the sliders act on the view the user asked for
    * rather than whichever one happened to be open. Without that the panel said
-   * "Flow" while editing Orbit's numbers.
+   * "Flow" while editing another view's numbers.
    */
   const openTuner = useCallback(
     (target?: VaultView) => {
@@ -1135,22 +1139,6 @@ const visible = useMemo(() => {
     [vault],
   );
 
-  const openItem = useCallback(
-    (item: VaultItem) => {
-      if (!item.password) {
-        notify(`${item.title || 'That login'} has no password saved`, 'error');
-        return;
-      }
-      if (prefs.warnOnReuse && duplicateIds.has(item.password) && vault.items.length > 1) {
-        setConfirmDelete({ ...item, notes: '__reuse__' });
-        return;
-      }
-      void copy(item.password, 'Password');
-      touchLogin(item.id);
-    },
-    [copy, notify, prefs.warnOnReuse, duplicateIds, vault.items.length, touchLogin, vault],
-  );
-
   /* ---- Untouched-login scan ------------------------------------------------
      Once per unlock: any login with a password that nobody has copied or
      edited within the staleness window gets flagged for attention. The flag
@@ -1181,6 +1169,47 @@ const visible = useMemo(() => {
     // pointless (everything newly flagged is excluded) and noisy.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vault.status]);
+
+  /* ---- Messages switch repair ----------------------------------------------
+     Once per vault: an earlier build defaulted the per-login Messages button
+     off and then migrated existing logins to off as well, so nothing showed it.
+     Every login shows the button now; this switches the flag back on for the
+     logins that are still off and stamps the vault so it never runs again. A
+     login switched off afterwards stays off. Runs only while a mailbox is
+     connected, and stamps no dates (setShowMail bypasses updatedAt), so sort
+     order and the untouched scan above are unaffected. */
+  useEffect(() => {
+    if (vault.status !== 'unlocked') return;
+    if (prefs.mailEveryLogin) return;
+    if (!prefs.gmailAccounts.some((account) => account.address.trim() !== '')) return;
+    const ids = planMailRestore(vault.items);
+    if (ids.length === 0) {
+      void vault.updatePrefs({ mailEveryLogin: true });
+      return;
+    }
+    void vault
+      .mutate(async () => {
+        for (const id of ids) await vault.service.setShowMail(id, true);
+      })
+      .then(() => vault.updatePrefs({ mailEveryLogin: true }))
+      .then(() =>
+        notify(
+          `Messages now show on every login (${ids.length} updated). Turn it off per login in its editor › Inbox.`,
+        ),
+      );
+    // Once per unlock by depending on status alone; the persisted flag stops
+    // every later run. Depending on items/prefs would re-run after the write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault.status]);
+
+  /* ---- Desktop spellchecker ------------------------------------------------
+     Pushed to the shell whenever the preference changes, and again on unlock
+     (the shell is fresh each launch, so the saved choice has to be re-applied
+     rather than assumed). A browser build has no runtime seam and silently
+     skips this. */
+  useEffect(() => {
+    getPlatform().runtime?.setSpellcheck(!prefs.disableSpellcheck);
+  }, [prefs.disableSpellcheck, vault.status]);
 
   const toggleFavorite = useCallback(
     async (item: VaultItem) => {
@@ -1236,6 +1265,49 @@ const visible = useMemo(() => {
       setEditing(item);
     },
     [verifiedItems],
+  );
+
+  /**
+   * Picking a login: the fast path is "copy the password".
+   *
+   * The Layout setting "Expand on select" makes that same pick also open the
+   * login's details. It used to be a stored preference nothing read, so the
+   * toggle did nothing at all — the label described behaviour the app did not
+   * have. The copy still happens either way, so switching it on never costs a
+   * click when all you wanted was the clipboard. The reuse warning is a modal of
+   * its own and takes precedence: stacking the editor underneath it would bury
+   * the warning it exists to show.
+   *
+   * Declared after requestEdit on purpose — the dependency array is evaluated
+   * when this runs, and reaching forward to a `const` defined below would throw.
+   */
+  const openItem = useCallback(
+    (item: VaultItem) => {
+      const warnAboutReuse =
+        prefs.warnOnReuse && item.password !== '' && duplicateIds.has(item.password) && vault.items.length > 1;
+      if (prefs.expandOnOpen && !warnAboutReuse) requestEdit(item);
+      if (!item.password) {
+        notify(`${item.title || 'That login'} has no password saved`, 'error');
+        return;
+      }
+      if (warnAboutReuse) {
+        setConfirmDelete({ ...item, notes: '__reuse__' });
+        return;
+      }
+      void copy(item.password, 'Password');
+      touchLogin(item.id);
+    },
+    [
+      copy,
+      notify,
+      prefs.warnOnReuse,
+      prefs.expandOnOpen,
+      duplicateIds,
+      vault.items.length,
+      touchLogin,
+      vault,
+      requestEdit,
+    ],
   );
 
   /**
@@ -2293,7 +2365,7 @@ onCreate={vault.create}
     showUrls: prefs.showUrls,
     staleDays,
     showLetterGroups: prefs.showLetterGroups,
-    // Each view reads its own slice, so tuning Orbit never resizes Flow.
+    // Each view reads its own slice, so tuning one view never resizes another.
     cardSize: prefs.cardSize[view],
     selectedIds: selection.ids,
     onSelectForEdit,
@@ -2311,8 +2383,8 @@ onCreate={vault.create}
           ? activeChannel.mailAccount
           : 'all',
     },
-    // Drag-reorder for the List and Grid views; Flow and Orbit ignore it but
-    // still follow the custom order through sorting.
+    // Drag-reorder for the Flow, List and Grid views (press and hold a login,
+    // then move). The custom order applies through sorting everywhere.
     onReorderLogins: moveLogin,
     // Card buttons hidden by right-click, everywhere they render.
     hiddenButtons: prefs.hiddenButtons,
@@ -2320,8 +2392,7 @@ onCreate={vault.create}
     ...viewActions,
   };
 
-  // Tag chips and orbit labels are per-view toggles rather than common ones, so
-  // they are passed only to the views that actually read them.
+  // Tag chips are passed only to the views that read them (all of them).
   const cardProps = { tags: prefs.tags, showTagChips: prefs.showTagChips };
 
   return (
@@ -2443,23 +2514,11 @@ onCreate={vault.create}
             </div>
 
             <div className="topbar__actions">
-              {prefs.showBulkAddButton !== false ? (
-                <button
-                  className="btn btn--quiet"
-                  onClick={() => setBulkAdding(true)}
-                  title="Bulk add — right-click to hide"
-                  onContextMenu={(event) => {
-                    // Stopped here: without this the window menu below opens a
-                    // beat later and overwrites this one, so Hide never shows.
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setMenu({ x: event.clientX, y: event.clientY, items: hideChromeMenu('bulk-add', () => hideChrome('bulk-add'), () => openSettings('hidden')) });
-                  }}
-                >
-                  <PlusIcon width="15" height="15" />
-                  Bulk add
-                </button>
-              ) : null}
+              {/* Bulk add used to sit here. Paste-to-create and the New login
+                  dialog cover the same ground without a second button in the
+                  header, so the control is gone. The bulk-add dialog is still
+                  reachable where it belongs: the empty state and the paste
+                  offer. */}
               {prefs.showNewLoginButton !== false ? (
                 <button
                   className="btn btn--quiet"
@@ -2478,15 +2537,19 @@ onCreate={vault.create}
                 </button>
               ) : null}
             </div>
-          </header>
-
-{/* Flow and Orbit manage their own overflow. The dashboard is a normal
-              scrolling page, so it must not inherit that. */}
+          </header>            {/* Flow and Orbit manage their own overflow: Flow's inner list scrolls,
+              Orbit's ring fills a bounded stage. Both need their height pinned
+              here so the flex chain is definite. List, Grid and the dashboard
+              are normal scrolling pages, so they must not inherit that. Hiding
+              overflow here for Grid is what froze Grid scrolling: Grid has no
+              inner scroller, so there was nowhere left to scroll. */}
           <div
             className="content"
             ref={contentRef}
             style={{
-              ...(view !== 'basic' && activeChannel?.kind !== 'dashboard' ? { overflow: 'hidden' } : undefined),
+              ...((view === 'animated' || view === 'carousel') && activeChannel?.kind !== 'dashboard'
+                ? { overflow: 'hidden' }
+                : undefined),
               // A dock floats over the page: without clearance on its edge the
               // content ends scroll underneath it. One rule per edge, since
               // bars roam freely now.
@@ -2514,6 +2577,18 @@ onCreate={vault.create}
                 }
                 onCancel={() => setActiveId('all')}
               />
+            ) : activeChannel?.kind === 'mail' ? (
+              <div className="content__inner content__inner--dash">
+                <MailCenter
+                  accounts={prefs.gmailAccounts}
+                  cache={prefs.mailCache}
+                  maskEmails={prefs.maskEmails}
+                  onCacheMessages={viewActions.onCacheMail}
+                  onOpenExternal={(url) => getPlatform().openExternal(url)}
+                  onAddMailbox={() => setEditing('new')}
+                  onOpenSettings={(tab) => openSettings(tab)}
+                />
+              </div>
             ) : activeChannel?.kind === 'dashboard' ? (
               <div className="content__inner content__inner--dash">
                 <Dashboard
@@ -2524,6 +2599,12 @@ onCreate={vault.create}
                   usage={prefs.usage}
                   onSelectChannel={(id) => setActiveId(id)}
                   onOpenLogin={(item) => requestEdit(item)}
+                  // Same window the dock's mailbox slot opens, so the two are
+                  // genuinely the same screen rather than two mail views.
+                  onOpenMailbox={(accountId) => {
+                    const account = prefs.gmailAccounts.find((entry) => entry.id === accountId);
+                    if (account) setMailboxFor(account);
+                  }}
                   onOpenSettings={(tab) => openSettings(tab)}
                   onAddLogin={() => setEditing('new')}
                   onNewChannel={() => setEditingChannel('new')}
@@ -2550,6 +2631,9 @@ onCreate={vault.create}
                 <AnimatedListView {...commonProps} {...cardProps} />
               </div>
             ) : view === 'carousel' ? (
+              // No data-vault-list wrapper: Orbit is a bounded flex column that
+              // owns its own stage, and an extra auto-height box in the chain
+              // collapses that stage to zero.
               <CarouselView {...commonProps} {...cardProps} showOrbitLabels={prefs.showOrbitLabels} />
             ) : view === 'grid' ? (
               // Grid scrolls in the pane like List, so it gets the plain wrapper.
@@ -2835,7 +2919,10 @@ onCreate={vault.create}
             <LoginMessages
               item={liveItem}
               accounts={prefs.gmailAccounts}
-              accountScope="all"
+              // A login whose own address is a connected mailbox reads exactly
+              // that one — the same narrowing the card expander applies, so the
+              // window and the expander can never disagree.
+              accountScope={mailboxOwnedBy(liveItem.username, prefs.gmailAccounts)?.id ?? 'all'}
               cache={prefs.mailCache}
               maskEmails={prefs.maskEmails}
               onCacheMessages={viewActions.onCacheMail}

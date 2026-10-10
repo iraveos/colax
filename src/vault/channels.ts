@@ -20,7 +20,7 @@ export type ChannelAccent = 'slate' | 'sage' | 'dusk' | 'clay';
 
 export const CHANNEL_ACCENTS: ChannelAccent[] = ['slate', 'sage', 'dusk', 'clay'];
 
-export type ChannelKind = 'all' | 'favorites' | 'attention' | 'tags' | 'weak' | 'dashboard' | 'unassigned';
+export type ChannelKind = 'all' | 'favorites' | 'attention' | 'tags' | 'weak' | 'dashboard' | 'mail' | 'unassigned';
 
 /**
  * Human names for the built-in channel kinds.
@@ -38,6 +38,7 @@ export const CHANNEL_KIND_LABELS: Record<ChannelKind, string> = {
   tags: 'Tagged',
   weak: 'Weak or reused',
   dashboard: 'Dashboard',
+  mail: 'Mail',
   unassigned: 'Unassigned',
 };
 
@@ -347,6 +348,7 @@ export const BUILTIN_CHANNELS: Channel[] = [
   { id: 'attention', name: 'Needs attention', kind: 'attention', tagIds: [], builtin: true, locked: false, icon: 'flag', hue: 8, accent: 'clay', backgroundImage: '', showMail: true, mailAccount: 'all' },
   { id: 'weak', name: 'Weak or reused', kind: 'weak', tagIds: [], builtin: true, locked: false, icon: 'shield', hue: 152, accent: 'sage', backgroundImage: '', showMail: true, mailAccount: 'all' },
   { id: 'dashboard', name: 'Dashboard', kind: 'dashboard', tagIds: [], builtin: true, locked: true, icon: 'grid', hue: 268, accent: 'dusk', backgroundImage: '', showMail: true, mailAccount: 'all' },
+  { id: 'mail', name: 'Mail', kind: 'mail', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: 205, accent: 'slate', backgroundImage: '', showMail: false, mailAccount: 'all' },
 ];
 
 /** Icon keys the sidebar knows how to draw. */
@@ -364,7 +366,7 @@ export const DELETABLE_CHANNEL_KINDS: ChannelKind[] = ['all', 'favorites', 'atte
  * deletable list silently rewrote them to `all` on reload, which made the
  * Dashboard channel render the login list instead of the summary screen.
  */
-const VALID_CHANNEL_KINDS: ChannelKind[] = [...DELETABLE_CHANNEL_KINDS, 'tags', 'dashboard', 'unassigned'];
+const VALID_CHANNEL_KINDS: ChannelKind[] = [...DELETABLE_CHANNEL_KINDS, 'tags', 'dashboard', 'mail', 'unassigned'];
 
 export function newChannelId(): string {
   return `ch_${crypto.randomUUID().slice(0, 8)}`;
@@ -413,8 +415,9 @@ export function applyChannel(channel: Channel, items: VaultItem[], staleAfterDay
       list = items.filter((item) => item.tags.length === 0);
       break;
     case 'dashboard':
-      // A summary screen, not a filtered list. Treated as "everything" so any
-      // tag narrowing still behaves predictably.
+    case 'mail':
+      // Both are summary screens rather than filtered lists. Treated as
+      // "everything" so any tag narrowing still behaves predictably.
       list = items;
       break;
     case 'weak': {
@@ -472,6 +475,7 @@ export function describeChannel(channel: Pick<Channel, 'kind' | 'tagIds'>, tags:
     case 'unassigned':
       return 'Logins still waiting for a tag';
     case 'dashboard':
+    case 'mail':
       return '';
     case 'tags':
     default: {
@@ -527,7 +531,7 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
       builtin: Boolean(preset),
       // The fallback view and the summary screen are both structural: there must
       // always be one of each, so neither can be deleted or reordered away.
-      locked: id === 'all' || kind === 'dashboard',
+      locked: id === 'all' || kind === 'dashboard' || kind === 'mail',
       showMail: raw.showMail !== false,
       mailAccount: typeof raw.mailAccount === 'string' && raw.mailAccount ? raw.mailAccount : 'all',
     });
@@ -546,6 +550,21 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
       stray.kind = 'dashboard';
       stray.locked = true;
       stray.hue = BUILTIN_CHANNELS.find((c) => c.kind === 'dashboard')?.hue ?? stray.hue;
+    }
+  }
+
+  // Same adoption for the mail centre, which arrived the same way: a channel
+  // somebody made and named Mail/Inbox has to keep being the row they click,
+  // not gain a duplicate beside it.
+  if (!channels.some((channel) => channel.kind === 'mail')) {
+    const stray = channels.find(
+      (channel) => !channel.builtin && /^(mail|inbox|messages|mailbox|emails?)$/i.test(channel.name),
+    );
+    if (stray) {
+      stray.kind = 'mail';
+      stray.locked = true;
+      stray.icon = 'inbox';
+      stray.hue = BUILTIN_CHANNELS.find((c) => c.kind === 'mail')?.hue ?? stray.hue;
     }
   }
 

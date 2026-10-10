@@ -119,10 +119,20 @@ export function Toggle({
   checked,
   onChange,
   label,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label: string;
+  /**
+   * Locks the switch in its current position.
+   *
+   * Used where the state is a fact rather than a choice — "there is no
+   * background picture" is already true and cannot be switched off — so the row
+   * still reads as the saving it is instead of vanishing, which is what made the
+   * Optimize counter look broken.
+   */
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -130,6 +140,8 @@ export function Toggle({
       className="toggle"
       aria-pressed={checked}
       aria-label={label}
+      aria-disabled={disabled || undefined}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
     />
   );

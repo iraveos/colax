@@ -13,15 +13,28 @@
  * Every loaded message renders — no paging, no "Load more": the list simply
  * scrolls as far back as the cache reaches.
  *
- * Matching is by the login's username against the sender address. When nothing
- * matches, recent messages show instead with a note saying so: an empty
- * expander reads as broken, while an honest "none matched" reads as
- * information. An account scope narrower than 'all' (set per channel) limits
- * which accounts are read at all.
+ * Matching is by the login's username against the sender address, plus the
+ * mailbox-owner rule (a login whose username IS a connected mailbox address
+ * reads that mailbox). 'auto' shows owner mail, else only matched mail — it
+ * never falls back to unrelated recent mail, because that fallback is what
+ * made every login show the same list and read as "messages on all logins".
+ * Choose 'recent' explicitly per login to see everything recent. An account
+ * scope narrower than 'all' (set per channel) limits which accounts are read
+ * at all.
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { credHash, gmailOpenUrl, imapUidOf, listGmailOnce, type GmailMessage } from './useGmail.ts';
+import {
+  credHash,
+  gmailOpenUrl,
+  hasMailCreds,
+  imapUidOf,
+  listGmailOnce,
+  mailTargetOf,
+  normAppPassword,
+  normMailAddress,
+  type GmailMessage,
+} from './useGmail.ts';
 import { gmailHexOf } from '../lib/mail-text.ts';
 import { FullMail } from './FullMail.tsx';
 import { useFullBody } from './useFullBody.ts';
@@ -62,7 +75,6 @@ export function LoginMessages({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [messages, setMessages] = useState<GmailMessage[] | null>(null);
-  const [unmatched, setUnmatched] = useState(false);
   /** What the last read returned per account — shown when the box is empty so "0" says which mailbox said it. */
   const [counts, setCounts] = useState<{ address: string; count: number }[]>([]);
   /** The one message showing its full details, by account:id. Null collapses all. */
@@ -80,8 +92,8 @@ export function LoginMessages({
     item.username,
     item.mailFilter ?? 'auto',
     accounts
-      .filter((account) => account.enabled && account.address && account.appPassword)
-      .map((account) => `${account.id}|${account.address.toLowerCase()}|${credHash(account.appPassword)}`)
+      .filter((account) => account.enabled && hasMailCreds(account))
+      .map((account) => `${account.id}|${normMailAddress(account.address).toLowerCase()}|${credHash(normAppPassword(account.appPassword))}`)
       .sort(),
   ]);
   const lastLoadKey = useRef<string | null>(null);
@@ -99,18 +111,23 @@ export function LoginMessages({
     requested.current.clear();
     setExpandedId(null);
     try {
+      // Which mailboxes this login may read at all. Normally the channel's
+      // scope decides — but a login whose own address IS a connected mailbox
+      // reads exactly that one, whatever the channel says. That is the
+      // "linked to an email" case: one login, its own mailbox, never every
+      // other login's mail as well.
+      const ownedLive = mailboxOwnedBy(item.username, accounts.filter((account) => account.enabled && hasMailCreds(account)));
+      const scopeFilter = (account: GmailAccount) =>
+        ownedLive
+          ? account.id === ownedLive.id
+          : accountScope === 'all' || account.id === accountScope;
       const live = accounts.filter(
-        (account) =>
-          account.enabled &&
-          account.address &&
-          account.appPassword &&
-          (accountScope === 'all' || account.id === accountScope),
+        (account) => account.enabled && hasMailCreds(account) && scopeFilter(account),
       );
       if (live.length === 0) {
         // Same empty box as "no mail", but a different problem: say which.
         setMessages([]);
         setCounts([]);
-        setUnmatched(false);
         setError(
           accountScope === 'all'
             ? 'No connected mailbox has an address and an app password yet. Add one in the login editor.'
@@ -124,6 +141,7 @@ export function LoginMessages({
             account.address,
             account.appPassword,
             account.id,
+            mailTargetOf(account),
           );
           return { account, found, failed };
         }),
@@ -131,6 +149,10 @@ export function LoginMessages({
       const failures = perAccount.filter((entry) => entry.failed);
       setCounts(perAccount.map((entry) => ({ address: entry.account.address, count: entry.found.length })));
       if (failures.length > 0 && perAccount.every((entry) => entry.found.length === 0)) {
+        // Total failure: clear to an empty list alongside the error, so a
+        // previous login's messages are never left on screen as if they
+        // belonged here, and reopening reliably retries.
+        setMessages([]);
         setError(failures.map((entry) => entry.failed).join(' '));
         return;
       }
@@ -152,36 +174,28 @@ export function LoginMessages({
       }
       all.sort((a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''));
       // A mailbox owner reads their own mailbox, newest first — matching
-      // senders against your own address is what hid everything before.
-      const owner = mailboxOwnedBy(item.username, live);
-      if (owner && (accountScope === 'all' || accountScope === owner.id)) {
-        setMessages(all.filter((message) => message.accountId === owner.id));
-        setUnmatched(false);
+      // senders against your own address is what hid everything before. `live`
+      // is already narrowed to that one mailbox above, so this is the whole
+      // list rather than a filter, but the guard keeps it explicit.
+      if (ownedLive) {
+        setMessages(all.filter((message) => message.accountId === ownedLive.id));
         return;
       }
       const matched = all.filter((message) => matchesLogin(message, item.username));
       const mode = item.mailFilter ?? 'auto';
-      if (mode === 'matched') {
-        // Only mail to this login, possibly none — never the recent fallback.
-        setMessages(matched);
-        setUnmatched(false);
-      } else if (mode === 'recent') {
-        // Everything recent, skipping the matching entirely.
+      if (mode === 'recent') {
+        // Everything recent, skipping the matching entirely. Explicit opt-in
+        // per login: the only mode that ever shows unrelated mail.
         setMessages(all);
-        setUnmatched(false);
       } else if (matched.length > 0) {
         setMessages(matched);
-        setUnmatched(false);
-      } else if (item.username.trim()) {
-        // Nothing from this sender: recent mail with a note beats an empty box.
-        setMessages(all);
-        setUnmatched(true);
       } else {
-        // No email on the login, so there is nothing to match against — and
-        // falling back to recent mail here is what put every other login's
-        // mail on logins with no address at all.
-        setMessages([]);
-        setUnmatched(false);
+        // Nothing matched this login: show the mailboxes' recent mail rather
+        // than an empty box. The Messages button is the way *into* the mail, so
+        // an empty result is only honest when there is no mail at all; a login
+        // that wants only its own matched mail sets the filter to 'Matched
+        // only' in its editor.
+        setMessages(all);
       }
     } finally {
       setLoading(false);
@@ -191,10 +205,16 @@ export function LoginMessages({
   /** Cached messages for the accounts currently in scope, newest first. */
   function cachedInScope(): GmailMessage[] {
     if (!cache) return [];
+    // Same narrowing the live read uses: a login that owns a mailbox only ever
+    // sees that mailbox's history, never the other accounts' cached mail.
+    const owned = mailboxOwnedBy(
+      item.username,
+      accounts.filter((account) => account.enabled && hasMailCreds(account)),
+    );
     const out: GmailMessage[] = [];
     for (const account of accounts) {
-      if (!account.enabled || !account.address || !account.appPassword) continue;
-      if (accountScope !== 'all' && account.id !== accountScope) continue;
+      if (!account.enabled || !hasMailCreds(account)) continue;
+      if (owned ? account.id !== owned.id : accountScope !== 'all' && account.id !== accountScope) continue;
       for (const message of cache[account.id] ?? []) out.push({ ...message, accountId: account.id });
     }
     return out;
@@ -226,17 +246,16 @@ export function LoginMessages({
     const account = accounts.find((entry) => entry.id === message.accountId);
     if (!account) return;
     requested.current.add(expandedId);
-    loadFullBody(
-      expandedId,
-      account.address,
-      account.appPassword,
-      message.id,
-      message.title,
-      message.author || message.email,
-    );
+    loadFullBody(expandedId, mailTargetOf(account), message.id, message.title, message.author || message.email);
   });
 
   const accountName = (id: string) => accounts.find((entry) => entry.id === id)?.address ?? '';
+  /**
+   * The mailbox this login owns, if its own address is a connected one. Says so
+   * in the toolbar, so "messages are per login" is visible rather than implied:
+   * the expander names the one mailbox it reads.
+   */
+  const ownerAddress = mailboxOwnedBy(item.username, accounts)?.address ?? '';
 
   return (
     <div className="login-messages">
@@ -259,6 +278,7 @@ export function LoginMessages({
           {open && messages !== null ? (
             <div className="login-messages__toolbar">
               <span className="field__note" style={{ margin: 0 }}>
+                {ownerAddress ? `This login's own mailbox (${ownerAddress}). ` : ''}
                 {messages.length === 0
                   ? 'No messages.'
                   : `Showing all ${messages.length} — newest first. Opening a row loads its full text straight away.`}
@@ -286,11 +306,9 @@ export function LoginMessages({
             </p>
           ) : messages !== null && messages.length === 0 && !loading ? (
             <p className="field__hint">
-              {(item.mailFilter ?? 'auto') === 'matched' && item.username.trim()
-                ? 'No messages matched this login yet.'
-                : item.username.trim()
-                  ? 'No messages found.'
-                  : 'Add an email to this login to match its messages.'}
+              {ownerAddress
+                ? `No messages in ${ownerAddress} yet.`
+                : 'No messages in the connected mailboxes yet.'}
               {counts.length > 0
                 ? ` (${counts.map((entry) => `${entry.address || 'a mailbox'}: ${entry.count}`).join(' · ')})`
                 : ''}
@@ -298,11 +316,6 @@ export function LoginMessages({
           ) : (
             <>
               <ul className="inbox__list login-messages__list msg-list">
-                {unmatched ? (
-                  <li className="field__hint" aria-hidden="true">
-                    None matched this login — recent mail:
-                  </li>
-                ) : null}
                 {(messages ?? []).map((message) => {
                   const key = `${message.accountId}:${message.id}`;
                   const isOpen = expandedId === key;
@@ -430,14 +443,7 @@ export function LoginMessages({
                                     const account = accounts.find((entry) => entry.id === message.accountId);
                                     if (account) {
                                       requested.current.delete(key);
-                                      loadFullBody(
-                                        key,
-                                        account.address,
-                                        account.appPassword,
-                                        message.id,
-                                        message.title,
-                                        message.author || message.email,
-                                      );
+                                      loadFullBody(key, mailTargetOf(account), message.id, message.title, message.author || message.email);
                                     }
                                   }}
                                 >

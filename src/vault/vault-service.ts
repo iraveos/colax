@@ -197,7 +197,22 @@ const next: VaultItem = { ...current, ...patch, id, updatedAt: Date.now() };
     await this.#persist({ ...current, needsAttention: value });
   }
 
-async deleteItem(id: string): Promise<void> {
+  /**
+   * Flips the Messages expander without touching any timestamp.
+   *
+   * Like setAttention: updateItem always stamps updatedAt, which would reset
+   * the "recently updated" order and the untouched-login clock for logins
+   * the user never edited. Visibility carries no age semantics of its own,
+   * so it bypasses the stamp.
+   */
+  async setShowMail(id: string, value: boolean): Promise<void> {
+    const current = this.#items.find((item) => item.id === id);
+    if (!current) throw new Error('That item no longer exists.');
+    if (current.showMail === value) return;
+    await this.#persist({ ...current, showMail: value });
+  }
+
+  async deleteItem(id: string): Promise<void> {
     this.#requireHandle();
     await this.#storage.deleteItem(id);
     this.#items = this.#items.filter((item) => item.id !== id);
