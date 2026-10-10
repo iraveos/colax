@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { gmailOpenUrl, imapUidOf, listGmailOnce, useGmail, type GmailMessage } from './useGmail.ts';
 import { gmailHexOf } from '../lib/mail-text.ts';
+import { maskEmail } from '../vault/site-intel.ts';
 import { FullMail } from './FullMail.tsx';
 import { useFullBody } from './useFullBody.ts';
 import type { CachedMailMessage, GmailAccount } from '../vault/storage.ts';
@@ -19,16 +20,27 @@ import { MailIcon } from './icons.tsx';
 export function MailboxWindow({
   account,
   cache,
+  maskEmails,
   onCacheMessages,
   onOpenExternal,
   onClose,
 }: {
   account: GmailAccount;
   cache?: Record<string, CachedMailMessage[]>;
+  /** Show the first letters of sender addresses only. */
+  maskEmails?: boolean;
   onCacheMessages?: (accountId: string, messages: GmailMessage[]) => void;
   onOpenExternal: (url: string) => void;
   onClose: () => void;
 }) {
+  const shownFrom = (author: string, email: string): { text: string; title: string } => {
+    const full = [author, email].filter(Boolean).join(' · ');
+    if (!maskEmails) return { text: full, title: full };
+    return {
+      text: [maskEmail(author), maskEmail(email)].filter(Boolean).join(' · '),
+      title: full,
+    };
+  };
   // Manual checks only: no timer polls behind the user's back — one read on
   // open plus the Check now button. The accounts' cadence setting governs the
   // editor's live lists, not a window someone left open.
@@ -134,9 +146,9 @@ export function MailboxWindow({
                   </svg>
                   <span className="msg__head-text">
                     <span className="inbox__subject">{message.title || '(no subject)'}</span>
-                    <span className="inbox__meta">
-                      {message.author || message.email || 'Unknown sender'}
-                      {message.email && message.author && message.email !== message.author
+                    <span className="inbox__meta" title={shownFrom(message.author, message.email).title || undefined}>
+                      {shownFrom(message.author, message.email).text || 'Unknown sender'}
+                      {!maskEmails && message.email && message.author && message.email !== message.author
                         ? ` <${message.email}>`
                         : ''}
                       {ago ? ` · ${ago}` : ''}
@@ -149,7 +161,9 @@ export function MailboxWindow({
                     <dl className="msg__fields">
                       <div className="msg__field">
                         <dt>From</dt>
-                        <dd>{[message.author, message.email].filter(Boolean).join(' · ') || 'Unknown sender'}</dd>
+                        <dd title={shownFrom(message.author, message.email).title || undefined}>
+                          {shownFrom(message.author, message.email).text || 'Unknown sender'}
+                        </dd>
                       </div>
                       <div className="msg__field">
                         <dt>Date</dt>

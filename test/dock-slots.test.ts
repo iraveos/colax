@@ -224,6 +224,8 @@ test('offered cadences (including 5s, 30s and Off) pass through untouched', () =
 
 test('chrome visibility switches default to shown, never hidden by absence', () => {
   const out = normalisePreferences({});
+  assert.equal(out.maskEmails, true);
+  assert.equal(normalisePreferences({ maskEmails: false }).maskEmails, false);
   assert.equal(out.showNewLoginButton, true);
   assert.equal(out.showBulkAddButton, true);
   assert.equal(out.showSettingsButton, true);

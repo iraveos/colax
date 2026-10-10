@@ -53,9 +53,12 @@ export function useFullBody() {
         }));
       })
       .catch(() => {
+        // The request itself broke down (transport, timeout, oversized
+        // payload) rather than the server refusing: say so, so Retry reads
+        // as useful and Open in Gmail reads as the way out.
         setBodies((previous) => ({
           ...previous,
-          [key]: { status: 'error', error: 'Could not load the full message.' },
+          [key]: { status: 'error', error: 'The transfer failed. Retry, or open in Gmail instead.' },
         }));
       });
   };

@@ -184,6 +184,9 @@ export function useGmail({
 
   const fetchOnce = useCallback(async () => {
     if (inFlight.current) return;
+    // A hidden window needs no fresh mail: skip the whole round trip (and, on
+    // desktop, the IMAP connections behind it) until it is visible again.
+    if (typeof document !== 'undefined' && document.hidden) return;
     const live = creds.current.filter((account) => account.enabled && account.address && account.appPassword);
     if (live.length === 0) {
       setMessages([]);

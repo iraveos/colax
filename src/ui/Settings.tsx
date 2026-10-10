@@ -1157,6 +1157,13 @@ export function Settings(props: {
               onChange={(clipboardAutoSave) => set({ clipboardAutoSave })}
             />
           </Row>
+          <Row label="Mask email addresses" hint="Shows the first letters only on cards and messages. Copying still copies the full address.">
+            <Toggle
+              label="Mask email addresses"
+              checked={prefs.maskEmails}
+              onChange={(maskEmails) => set({ maskEmails })}
+            />
+          </Row>
           <Row label="Lock now" hint="Clears the decryption key from memory straight away.">
             <button
               className="btn btn--secondary"

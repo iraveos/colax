@@ -20,6 +20,7 @@ import {
   TrashIcon,
 } from './icons.tsx';
 import { accentOf, hostnameOf, isWeakPassword, relativeTime, staleDaysFor, type VaultItem } from '../vault/types.ts';
+import { maskEmail } from '../vault/site-intel.ts';
 import { isSecured } from '../crypto/security.ts';
 import type { CachedMailMessage, CardSizePrefs, GmailAccount } from '../vault/storage.ts';
 import type { GmailMessage } from './useGmail.ts';
@@ -71,6 +72,8 @@ export interface ViewActions {
   showOrbitLabels?: boolean;
   /** List only: group rows under their first letter. */
   showLetterGroups?: boolean;
+  /** Show the first letters of email addresses only. Copying is unaffected. */
+  maskEmails?: boolean;
   /** Card button ids hidden by right-click. Views hide those buttons. */
   hiddenButtons?: string[];
   /**
@@ -660,12 +663,14 @@ export function AnimatedListView({
   onItemMenu,
   onReorderLogins,
   hiddenButtons,
+  maskEmails,
   tags,
 }: CommonViewProps) {
   // Ids whose password has been explicitly revealed. Everything else is masked, so
   // opening the vault never puts every credential on screen at once.
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set());
   const gone = (id: string) => hiddenButtons?.includes(id) ?? false;
+  const shownUser = (username: string) => (maskEmails ? maskEmail(username) : username);
   // A login with its own second factor has to clear it before its password shows.
   const [gateItem, setGateItem] = useState<VaultItem | null>(null);
   const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
@@ -812,7 +817,7 @@ export function AnimatedListView({
                 tell two cards apart without revealing anything. */}
             <div className="card-row__secret">
               <div className="card-row__secret-row">
-                <span className="card-row__username">{item.username || hostnameOf(item.url) || 'No username'}</span>
+                <span className="card-row__username" title={item.username || undefined}>{shownUser(item.username) || hostnameOf(item.url) || 'No username'}</span>
                 {item.username && !gone('card-copy-user') ? (
                   <button
                     className="btn btn--icon"
@@ -864,7 +869,7 @@ export function AnimatedListView({
                 the card menu instead of competing as icons. */}
             <div className="card-row__actions-row">
               {mailFor(item, mailScope, gmailAccounts) ? (
-                <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                  <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
               ) : null}
               {item.password && !gone('card-copy') ? (
                 <button
@@ -1123,6 +1128,7 @@ showTagChips,
   onItemMenu,
   onReorderLogins,
   hiddenButtons,
+  maskEmails,
 }: CommonViewProps) {
   // Ids whose password has been explicitly revealed. Everything else is masked, so
   // opening the vault never puts every credential on screen at once.
@@ -1131,6 +1137,7 @@ showTagChips,
   const [gateItem, setGateItem] = useState<VaultItem | null>(null);
   const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
   const gone = (id: string) => hiddenButtons?.includes(id) ?? false;
+  const shownUser = (username: string) => (maskEmails ? maskEmail(username) : username);
   const showGroups = showLetterGroups !== false;
   const groups = showGroups ? groupByLetter(items) : [['', items] as [string, VaultItem[]]];
   // Flat render order, across letter groups, so a drop lands globally.
@@ -1222,7 +1229,7 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
 
                   <div className="item__actions">
                     {mailFor(item, mailScope, gmailAccounts) ? (
-                      <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                      <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                     ) : null}
                     {item.password && !gone('card-copy') ? (
                       <button
@@ -1279,7 +1286,7 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
 
                   {show ? (
                     <div className="item__peek">
-                      <span className="item__peek-user">{item.username || hostnameOf(item.url) || 'No username'}</span>
+                      <span className="item__peek-user" title={item.username || undefined}>{shownUser(item.username) || hostnameOf(item.url) || 'No username'}</span>
                       <code>{item.password || '—'}</code>
                     </div>
                   ) : null}
@@ -1343,11 +1350,13 @@ export function GridView({
   onItemMenu,
   onReorderLogins,
   hiddenButtons,
+  maskEmails,
 }: CommonViewProps) {
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set());
   const [gateItem, setGateItem] = useState<VaultItem | null>(null);
   const itemTagsFor = (item: VaultItem) => tags.filter((tag) => item.tags.includes(tag.id));
   const gone = (id: string) => hiddenButtons?.includes(id) ?? false;
+  const shownUser = (username: string) => (maskEmails ? maskEmail(username) : username);
   const reorder = useLoginReorder(
     items.map((entry) => entry.id),
     onReorderLogins,
@@ -1459,8 +1468,8 @@ export function GridView({
                   visible — the button flipped state and the card did not move. */}
               <div className="card-row__secret grid-cell__secret">
                 <div className="card-row__secret-row">
-                  <span className="card-row__username">
-                    {item.username || hostnameOf(item.url) || 'No username'}
+                  <span className="card-row__username" title={item.username || undefined}>
+                    {shownUser(item.username) || hostnameOf(item.url) || 'No username'}
                   </span>
                   {item.username && !gone('card-copy-user') ? (
                     <button
@@ -1497,7 +1506,7 @@ export function GridView({
 
               <div className="grid-cell__actions">
                 {mailFor(item, mailScope, gmailAccounts) ? (
-                  <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                 ) : null}
                 {!gone('card-edit') ? (
                   <button

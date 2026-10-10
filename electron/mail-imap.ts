@@ -59,10 +59,11 @@ export interface InboxListMessage {
   date: string;
 }
 
-/** Upper bound on inline images per message: mail, not an album. */
-const MAX_INLINE_IMAGES = 8;
+/** Upper bound on inline images per message: mail, not an album. Small enough
+    that the transfer back to the renderer stays quick on slow links. */
+const MAX_INLINE_IMAGES = 4;
 /** Largest single inline image fetched. */
-const MAX_IMAGE_BYTES = 1_000_000;
+const MAX_IMAGE_BYTES = 524_288;
 /** What the UI ever sees of an HTML body. */
 const MAX_HTML_CHARS = 300_000;
 
@@ -116,7 +117,9 @@ export async function listInboxMail(input: {
     try {
       const lock = await client.getMailboxLock('INBOX');
       try {
-        const found = await client.search({ seen: false }, { uid: true });
+        // Everything recent, read or not: users expect their inbox, not just
+        // the unread slice the old feed showed.
+        const found = await client.search({ all: true }, { uid: true });
         const uids = (Array.isArray(found) ? [...found] : []).sort((a, b) => a - b).slice(-limit);
         if (uids.length === 0) return { ok: true, messages: [] };
         const messages: InboxListMessage[] = [];

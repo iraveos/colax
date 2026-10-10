@@ -2311,6 +2311,7 @@ onCreate={vault.create}
     onReorderLogins: moveLogin,
     // Card buttons hidden by right-click, everywhere they render.
     hiddenButtons: prefs.hiddenButtons,
+    maskEmails: prefs.maskEmails,
     ...viewActions,
   };
 
@@ -2810,6 +2811,7 @@ onCreate={vault.create}
             key={liveAccount.id}
             account={liveAccount}
             cache={prefs.mailCache}
+            maskEmails={prefs.maskEmails}
             onCacheMessages={viewActions.onCacheMail}
             onOpenExternal={(url) => getPlatform().openExternal(url)}
             onClose={() => setMailboxFor(null)}
@@ -2830,6 +2832,7 @@ onCreate={vault.create}
               accounts={prefs.gmailAccounts}
               accountScope="all"
               cache={prefs.mailCache}
+              maskEmails={prefs.maskEmails}
               onCacheMessages={viewActions.onCacheMail}
               onOpenExternal={(url) => getPlatform().openExternal(url)}
               defaultOpen

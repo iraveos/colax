@@ -459,6 +459,8 @@ export interface VaultPreferences {
   clipboardCapture: boolean;
   /** Saves them immediately rather than asking first. */
   clipboardAutoSave: boolean;
+  /** Shows the first letters of email addresses only, on cards and messages. */
+  maskEmails: boolean;
 
   // -- Gmail integration: several accounts, each independent. The old single
   // `gmail` object migrates into the first entry on load, so a connected
@@ -583,6 +585,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   showLetterGroups: true,
   clipboardCapture: false,
   clipboardAutoSave: false,
+  maskEmails: true,
   alarms: [],
   vaultSecurity: EMPTY_SECURITY,
   autoLockMinutes: 5,
@@ -710,6 +713,7 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.showLetterGroups = merged.showLetterGroups !== false;
   merged.clipboardCapture = Boolean(merged.clipboardCapture);
   merged.clipboardAutoSave = Boolean(merged.clipboardAutoSave);
+  merged.maskEmails = merged.maskEmails !== false;
   // Several accounts now; the old single object migrates into the first entry
   // so a connected mailbox keeps working without reconnecting. Anything
   // malformed is dropped per account rather than wiping the whole list.

@@ -10,6 +10,7 @@ import {
   looksLikeEmail,
   looksLikePlaceholder,
   mailboxOwnedBy,
+  maskEmail,
   matchesLogin,
   normaliseHost,
   siteNameFor,
@@ -67,6 +68,15 @@ test('sender matching is exact on address, loose on name', () => {
   assert.equal(matchesLogin({ email: 'b@x.com', author: 'Anna Smith' }, 'anna'), true);
   assert.equal(matchesLogin({ email: 'b@x.com', author: 'Bob' }, 'a@x.com'), false);
   assert.equal(matchesLogin({ email: 'b@x.com', author: 'Bob' }, ''), false);
+});
+
+test('masking keeps two letters and the domain, hides the rest', () => {
+  assert.equal(maskEmail('hmm34909@gmail.com'), 'hm••••••@gmail.com');
+  assert.equal(maskEmail('ab@x.co'), 'a•@x.co');
+  assert.equal(maskEmail('a@x.co'), 'a•@x.co');
+  assert.equal(maskEmail('not-an-email'), 'not-an-email');
+  assert.equal(maskEmail(''), '');
+  assert.equal(maskEmail(null), '');
 });
 
 test('bulk paste: junk is dropped and dupes collapse case-insensitively', () => {

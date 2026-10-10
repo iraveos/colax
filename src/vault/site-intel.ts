@@ -224,6 +224,22 @@ export function looksLikeEmail(value: string | null | undefined): boolean {
   return Boolean(value) && EMAIL_PATTERN.test(value!.trim());
 }
 
+/**
+ * Masks an address for display: the first two letters stay, the rest of the
+ * local part becomes dots, the domain stays readable. Copying still copies
+ * the full address — this only ever changes what shoulders can surf.
+ */
+export function maskEmail(value: string | null | undefined): string {
+  if (!value) return '';
+  const trimmed = value.trim();
+  const at = trimmed.indexOf('@');
+  if (at <= 0) return trimmed;
+  const local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at + 1);
+  const keep = local.slice(0, Math.min(2, Math.max(1, local.length - 1)));
+  return `${keep}${'•'.repeat(Math.max(1, local.length - keep.length))}@${domain}`;
+}
+
 /** True when a message is from the login: same address, or the name carries it. */
 export function matchesLogin(
   message: { email: string; author: string },

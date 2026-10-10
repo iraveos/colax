@@ -28,7 +28,7 @@ import { useFullBody } from './useFullBody.ts';
 import type { CachedMailMessage, GmailAccount } from '../vault/storage.ts';
 import type { VaultItem } from '../vault/types.ts';
 import { relativeTime } from '../vault/types.ts';
-import { mailboxOwnedBy, matchesLogin } from '../vault/site-intel.ts';
+import { mailboxOwnedBy, maskEmail, matchesLogin } from '../vault/site-intel.ts';
 import { MailIcon } from './icons.tsx';
 
 
@@ -38,6 +38,7 @@ export function LoginMessages({
   accounts,
   accountScope,
   cache,
+  maskEmails,
   onCacheMessages,
   onOpenExternal,
   defaultOpen,
@@ -48,6 +49,8 @@ export function LoginMessages({
   accountScope: string;
   /** Previously fetched messages, per account id. Fills the gaps the feed cannot. */
   cache?: Record<string, CachedMailMessage[]>;
+  /** Show the first letters of sender addresses only. */
+  maskEmails?: boolean;
   /** Persists one account's fresh read into that cache. */
   onCacheMessages?: (accountId: string, messages: GmailMessage[]) => void;
   /** Opens a message link in the real browser (never a second app window). */
@@ -301,8 +304,13 @@ export function LoginMessages({
                         </svg>
                         <span className="msg__head-text">
                           <span className="inbox__subject">{message.title || '(no subject)'}</span>
-                          <span className="inbox__meta">
-                            {message.author || message.email || 'Unknown sender'}
+                          <span
+                            className="inbox__meta"
+                            title={[message.author, message.email].filter(Boolean).join(' · ') || undefined}
+                          >
+                            {(maskEmails
+                              ? maskEmail(message.author || message.email)
+                              : message.author || message.email) || 'Unknown sender'}
                             {accountName(message.accountId) ? ` · ${accountName(message.accountId)}` : ''}
                             {ago ? ` · ${ago}` : ''}
                           </span>
@@ -314,7 +322,11 @@ export function LoginMessages({
                           <dl className="msg__fields">
                             <div className="msg__field">
                               <dt>From</dt>
-                              <dd>{[message.author, message.email].filter(Boolean).join(' · ') || 'Unknown sender'}</dd>
+                              <dd title={[message.author, message.email].filter(Boolean).join(' · ') || undefined}>
+                                {(maskEmails
+                                  ? [maskEmail(message.author), maskEmail(message.email)].filter(Boolean).join(' · ')
+                                  : [message.author, message.email].filter(Boolean).join(' · ')) || 'Unknown sender'}
+                              </dd>
                             </div>
                             <div className="msg__field">
                               <dt>Date</dt>

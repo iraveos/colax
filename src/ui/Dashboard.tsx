@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { estimateStrength } from '../crypto/passwords.ts';
 import { findWeakItems, hostnameOf, relativeTime, staleDaysFor, type VaultItem } from '../vault/types.ts';
+import { maskEmail } from '../vault/site-intel.ts';
 import { isSecured } from '../crypto/security.ts';
 import { applyChannel, type Channel, type Tag } from '../vault/channels.ts';
 import type { VaultPreferences } from '../vault/storage.ts';
@@ -471,10 +472,10 @@ export function Dashboard({
                       >
                         {labelOf(item)}
                       </button>
-                      <span className="dash-row__meta">
-                        {item.username || hostnameOf(item.url) || ''}
-                        {uses > 0 ? ` · ${uses} use${uses === 1 ? '' : 's'}` : ''}
-                      </span>
+                  <span className="dash-row__meta" title={item.username || undefined}>
+                    {(prefs.maskEmails ? maskEmail(item.username) : item.username) || hostnameOf(item.url) || ''}
+                    {uses > 0 ? ` · ${uses} use${uses === 1 ? '' : 's'}` : ''}
+                  </span>
                       <span className="dash-row__count">{relativeTime(at)}</span>
                     </div>
                   ))}
@@ -727,7 +728,7 @@ export function Dashboard({
                     <button className="dash-row__name" onClick={() => onOpenLogin(item)} title={`Edit ${item.title || item.username || 'login'}`}>
                       {item.title || item.username || hostnameOf(item.url) || 'Untitled'}
                     </button>
-                    <span className="dash-row__meta">{item.username}</span>
+                    <span className="dash-row__meta" title={item.username || undefined}>{prefs.maskEmails ? maskEmail(item.username) : item.username}</span>
                   </div>
                 ))}
               </div>
@@ -750,7 +751,7 @@ export function Dashboard({
                     <button className="dash-row__name" onClick={() => onOpenLogin(item)} title={`Edit ${item.title || item.username || 'login'}`}>
                       {item.title || item.username || hostnameOf(item.url) || 'Untitled'}
                     </button>
-                    <span className="dash-row__meta">{item.username}</span>
+                    <span className="dash-row__meta" title={item.username || undefined}>{prefs.maskEmails ? maskEmail(item.username) : item.username}</span>
                   </div>
                 ))}
               </div>
