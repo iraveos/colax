@@ -19,6 +19,13 @@ export interface GmailMessage {
 
 const FEED_URL = 'https://mail.google.com/mail/feed/atom';
 
+/** Short non-crypto hash, so credential *changes* invalidate poll keys without storing secrets in them. */
+function credHash(value: string): string {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) hash = ((hash << 5) + hash + value.charCodeAt(i)) | 0;
+  return (hash >>> 0).toString(36);
+}
+
 /**
  * A Gmail link that survives the account switcher.
  *
@@ -227,10 +234,12 @@ export function useGmail({
   // A stable key for the live set: array identity changes on every keystroke
   // in the editor, but this only changes when credentials, enablement or the
   // chosen cadence actually change — so typing a password no longer fires a
-  // request per character.
+  // request per character. The password itself is hashed in, not just its
+  // length: correcting a wrong password with another of the same length must
+  // still refetch, or fixed credentials silently keep showing the old error.
   const liveKey = accounts
     .filter((account) => account.enabled && account.address && account.appPassword)
-    .map((account) => `${account.id}|${account.address.toLowerCase()}|${account.appPassword.length}|${account.refreshSeconds}`)
+    .map((account) => `${account.id}|${account.address.toLowerCase()}|${credHash(account.appPassword)}|${account.refreshSeconds}`)
     .sort()
     .join(';');
   const autoKey = accounts

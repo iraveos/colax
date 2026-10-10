@@ -151,7 +151,13 @@ export async function listInboxMail(input: {
   const timeout = new Promise<{ ok: boolean; messages?: InboxListMessage[]; error?: string }>((resolve) =>
     setTimeout(() => resolve({ ok: false, error: 'Gmail took too long to answer. Try again.' }), 30000),
   );
-  return Promise.race([run, timeout]);
+  const contained = run.catch(
+    (cause): { ok: boolean; messages?: InboxListMessage[]; error?: string } => ({
+      ok: false,
+      error: `Could not list the inbox (${cause instanceof Error && cause.message ? cause.message : 'unexpected error'}).`,
+    }),
+  );
+  return Promise.race([contained, timeout]);
 }
 
 /**
@@ -184,18 +190,24 @@ async function readOne(client: ImapFlow, box: string, uid: number): Promise<Full
     const images: { cid: string; mime: string; dataUrl: string }[] = [];
     const htmlPick = pickHtmlPart(structure);
     if (htmlPick) {
-      let raw = htmlPick.part === pick.part ? bytes : undefined;
-      if (!raw) {
-        const htmlFetched = await client.fetchOne(uid, { bodyParts: [htmlPick.part] }, { uid: true });
-        raw = htmlFetched && htmlFetched.bodyParts ? htmlFetched.bodyParts.get(htmlPick.part) : undefined;
-      }
-      if (raw && raw.length > 0) {
-        const hnode = findNode(structure, htmlPick.part);
-        html = decodePartBytes(
-          raw.length > MAX_TEXT_BYTES ? raw.subarray(0, MAX_TEXT_BYTES) : raw,
-          hnode?.encoding,
-          hnode?.parameters?.charset ?? hnode?.parameters?.CHARSET,
-        ).slice(0, MAX_HTML_CHARS);
+      // Never let the rich body sink the plain one: anything failing here
+      // drops back to text, which is already decoded above.
+      try {
+        let raw = htmlPick.part === pick.part ? bytes : undefined;
+        if (!raw) {
+          const htmlFetched = await client.fetchOne(uid, { bodyParts: [htmlPick.part] }, { uid: true });
+          raw = htmlFetched && htmlFetched.bodyParts ? htmlFetched.bodyParts.get(htmlPick.part) : undefined;
+        }
+        if (raw && raw.length > 0) {
+          const hnode = findNode(structure, htmlPick.part);
+          html = decodePartBytes(
+            raw.length > MAX_TEXT_BYTES ? raw.subarray(0, MAX_TEXT_BYTES) : raw,
+            hnode?.encoding,
+            hnode?.parameters?.charset ?? hnode?.parameters?.CHARSET,
+          ).slice(0, MAX_HTML_CHARS);
+        }
+      } catch {
+        html = undefined;
       }
     }
     if (html) {
@@ -326,7 +338,15 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
   const timeout = new Promise<FullMailResult>((resolve) =>
     setTimeout(() => resolve(invalid('Gmail took too long to answer. Try again.')), 45000),
   );
-  return Promise.race([run, timeout]);
+  // And never reject: a thrown error would surface in the UI as a bare
+  // transport failure. Every failure mode answers with a reason instead.
+  const contained = run.catch(
+    (cause): FullMailResult =>
+      invalid(
+        `Could not read that message (${cause instanceof Error && cause.message ? cause.message : 'unexpected error'}). Open it in Gmail instead.`,
+      ),
+  );
+  return Promise.race([contained, timeout]);
 }
 
 /** Finds one structure node by its part id. */

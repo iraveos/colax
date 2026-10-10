@@ -217,8 +217,16 @@ export function decodePartBytes(
     raw = decodeQuotedPrintable(bytes);
   }
   const label = (charset ?? 'utf-8').trim().toLowerCase() || 'utf-8';
+  // The constructor itself throws on unknown labels — not just the decode —
+  // so even garbage charset names fall back instead of killing the read.
+  let decoder: TextDecoder;
   try {
-    return new TextDecoder(label, { fatal: false }).decode(raw);
+    decoder = new TextDecoder(label, { fatal: false });
+  } catch {
+    decoder = new TextDecoder('utf-8', { fatal: false });
+  }
+  try {
+    return decoder.decode(raw);
   } catch {
     return new TextDecoder('utf-8', { fatal: false }).decode(raw);
   }

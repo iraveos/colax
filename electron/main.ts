@@ -223,20 +223,34 @@ void app.whenReady().then(() => {
     if (typeof url === 'string') void openExternal(url);
   });
   ipcMain.handle('colax:mail-full', async (_event, input: unknown) => {
-    if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };
-    const args = input as { address?: unknown; appPassword?: unknown; feedId?: unknown };
-    if (typeof args.address !== 'string' || typeof args.appPassword !== 'string' || typeof args.feedId !== 'string') {
-      return { ok: false, error: 'Bad request.' };
+    try {
+      if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };
+      const args = input as { address?: unknown; appPassword?: unknown; feedId?: unknown };
+      if (typeof args.address !== 'string' || typeof args.appPassword !== 'string' || typeof args.feedId !== 'string') {
+        return { ok: false, error: 'Bad request.' };
+      }
+      return await fetchFullMail({ address: args.address, appPassword: args.appPassword, feedId: args.feedId });
+    } catch (cause) {
+      return {
+        ok: false,
+        error: `Mailer error (${cause instanceof Error && cause.message ? cause.message : 'unexpected error'}). Open it in Gmail instead.`,
+      };
     }
-    return fetchFullMail({ address: args.address, appPassword: args.appPassword, feedId: args.feedId });
   });
   ipcMain.handle('colax:mail-list', async (_event, input: unknown) => {
-    if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };
-    const args = input as { address?: unknown; appPassword?: unknown; limit?: unknown };
-    if (typeof args.address !== 'string' || typeof args.appPassword !== 'string') {
-      return { ok: false, error: 'Bad request.' };
+    try {
+      if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };
+      const args = input as { address?: unknown; appPassword?: unknown; limit?: unknown };
+      if (typeof args.address !== 'string' || typeof args.appPassword !== 'string') {
+        return { ok: false, error: 'Bad request.' };
+      }
+      return await listInboxMail({ address: args.address, appPassword: args.appPassword, limit: args.limit });
+    } catch (cause) {
+      return {
+        ok: false,
+        error: `Mailer error (${cause instanceof Error && cause.message ? cause.message : 'unexpected error'}).`,
+      };
     }
-    return listInboxMail({ address: args.address, appPassword: args.appPassword, limit: args.limit });
   });
   ipcMain.handle('colax:shell-update', (_event, settings: unknown) => {
     if (!settings || typeof settings !== 'object') return;
