@@ -3002,6 +3002,9 @@ onCreate={vault.create}
 }
 
 function Ambient({ strength }: { strength: number }) {
+  // Zero means zero work: three infinitely-animating gradient layers plus a
+  // fullscreen grain layer cost compositing every frame even at opacity 0.
+  if (strength <= 0) return null;
   return (
     <>
       <div className="ambient" style={{ ['--ambient-strength' as string]: strength }} aria-hidden="true">

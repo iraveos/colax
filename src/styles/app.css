@@ -367,6 +367,10 @@ button.sec__glance:hover{border-color:var(--border-strong)}
    backdrop-filter over an animated background janks on modest GPUs. Reduced
    transparency drops it for a solid bar — same shape, a fraction of the cost. */
 [data-transparency='reduced'] .dock{background:hsl(220 24% 10%);backdrop-filter:none;box-shadow:0 18px 50px -18px hsl(220 40% 2% / .8)}
+/* Reduced transparency is the performance mode: every backdrop blur in the
+   app goes, not just the dock's. Blurring animated layers behind dozens of
+   frosted surfaces is what kept the GPU busy doing nothing visible. */
+[data-transparency='reduced'] *,[data-transparency='reduced'] *::before,[data-transparency='reduced'] *::after{backdrop-filter:none !important}
 [data-theme=light][data-transparency='reduced'] .dock{background:hsl(210 30% 96%);box-shadow:0 18px 50px -18px hsl(222 40% 20% / .3)}
 .dock__slot{position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:56px;padding:8px 10px 7px;border:1px solid transparent;border-radius:var(--radius-md);background:none;color:var(--text-muted);font-size:10px;font-weight:600;letter-spacing:.02em;cursor:pointer;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),border-color var(--fast) var(--ease)}
 .dock__slot:hover{background:var(--surface-hover);color:var(--text)}
@@ -502,7 +506,7 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 .content__inner--wide{max-width:1180px}
 /* The dashboard breathes: full width with roomy rhythm so every section gets
    its own comfortable viewing space. */
-.content__inner--dash{max-width:none;padding:var(--space-6) var(--space-8) var(--space-12)}
+.content__inner--dash{width:100%;max-width:none;padding:var(--space-6) var(--space-8) var(--space-12)}
 .content__inner--dash .dashboard{gap:var(--space-6)}
 .content__inner--dash .dash-hero{padding:var(--space-8)}
 .content__inner--dash .stat-row{grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:var(--space-3)}
@@ -1042,7 +1046,7 @@ to{transform:translate(0)}
 .dash-grid__main{grid-column:span 7;min-width:0}
 .dash-grid__side{grid-column:span 5;min-width:0;display:flex;flex-direction:column;gap:var(--space-4)}
 .dash-grid__side .dash-section{flex:1}
-@media(max-width:1100px){.dash-grid__main,.dash-grid__side{grid-column:1/-1}}
+@media(max-width:820px){.dash-grid__main,.dash-grid__side{grid-column:1/-1}}
 .dash-bars{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}
 .dash-bars li{display:grid;grid-template-columns:minmax(0,7rem) 1fr auto;align-items:center;gap:var(--space-2);font-size:var(--text-xs)}
 .dash-bars__label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)}

@@ -64,6 +64,9 @@ export function useClipboardWatcher({
     let cancelled = false;
 
     const tick = async () => {
+      // A hidden tab needs nothing from the clipboard: skip the read, the
+      // parse and any waking of the renderer on its behalf.
+      if (document.hidden) return;
       let text = '';
       try {
         text = await navigator.clipboard.readText();
