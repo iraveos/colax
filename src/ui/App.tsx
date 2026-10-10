@@ -1413,6 +1413,18 @@ tags: prefs.tags,
         shortcut: 'N',
         onSelect: () => setEditing('new'),
       },
+      // The only way back when the rail is hidden: the pill is gone by
+      // request, so empty-space right-click carries the recovery instead.
+      ...(prefs.showSidebar === false
+        ? [
+            {
+              kind: 'item' as const,
+              label: 'Show sidebar',
+              icon: <EyeOffIcon />,
+              onSelect: () => void vault.updatePrefs({ showSidebar: true }),
+            },
+          ]
+        : []),
       {
         kind: 'submenu',
         label: 'Switch view',
@@ -1836,6 +1848,102 @@ label: 'Settings',
       void vault.updatePrefs(patches[id]).then(() => notify('Hidden — bring it back in Settings › Hidden'));
     },
     [vault, notify],
+  );
+
+  /**
+   * Right-click on one dock slot: edit whatever it jumps to, without detouring
+   * through Settings. Falls back to the bar menu when the target is gone.
+   */
+  const dockSlotMenu = useCallback(
+    (slotId: string): MenuItem[] => {
+      const sep = slotId.indexOf(':');
+      const kind = sep === -1 ? slotId : slotId.slice(0, sep);
+      const ref = sep === -1 ? '' : slotId.slice(sep + 1);
+      const customize: MenuItem[] = [
+        { kind: 'separator' },
+        {
+          kind: 'item',
+          label: 'Customize this bar…',
+          icon: <SettingsIcon />,
+          onSelect: () => openSettings('layout'),
+        },
+        {
+          kind: 'item',
+          label: 'Show hidden items…',
+          onSelect: () => openSettings('hidden'),
+        },
+      ];
+      if (kind === 'login') {
+        const item = vault.items.find((entry) => entry.id === ref);
+        return [
+          item
+            ? {
+                kind: 'item' as const,
+                label: `Edit ${item.title || item.username || 'login'}`,
+                icon: <EditIcon />,
+                onSelect: () => requestEdit(item),
+              }
+            : { kind: 'item' as const, label: 'Login deleted', disabled: true },
+          ...customize,
+        ];
+      }
+      if (kind === 'channel') {
+        const channel = channelLookup.find((entry) => entry.id === ref);
+        return [
+          channel
+            ? {
+                kind: 'item' as const,
+                label: `Edit ${channel.name}`,
+                icon: <EditIcon />,
+                onSelect: () => setEditingChannel(channel.id),
+              }
+            : { kind: 'item' as const, label: 'Channel deleted', disabled: true },
+          ...customize,
+        ];
+      }
+      if (kind === 'folder') {
+        const folder = folders.find((entry) => entry.id === ref);
+        return [
+          folder
+            ? {
+                kind: 'item' as const,
+                label: `Edit ${folder.name}`,
+                icon: <EditIcon />,
+                onSelect: () => setEditingFolder(folder.id),
+              }
+            : { kind: 'item' as const, label: 'Folder deleted', disabled: true },
+          ...customize,
+        ];
+      }
+      if (kind === 'mailbox') {
+        const account = prefs.gmailAccounts.find((entry) => entry.id === ref);
+        return [
+          account
+            ? {
+                kind: 'item' as const,
+                label: `Open ${account.address || 'mailbox'}`,
+                icon: <MailIcon />,
+                onSelect: () => setMailboxFor(account),
+              }
+            : { kind: 'item' as const, label: 'Mailbox disconnected', disabled: true },
+          ...customize,
+        ];
+      }
+      return [
+        {
+          kind: 'item',
+          label: 'Customize this bar…',
+          icon: <SettingsIcon />,
+          onSelect: () => openSettings('layout'),
+        },
+        {
+          kind: 'item',
+          label: 'Show hidden items…',
+          onSelect: () => openSettings('hidden'),
+        },
+      ];
+    },
+    [vault.items, channelLookup, folders, prefs.gmailAccounts, requestEdit, openSettings],
   );
 
   const dockMenu = useCallback(
@@ -2275,20 +2383,7 @@ onCreate={vault.create}
             if (prefs.clearClipboardOnLock) void navigator.clipboard.writeText('').catch(() => {});
           }}
         />
-        ) : (
-          // Recovery follows the rail: a pill hugging the edge the sidebar
-          // hid from, wherever that edge currently is — not a fixed corner.
-          <button
-            type="button"
-            className="btn btn--secondary rail-recovery"
-            data-edge={prefs.sidebarPosition}
-            onClick={() => void vault.updatePrefs({ showSidebar: true })}
-            title="Show sidebar"
-          >
-            <RowsIcon width="15" height="15" />
-            <span>Sidebar</span>
-          </button>
-        )}
+        ) : null}
 
 <main className="main">
           <header className="topbar">
@@ -2348,7 +2443,10 @@ onCreate={vault.create}
                   onClick={() => setBulkAdding(true)}
                   title="Bulk add — right-click to hide"
                   onContextMenu={(event) => {
+                    // Stopped here: without this the window menu below opens a
+                    // beat later and overwrites this one, so Hide never shows.
                     event.preventDefault();
+                    event.stopPropagation();
                     setMenu({ x: event.clientX, y: event.clientY, items: hideChromeMenu('bulk-add', () => hideChrome('bulk-add'), () => openSettings('hidden')) });
                   }}
                 >
@@ -2362,7 +2460,10 @@ onCreate={vault.create}
                   onClick={() => setEditing('new')}
                   title="New login — right-click to hide"
                   onContextMenu={(event) => {
+                    // Stopped here, same as Bulk add above: the window menu
+                    // would otherwise overwrite this one.
                     event.preventDefault();
+                    event.stopPropagation();
                     setMenu({ x: event.clientX, y: event.clientY, items: hideChromeMenu('new-login', () => hideChrome('new-login'), () => openSettings('hidden')) });
                   }}
                 >
@@ -2549,23 +2650,11 @@ onCreate={vault.create}
             pos={model.dock.pos}
             onPosChange={(pos) => patchDock(model.dock.id, { pos })}
             onMenu={(event) => setMenu({ x: event.clientX, y: event.clientY, items: dockMenu(model.dock.id) })}
-            onSlotMenu={(event) =>
+            onSlotMenu={(event, slotId) =>
               setMenu({
                 x: event.clientX,
                 y: event.clientY,
-                items: [
-                  {
-                    kind: 'item',
-                    label: 'Customize this bar…',
-                    icon: <SettingsIcon />,
-                    onSelect: () => openSettings('layout'),
-                  },
-                  {
-                    kind: 'item',
-                    label: 'Show hidden items…',
-                    onSelect: () => openSettings('hidden'),
-                  },
-                ],
+                items: dockSlotMenu(slotId),
               })
             }
           />

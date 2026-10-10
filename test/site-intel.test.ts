@@ -9,6 +9,8 @@ import {
   knownSite,
   looksLikeEmail,
   looksLikePlaceholder,
+  mailboxOwnedBy,
+  matchesLogin,
   normaliseHost,
   siteNameFor,
 } from '../src/vault/site-intel.ts';
@@ -50,6 +52,21 @@ test('bulk paste: one address per line, in paste order', () => {
 test('bulk paste: commas, semicolons, spaces and wrapping all work', () => {
   assert.deepEqual(extractEmails('a@x.com, b@y.org; c@z.net'), ['a@x.com', 'b@y.org', 'c@z.net']);
   assert.deepEqual(extractEmails('<a@x.com>, "b@y.org";'), ['a@x.com', 'b@y.org']);
+});
+
+test('a login whose username is a mailbox address owns that mailbox', () => {
+  const accounts = [{ id: 'gm_1', address: 'Me@Gmail.com' }];
+  assert.equal(mailboxOwnedBy('me@gmail.com', accounts)?.id, 'gm_1');
+  assert.equal(mailboxOwnedBy('someone@else.com', accounts), null);
+  assert.equal(mailboxOwnedBy('  ', accounts), null);
+  assert.equal(mailboxOwnedBy('me@gmail.com', []), null);
+});
+
+test('sender matching is exact on address, loose on name', () => {
+  assert.equal(matchesLogin({ email: 'a@x.com', author: 'A' }, 'a@x.com'), true);
+  assert.equal(matchesLogin({ email: 'b@x.com', author: 'Anna Smith' }, 'anna'), true);
+  assert.equal(matchesLogin({ email: 'b@x.com', author: 'Bob' }, 'a@x.com'), false);
+  assert.equal(matchesLogin({ email: 'b@x.com', author: 'Bob' }, ''), false);
 });
 
 test('bulk paste: junk is dropped and dupes collapse case-insensitively', () => {

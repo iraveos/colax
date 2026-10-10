@@ -27,15 +27,10 @@ import { useFullBody } from './useFullBody.ts';
 import type { CachedMailMessage, GmailAccount } from '../vault/storage.ts';
 import type { VaultItem } from '../vault/types.ts';
 import { relativeTime } from '../vault/types.ts';
+import { mailboxOwnedBy, matchesLogin } from '../vault/site-intel.ts';
 import { MailIcon } from './icons.tsx';
 
-function matchesLogin(message: GmailMessage, username: string): boolean {
-  const needle = username.trim().toLowerCase();
-  if (!needle) return false;
-  return (
-    message.email.toLowerCase() === needle || message.author.toLowerCase().includes(needle)
-  );
-}
+
 
 export function LoginMessages({
   item,
@@ -128,6 +123,14 @@ export function LoginMessages({
         all.push(message);
       }
       all.sort((a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''));
+      // A mailbox owner reads their own mailbox, newest first — matching
+      // senders against your own address is what hid everything before.
+      const owner = mailboxOwnedBy(item.username, live);
+      if (owner && (accountScope === 'all' || accountScope === owner.id)) {
+        setMessages(all.filter((message) => message.accountId === owner.id));
+        setUnmatched(false);
+        return;
+      }
       const matched = all.filter((message) => matchesLogin(message, item.username));
       const mode = item.mailFilter ?? 'auto';
       if (mode === 'matched') {

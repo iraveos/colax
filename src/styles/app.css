@@ -1160,11 +1160,6 @@ to{transform:translate(0)}
 .shell[data-sidebar-hidden]{grid-template-columns:minmax(0,1fr)}
 .shell[data-sidebar-hidden] .main{grid-column:1;grid-row:1}
 .shell[data-compact-sidebar] .brand,.shell[data-compact-sidebar] .nav-item{justify-content:center;padding-left:0;padding-right:0}
-.rail-recovery{position:fixed;z-index:30}
-.rail-recovery[data-edge=left]{left:10px;top:50%;translate:0 -50%}
-.rail-recovery[data-edge=right]{right:10px;top:50%;translate:0 -50%}
-.rail-recovery[data-edge=top]{left:50%;top:10px;translate:-50% 0}
-.rail-recovery[data-edge=bottom]{left:50%;bottom:10px;translate:-50% 0}
 .sidebar{scrollbar-width:none}
 .sidebar::-webkit-scrollbar{display:none}
 /* Rows stay draggable; only the grip glyph was removed. The grab cursor is what

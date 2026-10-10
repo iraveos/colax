@@ -224,6 +224,33 @@ export function looksLikeEmail(value: string | null | undefined): boolean {
   return Boolean(value) && EMAIL_PATTERN.test(value!.trim());
 }
 
+/** True when a message is from the login: same address, or the name carries it. */
+export function matchesLogin(
+  message: { email: string; author: string },
+  username: string,
+): boolean {
+  const needle = username.trim().toLowerCase();
+  if (!needle) return false;
+  return (
+    message.email.toLowerCase() === needle || message.author.toLowerCase().includes(needle)
+  );
+}
+
+/**
+ * The connected mailbox a login owns, if any: a login whose username IS a
+ * mailbox address reads that mailbox, not mail from a sender of the same
+ * name. Without this a Gmail login matched only mail it had sent itself —
+ * which is why adding a mailbox seemingly showed nothing.
+ */
+export function mailboxOwnedBy<T extends { address: string }>(
+  username: string,
+  accounts: T[],
+): T | null {
+  const needle = username.trim().toLowerCase();
+  if (!needle) return null;
+  return accounts.find((account) => account.address.trim().toLowerCase() === needle) ?? null;
+}
+
 /**
  * Pulls every email address out of a pasted block — one per line, comma- or
  * space-separated, or prose with addresses in it.
