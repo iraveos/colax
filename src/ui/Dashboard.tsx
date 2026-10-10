@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { estimateStrength } from '../crypto/passwords.ts';
 import { findWeakItems, hostnameOf, relativeTime, staleDaysFor, type VaultItem } from '../vault/types.ts';
 import { isSecured } from '../crypto/security.ts';
-import type { Channel, Tag } from '../vault/channels.ts';
+import { applyChannel, type Channel, type Tag } from '../vault/channels.ts';
 import type { VaultPreferences } from '../vault/storage.ts';
 import { labelOf } from './views.tsx';
 
@@ -45,6 +45,8 @@ export function Dashboard({
   onOpenLogin,
   onOpenSettings,
   onAddLogin,
+  onNewChannel,
+  onBulkAdd,
 }: {
   channels: Channel[];
   tags: Tag[];
@@ -59,6 +61,10 @@ export function Dashboard({
   onOpenSettings: (tab: string) => void;
   /** Starts a new login. Shown only when the vault is empty. */
   onAddLogin: () => void;
+  /** Opens a blank channel editor. */
+  onNewChannel: () => void;
+  /** Opens the bulk-add dialog. */
+  onBulkAdd: () => void;
 }) {
   const health = useMemo(() => {
     const now = Date.now();
@@ -291,6 +297,36 @@ export function Dashboard({
   const headline = issues[0];
   const empty = health.total === 0;
 
+  /** Logins per channel, for the distribution bars. Biggest first. */
+  const perChannel = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const channel of channels) {
+      try {
+        counts.set(channel.id, applyChannel(channel, items, prefs.passwordAgeDays).length);
+      } catch {
+        counts.set(channel.id, 0);
+      }
+    }
+    return [...counts.entries()]
+      .map(([id, count]) => ({ channel: channels.find((entry) => entry.id === id)!, count }))
+      .filter((entry) => entry.channel)
+      .sort((a, b) => b.count - a.count || a.channel.name.localeCompare(b.channel.name));
+  }, [channels, items, prefs.passwordAgeDays]);
+
+  /** Share of the vault with nothing serious wrong with it. */
+  const covered =
+    health.total === 0
+      ? 0
+      : Math.max(
+          0,
+          Math.round(
+            ((health.total -
+              issues.filter((issue) => issue.severity !== 'low').reduce((sum, issue) => sum + issue.count, 0)) /
+              health.total) *
+              100,
+          ),
+        );
+
   const metrics = [
     { label: 'Total Logins', value: health.total, channel: idOf('all') },
     { label: 'Favorites', value: health.favorites, channel: idOf('favorites') },
@@ -321,28 +357,36 @@ export function Dashboard({
           it. Adapts instead of alarming when there is nothing to fix. */}
       {!empty ? (
         <section className="cc-security" aria-label="Security summary">
-          {headline ? (
-            <>
-              <div className="cc-security__body">
-                <span className="cc-security__count" data-severity={headline.severity}>
-                  {headline.count}
-                </span>
-                <span>
-                  <span className="cc-security__label">{headline.label}</span>
-                  <span className="cc-security__detail">{headline.detail}</span>
-                </span>
-              </div>
-              <button
-                type="button"
-                className="btn btn--champagne"
-                onClick={() => onSelectChannel(headline.channel)}
-              >
-                Review now
-              </button>
-            </>
-          ) : (
-            <p className="cc-security__calm">Everything looks healthy. Nothing needs rotation or review.</p>
-          )}
+          <div className="cc-security__main">
+            {headline ? (
+              <>
+                <div className="cc-security__body">
+                  <span className="cc-security__count" data-severity={headline.severity}>
+                    {headline.count}
+                  </span>
+                  <span>
+                    <span className="cc-security__label">{headline.label}</span>
+                    <span className="cc-security__detail">{headline.detail}</span>
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn--champagne"
+                  onClick={() => onSelectChannel(headline.channel)}
+                >
+                  Review now
+                </button>
+              </>
+            ) : (
+              <p className="cc-security__calm">Everything looks healthy. Nothing needs rotation or review.</p>
+            )}
+          </div>
+          <div className="cc-security__foot">
+            <div className="dash-coverage" role="img" aria-label={`${covered}% of the vault in good shape`}>
+              <span style={{ width: `${covered}%` }} />
+            </div>
+            <span className="cc-security__cover">{covered}% in good shape</span>
+          </div>
         </section>
       ) : null}
 
@@ -715,6 +759,72 @@ export function Dashboard({
               ) : null}
             </section>
           ) : null}
+        </div>
+      ) : null}
+
+      {/* Distribution beside quick actions: where logins live, and the three
+          ways to make more of them. */}
+      {!empty ? (
+        <div className="dash-grid">
+          <section className="dash-section dash-grid__main">
+            <header className="dash-section__head">
+              <div>
+                <h2 className="dash-section__title">Channels</h2>
+                <p className="dash-section__hint">Where your logins live. Open one.</p>
+              </div>
+            </header>
+            {perChannel.length === 0 ? (
+              <p className="dash-card__empty">No channels yet.</p>
+            ) : (
+              <>
+                <ul className="dash-bars">
+                  {perChannel.slice(0, 8).map(({ channel, count }) => (
+                    <li key={channel.id}>
+                      <button
+                        type="button"
+                        className="dash-bars__label dash-bars__link"
+                        onClick={() => onSelectChannel(channel.id)}
+                        title={`Show ${channel.name}`}
+                      >
+                        {channel.name}
+                      </button>
+                      <span className="dash-bars__track">
+                        <span
+                          className="dash-bars__fill"
+                          style={{ width: `${(count / Math.max(1, perChannel[0]!.count)) * 100}%` }}
+                        />
+                      </span>
+                      <b>{count}</b>
+                    </li>
+                  ))}
+                </ul>
+                {perChannel.length > 8 ? (
+                  <p className="dash-card__empty">+{perChannel.length - 8} more in the sidebar.</p>
+                ) : null}
+              </>
+            )}
+          </section>
+          <div className="dash-grid__side">
+            <section className="dash-section">
+              <header className="dash-section__head">
+                <div>
+                  <h2 className="dash-section__title">Quick actions</h2>
+                  <p className="dash-section__hint">Create without leaving.</p>
+                </div>
+              </header>
+              <div className="dash-actions">
+                <button type="button" className="btn btn--champagne" onClick={onAddLogin}>
+                  New login
+                </button>
+                <button type="button" className="btn btn--secondary" onClick={onBulkAdd}>
+                  Bulk add logins
+                </button>
+                <button type="button" className="btn btn--secondary" onClick={onNewChannel}>
+                  New channel
+                </button>
+              </div>
+            </section>
+          </div>
         </div>
       ) : null}
 

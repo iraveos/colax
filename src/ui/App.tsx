@@ -2409,6 +2409,8 @@ onCreate={vault.create}
                   onOpenLogin={(item) => requestEdit(item)}
                   onOpenSettings={(tab) => openSettings(tab)}
                   onAddLogin={() => setEditing('new')}
+                  onNewChannel={() => setEditingChannel('new')}
+                  onBulkAdd={() => setBulkAdding(true)}
                 />
               </div>
             ) : showEmpty ? (

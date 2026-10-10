@@ -989,7 +989,16 @@ to{transform:translate(0)}
 .btn--champagne:focus-visible{outline:2px solid var(--border-focus);outline-offset:2px}
 
 /* Security summary: the count that matters, plainly stated. */
-.cc-security{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap;padding:var(--space-4) var(--space-5);border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card)}
+.cc-security{display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-4) var(--space-5);border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card)}
+.cc-security__main{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+.cc-security__foot{display:flex;align-items:center;gap:var(--space-3)}
+.dash-coverage{flex:1;height:5px;border-radius:var(--radius-full);background:var(--surface);overflow:hidden}
+.dash-coverage>span{display:block;height:100%;border-radius:inherit;background:var(--grad-primary)}
+.cc-security__cover{font-size:var(--text-xs);color:var(--text-faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.dash-actions{display:flex;flex-direction:column;gap:var(--space-2)}
+.dash-actions .btn{justify-content:flex-start}
+.dash-bars__link{font:inherit;text-align:left;cursor:pointer}
+.dash-bars__link:hover{color:var(--accent-text)}
 .cc-security__body{display:flex;align-items:center;gap:var(--space-4);min-width:0}
 .cc-security__count{font-family:var(--font-display);font-size:2rem;font-weight:600;font-variant-numeric:tabular-nums;line-height:1}
 .cc-security__count[data-severity=high]{color:var(--danger)}
