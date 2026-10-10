@@ -90,10 +90,11 @@ export async function fetchGmailOnce(
  * Lists one mailbox: the Atom feed first (it carries snippets), IMAP second.
  *
  * The feed answers 401/403/empty since Google shut Basic-auth feed access
- * down, which used to read as "no messages" with no recourse. Where the feed
- * fails and the desktop shell is present, the same app password lists unread
- * headers straight over IMAP instead — no snippets, but real mail. The web
- * build has no IMAP, so there the feed error stands as the error.
+ * down, which used to read as "no messages" with no recourse — and even when
+ * it answers, it only ever shows unread mail. Where the feed fails or comes
+ * back empty and the desktop shell is present, the same app password lists
+ * recent headers straight over IMAP instead — no snippets, but real mail.
+ * The web build has no IMAP, so there the feed's answer stands as the answer.
  */
 export async function listGmailOnce(
   address: string,
@@ -115,9 +116,12 @@ export async function listGmailOnce(
     undefined,
     accountId,
   );
-  // Mail, or a clean empty inbox, ends here. Only a feed *error* falls
-  // through to IMAP — and only where IMAP exists (desktop shell).
-  if (feedMessages.length > 0 || feedError === null) {
+  // Mail ends here. An empty feed does NOT end here: the feed only ever shows
+  // unread mail, so "nothing unread" reads exactly like "nothing there", and
+  // a mailbox with zero unread would show zero messages forever. Where IMAP
+  // exists (desktop shell) an empty feed falls through to it; only the web
+  // build, which has no IMAP, takes the feed's word for it.
+  if (feedMessages.length > 0) {
     return { messages: feedMessages, error: feedError };
   }
   const listMail = getPlatform().mail?.listInbox;
@@ -141,9 +145,9 @@ export async function listGmailOnce(
         error: null,
       };
     }
-    return { messages: [], error: listed.error ?? 'The inbox could not be read.' };
+    return { messages: [], error: listed.error ?? feedError ?? 'The inbox could not be read.' };
   } catch {
-    return { messages: [], error: 'The inbox could not be read.' };
+    return { messages: [], error: feedError ?? 'The inbox could not be read.' };
   }
 }
 

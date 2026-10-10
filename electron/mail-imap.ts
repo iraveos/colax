@@ -178,43 +178,36 @@ async function readOne(
   uid: number,
   retry?: () => Promise<FullMailResult>,
 ): Promise<FullMailResult> {
-  const lock = await client.getMailboxLock(box);
-  try {
-    let meta;
+  // The whole read is one attempt — lock included. imapflow reports a dead
+  // socket as `NoConnection` ("Connection not available") on whatever command
+  // runs next, lock or fetch alike, so only retrying the fetches left the
+  // lock-time failure with no recovery. Stage failures throw their user-facing
+  // text; the single catch below answers them, after one fresh retry for dead
+  // sockets. The wrapped cause text keeps the original message, so the
+  // connection check still recognises a NoConnection through the wrapping.
+  const fail = (stage: string, cause: unknown): Error =>
+    new Error(`${stage} (${causeText(cause)}). Open it in Gmail instead.`);
+  const attempt = async (active: ImapFlow): Promise<FullMailResult> => {
+    const lock = await active.getMailboxLock(box);
     try {
-      meta = await client.fetchOne(uid, { bodyStructure: true, envelope: true }, { uid: true });
-    } catch (cause) {
-      // The socket died between the search and the read — Gmail culls idle
-      // connections, and a search on a big mailbox gives it time to. One
-      // retry on a fresh connection before giving up.
-      if (retry && isConnectionError(cause)) {
-        try {
-          return await retry();
-        } catch (retryCause) {
-          return invalid(`Still unreadable after reconnecting (${causeText(retryCause)}). Open it in Gmail instead.`);
-        }
+      let meta;
+      try {
+        meta = await active.fetchOne(uid, { bodyStructure: true, envelope: true }, { uid: true });
+      } catch (cause) {
+        throw fail('Could not fetch that message', cause);
       }
-      return invalid(`Could not fetch that message (${causeText(cause)}). Open it in Gmail instead.`);
-    }
-    if (!meta || !meta.bodyStructure) return invalid('Message not found on the server.');
-    const structure = meta.bodyStructure as MailPartNode;
-    const pick = pickTextPart(structure);
-    if (!pick) return invalid('That message has no readable text part.');
-    let fetched;
-    try {
-      fetched = await client.fetchOne(uid, { bodyParts: [pick.part] }, { uid: true });
-    } catch (cause) {
-      if (retry && isConnectionError(cause)) {
-        try {
-          return await retry();
-        } catch (retryCause) {
-          return invalid(`Still unreadable after reconnecting (${causeText(retryCause)}). Open it in Gmail instead.`);
-        }
+      if (!meta || !meta.bodyStructure) throw new Error('Message not found on the server.');
+      const structure = meta.bodyStructure as MailPartNode;
+      const pick = pickTextPart(structure);
+      if (!pick) throw new Error('That message has no readable text part.');
+      let fetched;
+      try {
+        fetched = await active.fetchOne(uid, { bodyParts: [pick.part] }, { uid: true });
+      } catch (cause) {
+        throw fail('Could not fetch the message body', cause);
       }
-      return invalid(`Could not fetch the message body (${causeText(cause)}). Open it in Gmail instead.`);
-    }
-    const buffer = fetched && fetched.bodyParts?.get(pick.part);
-    if (!buffer || buffer.length === 0) return invalid('The text part came back empty.');
+      const buffer = fetched && fetched.bodyParts?.get(pick.part);
+      if (!buffer || buffer.length === 0) throw new Error('The text part came back empty.');
     const bytes = buffer.length > MAX_TEXT_BYTES ? buffer.subarray(0, MAX_TEXT_BYTES) : buffer;
     const node = findNode(structure, pick.part);
     const text = decodePartBytes(
@@ -234,7 +227,7 @@ async function readOne(
       try {
         let raw = htmlPick.part === pick.part ? bytes : undefined;
         if (!raw) {
-          const htmlFetched = await client.fetchOne(uid, { bodyParts: [htmlPick.part] }, { uid: true });
+          const htmlFetched = await active.fetchOne(uid, { bodyParts: [htmlPick.part] }, { uid: true });
           raw = htmlFetched && htmlFetched.bodyParts ? htmlFetched.bodyParts.get(htmlPick.part) : undefined;
         }
         if (raw && raw.length > 0) {
@@ -253,7 +246,7 @@ async function readOne(
       for (const image of collectInlineImages(structure).slice(0, MAX_INLINE_IMAGES)) {
         if (image.size > MAX_IMAGE_BYTES) continue;
         try {
-          const got = await client.fetchOne(uid, { bodyParts: [image.part] }, { uid: true });
+          const got = await active.fetchOne(uid, { bodyParts: [image.part] }, { uid: true });
           const data = got && got.bodyParts ? got.bodyParts.get(image.part) : undefined;
           if (!data || data.length === 0 || data.length > MAX_IMAGE_BYTES) continue;
           images.push({
@@ -266,18 +259,33 @@ async function readOne(
         }
       }
     }
-    const from = meta.envelope?.from?.[0];
-    return {
-      ok: true,
-      subject: meta.envelope?.subject ?? '',
-      from: from ? `${from.name ?? ''}${from.name && from.address ? ' · ' : ''}${from.address ?? ''}` : '',
-      date: meta.envelope?.date ? new Date(meta.envelope.date).toLocaleString() : '',
-      text: body || '(No readable text in this message.)',
-      ...(html ? { html } : {}),
-      ...(images.length > 0 ? { images } : {}),
-    };
-  } finally {
-    lock.release();
+      const from = meta.envelope?.from?.[0];
+      return {
+        ok: true,
+        subject: meta.envelope?.subject ?? '',
+        from: from ? `${from.name ?? ''}${from.name && from.address ? ' · ' : ''}${from.address ?? ''}` : '',
+        date: meta.envelope?.date ? new Date(meta.envelope.date).toLocaleString() : '',
+        text: body || '(No readable text in this message.)',
+        ...(html ? { html } : {}),
+        ...(images.length > 0 ? { images } : {}),
+      };
+    } finally {
+      lock.release();
+    }
+  };
+  try {
+    return await attempt(client);
+  } catch (cause) {
+    // Dead socket: one retry on a fresh connection before giving up. Anything
+    // else (refused, missing, undecodable) answers straight away.
+    if (retry && isConnectionError(cause)) {
+      try {
+        return await retry();
+      } catch (retryCause) {
+        return invalid(`Still unreadable after reconnecting (${causeText(retryCause)}). Open it in Gmail instead.`);
+      }
+    }
+    return invalid(cause instanceof Error && cause.message ? cause.message : 'Could not read that message.');
   }
 }
 
