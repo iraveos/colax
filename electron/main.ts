@@ -22,6 +22,18 @@ import trayPng from '../public/colax-icon.png';
 const isDev = process.env.ELECTRON_RENDERER_URL !== undefined;
 /** Prints per-process memory once the window has loaded, then exits. Diagnostic only. */
 const memoryReport = process.argv.includes('--memory-report');
+/**
+ * Prints whether the window actually painted pixels, then exits.
+ *
+ * This exists because "the renderer finished loading" and "the user can see the
+ * app" turned out to be different claims: a bad GPU switch leaves a window that
+ * loads, reports a healthy process tree, and paints nothing but the window's
+ * background colour. Anything that changes the rendering path has to be checked
+ * with pixels, not with `did-finish-load`.
+ */
+const renderCheck = process.argv.includes('--render-check');
+/** Either diagnostic mode: own profile, no single-instance lock, no splash, exit. */
+const diagnostic = memoryReport || renderCheck;
 
 /* ==========================================================================
    Memory switches — read from disk, applied before anything is created
@@ -42,11 +54,17 @@ const memoryReport = process.argv.includes('--memory-report');
      size this app actually uses, so peak resident memory comes down without any
      visible difference. It is applied always, not only in low-memory mode,
      because a vault holds kilobytes of data, not megabytes.
-   - Low-memory mode (opt-in, from Settings › Optimize) additionally forces
-     Chromium's low-end-device heuristics — smaller raster tiles, smaller image
-     decode caches, no prerender — and drops the GPU process entirely by
-     rasterizing in software. That trades a little smoothness for the last
-     chunk, which is exactly the trade the switch advertises.
+   - Low-memory mode (the default, switchable from Settings › Optimize)
+     additionally turns on Chromium's low-end-device heuristics — smaller raster
+     tiles, smaller image decode caches, no prerender — which trades a little
+     smoothness for memory without touching how frames reach the screen.
+
+   The rendering path itself is off limits, however tempting: `--disable-gpu`
+   and friends saved the most of anything here (about 80 MB, because the GPU
+   process alone holds that much) and produced a black window on this machine —
+   loaded, healthy, invisible. Anything added below has to pass
+   `electron . --render-check`, which captures the window and reports how many
+   distinct colours it actually painted, before it ships.
 
    The file lives in userData rather than in the vault because it has to be
    read *before* the vault exists: preferences live inside the encrypted vault,
@@ -84,7 +102,7 @@ function writeEfficiency(next: EfficiencySettings): void {
 // Report mode measures a throwaway profile: it must not read or write the
 // user's real caches, and it must not fight the running app for the profile
 // lock. Declared before anything reads a path.
-if (memoryReport) {
+if (diagnostic) {
   try {
     app.setPath('userData', join(app.getPath('temp'), 'colax-memory-report'));
   } catch {
@@ -162,12 +180,19 @@ function applyMemorySwitches(): void {
   app.commandLine.appendSwitch('no-first-run');
   app.commandLine.appendSwitch('no-service-autorun');
   if (efficiency.maxSavings) {
+    // Smaller raster tiles, smaller image-decode caches, no prerender. This is
+    // the leanest rendering path that still composites a frame for display.
+    //
+    // `disable-gpu`, `disable-gpu-compositing` and `force-gpu-mem-available-mb=0`
+    // are NOT here, and must not be added back. Each of them removes the GPU
+    // process and looked like the single biggest saving on any memory readout —
+    // and each leaves a window that loads, reports a healthy process tree, and
+    // paints a flat black rectangle the user cannot act on. `--render-check`
+    // measures it: the same page puts 2088 distinct colours on screen with the
+    // GPU and 4 without, which is the difference between a UI and a blank
+    // screen. Memory was cheaper to measure than a visible app, so it won for a
+    // while; pixels are the check that decides.
     app.commandLine.appendSwitch('enable-low-end-device-mode');
-    app.commandLine.appendSwitch('disable-gpu');
-    app.commandLine.appendSwitch('disable-gpu-compositing');
-    // Software rasterization needs its own budget, or Chromium keeps whole
-    // tiles in memory it would otherwise hand to the GPU.
-    app.commandLine.appendSwitch('force-gpu-mem-available-mb', '0');
     app.commandLine.appendSwitch('disable-features', `${DISABLED_FEATURES},BackForwardCache`);
   }
 }
@@ -212,6 +237,64 @@ function readProcessMemory() {
   }
 }
 
+/**
+ * Reads what the window actually put on screen.
+ *
+ * The window is shown first: a hidden window reports no pixels whatever the GPU
+ * switches are doing, so capturing one would answer a different question than
+ * "can the user see the app". Luminance and the count of near-black pixels are
+ * enough to tell a painted UI from a window that never composited, and the
+ * renderer's own view of the DOM is reported alongside so the two can only
+ * disagree in the informative direction.
+ */
+async function readPaintedPixels() {
+  try {
+    const window = mainWindow;
+    if (!window) return { error: 'no window' };
+    // Read before showing: whether the launch sequence could put this window on
+    // screen on its own is exactly the question, and calling show() would erase
+    // the evidence.
+    const wasVisible = window.isVisible();
+    const readyFired = readyToShowFired;
+    window.show();
+    const dom = (await window.webContents.executeJavaScript(
+      `(() => ({
+        title: document.title,
+        visibleText: (document.body?.innerText ?? '').length,
+        rootChildren: document.getElementById('root')?.childElementCount ?? -1,
+      }))()`,
+    )) as { title: string; visibleText: number; rootChildren: number };
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const image = await window.webContents.capturePage();
+    const bitmap = image.toBitmap();
+    const colors = new Set<string>();
+    let luminance = 0;
+    let nearBlack = 0;
+    let pixels = 0;
+    for (let i = 0; i + 3 < bitmap.length; i += 4) {
+      const blue = bitmap[i] ?? 0;
+      const green = bitmap[i + 1] ?? 0;
+      const red = bitmap[i + 2] ?? 0;
+      luminance += (red * 299 + green * 587 + blue * 114) / 1000;
+      if (red < 16 && green < 16 && blue < 16) nearBlack += 1;
+      pixels += 1;
+      if (pixels % 53 === 0) colors.add(`${red},${green},${blue}`);
+    }
+    if (pixels === 0) return { ...dom, wasVisible, readyFired, error: 'no pixels captured' };
+    return {
+      ...dom,
+      wasVisible,
+      readyFired,
+      size: image.getSize(),
+      meanLuminance: Math.round((luminance / pixels) * 100) / 100,
+      nearBlackFraction: Math.round((nearBlack / pixels) * 1000) / 1000,
+      sampledColors: colors.size,
+    };
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : 'unknown' };
+  }
+}
+
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
@@ -221,6 +304,9 @@ let shellSettings: ShellSettings = {
   launchAtLogin: false,
   soundsMuted: false,
 };
+
+/** Set when Chromium reports the main window's first paint. See createWindow. */
+let readyToShowFired = false;
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -402,7 +488,7 @@ void app.whenReady().then(() => {
   // handle against the same profile and the two copies would silently diverge.
   // Skipped in report mode, which is a throwaway measurement that must be able
   // to run while the real app is open — and which uses its own profile dir.
-  if (!memoryReport) {
+  if (!diagnostic) {
     const single = app.requestSingleInstanceLock();
     if (!single) {
       app.quit();
@@ -523,15 +609,24 @@ void app.whenReady().then(() => {
   });
 
   const shownAt = Date.now();
-  if (memoryReport) {
+  if (diagnostic) {
     // Measurement mode: no splash (a second window is a second renderer, which
     // would be counted and make the figure meaningless), load, settle, report.
     mainWindow = createWindow();
+    // Recorded so --render-check can tell "the launch sequence would have shown
+    // this window" from "only an explicit show() can".
+    mainWindow.once('ready-to-show', () => {
+      readyToShowFired = true;
+    });
     mainWindow.webContents.once('did-finish-load', () => {
       setTimeout(() => {
-        const report = readProcessMemory();
-        console.log('MEMORY_REPORT ' + JSON.stringify(report));
-        app.exit(0);
+        void (async () => {
+          if (memoryReport) {
+            console.log('MEMORY_REPORT ' + JSON.stringify(readProcessMemory()));
+          }
+          if (renderCheck) console.log('RENDER_REPORT ' + JSON.stringify(await readPaintedPixels()));
+          app.exit(0);
+        })();
       }, 4000);
     });
     return;

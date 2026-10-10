@@ -1,7 +1,7 @@
 {
   "name": "colax",
   "private": true,
-  "version": "1.0.40",
+  "version": "1.0.41",
   "type": "module",
   "description": "Colax — a local-first, zero-knowledge password vault. Runs in the browser today, portable to a native app later.",
   "main": "dist-electron/main.cjs",
@@ -13,6 +13,8 @@
     "test": "node --experimental-strip-types --test --test-timeout=40000 test/*.test.ts",
     "dev:electron": "node scripts/electron-dev.mjs",
     "build:electron": "npm run build && node scripts/electron-build.mjs",
+    "check:render": "npm run build:electron && electron . --render-check",
+    "check:memory": "npm run build:electron && electron . --memory-report",
     "dist:electron": "npm run build:electron && electron-builder --win && node scripts/copy-installer.mjs"
   },
   "build": {

@@ -1646,7 +1646,7 @@ export function Settings(props: {
               question with an answer instead of a shrug. */}
           <Row
             label="What it costs right now"
-            hint="Measured on this machine, not estimated. Two totals are shown because they answer different questions. “Task manager” is what the system reports for the app group: it adds up every process, and Chromium's shared read-only pages (the engine's own code and data) get counted once per process, so it always reads high. “Unique to Colax” is the part that does not overlap between processes, which is the honest figure for how much memory this app actually takes."
+            hint="Measured on this machine, not estimated. Two totals are shown because they answer different questions. “Task manager” is what the system reports for the app group: it adds up every process, and Chromium's shared read-only pages (the engine's own code and data) get counted once per process, so it always reads high. “Unique to Colax” is the part that does not overlap between processes, which is the honest figure for how much this app actually takes. It sits around 200 MB, and the engine's own processes are most of it: the browser process, the GPU process and the network service are Chromium's, not this app's. Only the renderer — around 35 MB — is the vault's own code and your data."
             stacked
           >
             <div className="optimize-metrics">
@@ -1818,9 +1818,14 @@ export function Settings(props: {
             <Row
               label="Low-memory mode"
               hint={
+                // Deliberately does not promise a big number. Dropping the GPU
+                // process used to be described here as an 85 MB saving because
+                // that is what the memory readout said — and it also painted a
+                // black window. A switch that overstates itself is worse than a
+                // small one that keeps its word.
                 efficiencyState?.maxSavings
-                  ? `On and in force. Chromium is rasterizing in software with low-end-device caches, which is what removes the GPU process entirely — measured at about 85 MB of unique memory saved.${efficiencyState.restartRequired ? ' Restart the app to apply the change.' : ''}`
-                  : 'The single biggest saving available, and on by default: Chromium drops the GPU process and rasterizes in software, with smaller image and tile caches. Costs a little smoothness in animation; nothing about your vault changes. Needs a restart, so flipping it back on here cannot take effect while the app is running.'
+                  ? `On and in force: Chromium is using its low-end-device caches — smaller raster tiles, smaller image and tile caches, no prerender — and Back/Forward caching is off. Measured saving on this machine: a few megabytes. It is a trim, not the lever it sounds like.${efficiencyState.restartRequired ? ' Restart the app to apply the change.' : ''}`
+                  : 'Off. Switching it on makes Chromium use its low-end-device caches — smaller raster tiles, smaller image and tile caches, no prerender — which is worth a few megabytes. Needs a restart, so it cannot take effect while the app is running.'
               }
             >
               <Toggle
