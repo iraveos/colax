@@ -13,10 +13,12 @@ import { ImapFlow } from 'imapflow';
 import {
   collectInlineImages,
   decodePartBytes,
+  feedIdOfDecimal,
   gmailDecimalsOf,
   gmailHexOf,
   gmailRawFallback,
   imapUidOf,
+  isConnectionError,
   pickHtmlPart,
   pickTextPart,
   stripHtml,
@@ -170,13 +172,28 @@ function causeText(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : 'unexpected error';
 }
 
-async function readOne(client: ImapFlow, box: string, uid: number): Promise<FullMailResult> {
+async function readOne(
+  client: ImapFlow,
+  box: string,
+  uid: number,
+  retry?: () => Promise<FullMailResult>,
+): Promise<FullMailResult> {
   const lock = await client.getMailboxLock(box);
   try {
     let meta;
     try {
       meta = await client.fetchOne(uid, { bodyStructure: true, envelope: true }, { uid: true });
     } catch (cause) {
+      // The socket died between the search and the read — Gmail culls idle
+      // connections, and a search on a big mailbox gives it time to. One
+      // retry on a fresh connection before giving up.
+      if (retry && isConnectionError(cause)) {
+        try {
+          return await retry();
+        } catch (retryCause) {
+          return invalid(`Still unreadable after reconnecting (${causeText(retryCause)}). Open it in Gmail instead.`);
+        }
+      }
       return invalid(`Could not fetch that message (${causeText(cause)}). Open it in Gmail instead.`);
     }
     if (!meta || !meta.bodyStructure) return invalid('Message not found on the server.');
@@ -187,6 +204,13 @@ async function readOne(client: ImapFlow, box: string, uid: number): Promise<Full
     try {
       fetched = await client.fetchOne(uid, { bodyParts: [pick.part] }, { uid: true });
     } catch (cause) {
+      if (retry && isConnectionError(cause)) {
+        try {
+          return await retry();
+        } catch (retryCause) {
+          return invalid(`Still unreadable after reconnecting (${causeText(retryCause)}). Open it in Gmail instead.`);
+        }
+      }
       return invalid(`Could not fetch the message body (${causeText(cause)}). Open it in Gmail instead.`);
     }
     const buffer = fetched && fetched.bodyParts?.get(pick.part);
@@ -268,15 +292,37 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
     directUid === null ? gmailDecimalsOf(gmailHexOf(input?.feedId) ?? input?.feedId ?? null) : [];
   if (directUid === null && decimals.length === 0) return invalid('That message has no addressable id.');
 
-  const client = new ImapFlow({
-    host: 'imap.gmail.com',
-    port: 993,
-    secure: true,
-    logger: false,
-    auth: { user: address, pass: appPassword },
-    connectionTimeout: 15000,
-    socketTimeout: 30000,
-  });
+  const makeClient = () =>
+    new ImapFlow({
+      host: 'imap.gmail.com',
+      port: 993,
+      secure: true,
+      logger: false,
+      auth: { user: address, pass: appPassword },
+      connectionTimeout: 15000,
+      socketTimeout: 30000,
+    });
+  const client = makeClient();
+
+  // Reads through a retry that reconnects on a fresh socket: the first
+  // connection signed in and searched fine, so only the read itself is
+  // retried — never the auth, never the search.
+  const readWithRetry = (box: string, uid: number): Promise<FullMailResult> => {
+    const freshRead = async (): Promise<FullMailResult> => {
+      const retryClient = makeClient();
+      try {
+        await retryClient.connect();
+      } catch {
+        throw new Error('the reconnect failed');
+      }
+      try {
+        return await readOne(retryClient, box, uid);
+      } finally {
+        await retryClient.logout().catch(() => undefined);
+      }
+    };
+    return readOne(client, box, uid, freshRead);
+  };
 
   const run = (async (): Promise<FullMailResult> => {
     try {
@@ -285,7 +331,7 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
       return invalid('Could not sign in to Gmail. Check the address and the app password.');
     }
     try {
-      if (directUid !== null) return readOne(client, 'INBOX', directUid);
+      if (directUid !== null) return readWithRetry('INBOX', directUid);
       // All Mail covers inbox and archive alike, but its path is
       // locale-dependent — resolve it by special-use flag, not by guessing
       // English. INBOX stays as the fallback.
@@ -343,7 +389,7 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
           `Message not found on the server (signed in OK; tried ${decimals.length} id(s) in ${where}).`,
         );
       }
-      return readOne(client, box, uids[0]!);
+      return readWithRetry(box, uids[0]!);
     } finally {
       await client.logout().catch(() => undefined);
     }

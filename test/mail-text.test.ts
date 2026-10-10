@@ -10,6 +10,7 @@ import {
   gmailHexOf,
   gmailRawFallback,
   imapUidOf,
+  isConnectionError,
   pickHtmlPart,
   pickTextPart,
   stripHtml,
@@ -126,6 +127,15 @@ test('images vanish whole, alt text included', () => {
   const out = stripHtml('<p>Hi</p><img src="cid:logo" alt="Company logo"><p>Bye</p>');
   assert.equal(out, 'Hi\nBye');
   assert.ok(!out.includes('logo'), 'no stray alt words left behind');
+});
+
+test('only dead sockets count as connection errors', () => {
+  assert.equal(isConnectionError(new Error('Connection not available')), true);
+  assert.equal(isConnectionError(new Error('socket hang up')), true);
+  assert.equal(isConnectionError(Object.assign(new Error('read failed'), { code: 'ETIMEDOUT' })), true);
+  assert.equal(isConnectionError(new Error('Invalid credentials')), false);
+  assert.equal(isConnectionError(new Error('Message not found')), false);
+  assert.equal(isConnectionError(null), false);
 });
 
 test('out-of-range entities drop out instead of throwing', () => {

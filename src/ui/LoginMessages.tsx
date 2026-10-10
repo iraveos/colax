@@ -104,6 +104,17 @@ export function LoginMessages({
           account.appPassword &&
           (accountScope === 'all' || account.id === accountScope),
       );
+      if (live.length === 0) {
+        // Same empty box as "no mail", but a different problem: say which.
+        setMessages([]);
+        setUnmatched(false);
+        setError(
+          accountScope === 'all'
+            ? 'No connected mailbox has an address and an app password yet. Add one in the login editor.'
+            : 'This channel reads one mailbox that is not connected. Pick it in the channel editor or switch the channel back to all mailboxes.',
+        );
+        return;
+      }
       const perAccount = await Promise.all(
         live.map(async (account) => {
           const { messages: found, error: failed } = await listGmailOnce(

@@ -19,6 +19,19 @@ export function imapUidOf(id: string | undefined | null): number | null {
   return Number.isSafeInteger(uid) && uid > 0 ? uid : null;
 }
 
+/**
+ * Whether a failure looks like a dead socket rather than a refusal: the
+ * server culling an idle connection, a network blip, a DNS wobble. Those are
+ * worth one reconnect + retry; auth errors and missing messages are not.
+ */
+export function isConnectionError(cause: unknown): boolean {
+  const code = cause instanceof Error ? (cause as { code?: unknown }).code : undefined;
+  const text = `${cause instanceof Error ? cause.message : String(cause ?? '')} ${typeof code === 'string' ? code : ''}`;
+  return /connection (not available|closed|lost|ended|reset|refused)|socket (closed|ended|hang up)|ECONN|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN/i.test(
+    text,
+  );
+}
+
 /** The hex tail of a feed id is the Gmail message id (`tag:...,2004:<hex>`). */
 export function gmailHexOf(id: string | undefined | null): string | null {
   if (!id) return null;
