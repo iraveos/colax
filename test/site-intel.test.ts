@@ -91,6 +91,33 @@ test('the linked-only pass switches off exactly the logins that are not linked',
   assert.deepEqual(planMailLinkedOnly(items, [{ address: 'me@gmail.com', appPassword: 'x', enabled: false }]), []);
 });
 
+test('the pass, run against a real vault, keeps the linked login and switches the rest off', async () => {
+  // The unit checks above are pure functions; this one runs the same calls the
+  // one-time effect makes — plan, write each id, then read the rule — so a
+  // wiring mistake between them cannot hide behind a green pure test.
+  const { VaultService } = await import('../src/vault/vault-service.ts');
+  const { MemoryVaultStorage } = await import('../src/vault/storage.ts');
+  const vault = new VaultService(new MemoryVaultStorage());
+  await vault.create(); // no password: fast device key, no PBKDF2
+  const linked = await vault.addItem({ title: 'Mail', username: 'me@gmail.com', password: 'x'.repeat(20), showMail: true });
+  const other = await vault.addItem({ title: 'Other', username: 'other@else.com', password: 'y'.repeat(20), showMail: true });
+  const accounts = [{ address: 'me@gmail.com', appPassword: 'abcd efgh ijkl mnop', enabled: true }];
+
+  const ids = planMailLinkedOnly(vault.items ?? [], accounts);
+  assert.deepEqual(ids, [other.id], 'only the unlinked login is a candidate');
+  // The same call the effect's mutate block makes, one id at a time.
+  for (const id of ids) await vault.setShowMail(id, false);
+
+  const find = (id: string) => (vault.items ?? []).find((item) => item.id === id)!;
+  assert.equal(find(linked.id).showMail, true, 'the linked login keeps its Messages button');
+  assert.equal(find(other.id).showMail, false, 'the unlinked one loses it');
+  assert.equal(loginShowsMail(find(linked.id), accounts), true);
+  assert.equal(loginShowsMail(find(other.id), accounts), false);
+  // Running the pass again finds nothing left to do, which is what the stamp
+  // relies on: a second unlock cannot flip the same logins twice.
+  assert.deepEqual(planMailLinkedOnly(vault.items ?? [], accounts), []);
+});
+
 test('one connected mailbox puts Messages on the linked login, and nowhere else', () => {
   const accounts = [{ address: 'me@gmail.com', appPassword: 'abcd efgh ijkl mnop', enabled: true }];
   // The login the mailbox was connected for, whatever it is called and whatever
