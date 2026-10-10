@@ -50,10 +50,8 @@ export interface FullMailResult {
 
 /** One inbox row listed over IMAP: headers only, no bodies. */
 export interface InboxListMessage {
-  /** IMAP UID within INBOX. */
+  /** IMAP UID within INBOX. Rows address messages as `imap:<uid>`. */
   uid: number;
-  /** Gmail X-GM-MSGID when the server reports it; else the UID addresses it. */
-  gmailId: string | null;
   subject: string;
   fromName: string;
   fromAddress: string;

@@ -1,22 +1,28 @@
 /**
- * Full message bodies over IMAP, in the main process.
+ * Mail over IMAP, in the main process.
  *
- * The renderer's feed only carries subjects and snippets and cannot open a
- * socket, so bodies are fetched here with the mailbox's own app password and
- * handed back as plain text. Nothing is stored: one connection per request,
- * always logged out, credentials never written anywhere. HTML is stripped to
- * text before it crosses IPC, so a malicious message cannot smuggle markup
- * into the renderer.
+ * One persistent connection per mailbox, not one handshake per click. The old
+ * design opened a fresh connection for every list and every full read, and
+ * Gmail culls short-lived and idle connections aggressively — commands issued
+ * on a culled socket fail with `NoConnection` ("Connection not available"),
+ * which is what made full reads flaky while listings (quick, first on the
+ * socket) usually survived. Here each mailbox holds a single client that is
+ * connected lazily, reused across lists and reads, and reconnected
+ * transparently when it dies. Work runs through `runMail`, which retries once
+ * on a reconnected client after a connection error and lets every other
+ * failure surface with its own message.
+ *
+ * Rows address messages by INBOX UID (`imap:<uid>`): the full read locks
+ * INBOX and fetches the UID directly. There is no id search, no All-Mail
+ * path resolution, no sender/subject fallback — the round-trips that made
+ * reads miss. Credentials live only in the clients themselves (memory, for
+ * the app's lifetime); nothing is written anywhere.
  */
 
 import { ImapFlow } from 'imapflow';
 import {
   collectInlineImages,
   decodePartBytes,
-  feedIdOfDecimal,
-  gmailDecimalsOf,
-  gmailHexOf,
-  gmailRawFallback,
   imapUidOf,
   isConnectionError,
   pickHtmlPart,
@@ -28,10 +34,11 @@ import {
 export interface FullMailInput {
   address: string;
   appPassword: string;
-  /** Feed message id (`tag:...,2004:<hex>`); the hex tail addresses the mail. */
+  /** Message id: `imap:<uid>`, from the inbox listing. */
   feedId: string;
-  /** Subject/sender, for the best-effort fallback when the id misses. */
+  /** Kept for IPC compatibility; unused — reads address the UID directly. */
   subject?: string;
+  /** Kept for IPC compatibility; unused. */
   from?: string;
 }
 
@@ -52,8 +59,6 @@ export interface FullMailResult {
 export interface InboxListMessage {
   /** IMAP UID within INBOX. */
   uid: number;
-  /** Gmail X-GM-MSGID when the server reports it; else the UID addresses it. */
-  gmailId: string | null;
   subject: string;
   fromName: string;
   fromAddress: string;
@@ -74,17 +79,167 @@ const MAX_TEXT_BYTES = 400_000;
 /** What the UI ever sees of a body. */
 const MAX_TEXT_CHARS = 200_000;
 
+/** A connection unused this long is logged out, so the vault does not squat
+    on Gmail sessions the user walked away from. */
+const MAIL_IDLE_MS = 10 * 60 * 1000;
+const SWEEP_EVERY_MS = 60 * 1000;
+
+interface ManagedMailbox {
+  client: ImapFlow;
+  pass: string;
+  ready: boolean;
+  lastUsed: number;
+  connecting: Promise<ImapFlow> | null;
+}
+
+const mailboxes = new Map<string, ManagedMailbox>();
+
+function mailboxKey(address: string): string {
+  return address.trim().toLowerCase();
+}
+
+function makeClient(address: string, pass: string): ImapFlow {
+  return new ImapFlow({
+    host: 'imap.gmail.com',
+    port: 993,
+    secure: true,
+    logger: false,
+    auth: { user: address, pass },
+    connectionTimeout: 15000,
+    socketTimeout: 30000,
+  });
+}
+
+type MailEvents = { on(event: string, listener: () => void): void };
+
+function watch(client: ImapFlow, key: string, held: ManagedMailbox): void {
+  // imapflow types its client narrowly; events are stable API regardless.
+  const events = client as unknown as MailEvents;
+  events.on('close', () => {
+    if (mailboxes.get(key) === held) held.ready = false;
+  });
+  // Failures surface through the command promises. Without a listener, a
+  // stray 'error' event would crash the process instead.
+  events.on('error', () => undefined);
+}
+
+async function dropMailbox(key: string): Promise<void> {
+  const old = mailboxes.get(key);
+  if (!old) return;
+  mailboxes.delete(key);
+  await old.client.logout().catch(() => undefined);
+  try {
+    old.client.close();
+  } catch {
+    // Already gone — logout is what mattered.
+  }
+}
+
+/** The connected client for a mailbox, connecting (once, shared between
+    concurrent callers) when needed. Throws the raw connection error. */
+async function ensureConnected(address: string, pass: string, force = false): Promise<ImapFlow> {
+  const key = mailboxKey(address);
+  const current = mailboxes.get(key);
+  if (current && (force || current.pass !== pass)) await dropMailbox(key);
+  let managed = mailboxes.get(key);
+  if (!managed) {
+    const client = makeClient(address, pass);
+    managed = { client, pass, ready: false, lastUsed: Date.now(), connecting: null };
+    mailboxes.set(key, managed);
+    watch(client, key, managed);
+  }
+  if (managed.ready) {
+    managed.lastUsed = Date.now();
+    return managed.client;
+  }
+  if (!managed.connecting) {
+    const held = managed;
+    managed.connecting = held.client.connect().then(() => held.client);
+  }
+  try {
+    const client = await managed.connecting;
+    managed.ready = true;
+    managed.lastUsed = Date.now();
+    return client;
+  } catch (cause) {
+    // A failed handshake leaves nothing usable behind for the next caller.
+    await dropMailbox(key);
+    throw cause;
+  }
+}
+
+function staged(stage: string, text: string): Error {
+  const error = new Error(text);
+  (error as { stage?: string }).stage = stage;
+  return error;
+}
+
+export function stageOf(cause: unknown): string | null {
+  if (cause instanceof Error) {
+    const stage = (cause as { stage?: unknown }).stage;
+    if (typeof stage === 'string') return stage;
+  }
+  return null;
+}
+
+/**
+ * Runs IMAP work on a mailbox's persistent connection: connect if needed,
+ * then one transparent retry on a reconnected client after a connection
+ * error. Non-connection failures propagate untouched, so every failure mode
+ * keeps its own message.
+ */
+async function runMail<T>(address: string, pass: string, work: (client: ImapFlow) => Promise<T>): Promise<T> {
+  let client: ImapFlow;
+  try {
+    client = await ensureConnected(address, pass);
+  } catch (cause) {
+    throw staged(
+      'signin',
+      `Could not sign in to Gmail. Check the address and the app password. (${causeText(cause)})`,
+    );
+  }
+  try {
+    return await work(client);
+  } catch (cause) {
+    if (!isConnectionError(cause)) throw cause;
+    try {
+      client = await ensureConnected(address, pass, true);
+    } catch (cause2) {
+      throw staged('reconnect', `The connection dropped and would not come back (${causeText(cause2)}).`);
+    }
+    return work(client);
+  }
+}
+
+/** Graceful shutdown hook for app quit: log every mailbox out. */
+export async function closeMailConnections(): Promise<void> {
+  const keys = [...mailboxes.keys()];
+  await Promise.all(keys.map((key) => dropMailbox(key)));
+}
+
+const sweepTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, managed] of mailboxes) {
+    if (now - managed.lastUsed > MAIL_IDLE_MS) void dropMailbox(key);
+  }
+}, SWEEP_EVERY_MS);
+// The sweep must never hold the app open on its own.
+sweepTimer.unref();
+
 function invalid(message: string): FullMailResult {
   return { ok: false, error: message };
 }
 
+/** One-line cause text for error answers — never throws, never leaks a stack. */
+function causeText(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : 'unexpected error';
+}
+
 /**
- * Recent unread headers over IMAP: the listing behind every message list when
- * the Atom feed refuses (401/403/empty — Google shut Basic-auth feed access
- * down, so the feed is the fallback now, not the source of truth).
+ * Recent headers from INBOX, newest first, capped — read or not, since users
+ * expect their inbox, not an unread slice.
  *
- * Headers only, newest first, capped — bodies still load per opened message,
- * exactly like the feed path, so polling stays cheap.
+ * Headers only; bodies still load per opened message, so polling stays cheap.
  */
 export async function listInboxMail(input: {
   address: unknown;
@@ -100,27 +255,10 @@ export async function listInboxMail(input: {
       ? Math.max(1, Math.min(50, Math.floor(input.limit)))
       : 20;
 
-  const client = new ImapFlow({
-    host: 'imap.gmail.com',
-    port: 993,
-    secure: true,
-    logger: false,
-    auth: { user: address, pass: appPassword },
-    connectionTimeout: 15000,
-    socketTimeout: 30000,
-  });
-
-  const run = (async (): Promise<{ ok: boolean; messages?: InboxListMessage[]; error?: string }> => {
-    try {
-      await client.connect();
-    } catch {
-      return { ok: false, error: 'Could not sign in to Gmail. Check the address and the app password.' };
-    }
-    try {
+  try {
+    return await runMail(address, appPassword, async (client) => {
       const lock = await client.getMailboxLock('INBOX');
       try {
-        // Everything recent, read or not: users expect their inbox, not just
-        // the unread slice the old feed showed.
         const found = await client.search({ all: true }, { uid: true });
         const uids = (Array.isArray(found) ? [...found] : []).sort((a, b) => a - b).slice(-limit);
         if (uids.length === 0) return { ok: true, messages: [] };
@@ -130,10 +268,6 @@ export async function listInboxMail(input: {
           const from = fetched.envelope?.from?.[0];
           messages.push({
             uid: fetched.uid,
-            // Gmail hands over X-GM-MSGID for free on fetch: with it the row
-            // gets a real feed-style id and everything downstream (deep
-            // links, id search, cache keys) works untouched.
-            gmailId: typeof fetched.emailId === 'string' && /^\d+$/.test(fetched.emailId) ? fetched.emailId : null,
             subject: fetched.envelope?.subject ?? '',
             fromName: from?.name ?? '',
             fromAddress: from?.address ?? '',
@@ -145,69 +279,39 @@ export async function listInboxMail(input: {
       } finally {
         lock.release();
       }
-    } finally {
-      await client.logout().catch(() => undefined);
-    }
-  })();
-
-  const timeout = new Promise<{ ok: boolean; messages?: InboxListMessage[]; error?: string }>((resolve) =>
-    setTimeout(() => resolve({ ok: false, error: 'Gmail took too long to answer. Try again.' }), 30000),
-  );
-  const contained = run.catch(
-    (cause): { ok: boolean; messages?: InboxListMessage[]; error?: string } => ({
+    });
+  } catch (cause) {
+    return {
       ok: false,
-      error: `Could not list the inbox (${cause instanceof Error && cause.message ? cause.message : 'unexpected error'}).`,
-    }),
-  );
-  return Promise.race([contained, timeout]);
+      error: cause instanceof Error && cause.message ? cause.message : 'The inbox could not be read.',
+    };
+  }
 }
 
 /**
- * Reads one message's envelope, text, HTML and inline images out of an
- * already-open mailbox. Shared by the Gmail-id search and the direct UID
- * path, so both render identically downstream.
+ * One message's envelope, text, HTML and inline images out of INBOX,
+ * addressed by UID straight from the listing. No search, no fallback path:
+ * the UID the list returned is the UID that is read back.
  */
-/** One-line cause text for error answers — never throws, never leaks a stack. */
-function causeText(cause: unknown): string {
-  return cause instanceof Error && cause.message ? cause.message : 'unexpected error';
-}
-
-async function readOne(
-  client: ImapFlow,
-  box: string,
-  uid: number,
-  retry?: () => Promise<FullMailResult>,
-): Promise<FullMailResult> {
-  // The whole read is one attempt — lock included. imapflow reports a dead
-  // socket as `NoConnection` ("Connection not available") on whatever command
-  // runs next, lock or fetch alike, so only retrying the fetches left the
-  // lock-time failure with no recovery. Stage failures throw their user-facing
-  // text; the single catch below answers them, after one fresh retry for dead
-  // sockets. The wrapped cause text keeps the original message, so the
-  // connection check still recognises a NoConnection through the wrapping.
-  const fail = (stage: string, cause: unknown): Error =>
-    new Error(`${stage} (${causeText(cause)}). Open it in Gmail instead.`);
-  const attempt = async (active: ImapFlow): Promise<FullMailResult> => {
-    const lock = await active.getMailboxLock(box);
-    try {
-      let meta;
-      try {
-        meta = await active.fetchOne(uid, { bodyStructure: true, envelope: true }, { uid: true });
-      } catch (cause) {
-        throw fail('Could not fetch that message', cause);
-      }
-      if (!meta || !meta.bodyStructure) throw new Error('Message not found on the server.');
-      const structure = meta.bodyStructure as MailPartNode;
-      const pick = pickTextPart(structure);
-      if (!pick) throw new Error('That message has no readable text part.');
-      let fetched;
-      try {
-        fetched = await active.fetchOne(uid, { bodyParts: [pick.part] }, { uid: true });
-      } catch (cause) {
-        throw fail('Could not fetch the message body', cause);
-      }
-      const buffer = fetched && fetched.bodyParts?.get(pick.part);
-      if (!buffer || buffer.length === 0) throw new Error('The text part came back empty.');
+async function readOne(client: ImapFlow, box: string, uid: number): Promise<FullMailResult> {
+  const lock = await client.getMailboxLock(box);
+  try {
+    const meta = await client
+      .fetchOne(uid, { bodyStructure: true, envelope: true }, { uid: true })
+      .catch((cause: unknown): never => {
+        throw new Error(`Could not fetch that message (${causeText(cause)}). Open it in Gmail instead.`);
+      });
+    if (!meta || !meta.bodyStructure) throw new Error('Message not found on the server.');
+    const structure = meta.bodyStructure as MailPartNode;
+    const pick = pickTextPart(structure);
+    if (!pick) throw new Error('That message has no readable text part.');
+    const fetched = await client
+      .fetchOne(uid, { bodyParts: [pick.part] }, { uid: true })
+      .catch((cause: unknown): never => {
+        throw new Error(`Could not fetch the message body (${causeText(cause)}). Open it in Gmail instead.`);
+      });
+    const buffer = fetched && fetched.bodyParts?.get(pick.part);
+    if (!buffer || buffer.length === 0) throw new Error('The text part came back empty.');
     const bytes = buffer.length > MAX_TEXT_BYTES ? buffer.subarray(0, MAX_TEXT_BYTES) : buffer;
     const node = findNode(structure, pick.part);
     const text = decodePartBytes(
@@ -218,16 +322,16 @@ async function readOne(
     const body = (pick.html ? stripHtml(text) : text).slice(0, MAX_TEXT_CHARS);
     // Rich body for Gmail-like rendering downstream, plus the inline images
     // its `cid:` references point at. Plain-text-only mail skips all of this.
+    // The rich body never sinks the plain one: anything failing here drops
+    // back to text, which is already decoded above.
     let html: string | undefined;
     const images: { cid: string; mime: string; dataUrl: string }[] = [];
     const htmlPick = pickHtmlPart(structure);
     if (htmlPick) {
-      // Never let the rich body sink the plain one: anything failing here
-      // drops back to text, which is already decoded above.
       try {
         let raw = htmlPick.part === pick.part ? bytes : undefined;
         if (!raw) {
-          const htmlFetched = await active.fetchOne(uid, { bodyParts: [htmlPick.part] }, { uid: true });
+          const htmlFetched = await client.fetchOne(uid, { bodyParts: [htmlPick.part] }, { uid: true });
           raw = htmlFetched && htmlFetched.bodyParts ? htmlFetched.bodyParts.get(htmlPick.part) : undefined;
         }
         if (raw && raw.length > 0) {
@@ -246,7 +350,7 @@ async function readOne(
       for (const image of collectInlineImages(structure).slice(0, MAX_INLINE_IMAGES)) {
         if (image.size > MAX_IMAGE_BYTES) continue;
         try {
-          const got = await active.fetchOne(uid, { bodyParts: [image.part] }, { uid: true });
+          const got = await client.fetchOne(uid, { bodyParts: [image.part] }, { uid: true });
           const data = got && got.bodyParts ? got.bodyParts.get(image.part) : undefined;
           if (!data || data.length === 0 || data.length > MAX_IMAGE_BYTES) continue;
           images.push({
@@ -259,33 +363,18 @@ async function readOne(
         }
       }
     }
-      const from = meta.envelope?.from?.[0];
-      return {
-        ok: true,
-        subject: meta.envelope?.subject ?? '',
-        from: from ? `${from.name ?? ''}${from.name && from.address ? ' · ' : ''}${from.address ?? ''}` : '',
-        date: meta.envelope?.date ? new Date(meta.envelope.date).toLocaleString() : '',
-        text: body || '(No readable text in this message.)',
-        ...(html ? { html } : {}),
-        ...(images.length > 0 ? { images } : {}),
-      };
-    } finally {
-      lock.release();
-    }
-  };
-  try {
-    return await attempt(client);
-  } catch (cause) {
-    // Dead socket: one retry on a fresh connection before giving up. Anything
-    // else (refused, missing, undecodable) answers straight away.
-    if (retry && isConnectionError(cause)) {
-      try {
-        return await retry();
-      } catch (retryCause) {
-        return invalid(`Still unreadable after reconnecting (${causeText(retryCause)}). Open it in Gmail instead.`);
-      }
-    }
-    return invalid(cause instanceof Error && cause.message ? cause.message : 'Could not read that message.');
+    const from = meta.envelope?.from?.[0];
+    return {
+      ok: true,
+      subject: meta.envelope?.subject ?? '',
+      from: from ? `${from.name ?? ''}${from.name && from.address ? ' · ' : ''}${from.address ?? ''}` : '',
+      date: meta.envelope?.date ? new Date(meta.envelope.date).toLocaleString() : '',
+      text: body || '(No readable text in this message.)',
+      ...(html ? { html } : {}),
+      ...(images.length > 0 ? { images } : {}),
+    };
+  } finally {
+    lock.release();
   }
 }
 
@@ -293,129 +382,21 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
   const address = typeof input?.address === 'string' ? input.address.trim().slice(0, 320) : '';
   const appPassword = typeof input?.appPassword === 'string' ? input.appPassword.replace(/\s+/g, '').slice(0, 200) : '';
   if (!address || !appPassword) return invalid('Missing mailbox credentials.');
-  // `imap:<uid>` addresses INBOX directly; anything else goes through the
-  // Gmail-id search plus the sender/subject fallback below.
-  const directUid = imapUidOf(typeof input?.feedId === 'string' ? input.feedId : null);
-  const decimals =
-    directUid === null ? gmailDecimalsOf(gmailHexOf(input?.feedId) ?? input?.feedId ?? null) : [];
-  if (directUid === null && decimals.length === 0) return invalid('That message has no addressable id.');
-
-  const makeClient = () =>
-    new ImapFlow({
-      host: 'imap.gmail.com',
-      port: 993,
-      secure: true,
-      logger: false,
-      auth: { user: address, pass: appPassword },
-      connectionTimeout: 15000,
-      socketTimeout: 30000,
-    });
-  const client = makeClient();
-
-  // Reads through a retry that reconnects on a fresh socket: the first
-  // connection signed in and searched fine, so only the read itself is
-  // retried — never the auth, never the search.
-  const readWithRetry = (box: string, uid: number): Promise<FullMailResult> => {
-    const freshRead = async (): Promise<FullMailResult> => {
-      const retryClient = makeClient();
-      try {
-        await retryClient.connect();
-      } catch {
-        throw new Error('the reconnect failed');
-      }
-      try {
-        return await readOne(retryClient, box, uid);
-      } finally {
-        await retryClient.logout().catch(() => undefined);
-      }
-    };
-    return readOne(client, box, uid, freshRead);
-  };
-
-  const run = (async (): Promise<FullMailResult> => {
-    try {
-      await client.connect();
-    } catch {
-      return invalid('Could not sign in to Gmail. Check the address and the app password.');
-    }
-    try {
-      if (directUid !== null) return readWithRetry('INBOX', directUid);
-      // All Mail covers inbox and archive alike, but its path is
-      // locale-dependent — resolve it by special-use flag, not by guessing
-      // English. INBOX stays as the fallback.
-      const mailboxes = ['INBOX'];
-      try {
-        const boxes = await client.list();
-        const all = boxes.find((box) => (box.specialUse ?? '').toLowerCase().includes('all'));
-        if (all?.path && !mailboxes.includes(all.path)) mailboxes.unshift(all.path);
-      } catch {
-        mailboxes.push('[Gmail]/All Mail');
-      }
-      let uids: number[] | false = false;
-      let box = '';
-      const triedBoxes: string[] = [];
-      found: for (const candidate of mailboxes) {
-        let lock: { release: () => void } | null = null;
-        try {
-          lock = await client.getMailboxLock(candidate);
-        } catch {
-          continue;
-        }
-        triedBoxes.push(candidate);
-        try {
-          for (const decimal of decimals) {
-            const hit = await client.search({ emailId: decimal }, { uid: true });
-            if (hit && hit.length > 0) {
-              uids = hit;
-              box = candidate;
-              break found;
-            }
-          }
-          // Id missed: fall back to sender + subject and take the newest.
-          // Less exact than the id, but it shows the message instead of an error.
-          const raw = gmailRawFallback(
-            typeof input?.from === 'string' ? input.from : '',
-            typeof input?.subject === 'string' ? input.subject : '',
-          );
-          if (raw) {
-            const fallback = await client.search({ gmraw: raw }, { uid: true });
-            if (fallback && fallback.length > 0) {
-              uids = [fallback[fallback.length - 1]!];
-              box = candidate;
-              break found;
-            }
-          }
-        } catch {
-          continue;
-        } finally {
-          lock.release();
-        }
-      }
-      if (!uids || uids.length === 0) {
-        const where = triedBoxes.length > 0 ? triedBoxes.join(', ') : 'no mailbox';
-        return invalid(
-          `Message not found on the server (signed in OK; tried ${decimals.length} id(s) in ${where}).`,
-        );
-      }
-      return readWithRetry(box, uids[0]!);
-    } finally {
-      await client.logout().catch(() => undefined);
-    }
-  })();
-
-  // Never hang the UI on a dead socket: answer within 45s either way.
-  const timeout = new Promise<FullMailResult>((resolve) =>
-    setTimeout(() => resolve(invalid('Gmail took too long to answer. Try again.')), 45000),
-  );
-  // And never reject: a thrown error would surface in the UI as a bare
-  // transport failure. Every failure mode answers with a reason instead.
-  const contained = run.catch(
-    (cause): FullMailResult =>
-      invalid(
-        `Could not read that message (${cause instanceof Error && cause.message ? cause.message : 'unexpected error'}). Open it in Gmail instead.`,
-      ),
-  );
-  return Promise.race([contained, timeout]);
+  // Listings address INBOX UIDs directly; anything else is a row saved before
+  // the rebuild, which no longer addresses anything.
+  const uid = imapUidOf(typeof input?.feedId === 'string' ? input.feedId : null);
+  if (uid === null) {
+    return invalid('That saved message is from an older version. Refresh the list and open it again.');
+  }
+  try {
+    return await runMail(address, appPassword, (client) => readOne(client, 'INBOX', uid));
+  } catch (cause) {
+    // Sign-in and reconnect texts arrive final; anything else already carries
+    // its own stage message from the read.
+    return invalid(
+      cause instanceof Error && cause.message ? cause.message : 'Could not read that message. Open it in Gmail instead.',
+    );
+  }
 }
 
 /** Finds one structure node by its part id. */

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GmailAccount } from '../vault/storage.ts';
-import { feedIdOfDecimal, imapUidOf } from '../lib/mail-text.ts';
+import { imapUidOf } from '../lib/mail-text.ts';
 import { getPlatform } from '../lib/platform.ts';
 
 export { imapUidOf };
@@ -42,7 +42,12 @@ export function gmailOpenUrl(
   const user = accountAddress.trim() ? encodeURIComponent(accountAddress.trim()) : '0';
   const rawId = message.id ?? '';
   const tail = rawId.includes(':') ? (rawId.split(':').pop() ?? '') : rawId;
-  if (/^[0-9a-f]+$/i.test(tail)) return `https://mail.google.com/mail/u/${user}/#inbox/${tail}`;
+  // Feed ids carry the Gmail hex id and deep-link straight to the message.
+  // `imap:` rows carry a decimal UID, which is not a message id — those fall
+  // through to the subject search instead of a mispointed deep link.
+  if (!rawId.startsWith('imap:') && /^[0-9a-f]+$/i.test(tail)) {
+    return `https://mail.google.com/mail/u/${user}/#inbox/${tail}`;
+  }
   if (message.title) return `https://mail.google.com/mail/u/${user}/#search/${encodeURIComponent(message.title)}`;
   return message.alternate || 'https://mail.google.com';
 }
@@ -87,14 +92,12 @@ export async function fetchGmailOnce(
 }
 
 /**
- * Lists one mailbox: the Atom feed first (it carries snippets), IMAP second.
+ * Lists one mailbox, newest first.
  *
- * The feed answers 401/403/empty since Google shut Basic-auth feed access
- * down, which used to read as "no messages" with no recourse — and even when
- * it answers, it only ever shows unread mail. Where the feed fails or comes
- * back empty and the desktop shell is present, the same app password lists
- * recent headers straight over IMAP instead — no snippets, but real mail.
- * The web build has no IMAP, so there the feed's answer stands as the answer.
+ * Desktop reads its own IMAP directly: one path, no feed round-trip. The
+ * Atom feed is web-only now — on desktop it only ever produced errors, CORS
+ * failures, or unread-only emptiness that hid the real mailbox. The web
+ * build has no IMAP, so there the feed is the only read available.
  */
 export async function listGmailOnce(
   address: string,
@@ -102,6 +105,30 @@ export async function listGmailOnce(
   accountId = '',
 ): Promise<{ messages: GmailMessage[]; error: string | null }> {
   if (!address || !appPassword) return { messages: [], error: null };
+  const listMail = getPlatform().mail?.listInbox;
+  if (listMail) {
+    try {
+      const listed = await listMail({ address, appPassword, limit: 20 });
+      if (listed.ok && listed.messages) {
+        return {
+          messages: listed.messages.map((entry) => ({
+            id: `imap:${entry.uid}`,
+            title: entry.subject,
+            author: entry.fromName,
+            email: entry.fromAddress,
+            summary: '',
+            issued: entry.date,
+            alternate: '',
+            accountId,
+          })),
+          error: null,
+        };
+      }
+      return { messages: [], error: listed.error ?? 'The inbox could not be read.' };
+    } catch {
+      return { messages: [], error: 'The inbox could not be read.' };
+    }
+  }
   let feedMessages: GmailMessage[] = [];
   let feedError: string | null = null;
   await fetchGmailOnce(
@@ -116,39 +143,7 @@ export async function listGmailOnce(
     undefined,
     accountId,
   );
-  // Mail ends here. An empty feed does NOT end here: the feed only ever shows
-  // unread mail, so "nothing unread" reads exactly like "nothing there", and
-  // a mailbox with zero unread would show zero messages forever. Where IMAP
-  // exists (desktop shell) an empty feed falls through to it; only the web
-  // build, which has no IMAP, takes the feed's word for it.
-  if (feedMessages.length > 0) {
-    return { messages: feedMessages, error: feedError };
-  }
-  const listMail = getPlatform().mail?.listInbox;
-  if (!listMail) return { messages: [], error: feedError };
-  try {
-    const listed = await listMail({ address, appPassword, limit: 20 });
-    if (listed.ok && listed.messages) {
-      return {
-        messages: listed.messages.map((entry) => ({
-          // A reported Gmail id becomes a real feed-style id; otherwise the
-          // UID addresses the row and the UID path reads it back.
-          id: feedIdOfDecimal(entry.gmailId) ?? `imap:${entry.uid}`,
-          title: entry.subject,
-          author: entry.fromName,
-          email: entry.fromAddress,
-          summary: '',
-          issued: entry.date,
-          alternate: '',
-          accountId,
-        })),
-        error: null,
-      };
-    }
-    return { messages: [], error: listed.error ?? feedError ?? 'The inbox could not be read.' };
-  } catch {
-    return { messages: [], error: feedError ?? 'The inbox could not be read.' };
-  }
+  return { messages: feedMessages, error: feedError };
 }
 
 /**

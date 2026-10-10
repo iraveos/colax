@@ -4,11 +4,7 @@ import {
   collectInlineImages,
   decodePartBytes,
   decodeQuotedPrintable,
-  feedIdOfDecimal,
-  gmailDecimalOf,
-  gmailDecimalsOf,
   gmailHexOf,
-  gmailRawFallback,
   imapUidOf,
   isConnectionError,
   pickHtmlPart,
@@ -21,22 +17,6 @@ test('the feed id tail is the Gmail hex id', () => {
   assert.equal(gmailHexOf('plain-hex'), null);
   assert.equal(gmailHexOf(''), null);
   assert.equal(gmailHexOf(null), null);
-});
-
-test('hex converts to the decimal X-GM-MSGID', () => {
-  assert.equal(gmailDecimalOf('18f3ab02cd'), String(BigInt('0x18f3ab02cd')));
-  assert.equal(gmailDecimalOf('zzz'), null);
-});
-
-test('decimal tails try decimal first, hex-decoded second', () => {
-  // A 19-digit feed tail is already decimal — hex-decoding it would address nothing.
-  assert.deepEqual(gmailDecimalsOf('1699871234567890123'), ['1699871234567890123']);
-  // Short digit tails are ambiguous: decimal first, then the hex reading.
-  assert.deepEqual(gmailDecimalsOf('1234'), ['1234', String(BigInt('0x1234'))]);
-  // Lettered tails only have the hex reading.
-  assert.deepEqual(gmailDecimalsOf('18f3ab02cd'), [String(BigInt('0x18f3ab02cd'))]);
-  assert.deepEqual(gmailDecimalsOf('junk!'), []);
-  assert.deepEqual(gmailDecimalsOf(null), []);
 });
 
 test('plain text wins over html, attachments never count', () => {
@@ -67,24 +47,6 @@ test('base64 parts decode with their charset, not as UTF-8', () => {
   assert.equal(decodePartBytes(qp, 'quoted-printable', 'utf-8'), 'café');
   const plain = new TextEncoder().encode('hello');
   assert.equal(decodePartBytes(plain, '7bit', 'utf-8'), 'hello');
-});
-
-test('the fallback query quotes sender and subject', () => {
-  assert.equal(
-    gmailRawFallback('Boss <boss@work.com>', 'Q3 "results"'),
-    'from:"boss@work.com" subject:"Q3 \\"results\\""',
-  );
-  assert.equal(gmailRawFallback('', '  '), null);
-  assert.equal(gmailRawFallback(null, null), null);
-});
-
-test('a decimal Gmail id round-trips to a feed id and back', () => {
-  const feedId = feedIdOfDecimal('1699871234567890123');
-  assert.ok(feedId?.startsWith('tag:gmail.google.com,2004:'));
-  assert.deepEqual(gmailDecimalsOf(gmailHexOf(feedId!)), ['1699871234567890123']);
-  assert.equal(feedIdOfDecimal('junk'), null);
-  assert.equal(feedIdOfDecimal(''), null);
-  assert.equal(feedIdOfDecimal(null), null);
 });
 
 test('imap ids parse to UIDs, everything else does not', () => {

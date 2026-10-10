@@ -39,69 +39,6 @@ export function gmailHexOf(id: string | undefined | null): string | null {
   return /^[0-9a-f]+$/i.test(tail) ? tail : null;
 }
 
-/**
- * A best-effort Gmail raw query for one message, used when the id search
- * misses. Phrases are quoted and escaped so a subject full of punctuation
- * cannot break the query into something that matches the whole mailbox.
- */
-export function gmailRawFallback(from: string | undefined | null, subject: string | undefined | null): string | null {
-  const quote = (value: string): string => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-  const parts: string[] = [];
-  const sender = (from ?? '').trim();
-  // The sender may be "Name <addr>"; the address halves the matches.
-  const address = sender.match(/<([^>]+)>/)?.[1] ?? sender;
-  if (address) parts.push(`from:${quote(address)}`);
-  if ((subject ?? '').trim()) parts.push(`subject:${quote(subject!.trim().slice(0, 120))}`);
-  return parts.length > 0 ? parts.join(' ') : null;
-}
-
-/** Decimal form, for IMAP's X-GM-MSGID search. */
-export function gmailDecimalOf(hex: string): string | null {
-  try {
-    return BigInt(`0x${hex}`).toString();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Feed-style id from a decimal X-GM-MSGID, so IMAP-listed rows address exactly
- * like feed rows: deep links, id search and cache keys all work untouched.
- */
-export function feedIdOfDecimal(decimal: string | undefined | null): string | null {
-  if (!decimal || !/^\d+$/.test(decimal)) return null;
-  try {
-    const hex = BigInt(decimal).toString(16);
-    return /^[0-9a-f]+$/i.test(hex) ? `tag:gmail.google.com,2004:${hex}` : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Decimal X-GM-MSGID candidates for a feed id tail, most likely first.
- *
- * Atom feeds carry the decimal id, but a short all-digit tail is also valid
- * hex — and treating a decimal as hex addresses a completely different
- * message (or, usually, nothing at all). So digit tails try decimal first and
- * hex-decoded second; lettered tails only have the hex reading.
- */
-export function gmailDecimalsOf(tail: string | null | undefined): string[] {
-  if (!tail) return [];
-  const out: string[] = [];
-  if (/^\d+$/.test(tail)) {
-    out.push(tail.replace(/^0+(?=\d)/, ''));
-    if (tail.length <= 16) {
-      const viaHex = gmailDecimalOf(tail);
-      if (viaHex && viaHex !== out[0]) out.push(viaHex);
-    }
-  } else if (/^[0-9a-f]+$/i.test(tail)) {
-    const viaHex = gmailDecimalOf(tail);
-    if (viaHex) out.push(viaHex);
-  }
-  return out;
-}
-
 /** Minimal shape of an imapflow bodyStructure node — structural, not imported. */
 export interface MailPartNode {
   type?: string;

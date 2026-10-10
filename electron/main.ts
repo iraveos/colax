@@ -13,7 +13,7 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell, Tray } from 'electron';
 import { join } from 'node:path';
 import type { ShellSettings } from '../src/lib/platform.ts';
-import { fetchFullMail, listInboxMail } from './mail-imap.ts';
+import { closeMailConnections, fetchFullMail, listInboxMail } from './mail-imap.ts';
 // Inlined as a data URL by esbuild (see scripts/electron-build.mjs), so the
 // tray icon needs no file path that differs between dev and packaged builds.
 import trayPng from '../public/colax-icon.png';
@@ -283,4 +283,10 @@ void app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// Mailbox connections are persistent now: log them out on quit instead of
+// leaving Gmail sessions dangling until they time out server-side.
+app.on('before-quit', () => {
+  void closeMailConnections();
 });
