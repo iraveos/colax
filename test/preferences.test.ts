@@ -25,11 +25,27 @@ test('an empty store yields the defaults', () => {
   assert.equal(prefs.mailEveryLogin, false);
 });
 
-test('the mail scoping flags survive normalisation', () => {
+test('the shipped look is full, instant, high-contrast and floating', () => {
+  const prefs = normalisePreferences(undefined);
+  assert.equal(prefs.motion, 1, 'animation at full intensity');
+  assert.equal(prefs.motionSpeed, 2, 'the top of the slider — every transition halves');
+  assert.equal(prefs.ambient, 1, 'the ambient gradient at full strength');
+  assert.equal(prefs.reduceTransparency, false, 'transparency stays on');
+  assert.equal(prefs.highContrast, true);
+  assert.equal(prefs.floatingChrome, true);
+});
+
+test('the mail and look passes are stamped, not assumptions', () => {
   assert.equal(normalisePreferences({ mailOptInMigrated: true }).mailOptInMigrated, true);
   assert.equal(normalisePreferences({}).mailOptInMigrated, false);
   assert.equal(normalisePreferences({ mailEveryLogin: true }).mailEveryLogin, true);
   assert.equal(normalisePreferences({}).mailEveryLogin, false);
+  assert.equal(normalisePreferences({ mailLinkedOnly: true }).mailLinkedOnly, true);
+  assert.equal(normalisePreferences({}).mailLinkedOnly, false, 'a fresh vault has not been through the pass');
+  assert.equal(normalisePreferences({ lookPresetMigrated: true }).lookPresetMigrated, true);
+  assert.equal(normalisePreferences({}).lookPresetMigrated, false);
+  // A hand-edited truthy non-boolean is not a stamp: the pass must still run.
+  assert.equal(normalisePreferences({ mailLinkedOnly: 'yes' as never }).mailLinkedOnly, false);
 });
 
 test('a hand-edited null record cannot crash normalisation', () => {

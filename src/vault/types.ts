@@ -146,9 +146,11 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     usernameUpdatedAt: typeof raw.usernameUpdatedAt === 'number' ? raw.usernameUpdatedAt : created,
     tags: Array.isArray(raw.tags) ? raw.tags.filter((tag): tag is string => typeof tag === 'string') : [],
     needsAttention: Boolean(raw.needsAttention),
-    // Per-login *opt-out*: every login shows the Messages button, and only an
-    // explicit false hides it. Records saved before the toggle existed carry no
-    // field at all, which now means the same thing as on.
+    // Opt-out for the *linked* login (its username is a connected mailbox's
+    // address), opt-in for everything else — see `loginShowsMail`. A record
+    // saved before the field existed reads as on, which is the linked case's
+    // default; the one-time linked-only pass is what switches the unrelated
+    // logins off, so nothing here has to guess whether a `true` was a choice.
     showMail: typeof raw.showMail === 'boolean' ? raw.showMail : true,
     mailFilter: raw.mailFilter === 'matched' || raw.mailFilter === 'recent' ? raw.mailFilter : 'auto',
     accentHue: typeof raw.accentHue === 'number' ? raw.accentHue : null,

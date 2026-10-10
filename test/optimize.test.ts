@@ -94,7 +94,12 @@ test('a stored style is clamped field by field, never trusted', () => {
   });
   assert.ok(hostile);
   assert.equal(hostile!.motion, 0);
-  assert.equal(hostile!.motionSpeed, 1.5);
+  assert.equal(hostile!.motionSpeed, 2, 'the top of the animation-speed slider');
+  assert.equal(
+    FULL_DETAIL_STYLE.motionSpeed,
+    DEFAULT_PREFERENCES.motionSpeed,
+    'restoring the look restores the speed the app ships with',
+  );
   assert.equal(hostile!.ambient, 1);
   assert.equal(hostile!.reduceTransparency, false, 'only a real boolean counts');
   assert.equal(hostile!.density, 'comfortable');

@@ -776,10 +776,24 @@ var(--ease),color var(--fast) var(--ease)}
 .mailcenter__head-actions{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
 .mailcenter__steps{margin:0;padding-left:1.2em;display:flex;flex-direction:column;gap:6px;font-size:var(--text-sm);color:var(--text-muted)}
 .mailcenter__cta{margin-top:var(--space-3)}
-.mailbox__tabs{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
-.mailbox__tab{display:inline-flex;align-items:center;gap:6px;padding:6px var(--space-3);border:1px solid var(--border);border-radius:var(--radius-full);background:var(--glass);color:var(--text-muted);font-size:var(--text-xs);font-weight:560;max-width:22ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),border-color var(--fast) var(--ease)}
-.mailbox__tab:hover{color:var(--text);border-color:var(--border-strong)}
-.mailbox__tab[aria-selected=true]{background:var(--grad-soft);border-color:hsl(var(--accent-h) 50% 58% / .5);color:var(--accent-text)}
+/* Connected-mailbox tabs.
+   Each tab is a real mailbox, so the chosen one has to read as chosen from
+   across the panel rather than from a faint tint: the group sits in its own
+   sunken pill, the selected tab carries the accent fill plus its own shadow,
+   and the glyph brightens with it. The unselected tabs stay quiet until
+   hovered, when they lift a hair — the tiniest motion that still answers
+   "is this clickable". Long addresses truncate instead of wrapping, so the row
+   keeps one height whatever the mailboxes are called. */
+.mailbox__tabs{display:flex;align-items:center;gap:4px;flex-wrap:wrap;width:fit-content;max-width:100%;padding:4px;border:1px solid var(--card-hairline);border-radius:var(--radius-full);background:var(--plate)}
+.mailbox__tab{display:inline-flex;align-items:center;gap:8px;min-height:34px;padding:7px 14px;border:1px solid transparent;border-radius:var(--radius-full);background:transparent;color:var(--text-muted);font-size:var(--text-sm);font-weight:600;letter-spacing:.01em;max-width:26ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease),transform var(--fast) var(--ease)}
+.mailbox__tab svg{flex:0 0 auto;opacity:.65;transition:opacity var(--fast) var(--ease)}
+.mailbox__tab:hover{background:var(--surface-hover);color:var(--text);transform:translateY(-1px)}
+.mailbox__tab:hover svg{opacity:1}
+.mailbox__tab:focus-visible{outline:2px solid var(--accent-text);outline-offset:2px}
+.mailbox__tab[aria-selected=true]{background:var(--grad-soft);border-color:hsl(var(--accent-h) 50% 58% / .55);box-shadow:var(--card-shadow),inset 0 0 0 1px hsl(var(--accent-h) 60% 62% / .18);color:var(--accent-text)}
+.mailbox__tab[aria-selected=true] svg{opacity:1;color:var(--accent-text)}
+@media (prefers-reduced-motion:reduce){.mailbox__tab{transition:none}.mailbox__tab:hover{transform:none}}
+
 .mailbox__picker{display:flex;align-items:center;gap:var(--space-2)}
 .mailcenter__panel{display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-5);border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card);box-shadow:var(--card-shadow)}
 .mailcenter__meta{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}

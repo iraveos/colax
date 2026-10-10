@@ -219,7 +219,7 @@ export function Settings(props: {
    * the truth lives in the main process on disk, because it has to be readable
    * before the vault exists. A second copy in prefs could only disagree.
    */
-  const [efficiencyState, setEfficiencyState] = useState<{ maxSavings: boolean; restartRequired: boolean } | null>(null);
+  const [efficiencyState, setEfficiencyState] = useState<{ maxSavings: boolean; gpu: boolean; restartRequired: boolean } | null>(null);
   useEffect(() => {
     const runtime = getPlatform().runtime;
     if (!open || liveTab !== 'optimize' || !runtime?.efficiency) return;
@@ -241,6 +241,30 @@ export function Settings(props: {
       state.restartRequired
         ? `Low-memory mode ${maxSavings ? 'on' : 'off'} — restart Colax to apply it`
         : `Low-memory mode ${maxSavings ? 'on' : 'off'}`,
+    );
+  };
+
+  /**
+   * The hardware-acceleration switch.
+   *
+   * Low-memory mode is what rasterizes in software, and software rasterization
+   * is paid for in CPU on every frame — which is exactly the trade the user
+   * reported as wrong: memory down, processor pinned. This switch keeps the
+   * cheap parts of low-memory mode (the low-end caches, the trimmed features,
+   * the V8 heap caps) and only puts the compositor back on the GPU, so the
+   * frame work leaves the CPU again. The cost is the GPU process's own memory,
+   * which is the ~80 MB the low-memory path was removing — the smallest way to
+   * buy the processor back, and the reason the two switches are separate.
+   */
+  const toggleGpu = async (gpu: boolean) => {
+    const runtime = getPlatform().runtime;
+    if (!runtime?.efficiency) return;
+    const state = await runtime.efficiency({ gpu });
+    setEfficiencyState(state);
+    onNotify(
+      state.restartRequired
+        ? `Hardware acceleration ${gpu ? 'on' : 'off'} — restart Colax to apply it`
+        : `Hardware acceleration ${gpu ? 'on' : 'off'}`,
     );
   };
   // A shortcut can jump straight to a tab without the user clicking it, and the
@@ -795,16 +819,12 @@ export function Settings(props: {
               onChange={(pinFavorites) => set({ pinFavorites })}
             />
           </Row>
-          <Row
-            label="Expand on select"
-            hint="Picking a login normally just copies its password. With this on it also opens the login's details, so one click lands you on the whole record instead of only the clipboard. The copy still happens either way."
-          >
-            <Toggle
-              label="Expand on select"
-              checked={prefs.expandOnOpen}
-              onChange={(expandOnOpen) => set({ expandOnOpen })}
-            />
-          </Row>
+          {/* "Expand on select" used to sit here. It made a single click open the
+              login editor, which put the whole edit form over the list you were
+              scanning — and the gesture for editing a login everywhere else is a
+              double-click. The click now only copies the password and the
+              double-click opens the editor, so the switch had no meaning left to
+              offer and is gone rather than quietly doing nothing. */}
 <Row label="Health badges" hint="Flag reused and long-untouched passwords.">
             <Toggle
               label="Health badges"
@@ -1824,14 +1844,36 @@ export function Settings(props: {
                 // combination that was individually checked with
                 // --render-check, so the promise and the pixels agree.
                 efficiencyState?.maxSavings
-                  ? `On and in force: Chromium is rasterizing in software with its low-end-device caches, which is what removes the GPU process — measured at about 80 MB of unique memory. It renders in software as a result, so animation is less smooth than the hardware path.${efficiencyState.restartRequired ? ' Restart the app to apply the change.' : ''}`
-                  : 'The biggest saving available, and on by default: Chromium drops the GPU process and rasterizes in software, with smaller image and tile caches. Costs some smoothness in animation; nothing about your vault changes. Needs a restart, so switching it back on here cannot take effect while the app is running.'
+                  ? `On and in force: Chromium is rasterizing in software with its low-end-device caches, which is what removes the GPU process — measured at about 80 MB of unique memory. Software rasterization is paid for by the processor on every frame, so this is the switch that trades CPU for memory: leave it on for the smallest footprint, switch it off (or turn Hardware acceleration on below) when the processor matters more.${efficiencyState.restartRequired ? ' Restart the app to apply the change.' : ''}`
+                  : 'The biggest memory saving available, and on by default: Chromium drops the GPU process and rasterizes in software, with smaller image and tile caches. Nothing about your vault changes, but the processor now draws every frame. Needs a restart, so switching it back on here cannot take effect while the app is running.'
               }
             >
               <Toggle
                 label="Low-memory mode"
                 checked={efficiencyState?.maxSavings === true}
                 onChange={(on) => void toggleMaxSavings(on)}
+              />
+            </Row>
+          ) : null}
+
+          {/* The CPU side of the same trade. Low-memory mode's saving is the GPU
+              process, and giving up that process means drawing every frame on the
+              processor. This one puts the compositor back while keeping the rest
+              of the low-memory path, which is the smallest change that returns
+              the CPU — the GPU process's own memory is the price. */}
+          {getPlatform().runtime?.efficiency ? (
+            <Row
+              label="Hardware acceleration"
+              hint={
+                efficiencyState?.gpu
+                  ? `On and in force: frames are composited by the GPU again, so animating and scrolling cost very little processor — measured as the difference between smooth motion and a busy CPU. The low-memory savings that do not need the compositor are still applied.${efficiencyState.restartRequired ? ' Restart the app to apply the change.' : ''}`
+                  : `Off: the GPU process is gone, so every frame is drawn on the processor. Turning this on puts the compositor back and takes the frame cost off the CPU, at the price of the GPU process's own memory — the cheapest available trade if the app feels heavy while animating. Needs a restart, so it cannot take effect while the app is running${efficiencyState?.restartRequired ? ' — restart Colax to apply the change you just made.' : '.'}`
+              }
+            >
+              <Toggle
+                label="Hardware acceleration"
+                checked={efficiencyState?.gpu === true}
+                onChange={(on) => void toggleGpu(on)}
               />
             </Row>
           ) : null}

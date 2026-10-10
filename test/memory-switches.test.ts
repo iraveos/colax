@@ -48,13 +48,35 @@ test('the switch that blanked the window is never passed', () => {
   assert.equal(passesSwitch('in-process-gpu'), false, 'a GPU fault would take the whole app down with it');
 });
 
-test('the GPU switches that carry the saving are still applied', () => {
+test('the GPU switches that carry the saving are still applied, behind the GPU switch', () => {
   // These were the prime suspects and are cleared: each was measured to paint a
   // real UI (~2000 colours) on its own. Dropping them silently would give back
-  // ~80 MB for nothing.
+  // ~80 MB for nothing — but they are also the software-rasterization path, so
+  // they must stay reachable and must stay conditional. Shipping them
+  // unconditionally is what pinned the CPU on every frame; shipping them not at
+  // all gives back the memory saving. Both switches, one guard.
   for (const kept of ['disable-gpu', 'disable-gpu-compositing']) {
     assert.equal(passesSwitch(kept), true, `${kept} is verified to render; do not remove it without a measurement`);
   }
+  // The guard block carries a long measured comment, so the window is generous.
+  assert.ok(
+    /if\s*\(!efficiency\.gpu\)[\s\S]{0,2000}?appendSwitch\(\s*['"]disable-gpu['"]/.test(source),
+    'the software path must be guarded by the GPU setting, not applied always',
+  );
+});
+
+test('the low-memory setting no longer drags the rendering path with it', () => {
+  // The two are separate trades: caches (maxSavings) and the compositor (gpu).
+  // Folding them together is the bug this split fixes — "save memory" silently
+  // bought "draw every frame on the processor".
+  const guard = source.slice(source.indexOf('if (efficiency.maxSavings)'), source.indexOf('if (!efficiency.gpu)') + 40);
+  assert.ok(guard.length > 40, 'both guards must exist, in that order');
+  assert.equal(
+    /appendSwitch\(\s*['"]disable-gpu/.test(guard.slice(0, guard.indexOf('if (!efficiency.gpu)'))),
+    false,
+    'low-memory mode must not switch off the GPU by itself',
+  );
+  assert.ok(source.includes('gpu:'), 'the stored setting must carry the GPU choice');
 });
 
 test('the quiet, safe savings are still applied', () => {

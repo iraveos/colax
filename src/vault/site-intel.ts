@@ -288,17 +288,19 @@ export function mailboxUsable(account: MailboxLike): boolean {
  * Whether one login shows its Messages button — the single rule every view
  * reads, so the three views and the App-level Messages window cannot disagree.
  *
- * The rule is: *any* usable mailbox puts the button under *every* login, unless
- * that login has been switched off by hand. It used to be the other way round —
- * a login only qualified when its own username was a connected mailbox address,
- * or when the user found the per-login switch buried in the editor. In practice
- * that meant a vault could hold a working mailbox and still show no way into it
- * from the login the mail was about, which is the one case a Messages button
- * exists for.
+ * The rule is: the button belongs to the login that is *linked* to a connected
+ * mailbox — its username is that mailbox's address — plus any login switched on
+ * by hand in its editor. Nothing else shows it.
  *
- * What the button then *reads* is still scoped: a login whose username is a
- * connected mailbox reads that mailbox, anything else reads the channel's mail
- * scope. See the owner branch in LoginMessages.
+ * This is deliberately the opposite of the build before it, which spread the
+ * button across every login. That looked generous and read as wrong: a mailbox
+ * connected for one login put a Messages button on every unrelated login, each
+ * of which then had to be switched off one by one. The linkage is the scoping,
+ * so there is nothing left to switch off.
+ *
+ * `mailboxOwnedBy` normalises whitespace and case, so "Me@Gmail.com " and
+ * "me@gmail.com" are the same login for this purpose — the same comparison the
+ * expander uses to decide whose mail it is reading.
  */
 export function loginShowsMail(
   item: { username: string; showMail: boolean; mailFilter?: string },
@@ -306,26 +308,36 @@ export function loginShowsMail(
   channelAllowsMail = true,
 ): boolean {
   if (!channelAllowsMail) return false;
-  if (item.showMail === false) return false;
-  return accounts.some(mailboxUsable);
+  const usable = accounts.filter(mailboxUsable);
+  if (usable.length === 0) return false;
+  // Linked: shown unless switched off by hand. Not linked: hidden unless
+  // switched on by hand. `!== false` rather than `=== true` for the linked case
+  // so a record predating the switch (no field at all) still reads as on.
+  return mailboxOwnedBy(item.username, usable) !== null ? item.showMail !== false : item.showMail === true;
 }
 
 /**
- * One-time repair of the per-login Messages switch.
+ * One-time pass that puts the Messages button back where it belongs.
  *
- * An earlier build defaulted the expander *off* and then migrated every
- * existing login to off as well, so vaults that predate this rule have the
- * button hidden everywhere. New logins default on now, so the fix is to switch
- * the flag back on for every login that is still off.
+ * The previous build switched the button on for every login. This returns the
+ * ids of the logins that are *not* linked to a connected mailbox and are still
+ * switched on, so the caller can switch exactly those off and stamp the vault.
+ * The login the mailbox was connected for is untouched, so the one link the
+ * user actually made keeps its mail.
  *
  * Returns ids rather than writing: pure, so it is unit-testable, and the caller
- * owns the writes and the one-time stamp. A login switched off afterwards stays
- * off, because the stamp stops this from ever running twice.
+ * owns the writes and the one-time stamp. A login switched back on by hand
+ * afterwards stays on, because the stamp stops this from ever running twice.
  */
-export function planMailRestore<TItem extends { id: string; showMail: boolean }>(
+export function planMailLinkedOnly<TItem extends { id: string; username: string; showMail: boolean }>(
   items: TItem[],
+  accounts: MailboxLike[],
 ): string[] {
-  return items.filter((item) => item.showMail !== true).map((item) => item.id);
+  const usable = accounts.filter(mailboxUsable);
+  if (usable.length === 0) return [];
+  return items
+    .filter((item) => item.showMail !== false && mailboxOwnedBy(item.username, usable) === null)
+    .map((item) => item.id);
 }
 
 /**

@@ -15,8 +15,8 @@ import {
   type Folder,
   type SidebarEntry,
 } from '../vault/channels.ts';
-import { freeDockSpot, MAX_DOCKS, mergeMailCache, newDockId } from '../vault/storage.ts';
-import { captureToDraft, findSimilarTag, mailboxOwnedBy, planMailRestore, suggestTagsForDraft } from '../vault/site-intel.ts';
+import { DEFAULT_PREFERENCES, freeDockSpot, MAX_DOCKS, mergeMailCache, newDockId } from '../vault/storage.ts';
+import { captureToDraft, findSimilarTag, mailboxOwnedBy, mailboxUsable, planMailLinkedOnly, suggestTagsForDraft } from '../vault/site-intel.ts';
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
 import { FolderEditor } from './FolderEditor.tsx';
@@ -1170,35 +1170,60 @@ const visible = useMemo(() => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vault.status]);
 
-  /* ---- Messages switch repair ----------------------------------------------
-     Once per vault: an earlier build defaulted the per-login Messages button
-     off and then migrated existing logins to off as well, so nothing showed it.
-     Every login shows the button now; this switches the flag back on for the
-     logins that are still off and stamps the vault so it never runs again. A
-     login switched off afterwards stays off. Runs only while a mailbox is
-     connected, and stamps no dates (setShowMail bypasses updatedAt), so sort
-     order and the untouched scan above are unaffected. */
+  /* ---- Messages: linked logins only ----------------------------------------
+     Once per vault: the previous build switched the Messages button on for
+     every login, so a mailbox connected for one login put mail on all of them.
+     This switches it off for the logins that are not linked to a connected
+     mailbox — the linked one keeps its mail — and stamps the vault so it never
+     runs again. A login switched back on afterwards stays on.
+
+     Runs only while a usable mailbox is connected (with none, there is nothing
+     to be linked to and nothing to decide). setShowMail stamps no dates, so
+     sort order and the untouched scan above are unaffected. */
   useEffect(() => {
     if (vault.status !== 'unlocked') return;
-    if (prefs.mailEveryLogin) return;
-    if (!prefs.gmailAccounts.some((account) => account.address.trim() !== '')) return;
-    const ids = planMailRestore(vault.items);
+    if (prefs.mailLinkedOnly) return;
+    if (!prefs.gmailAccounts.some(mailboxUsable)) return;
+    const ids = planMailLinkedOnly(vault.items, prefs.gmailAccounts);
     if (ids.length === 0) {
-      void vault.updatePrefs({ mailEveryLogin: true });
+      void vault.updatePrefs({ mailLinkedOnly: true });
       return;
     }
     void vault
       .mutate(async () => {
-        for (const id of ids) await vault.service.setShowMail(id, true);
+        for (const id of ids) await vault.service.setShowMail(id, false);
       })
-      .then(() => vault.updatePrefs({ mailEveryLogin: true }))
+      .then(() => vault.updatePrefs({ mailLinkedOnly: true }))
       .then(() =>
         notify(
-          `Messages now show on every login (${ids.length} updated). Turn it off per login in its editor › Inbox.`,
+          `Messages now show only on the login linked to a mailbox (${ids.length} switched off). Turn one back on in its editor › Inbox.`,
         ),
       );
     // Once per unlock by depending on status alone; the persisted flag stops
     // every later run. Depending on items/prefs would re-run after the write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault.status]);
+
+  /* ---- Look preset, once ---------------------------------------------------
+     Instant animation, full motion and glow, high contrast, transparency and
+     floating chrome are what the app ships with now. A vault stored before
+     them would never see any of it, because stored preferences always win over
+     defaults — so they are written in once and stamped. Only the six look
+     fields are touched: text size, roundness, accent, density and the rest are
+     left exactly as the user set them. */
+  useEffect(() => {
+    if (vault.status !== 'unlocked') return;
+    if (prefs.lookPresetMigrated) return;
+    void vault.updatePrefs({
+      motion: DEFAULT_PREFERENCES.motion,
+      motionSpeed: DEFAULT_PREFERENCES.motionSpeed,
+      ambient: DEFAULT_PREFERENCES.ambient,
+      reduceTransparency: DEFAULT_PREFERENCES.reduceTransparency,
+      highContrast: DEFAULT_PREFERENCES.highContrast,
+      floatingChrome: DEFAULT_PREFERENCES.floatingChrome,
+      lookPresetMigrated: true,
+    });
+    // Once per unlock by design; the stamp it writes stops the next run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vault.status]);
 
@@ -1268,24 +1293,22 @@ const visible = useMemo(() => {
   );
 
   /**
-   * Picking a login: the fast path is "copy the password".
+   * Picking a login: the fast path is "copy the password", and nothing else.
    *
-   * The Layout setting "Expand on select" makes that same pick also open the
-   * login's details. It used to be a stored preference nothing read, so the
-   * toggle did nothing at all — the label described behaviour the app did not
-   * have. The copy still happens either way, so switching it on never costs a
-   * click when all you wanted was the clipboard. The reuse warning is a modal of
-   * its own and takes precedence: stacking the editor underneath it would bury
-   * the warning it exists to show.
-   *
-   * Declared after requestEdit on purpose — the dependency array is evaluated
-   * when this runs, and reaching forward to a `const` defined below would throw.
+   * A single click must never open the editor. It used to, whenever the
+   * "Expand on select" preference was on: one click on a card threw the whole
+   * edit form up over the list you were scanning, which is not what a click on
+   * a card means anywhere else in the app. Opening the editor is now the
+   * double-click gesture it is everywhere else (Flow, List, Grid and Orbit all
+   * bind onDoubleClick to it), and this handler is left doing one job: copy the
+   * password. The preference itself is retired below — see the note beside it in
+   * storage, and Settings no longer offers it. The reuse warning is still a
+   * modal of its own and takes precedence over the copy.
    */
   const openItem = useCallback(
     (item: VaultItem) => {
       const warnAboutReuse =
         prefs.warnOnReuse && item.password !== '' && duplicateIds.has(item.password) && vault.items.length > 1;
-      if (prefs.expandOnOpen && !warnAboutReuse) requestEdit(item);
       if (!item.password) {
         notify(`${item.title || 'That login'} has no password saved`, 'error');
         return;
@@ -1301,12 +1324,10 @@ const visible = useMemo(() => {
       copy,
       notify,
       prefs.warnOnReuse,
-      prefs.expandOnOpen,
       duplicateIds,
       vault.items.length,
       touchLogin,
       vault,
-      requestEdit,
     ],
   );
 

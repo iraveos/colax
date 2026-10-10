@@ -21,6 +21,9 @@
  * Choose 'recent' explicitly per login to see everything recent. An account
  * scope narrower than 'all' (set per channel) limits which accounts are read
  * at all.
+ *
+ * Who gets the expander at all is `loginShowsMail`'s decision: the login linked
+ * to a connected mailbox, plus any login switched on by hand in its editor.
  */
 
 import { useEffect, useRef, useState } from 'react';

@@ -15,7 +15,7 @@ import {
   maskEmail,
   matchesLogin,
   normaliseHost,
-  planMailRestore,
+  planMailLinkedOnly,
   siteNameFor,
 } from '../src/vault/site-intel.ts';
 
@@ -73,59 +73,63 @@ test('sender matching is exact on address, loose on name', () => {
   assert.equal(matchesLogin({ email: 'b@x.com', author: 'Bob' }, ''), false);
 });
 
-test('the Messages switch repair switches on every login that is still off', () => {
+test('the linked-only pass switches off exactly the logins that are not linked', () => {
+  const accounts = [{ address: 'me@gmail.com', appPassword: 'abcd efgh ijkl mnop', enabled: true }];
   const items = [
     { id: 'owner', username: 'Me@Gmail.com', showMail: true },
-    { id: 'plain', username: 'other@else.com', showMail: false },
-    { id: 'blank', username: '   ', showMail: false },
+    { id: 'plain', username: 'other@else.com', showMail: true },
+    { id: 'blank', username: '   ', showMail: true },
+    { id: 'already', username: 'other@else.com', showMail: false },
   ];
-  assert.deepEqual(planMailRestore(items), ['plain', 'blank']);
-  assert.deepEqual(planMailRestore([{ id: 'only', showMail: true }]), []);
+  // The linked login is left alone; everything else that is still on goes off.
+  assert.deepEqual(planMailLinkedOnly(items, accounts), ['plain', 'blank']);
+  assert.deepEqual(planMailLinkedOnly([{ id: 'x', username: 'plain@else.com', showMail: true }], accounts), ['x']);
+  // With no *usable* mailbox there is nothing to be linked to, so the pass
+  // decides nothing rather than switching a whole vault's mail off.
+  assert.deepEqual(planMailLinkedOnly(items, []), []);
+  assert.deepEqual(planMailLinkedOnly(items, [{ address: 'me@gmail.com', appPassword: '  ' }]), []);
+  assert.deepEqual(planMailLinkedOnly(items, [{ address: 'me@gmail.com', appPassword: 'x', enabled: false }]), []);
 });
 
-test('one connected mailbox puts Messages under every login', () => {
+test('one connected mailbox puts Messages on the linked login, and nowhere else', () => {
   const accounts = [{ address: 'me@gmail.com', appPassword: 'abcd efgh ijkl mnop', enabled: true }];
-  // The login the mailbox was connected for, and every other login alike: the
-  // button is the way into the mail, so it is not withheld from either.
-  for (const username of ['Me@Gmail.com', 'other@else.com', '', '   ']) {
-    assert.equal(loginShowsMail({ username, showMail: true }, accounts), true, `username=${username}`);
-  }
-  assert.equal(
-    loginShowsMail({ username: 'me@gmail.com', showMail: true }, accounts),
-    true,
-    'the login the mailbox was connected for still shows messages',
-  );
+  // The login the mailbox was connected for, whatever it is called and whatever
+  // case it was typed in: the linkage is the whole qualification.
+  assert.equal(loginShowsMail({ username: 'me@gmail.com', showMail: false }, accounts), false, 'switched off by hand still wins');
+  assert.equal(loginShowsMail({ username: 'other@else.com', showMail: false }, accounts), false);
+  assert.equal(loginShowsMail({ username: '', showMail: false }, accounts), false);
+  assert.equal(loginShowsMail({ username: '   ', showMail: false }, accounts), false);
 });
 
-test('a login switched off by hand keeps its Messages button hidden', () => {
+test('a login switched on by hand shows Messages without being linked', () => {
   const accounts = [{ address: 'me@gmail.com', appPassword: 'x', enabled: true }];
-  assert.equal(loginShowsMail({ username: 'me@gmail.com', showMail: false }, accounts), false);
-  assert.equal(loginShowsMail({ username: 'other@else.com', showMail: false }, accounts), false);
+  // The one deliberate escape hatch: the switch in the login editor.
+  assert.equal(loginShowsMail({ username: 'other@else.com', showMail: true }, accounts), true);
 });
 
 test('a channel that hides mail wins over every other qualification', () => {
   const accounts = [{ address: 'me@gmail.com', appPassword: 'x', enabled: true }];
   assert.equal(loginShowsMail({ username: 'me@gmail.com', showMail: true }, accounts, false), false);
+  assert.equal(loginShowsMail({ username: 'other@else.com', showMail: true }, accounts, false), false);
 });
 
 test('an unusable mailbox qualifies nobody, however it is configured', () => {
-  const item = { username: 'me@gmail.com', showMail: true };
-  assert.equal(loginShowsMail(item, []), false);
-  assert.equal(loginShowsMail(item, [{ address: 'me@gmail.com', appPassword: '   ', enabled: true }]), false);
-  assert.equal(loginShowsMail(item, [{ address: 'me@gmail.com', appPassword: 'x', enabled: false }]), false);
-  assert.equal(loginShowsMail(item, [{ address: '  ', appPassword: 'x', enabled: true }]), false);
-  // Spaces are Google's own display format for app passwords, not a typo.
+  const linked = { username: 'me@gmail.com', showMail: false };
+  assert.equal(loginShowsMail(linked, []), false);
+  assert.equal(loginShowsMail(linked, [{ address: 'me@gmail.com', appPassword: '   ', enabled: true }]), false);
+  assert.equal(loginShowsMail(linked, [{ address: 'me@gmail.com', appPassword: 'x', enabled: false }]), false);
+  assert.equal(loginShowsMail(linked, [{ address: '  ', appPassword: 'x', enabled: true }]), false);
+  // Spaces are Google's own display format for app passwords, not a typo — and
+  // the comparison is normalised on both sides, so a pasted address still links.
   assert.equal(
-    loginShowsMail(item, [{ address: ' me@gmail.com ', appPassword: 'abcd efgh ijkl mnop', enabled: true }]),
+    loginShowsMail(
+      { username: ' Me@Gmail.com ', showMail: true },
+      [{ address: 'me@gmail.com', appPassword: 'abcd efgh ijkl mnop', enabled: true }],
+    ),
     true,
     'pasted spaces and stray whitespace are normalised, not rejected',
   );
   assert.equal(mailboxUsable({ address: 'a@b.c', appPassword: 'x' }), true, 'enabled defaults to true');
-});
-
-test('the repair has nothing to do without a login that is off', () => {
-  assert.deepEqual(planMailRestore([]), []);
-  assert.deepEqual(planMailRestore([{ id: 'a', showMail: true }]), []);
 });
 
 test('masking keeps two letters and the domain, hides the rest', () => {

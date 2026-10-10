@@ -38,7 +38,7 @@ const platform: PlatformAPI = {
       void ipcRenderer.invoke('colax:runtime-spellcheck', enabled === true);
     },
     memory: () => ipcRenderer.invoke('colax:runtime-memory') as Promise<RuntimeMemory | null>,
-    efficiency: (update?: { maxSavings: boolean }) =>
+    efficiency: (update?: { maxSavings?: boolean; gpu?: boolean }) =>
       ipcRenderer.invoke('colax:runtime-efficiency', update) as Promise<EfficiencyState>,
   },
   shell: {

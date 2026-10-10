@@ -65,7 +65,10 @@ export interface OptimizeProfile {
 /** What the app looks like with nothing traded away. Also the "restore" target. */
 export const FULL_DETAIL_STYLE: OptimizeStyle = {
   motion: 1,
-  motionSpeed: 1,
+  // The shipped animation speed, at the top of its slider ("Instant"). Kept in
+  // step with DEFAULT_PREFERENCES so "restore my look" restores the speed the
+  // app ships with rather than half-speed.
+  motionSpeed: 2,
   ambient: 1,
   reduceTransparency: false,
   density: 'comfortable',
@@ -242,7 +245,7 @@ export function readStyle(raw: unknown): OptimizeStyle | null {
   const mailRaw = record.mailRefreshSeconds;
   return {
     motion: clamp(record.motion, 0, 1, FULL_DETAIL_STYLE.motion),
-    motionSpeed: clamp(record.motionSpeed, 0.25, 1.5, FULL_DETAIL_STYLE.motionSpeed),
+    motionSpeed: clamp(record.motionSpeed, 0.25, 2, FULL_DETAIL_STYLE.motionSpeed),
     ambient: clamp(record.ambient, 0, 1, FULL_DETAIL_STYLE.ambient),
     reduceTransparency: record.reduceTransparency === true,
     density,

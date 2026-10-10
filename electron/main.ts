@@ -74,20 +74,38 @@ const diagnostic = memoryReport || renderCheck;
    -------------------------------------------------------------------------- */
 interface EfficiencySettings {
   maxSavings: boolean;
+  /**
+   * Whether frames are composited by the GPU.
+   *
+   * The two settings are deliberately independent, because they are the two
+   * halves of one trade. `maxSavings` is the cache side — smaller raster tiles,
+   * smaller image decodes, no prerender — and costs nothing but smoothness.
+   * This one is the rendering path: with it off, Chromium drops the GPU process
+   * (about 80 MB of unique memory) and rasterizes in software, which is paid for
+   * by the processor on every single frame. Shipping them as one switch meant
+   * "save memory" silently bought "pin a CPU core while animating", which is
+   * what the user reported. They are separate now, and this one defaults on.
+   */
+  gpu: boolean;
 }
 
 const efficiencyFile = () => join(app.getPath('userData'), 'efficiency.json');
 
 function readEfficiency(): EfficiencySettings {
   try {
-    const raw = JSON.parse(readFileSync(efficiencyFile(), 'utf8')) as { maxSavings?: unknown };
+    const raw = JSON.parse(readFileSync(efficiencyFile(), 'utf8')) as { maxSavings?: unknown; gpu?: unknown };
     // Absent or malformed means "never touched, or not readable", which takes
     // the lean path: this is an offline vault, the trade costs a little
     // animation smoothness, and it measured ~85 MB smaller. Only an explicit
     // false — the user switching it off again — opts back into the GPU path.
-    return { maxSavings: raw?.maxSavings === false ? false : true };
+    return {
+      maxSavings: raw?.maxSavings === false ? false : true,
+      // Same rule as above, in the other direction: only an explicit false —
+      // the user asking for the smallest footprint — gives up the compositor.
+      gpu: raw?.gpu === false ? false : true,
+    };
   } catch {
-    return { maxSavings: true };
+    return { maxSavings: true, gpu: true };
   }
 }
 
@@ -120,7 +138,7 @@ const efficiency = readEfficiency();
  * honestly: Chromium has already read its command line, so a toggle flipped now
  * can only take effect on the next launch.
  */
-const appliedAtStartup = efficiency.maxSavings;
+const appliedAtStartup: EfficiencySettings = { ...efficiency };
 
 /**
  * V8 heap caps, in megabytes.
@@ -183,6 +201,9 @@ function applyMemorySwitches(): void {
   app.commandLine.appendSwitch('no-service-autorun');
   if (efficiency.maxSavings) {
     app.commandLine.appendSwitch('enable-low-end-device-mode');
+    app.commandLine.appendSwitch('disable-features', `${DISABLED_FEATURES},BackForwardCache`);
+  }
+  if (!efficiency.gpu) {
     // Software rasterization: the GPU process is the single largest thing in
     // the tree (~100 MB private), and nothing here needs hardware acceleration.
     // Measured with `--render-check`, one switch at a time, on the machine this
@@ -201,7 +222,6 @@ function applyMemorySwitches(): void {
     // they sound safe, and `npm run check:render` is what keeps them honest.
     app.commandLine.appendSwitch('disable-gpu');
     app.commandLine.appendSwitch('disable-gpu-compositing');
-    app.commandLine.appendSwitch('disable-features', `${DISABLED_FEATURES},BackForwardCache`);
   }
 }
 
@@ -238,6 +258,7 @@ function readProcessMemory() {
         .filter((entry) => entry.type === 'Renderer')
         .reduce((sum, entry) => sum + entry.privateBytes, 0),
       maxSavings: efficiency.maxSavings,
+      gpu: efficiency.gpu,
       switches: process.argv.filter((arg) => arg.startsWith('--')).join(' '),
     };
   } catch {
@@ -594,15 +615,20 @@ void app.whenReady().then(() => {
    * whether a restart is needed rather than pretending the change took effect.
    */
   ipcMain.handle('colax:runtime-efficiency', (_event, update: unknown) => {
-    if (update && typeof update === 'object' && typeof (update as { maxSavings?: unknown }).maxSavings === 'boolean') {
-      const maxSavings = (update as { maxSavings: boolean }).maxSavings;
-      efficiency.maxSavings = maxSavings;
-      writeEfficiency({ maxSavings });
+    if (update && typeof update === 'object') {
+      const patch = update as { maxSavings?: unknown; gpu?: unknown };
+      // Each field is written only when it is a real boolean, so a half-formed
+      // record cannot flip the other switch as a side effect of changing one.
+      if (typeof patch.maxSavings === 'boolean') efficiency.maxSavings = patch.maxSavings;
+      if (typeof patch.gpu === 'boolean') efficiency.gpu = patch.gpu;
+      writeEfficiency({ ...efficiency });
     }
     return {
       maxSavings: efficiency.maxSavings,
-      /** True while the stored setting differs from the one in force. */
-      restartRequired: efficiency.maxSavings !== appliedAtStartup,
+      gpu: efficiency.gpu,
+      /** True while either stored setting differs from the one in force. */
+      restartRequired:
+        efficiency.maxSavings !== appliedAtStartup.maxSavings || efficiency.gpu !== appliedAtStartup.gpu,
     };
   });
   ipcMain.handle('colax:shell-update', (_event, settings: unknown) => {

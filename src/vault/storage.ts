@@ -392,7 +392,12 @@ export interface VaultPreferences {
   showUrls: boolean;
   /** Pins favorites to a section above everything else. */
   pinFavorites: boolean;
-  /** Opens a login's details as soon as it is selected. */
+  /**
+   * Retired. It used to make a single click open the login editor, which put
+   * the whole edit form over the list on one click — the gesture the app uses
+   * for "edit" is a double-click. Kept in the record so an existing vault's
+   * value round-trips instead of being dropped, and nothing reads it.
+   */
   expandOnOpen: boolean;
   /** Collapses the sidebar to icons only. */
   compactSidebar: boolean;
@@ -549,12 +554,25 @@ export interface VaultPreferences {
    */
   mailOptInMigrated: boolean;
   /**
-   * Whether the one-time repair has run: every login switches its Messages
-   * button back on (see planMailRestore), which undoes the scoping pass above
-   * for vaults that ran it. Stamped once so a login switched off later stays
-   * off.
+   * Superseded by {@link mailLinkedOnly}: this stamped the pass that switched
+   * the Messages button on for every login, which is the rule the app no longer
+   * follows. Kept so an existing vault's flag round-trips instead of being
+   * dropped, and nothing acts on it.
    */
   mailEveryLogin: boolean;
+  /**
+   * Whether the one-time linked-only pass has run: the Messages button is
+   * switched off for every login that is not linked to a connected mailbox
+   * (see planMailLinkedOnly). Stamped once, so a login switched back on by
+   * hand keeps its button.
+   */
+  mailLinkedOnly: boolean;
+  /**
+   * Whether the shipped look defaults (instant animation, full motion, high
+   * contrast, transparency and floating chrome) have been written into an
+   * existing vault once. See {@link LOOK_PRESET}.
+   */
+  lookPresetMigrated: boolean;
 
   // -- Alarms
   alarms: Alarm[];
@@ -596,7 +614,11 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   theme: 'system',
   accent: 'slate',
   motion: 1,
-  motionSpeed: 1,
+  // 2 is the top of the slider and reads "Instant": every transition divides
+  // by this, so 2 makes --fast/--normal/--slow half as long. The app shipped
+  // at 1 ("Normal") and, at this user's request, moves at full speed by
+  // default — a languid default is the thing they complained about.
+  motionSpeed: 2,
   ambient: 1,
   density: 'comfortable',
   roundness: 1,
@@ -612,7 +634,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   sidebarPosition: 'left',
   textScale: 100,
   reduceTransparency: false,
-  highContrast: false,
+  highContrast: true,
   backgroundImage: '',
   backgroundOpacity: 0.35,
   backgroundBlur: 0,
@@ -637,7 +659,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   closeToTray: true,
   launchAtLogin: false,
   soundsMuted: false,
-  floatingChrome: false,
+  floatingChrome: true,
   showLockButton: true,
   autoTagChannel: false,
   showTagChips: true,
@@ -691,6 +713,23 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   mailCache: {},
   mailOptInMigrated: false,
   mailEveryLogin: false,
+  /**
+   * Whether the one-time "messages follow the linked mailbox" pass has run.
+   *
+   * {@link mailEveryLogin} put a Messages button under *every* login; the user
+   * asked for the opposite — the button belongs to the login that is linked to
+   * a connected mailbox, and nowhere else. The pass switches the flag off for
+   * the logins that are not linked, once, and stamps this so a login switched
+   * back on by hand stays on.
+   */
+  mailLinkedOnly: false,
+  /**
+   * Whether the shipped motion/look defaults have been applied once to an
+   * existing vault. New vaults start at these values anyway; a vault stored
+   * before them would otherwise never see the change, because stored
+   * preferences always win over defaults.
+   */
+  lookPresetMigrated: false,
 };
 
 /**
@@ -830,6 +869,11 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.maskEmails = merged.maskEmails !== false;
   merged.mailOptInMigrated = Boolean(merged.mailOptInMigrated);
   merged.mailEveryLogin = Boolean(merged.mailEveryLogin);
+  // Stamps, not switches: only a real `true` counts as "this pass has already
+  // run". A hand-edited or half-written truthy value must not stand in for a
+  // completed pass, or the repair it guards would never happen.
+  merged.mailLinkedOnly = merged.mailLinkedOnly === true;
+  merged.lookPresetMigrated = merged.lookPresetMigrated === true;
   // Several accounts now; the old single object migrates into the first entry
   // so a connected mailbox keeps working without reconnecting. Anything
   // malformed is dropped per account rather than wiping the whole list.

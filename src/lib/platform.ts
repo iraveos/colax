@@ -194,15 +194,20 @@ export interface PlatformAPI {
      * command line before any window exists — so the answer includes whether a
      * restart is required rather than implying the change is live.
      */
-    efficiency(update?: { maxSavings: boolean }): Promise<EfficiencyState>;
+    efficiency(update?: { maxSavings?: boolean; gpu?: boolean }): Promise<EfficiencyState>;
   };
 }
 
 /** The launch-time memory switches, and whether they are in force yet. */
 export interface EfficiencyState {
-  /** Chromium's low-end-device heuristics and no GPU process. */
+  /** Chromium's low-end-device heuristics: smaller raster tiles and image caches. */
   maxSavings: boolean;
-  /** True while the stored setting differs from the running process. */
+  /**
+   * Whether the GPU composites frames. Off means software rasterization: about
+   * 80 MB less memory, and the processor cost of drawing every frame.
+   */
+  gpu: boolean;
+  /** True while a stored setting differs from the running process. */
   restartRequired: boolean;
 }
 

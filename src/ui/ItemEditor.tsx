@@ -638,8 +638,8 @@ export function ItemEditor({
               ? 'This login shows its Messages button. '
               : 'Switched off here, so this login shows no Messages button. '}
             A login whose email is a connected mailbox reads that mailbox — the address it was
-            connected for, never another login's mail. Every other login reads the channel's mail
-            scope, so the same mail is reachable from wherever you happen to be.
+            connected for, never another login's mail. Other logins stay off: switch this on and
+            this one reads the channel's mail scope instead.
           </p>
         </div>
         {draft.showMail === true ? (
