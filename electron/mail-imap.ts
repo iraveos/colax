@@ -165,15 +165,30 @@ export async function listInboxMail(input: {
  * already-open mailbox. Shared by the Gmail-id search and the direct UID
  * path, so both render identically downstream.
  */
+/** One-line cause text for error answers — never throws, never leaks a stack. */
+function causeText(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : 'unexpected error';
+}
+
 async function readOne(client: ImapFlow, box: string, uid: number): Promise<FullMailResult> {
   const lock = await client.getMailboxLock(box);
   try {
-    const meta = await client.fetchOne(uid, { bodyStructure: true, envelope: true }, { uid: true });
+    let meta;
+    try {
+      meta = await client.fetchOne(uid, { bodyStructure: true, envelope: true }, { uid: true });
+    } catch (cause) {
+      return invalid(`Could not fetch that message (${causeText(cause)}). Open it in Gmail instead.`);
+    }
     if (!meta || !meta.bodyStructure) return invalid('Message not found on the server.');
     const structure = meta.bodyStructure as MailPartNode;
     const pick = pickTextPart(structure);
     if (!pick) return invalid('That message has no readable text part.');
-    const fetched = await client.fetchOne(uid, { bodyParts: [pick.part] }, { uid: true });
+    let fetched;
+    try {
+      fetched = await client.fetchOne(uid, { bodyParts: [pick.part] }, { uid: true });
+    } catch (cause) {
+      return invalid(`Could not fetch the message body (${causeText(cause)}). Open it in Gmail instead.`);
+    }
     const buffer = fetched && fetched.bodyParts?.get(pick.part);
     if (!buffer || buffer.length === 0) return invalid('The text part came back empty.');
     const bytes = buffer.length > MAX_TEXT_BYTES ? buffer.subarray(0, MAX_TEXT_BYTES) : buffer;

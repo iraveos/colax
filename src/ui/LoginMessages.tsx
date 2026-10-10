@@ -21,7 +21,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { gmailOpenUrl, imapUidOf, listGmailOnce, type GmailMessage } from './useGmail.ts';
+import { credHash, gmailOpenUrl, imapUidOf, listGmailOnce, type GmailMessage } from './useGmail.ts';
 import { gmailHexOf } from '../lib/mail-text.ts';
 import { FullMail } from './FullMail.tsx';
 import { useFullBody } from './useFullBody.ts';
@@ -69,6 +69,20 @@ export function LoginMessages({
   // Full bodies fetch once per opened message, keyed by account:id. The set
   // survives re-renders so opening, closing and reopening never refetches.
   const requested = useRef<Set<string>>(new Set());
+  // What the last read actually read: scope, matching inputs and credentials.
+  // App passwords are usually *fixed* between visits, so an expander that
+  // read empty must re-read when they change — otherwise corrected
+  // credentials keep showing a stale "No messages found." forever.
+  const scopeKey = JSON.stringify([
+    accountScope,
+    item.username,
+    item.mailFilter ?? 'auto',
+    accounts
+      .filter((account) => account.enabled && account.address && account.appPassword)
+      .map((account) => `${account.id}|${account.address.toLowerCase()}|${credHash(account.appPassword)}`)
+      .sort(),
+  ]);
+  const lastLoadKey = useRef<string | null>(null);
 
   useEffect(() => {
     if (defaultOpen && messages === null) void load();
@@ -77,6 +91,7 @@ export function LoginMessages({
   }, [defaultOpen]);
 
   async function load() {
+    lastLoadKey.current = scopeKey;
     setLoading(true);
     setError(null);
     requested.current.clear();
@@ -176,8 +191,13 @@ export function LoginMessages({
       return;
     }
     setOpen(true);
-    if (messages !== null || loading) return;
-    void load();
+    if (loading) return;
+    // A loaded list stays put so reopening never yanks what you were
+    // browsing — but an empty box, a failed read, or changed accounts behind
+    // it all re-read on open. That is the whole point of opening it again.
+    if (messages === null || lastLoadKey.current !== scopeKey || messages.length === 0 || error) {
+      void load();
+    }
   }
 
   // The whole point of opening a row is reading the message: the full text

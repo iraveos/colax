@@ -128,6 +128,10 @@ test('images vanish whole, alt text included', () => {
   assert.ok(!out.includes('logo'), 'no stray alt words left behind');
 });
 
+test('out-of-range entities drop out instead of throwing', () => {
+  assert.equal(stripHtml('<p>A&#99999999;B&#x110000;C&#65;D</p>'), 'ABCAD');
+});
+
 test('links unwrap to text, bare long URLs drop out', () => {
   const long = `https://tracker.example.com/click?${'x'.repeat(80)}`;
   assert.equal(stripHtml(`<p>Read <a href="${long}">the report</a> today</p>`), 'Read the report today');

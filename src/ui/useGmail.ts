@@ -20,7 +20,7 @@ export interface GmailMessage {
 const FEED_URL = 'https://mail.google.com/mail/feed/atom';
 
 /** Short non-crypto hash, so credential *changes* invalidate poll keys without storing secrets in them. */
-function credHash(value: string): string {
+export function credHash(value: string): string {
   let hash = 5381;
   for (let i = 0; i < value.length; i += 1) hash = ((hash << 5) + hash + value.charCodeAt(i)) | 0;
   return (hash >>> 0).toString(36);

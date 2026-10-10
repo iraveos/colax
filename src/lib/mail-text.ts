@@ -262,13 +262,16 @@ export function stripHtml(html: string): string {
       .replace(/&gt;/gi, '>')
       .replace(/&quot;/gi, '"')
       .replace(/&#39;|&apos;/gi, "'")
+      // fromCodePoint throws on out-of-range values, and real-world mail
+      // carries garbage entities (`&#99999999;`) — those drop out instead of
+      // killing the whole read.
       .replace(/&#(\d+);/g, (_, code: string) => {
         const point = Number(code);
-        return Number.isFinite(point) ? String.fromCodePoint(point) : '';
+        return Number.isSafeInteger(point) && point <= 0x10ffff ? String.fromCodePoint(point) : '';
       })
       .replace(/&#x([0-9a-fA-F]+);/g, (_, code: string) => {
         const point = parseInt(code, 16);
-        return Number.isFinite(point) ? String.fromCodePoint(point) : '';
+        return Number.isSafeInteger(point) && point <= 0x10ffff ? String.fromCodePoint(point) : '';
       })
       .split('\n')
       .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())

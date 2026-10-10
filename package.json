@@ -1,7 +1,7 @@
 {
   "name": "colax",
   "private": true,
-  "version": "1.0.32",
+  "version": "1.0.33",
   "type": "module",
   "description": "Colax — a local-first, zero-knowledge password vault. Runs in the browser today, portable to a native app later.",
   "main": "dist-electron/main.cjs",
