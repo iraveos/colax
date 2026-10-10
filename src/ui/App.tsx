@@ -1269,7 +1269,12 @@ const visible = useMemo(() => {
     // Fresh inbox reads join the persistent per-account cache, so message
     // lists keep reaching further back than Google's ~20-per-read feed.
     onCacheMail: (accountId, messages) => {
-      const next = mergeMailCache(vault.prefs.mailCache ?? {}, accountId, messages);
+      // Empty reads and duplicate reads never touch the store: every poll
+      // would otherwise rewrite prefs and re-render the app for no reason.
+      if (messages.length === 0) return;
+      const current = vault.prefs.mailCache ?? {};
+      const next = mergeMailCache(current, accountId, messages);
+      if (next === current) return;
       void vault.updatePrefs({ mailCache: next });
     },
 tags: prefs.tags,

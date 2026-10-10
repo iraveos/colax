@@ -185,6 +185,11 @@ export function useGmail({
   // Guards overlapping ticks: the interval never stacks a second request on
   // top of one still in flight (that overlap is what got accounts throttled).
   const inFlight = useRef(false);
+  // Fingerprint of the last published list: a quiet poll publishes nothing,
+  // so the app does not re-render (and rewrite prefs) every cadence tick when
+  // the mailbox said nothing new. With reliable IMAP every poll succeeds, and
+  // without this every success was a full-app re-render for identical data.
+  const lastPrint = useRef('');
   const onCacheRef = useRef(onCacheMessages);
   onCacheRef.current = onCacheMessages;
 
@@ -214,9 +219,13 @@ export function useGmail({
       const merged = perAccount
         .flatMap((entry) => entry.found)
         .sort((a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''));
-      setMessages(merged);
-      for (const entry of perAccount) {
-        if (!entry.failed && entry.found.length > 0) onCacheRef.current?.(entry.account.id, entry.found);
+      const fingerprint = merged.map((entry) => `${entry.accountId}:${entry.id}:${entry.issued}`).join('\n');
+      if (fingerprint !== lastPrint.current) {
+        lastPrint.current = fingerprint;
+        setMessages(merged);
+        for (const entry of perAccount) {
+          if (!entry.failed && entry.found.length > 0) onCacheRef.current?.(entry.account.id, entry.found);
+        }
       }
       const failures = perAccount.filter((entry) => entry.failed);
       setError(

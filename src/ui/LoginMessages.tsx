@@ -63,6 +63,8 @@ export function LoginMessages({
   const [error, setError] = useState<string | null>(null);
   const [messages, setMessages] = useState<GmailMessage[] | null>(null);
   const [unmatched, setUnmatched] = useState(false);
+  /** What the last read returned per account — shown when the box is empty so "0" says which mailbox said it. */
+  const [counts, setCounts] = useState<{ address: string; count: number }[]>([]);
   /** The one message showing its full details, by account:id. Null collapses all. */
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { bodies: fullBodies, load: loadFullBody, available: canFullBody } = useFullBody();
@@ -107,6 +109,7 @@ export function LoginMessages({
       if (live.length === 0) {
         // Same empty box as "no mail", but a different problem: say which.
         setMessages([]);
+        setCounts([]);
         setUnmatched(false);
         setError(
           accountScope === 'all'
@@ -126,6 +129,7 @@ export function LoginMessages({
         }),
       );
       const failures = perAccount.filter((entry) => entry.failed);
+      setCounts(perAccount.map((entry) => ({ address: entry.account.address, count: entry.found.length })));
       if (failures.length > 0 && perAccount.every((entry) => entry.found.length === 0)) {
         setError(failures.map((entry) => entry.failed).join(' '));
         return;
@@ -287,6 +291,9 @@ export function LoginMessages({
                 : item.username.trim()
                   ? 'No messages found.'
                   : 'Add an email to this login to match its messages.'}
+              {counts.length > 0
+                ? ` (${counts.map((entry) => `${entry.address || 'a mailbox'}: ${entry.count}`).join(' · ')})`
+                : ''}
             </p>
           ) : (
             <>

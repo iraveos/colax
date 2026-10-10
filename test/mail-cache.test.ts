@@ -33,6 +33,13 @@ test('the same message fetched twice is stored once', () => {
   assert.equal(next.gm_1?.length, 1);
 });
 
+test('a read with nothing new returns the same cache reference', () => {
+  const cache = { gm_1: [message({ id: 'a' }), message({ id: 'b' })] };
+  assert.equal(mergeMailCache(cache, 'gm_1', [{ ...cache.gm_1![1]! }]), cache);
+  assert.equal(mergeMailCache(cache, 'gm_1', []), cache);
+  assert.notEqual(mergeMailCache(cache, 'gm_1', [message({ id: 'c' })]), cache);
+});
+
 test('other accounts are left untouched', () => {
   const other = message({ id: 'other', accountId: 'gm_2' });
   const next = mergeMailCache({ gm_2: [other] }, 'gm_1', [message({ id: 'new' })]);
@@ -66,6 +73,13 @@ test('the Gmail link pins the account session and the message id', () => {
   assert.equal(
     gmailOpenUrl({ id: 'tag:gmail.google.com,2004:18f3ab02cd', title: 'Hi', alternate: '' }, 'me@gmail.com'),
     'https://mail.google.com/mail/u/me%40gmail.com/#inbox/18f3ab02cd',
+  );
+});
+
+test('imap rows link by subject search, never by UID deep link', () => {
+  assert.equal(
+    gmailOpenUrl({ id: 'imap:48213', title: 'Invoice March', alternate: '' }, 'me@gmail.com'),
+    'https://mail.google.com/mail/u/me%40gmail.com/#search/Invoice%20March',
   );
 });
 

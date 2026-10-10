@@ -226,22 +226,36 @@ export const MAIL_CACHE_CAP = 300;
  * Merges freshly fetched messages into an account's cache, newest first.
  * Pure, so it is unit-testable: dedupes by message id, keeps the newest, and
  * caps the list so one chatty mailbox cannot grow the stored record forever.
+ *
+ * Returns the SAME cache reference when nothing changed, so callers can skip
+ * their store write: without this every poll rewrites prefs and re-renders
+ * the whole app even when the mailbox said nothing new.
  */
 export function mergeMailCache(
   cache: Record<string, CachedMailMessage[]>,
   accountId: string,
   incoming: CachedMailMessage[],
 ): Record<string, CachedMailMessage[]> {
+  const existing = cache[accountId] ?? [];
   const seen = new Set<string>();
   const merged: CachedMailMessage[] = [];
-  for (const message of [...incoming, ...(cache[accountId] ?? [])]) {
+  for (const message of [...incoming, ...existing]) {
     if (!message || typeof message.id !== 'string') continue;
     if (seen.has(message.id)) continue;
     seen.add(message.id);
     merged.push(message);
   }
-  merged.sort((a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''));
-  return { ...cache, [accountId]: merged.slice(0, MAIL_CACHE_CAP) };
+  // Newest first, id as the tie-break: without a deterministic order, polls
+  // returning the same messages in a different order would read as "changed"
+  // every time and defeat the same-reference skip below.
+  merged.sort(
+    (a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || '') || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+  const capped = merged.slice(0, MAIL_CACHE_CAP);
+  if (capped.length === existing.length && capped.every((message, index) => message.id === existing[index]!.id)) {
+    return cache;
+  }
+  return { ...cache, [accountId]: capped };
 }
 
 /**
