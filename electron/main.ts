@@ -186,6 +186,12 @@ const DISABLED_FEATURES = [
 function applyMemorySwitches(): void {
   app.commandLine.appendSwitch('js-flags', HEAP_LIMITS);
   app.commandLine.appendSwitch('disable-features', DISABLED_FEATURES);
+  // `performance.memory` is bucketed unless Chromium is told to be exact —
+  // the buckets exist to stop fingerprinting, which is not a concern on the
+  // owner's own machine. Without this the Optimize panel's heap figure (and
+  // `--memory-report`) can only guess, which is the difference between
+  // knowing whether the JS heap or Chromium's own overhead is the 200 MB.
+  app.commandLine.appendSwitch('enable-precise-memory-info');
   // No background network at all: no component updates, no crash uploads, no
   // domain reliability beacons, no first-run phone-home. The vault is offline
   // by design, so each of these is a service running for nothing.
@@ -543,6 +549,7 @@ void app.whenReady().then(() => {
         host?: unknown;
         port?: unknown;
         secure?: unknown;
+        images?: unknown;
       };
       if (typeof args.address !== 'string' || typeof args.appPassword !== 'string' || typeof args.feedId !== 'string') {
         return { ok: false, error: 'Bad request.' };
@@ -554,6 +561,9 @@ void app.whenReady().then(() => {
         host: typeof args.host === 'string' ? args.host : undefined,
         port: typeof args.port === 'number' ? args.port : undefined,
         secure: typeof args.secure === 'boolean' ? args.secure : undefined,
+        // Absent means true: the reader fetches images unless the renderer's
+        // Optimize setting told it not to. Only an explicit false skips them.
+        images: args.images === false ? false : undefined,
       });
     } catch (cause) {
       return {
@@ -656,7 +666,20 @@ void app.whenReady().then(() => {
       setTimeout(() => {
         void (async () => {
           if (memoryReport) {
-            console.log('MEMORY_REPORT ' + JSON.stringify(readProcessMemory()));
+            const shell = readProcessMemory();
+            // The page's own V8 heap, read from the renderer. The renderer's
+            // private bytes include Chromium overhead well beyond V8, so this
+            // is what separates "the app's JavaScript is big" from "the
+            // runtime around it is".
+            let rendererHeap: unknown = null;
+            try {
+              rendererHeap = await mainWindow?.webContents.executeJavaScript(
+                `(() => { const m = performance.memory; return m ? { usedJSHeapSize: m.usedJSHeapSize, totalJSHeapSize: m.totalJSHeapSize, jsHeapSizeLimit: m.jsHeapSizeLimit } : null; })()`,
+              );
+            } catch {
+              // A window that has gone away leaves the field null, never a guess.
+            }
+            console.log('MEMORY_REPORT ' + JSON.stringify({ ...shell, rendererHeap }));
           }
           if (renderCheck) console.log('RENDER_REPORT ' + JSON.stringify(await readPaintedPixels()));
           app.exit(0);

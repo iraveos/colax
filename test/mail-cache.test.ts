@@ -69,6 +69,24 @@ test('a missing cache normalises to empty, not undefined', () => {
   assert.deepEqual(out.mailCache, {});
 });
 
+test('the mail memory knobs default on and clamp to the offered page sizes', () => {
+  // Shipped default fetches images and asks for 50 headers: the reading
+  // experience, not a stripped-down one the user has to opt into.
+  const base = normalisePreferences({});
+  assert.equal(base.mailInlineImages, true);
+  assert.equal(base.mailPageSize, 50);
+  // "false" is the only off-switch; anything else reads as on.
+  assert.equal(normalisePreferences({ mailInlineImages: false }).mailInlineImages, false);
+  assert.equal(normalisePreferences({ mailInlineImages: 'no' as never }).mailInlineImages, true);
+  // A hostile or mistyped page size falls back to the shipped one rather
+  // than asking the server for an unbounded page.
+  assert.equal(normalisePreferences({ mailPageSize: 25 }).mailPageSize, 25);
+  assert.equal(normalisePreferences({ mailPageSize: 100 }).mailPageSize, 100);
+  assert.equal(normalisePreferences({ mailPageSize: 5000 }).mailPageSize, 50);
+  assert.equal(normalisePreferences({ mailPageSize: -1 }).mailPageSize, 50);
+  assert.equal(normalisePreferences({ mailPageSize: 'lots' as never }).mailPageSize, 50);
+});
+
 test('the Gmail link pins the account session and the message id', () => {
   assert.equal(
     gmailOpenUrl({ id: 'tag:gmail.google.com,2004:18f3ab02cd', title: 'Hi', alternate: '' }, 'me@gmail.com'),

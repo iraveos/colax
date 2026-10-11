@@ -170,6 +170,22 @@ const SECURITY_GROUPS: readonly { id: SecurityGroup; label: string; hint: string
   { id: 'confirmations', label: 'Confirmations', hint: 'Which actions ask first' },
 ];
 
+/**
+ * The Optimize tab's own groups. The panel grew past one screen of switches,
+ * so the same two-level shape as Security keeps each list short: profiles and
+ * measurements together under General, the look under Look & feel, the
+ * launch-time Chromium trades under Speed, and everything that touches mail
+ * under Messages.
+ */
+type OptimizeGroup = 'general' | 'look' | 'speed' | 'messages';
+
+const OPTIMIZE_GROUPS: readonly { id: OptimizeGroup; label: string; hint: string }[] = [
+  { id: 'general', label: 'General', hint: 'One-click profiles, saved looks and what the app costs right now' },
+  { id: 'look', label: 'Look & feel', hint: 'Motion, transparency, density, cards and the background' },
+  { id: 'speed', label: 'Speed', hint: 'Memory mode, hardware acceleration and spellcheck' },
+  { id: 'messages', label: 'Messages', hint: 'Mail polling, inline images, page size and the message cache' },
+];
+
 export function Settings(props: {
   open: boolean;
   onClose: () => void;
@@ -213,6 +229,8 @@ export function Settings(props: {
   const set = (patch: Partial<VaultPreferences>) => void onUpdate(patch);
   /** Which group of the Security section is showing. See SECURITY_GROUPS. */
   const [securityGroup, setSecurityGroup] = useState<SecurityGroup>('locking');
+  /** Which group of the Optimize section is showing. See OPTIMIZE_GROUPS. */
+  const [optimizeGroup, setOptimizeGroup] = useState<OptimizeGroup>('general');
 
   /* ---- Optimize ---------------------------------------------------------
      One place to trade eye-candy for CPU, GPU and battery. The app's real
@@ -1575,6 +1593,11 @@ export function Settings(props: {
       icon: <WrenchIcon />,
       render: () => (
         <>
+          {/* Same two-level shape as Security: the panel grew past one screen,
+              and each group now holds a short, coherent list. */}
+          <SubTabs label="Optimize groups" tabs={OPTIMIZE_GROUPS} active={optimizeGroup} onChange={setOptimizeGroup} />
+          {optimizeGroup === 'general' ? (
+            <>
           <Row
             label="One-click profiles"
             hint="Applies a whole set of resource-saving settings at once. Your logins, tags, mailboxes and layout are never touched — only how much the app animates and repaints."
@@ -1787,6 +1810,25 @@ export function Settings(props: {
             </div>
           </Row>
 
+          {/* Reset belongs with the profiles it undoes, not at the bottom of a
+              list it no longer matches the shape of. */}
+          <Row
+            label="Reset optimisations"
+            hint={
+              prefs.optimizeSnapshot
+                ? 'Puts back the look that was here before anything was traded away — background picture, sliders, mail cadence and all.'
+                : 'Restores every value this panel touches to its shipped default. Nothing here is destructive.'
+            }
+          >
+            <button className="btn btn--quiet" onClick={restoreLook}>
+              Reset
+            </button>
+          </Row>
+            </>
+          ) : null}
+
+          {optimizeGroup === 'look' ? (
+            <>
           <Row
             label="Reduce motion"
             hint="Stops the spring and entrance animations. The biggest win on a large vault, and the one that helps most on battery."
@@ -1850,36 +1892,6 @@ export function Settings(props: {
             />
           </Row>
 
-          <Row
-            label="Slower mail polling"
-            hint={
-              prefs.gmailAccounts.length === 0
-                ? 'Nothing to poll — no mailbox is connected, so no background check is running. Connect one and this becomes a choice.'
-                : 'Stretches every connected mailbox to a 15-minute refresh. Mail reads immediately when you open a login, so this only affects background checks.'
-            }
-          >
-            <Toggle
-              label="Slower mail polling"
-              // Nothing connected means nothing polls, so the saving is already
-              // in place — shown as a locked "on" rather than an off switch that
-              // could never be reached, which is what kept the counter off its
-              // own total on a fresh install.
-              checked={
-                prefs.gmailAccounts.length === 0 ||
-                prefs.gmailAccounts.every((account) => account.refreshSeconds >= 300)
-              }
-              disabled={prefs.gmailAccounts.length === 0}
-              onChange={(on) =>
-                set({
-                  gmailAccounts: prefs.gmailAccounts.map((account) => ({
-                    ...account,
-                    refreshSeconds: on ? 900 : 300,
-                  })),
-                })
-              }
-            />
-          </Row>
-
           {/* Always rendered, unlike before. It used to disappear with the
               picture, so "Remove background image" could never be the on-state
               of anything and the counter could never reach its own total. */}
@@ -1906,6 +1918,11 @@ export function Settings(props: {
             />
           </Row>
 
+            </>
+          ) : null}
+
+          {optimizeGroup === 'speed' ? (
+            <>
           {/* The launch-time switches. They are Chromium flags, so the only
               honest thing to show is what is in force now and whether a restart
               is still owed — never a switch that pretends to apply live. */}
@@ -1967,19 +1984,86 @@ export function Settings(props: {
               onChange={(disableSpellcheck) => set({ disableSpellcheck })}
             />
           </Row>
+            </>
+          ) : null}
 
+          {optimizeGroup === 'messages' ? (
+            <>
           <Row
-            label="Reset optimisations"
+            label="Slower mail polling"
             hint={
-              prefs.optimizeSnapshot
-                ? 'Puts back the look that was here before anything was traded away — background picture, sliders, mail cadence and all.'
-                : 'Restores every value this panel touches to its shipped default. Nothing here is destructive.'
+              prefs.gmailAccounts.length === 0
+                ? 'Nothing to poll — no mailbox is connected, so no background check is running. Connect one and this becomes a choice.'
+                : 'Stretches every connected mailbox to a 15-minute refresh. Mail reads immediately when you open a login, so this only affects background checks.'
             }
           >
-            <button className="btn btn--quiet" onClick={restoreLook}>
-              Reset
+            <Toggle
+              label="Slower mail polling"
+              // Nothing connected means nothing polls, so the saving is already
+              // in place — shown as a locked "on" rather than an off switch that
+              // could never be reached, which is what kept the counter off its
+              // own total on a fresh install.
+              checked={
+                prefs.gmailAccounts.length === 0 ||
+                prefs.gmailAccounts.every((account) => account.refreshSeconds >= 300)
+              }
+              disabled={prefs.gmailAccounts.length === 0}
+              onChange={(on) =>
+                set({
+                  gmailAccounts: prefs.gmailAccounts.map((account) => ({
+                    ...account,
+                    refreshSeconds: on ? 900 : 300,
+                  })),
+                })
+              }
+            />
+          </Row>
+
+          <Row
+            label="Fetch inline images"
+            hint="Inline images (logos, signatures, photos pasted into a message) are fetched when a message is opened. Switching this off reads the text only — the largest single saving when opening mail, and nothing about the message list changes."
+          >
+            <Toggle
+              label="Fetch inline images"
+              checked={prefs.mailInlineImages}
+              onChange={(mailInlineImages) => set({ mailInlineImages })}
+            />
+          </Row>
+
+          <Row
+            label="Messages per page"
+            hint="How many headers each mailbox page holds. Smaller pages mean less mail kept in memory at once; larger pages mean fewer round trips while scrolling."
+          >
+            <Select
+              label="Messages per page"
+              value={String(prefs.mailPageSize)}
+              options={[25, 50, 100].map((size) => ({ value: String(size), label: String(size) }))}
+              onChange={(next) => set({ mailPageSize: Number(next) })}
+              align="right"
+            />
+          </Row>
+
+          {/* The cache is what lets an expander show a message body without a
+              second IMAP read. Clearing it is safe — the next open refetches —
+              and it is the one button here that reclaims memory right now
+              rather than preventing the memory being spent later. */}
+          <Row
+            label="Clear cached messages"
+            hint="Drops every cached message body this app holds. Open messages are refetched on the next open, so nothing is lost — the mail itself lives on the server."
+          >
+            <button
+              className="btn btn--quiet"
+              disabled={Object.keys(prefs.mailCache).length === 0}
+              onClick={() => {
+                set({ mailCache: {} });
+                onNotify('Cached messages cleared');
+              }}
+            >
+              Clear cache
             </button>
           </Row>
+            </>
+          ) : null}
         </>
       ),
     },

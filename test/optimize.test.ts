@@ -21,10 +21,10 @@ import { DEFAULT_PREFERENCES, normalisePreferences, newGmailAccountId } from '..
 const prefs = () => normalisePreferences(undefined);
 
 test('the counter can reach its own total, and shipped defaults score honest', () => {
-  // Nine since micro-animations joined the list: they are the only animation
-  // left once "reduce motion" is on, so a profile called "maximum savings" has
-  // to be able to turn them off and count it.
-  assert.equal(OPTIMISATION_COUNT, 9, 'nine switches, nine countable savings');
+  // Ten since inline-image fetching joined the list: reading a message's text
+  // without its images is a real, countable saving, and a profile called
+  // "maximum savings" has to be able to turn it off and count it.
+  assert.equal(OPTIMISATION_COUNT, 10, 'ten switches, ten countable savings');
   const base = prefs();
   // Shipped defaults score exactly two, and both are facts the panel shows as
   // locked switches: no full-bleed photo is being repainted, and no mailbox is
@@ -49,6 +49,7 @@ test('a style round-trips through the preferences it describes', () => {
     'reduceTransparency',
     'density',
     'cardDepth',
+    'mailInlineImages',
     'disableSpellcheck',
   ] as const) {
     assert.deepEqual(snapshot[key], MAX_SAVINGS_STYLE[key], `${key} survives the round trip`);

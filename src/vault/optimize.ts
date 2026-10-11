@@ -2,7 +2,7 @@
  * The Optimize tab's vocabulary, kept out of the UI on purpose.
  *
  * The panel, its one-click profiles, the saved profiles below and the counter
- * that reads "n of 7" all used to be three separate lists of the same thing,
+ * that reads "n of 10" all used to be three separate lists of the same thing,
  * which is how a counter ends up disagreeing with the switches it counts. Here
  * there is exactly one definition of each: `OPTIMISATIONS` is the single source
  * for what the rows read, `styleFromPrefs`/`stylePatch` convert between a
@@ -50,6 +50,15 @@ export interface OptimizeStyle {
    */
   mailRefreshSeconds: number | null;
   /**
+   * Whether opening an HTML message also fetches its inline images.
+   *
+   * The largest per-message memory saving available: the reader skips up to
+   * four images of 512 KB each. Counted as its own optimisation for the same
+   * reason `disableSpellcheck` is — a profile that did not carry it would
+   * leave the saving behind every time it was applied.
+   */
+  mailInlineImages: boolean;
+  /**
    * Switches Chromium's spellchecker (and its per-language dictionaries) off.
    * Not appearance, but it is the same kind of trade, and a profile that did
    * not carry it would leave one saving behind every time it was applied.
@@ -81,6 +90,7 @@ export const FULL_DETAIL_STYLE: OptimizeStyle = {
   backgroundBlur: DEFAULT_BACKGROUND.blur,
   backgroundDim: DEFAULT_BACKGROUND.dim,
   mailRefreshSeconds: null,
+  mailInlineImages: true,
   disableSpellcheck: false,
 };
 
@@ -120,6 +130,7 @@ export const MAX_SAVINGS_STYLE: OptimizeStyle = {
   density: 'compact',
   cardDepth: 0,
   mailRefreshSeconds: 900,
+  mailInlineImages: false,
   disableSpellcheck: true,
 };
 
@@ -156,6 +167,13 @@ export const OPTIMISATIONS = [
       prefs.gmailAccounts.every((account) => account.refreshSeconds >= SLOW_MAIL_SECONDS),
   },
   { id: 'background', on: (prefs: VaultPreferences) => prefs.backgroundImage === '' },
+  {
+    // Skipped inline images are the biggest per-message saving on offer — a
+    // couple of megabytes of base64 that would otherwise sit in memory for
+    // the rest of the session — so the switch counts like any other.
+    id: 'mailImages',
+    on: (prefs: VaultPreferences) => !prefs.mailInlineImages,
+  },
   { id: 'spellcheck', on: (prefs: VaultPreferences) => prefs.disableSpellcheck },
 ] as const;
 
@@ -181,6 +199,7 @@ export function styleFromPrefs(prefs: VaultPreferences): OptimizeStyle {
     backgroundBlur: prefs.backgroundBlur,
     backgroundDim: prefs.backgroundDim,
     mailRefreshSeconds: null,
+    mailInlineImages: prefs.mailInlineImages,
     disableSpellcheck: prefs.disableSpellcheck,
   };
 }
@@ -220,6 +239,7 @@ export function stylePatch(prefs: VaultPreferences, style: OptimizeStyle): Parti
     backgroundOpacity: style.backgroundOpacity,
     backgroundBlur: style.backgroundBlur,
     backgroundDim: style.backgroundDim,
+    mailInlineImages: style.mailInlineImages,
     disableSpellcheck: style.disableSpellcheck,
   };
   if (style.mailRefreshSeconds !== null && prefs.gmailAccounts.length > 0) {
@@ -246,6 +266,7 @@ export function sameStyle(a: OptimizeStyle, b: OptimizeStyle): boolean {
     a.backgroundBlur === b.backgroundBlur &&
     a.backgroundDim === b.backgroundDim &&
     a.mailRefreshSeconds === b.mailRefreshSeconds &&
+    a.mailInlineImages === b.mailInlineImages &&
     a.disableSpellcheck === b.disableSpellcheck
   );
 }
@@ -294,6 +315,10 @@ export function readStyle(raw: unknown): OptimizeStyle | null {
       typeof mailRaw === 'number' && Number.isFinite(mailRaw) && mailRaw >= 0
         ? Math.min(3600, Math.round(mailRaw))
         : null,
+    // A profile saved before this switch existed has no field; it restores
+    // the full-detail behaviour (images fetched) rather than silently
+    // stripping the pictures out of every message.
+    mailInlineImages: record.mailInlineImages !== false,
     disableSpellcheck: record.disableSpellcheck === true,
   };
 }

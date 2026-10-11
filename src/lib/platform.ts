@@ -32,6 +32,15 @@ export interface FullMailInput extends MailConnectionInput {
   /** Subject/sender, for the best-effort fallback when the id misses. */
   subject?: string;
   from?: string;
+  /**
+   * Whether to fetch the message's inline images alongside the body.
+   *
+   * Defaults to true when absent, so an older caller sees the old behaviour.
+   * Optimize → Messages switches it off to skip up to four 512 KB image
+   * fetches per opened message — the largest per-message memory saving the
+   * app offers. The body and HTML always come back either way.
+   */
+  images?: boolean;
 }
 
 export interface FullMailImage {

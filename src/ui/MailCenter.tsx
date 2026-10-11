@@ -27,6 +27,8 @@ export function MailCenter({
   onOpenExternal,
   onAddMailbox,
   onOpenSettings,
+  pageSize,
+  inlineImages,
 }: {
   accounts: GmailAccount[];
   cache?: Record<string, CachedMailMessage[]>;
@@ -36,6 +38,10 @@ export function MailCenter({
   /** Opens the editor for a new login, where a mailbox is connected. */
   onAddMailbox: () => void;
   onOpenSettings: (tab: string) => void;
+  /** Headers per page from Optimize → Messages. */
+  pageSize?: number;
+  /** Whether opened messages fetch inline images. From the same panel. */
+  inlineImages?: boolean;
 }) {
   const [activeId, setActiveId] = useState('');
   // Only switched-on accounts get a tab: a mailbox the user disabled is not a
@@ -135,6 +141,8 @@ export function MailCenter({
                 maskEmails={maskEmails}
                 onCacheMessages={onCacheMessages}
                 onOpenExternal={onOpenExternal}
+                pageSize={pageSize}
+                inlineImages={inlineImages}
               />
             </section>
           ) : null}

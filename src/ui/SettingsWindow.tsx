@@ -193,6 +193,8 @@ function describe(id: string): string {
       return 'Encrypts the vault key itself';
     case 'security':
       return 'Locking, clipboard and warnings';
+    case 'optimize':
+      return 'Trade eye-candy for memory, CPU and battery';
     case 'data':
       return 'Import, export and what is stored';
     case 'backup':

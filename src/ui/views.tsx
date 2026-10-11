@@ -109,6 +109,8 @@ interface CommonViewProps extends ViewActions {
   mailScope?: { show: boolean; account: string };
   /** Previously fetched messages, per account id. Lets the expander reach past one feed read. */
   mailCache?: Record<string, CachedMailMessage[]>;
+  /** Whether opened messages fetch inline images, from Optimize → Messages. */
+  mailInlineImages?: boolean;
 }
 
 /**
@@ -656,6 +658,7 @@ export function AnimatedListView({
   gmailAccounts,
   mailScope,
   mailCache,
+  mailInlineImages,
   onCacheMail,
   onOpenExternal,
   onCopy,
@@ -870,7 +873,7 @@ export function AnimatedListView({
                 the card menu instead of competing as icons. */}
             <div className="card-row__actions-row">
               {mailFor(item, mailScope, gmailAccounts) ? (
-                  <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                  <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
               ) : null}
               {item.password && !gone('card-copy') ? (
                 <button
@@ -1121,6 +1124,7 @@ showTagChips,
   gmailAccounts,
   mailScope,
   mailCache,
+  mailInlineImages,
   onCacheMail,
   onOpenExternal,
   onCopy,
@@ -1230,7 +1234,7 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
 
                   <div className="item__actions">
                     {mailFor(item, mailScope, gmailAccounts) ? (
-                      <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                      <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                     ) : null}
                     {item.password && !gone('card-copy') ? (
                       <button
@@ -1343,6 +1347,7 @@ export function GridView({
   gmailAccounts,
   mailScope,
   mailCache,
+  mailInlineImages,
   onCacheMail,
   onOpenExternal,
   onEdit,
@@ -1507,7 +1512,7 @@ export function GridView({
 
               <div className="grid-cell__actions">
                 {mailFor(item, mailScope, gmailAccounts) ? (
-                <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                 ) : null}
                 {!gone('card-edit') ? (
                   <button

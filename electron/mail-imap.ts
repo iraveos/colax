@@ -44,6 +44,16 @@ export interface FullMailInput {
   subject?: string;
   /** Kept for IPC compatibility; unused. */
   from?: string;
+  /**
+   * Whether to fetch the message's inline images alongside the body.
+   *
+   * Absent means true (the shipped behaviour). `false` skips the image loop
+   * entirely — the Optimize tab's per-message memory saving, worth up to
+   * 4 × 512 KB of base64 that would otherwise ride back over IPC and sit in
+   * the renderer for the rest of the session. The text and HTML bodies are
+   * fetched either way.
+   */
+  images?: boolean;
 }
 
 export interface FullMailResult {
@@ -372,8 +382,13 @@ export async function listInboxMail(input: {
  * One message's envelope, text, HTML and inline images out of INBOX,
  * addressed by UID straight from the listing. No search, no fallback path:
  * the UID the list returned is the UID that is read back.
+ *
+ * `wantImages` false skips the inline-image loop entirely — one boolean
+ * rather than a read option object, because the only caller that turns it
+ * off is the Optimize switch and threading a pref through here would make
+ * main depend on the vault.
  */
-async function readOne(client: ImapFlow, box: string, uid: number): Promise<FullMailResult> {
+async function readOne(client: ImapFlow, box: string, uid: number, wantImages = true): Promise<FullMailResult> {
   const lock = await client.getMailboxLock(box);
   try {
     const meta = await client
@@ -426,7 +441,7 @@ async function readOne(client: ImapFlow, box: string, uid: number): Promise<Full
         html = undefined;
       }
     }
-    if (html) {
+    if (html && wantImages) {
       for (const image of collectInlineImages(structure).slice(0, MAX_INLINE_IMAGES)) {
         if (image.size > MAX_IMAGE_BYTES) continue;
         try {
@@ -470,7 +485,9 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
     return invalid('That saved message is from an older version. Refresh the list and open it again.');
   }
   try {
-    return await runMail(address, appPassword, conn, (client) => readOne(client, 'INBOX', uid));
+    return await runMail(address, appPassword, conn, (client) =>
+      readOne(client, 'INBOX', uid, input.images !== false),
+    );
   } catch (cause) {
     // Sign-in and reconnect texts arrive final; anything else already carries
     // its own stage message from the read.

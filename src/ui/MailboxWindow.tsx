@@ -21,6 +21,8 @@ export function MailboxWindow({
   onCacheMessages,
   onOpenExternal,
   onClose,
+  pageSize,
+  inlineImages,
 }: {
   account: GmailAccount;
   cache?: Record<string, CachedMailMessage[]>;
@@ -29,6 +31,10 @@ export function MailboxWindow({
   onCacheMessages?: (accountId: string, messages: GmailMessage[]) => void;
   onOpenExternal: (url: string) => void;
   onClose: () => void;
+  /** Headers per page from Optimize → Messages. */
+  pageSize?: number;
+  /** Whether opened messages fetch inline images. From the same panel. */
+  inlineImages?: boolean;
 }) {
   return (
     <Modal title={`${accountLabel(account)} · ${account.address || 'Mailbox'}`} onClose={onClose} wide>
@@ -38,6 +44,8 @@ export function MailboxWindow({
         maskEmails={maskEmails}
         onCacheMessages={onCacheMessages}
         onOpenExternal={onOpenExternal}
+        pageSize={pageSize}
+        inlineImages={inlineImages}
       />
     </Modal>
   );

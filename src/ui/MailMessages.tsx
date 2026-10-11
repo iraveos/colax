@@ -34,8 +34,8 @@ import { gmailOpenUrl, hasMailCreds, listGmailPage, mailTargetOf, type GmailMess
 import { Alert, Select } from './primitives.tsx';
 import { MailIcon, SearchIcon } from './icons.tsx';
 
-/** Messages per page. One round trip either way; the ceiling is only IPC size. */
-const PAGE_SIZE = 50;
+/** Fallback messages per page, when the caller has no preference to offer. */
+const DEFAULT_PAGE_SIZE = 50;
 
 export function MailMessages({
   account,
@@ -45,6 +45,8 @@ export function MailMessages({
   onOpenExternal,
   /** Rendered above the list, for the mail centre's tab strip. */
   header,
+  pageSize,
+  inlineImages,
 }: {
   account: GmailAccount;
   cache?: Record<string, CachedMailMessage[]>;
@@ -52,7 +54,18 @@ export function MailMessages({
   onCacheMessages?: (accountId: string, messages: GmailMessage[]) => void;
   onOpenExternal: (url: string) => void;
   header?: React.ReactNode;
+  /** Headers per page from Optimize → Messages. Absent means 50. */
+  pageSize?: number;
+  /** Whether opened messages fetch inline images. From the same panel. */
+  inlineImages?: boolean;
 }) {
+  // One page size per mount, read once: a user changing the preference
+  // mid-list should not renumber the pages already held.
+  const [limit] = useState(() =>
+    typeof pageSize === 'number' && Number.isFinite(pageSize) && pageSize >= 1 && pageSize <= 100
+      ? Math.round(pageSize)
+      : DEFAULT_PAGE_SIZE,
+  );
   const [rows, setRows] = useState<GmailMessage[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -79,7 +92,7 @@ export function MailMessages({
       requested.current.clear();
       try {
         const page = await listGmailPage(mailTargetOf(account), account.id, {
-          limit: PAGE_SIZE,
+          limit,
           query: search || undefined,
         });
         if (page.error) {
@@ -98,8 +111,10 @@ export function MailMessages({
     },
     // `account` is a stored record whose identity changes on every prefs write,
     // so the key that actually matters is which mailbox and which password.
+    // `limit` is read once at mount and never changes, so it is safe in the
+    // closure without re-reading the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [account.id, account.address, account.appPassword, usable],
+    [account.id, account.address, account.appPassword, usable, limit],
   );
 
   /** The page after the oldest message held. */
@@ -115,7 +130,7 @@ export function MailMessages({
     setLoadingOlder(true);
     try {
       const page = await listGmailPage(mailTargetOf(account), account.id, {
-        limit: PAGE_SIZE,
+        limit,
         beforeUid: oldest,
       });
       if (page.error) {
@@ -131,7 +146,7 @@ export function MailMessages({
     } finally {
       setLoadingOlder(false);
     }
-  }, [account, usable, loadingOlder, rows, applied, onCacheMessages]);
+  }, [account, usable, loadingOlder, rows, applied, onCacheMessages, limit]);
 
   // One read on open, and a fresh one whenever the mailbox itself changes.
   useEffect(() => {
@@ -149,8 +164,15 @@ export function MailMessages({
     const message = rows.find((entry) => `${entry.accountId}:${entry.id}` === expandedId);
     if (!message || (!gmailHexOf(message.id) && !imapUidOf(message.id))) return;
     requested.current.add(expandedId);
-    loadFullBody(expandedId, mailTargetOf(account), message.id, message.title, message.author || message.email);
-  }, [expandedId, rows, canFullBody, account, loadFullBody]);
+    loadFullBody(
+      expandedId,
+      mailTargetOf(account),
+      message.id,
+      message.title,
+      message.author || message.email,
+      inlineImages !== false,
+    );
+  }, [expandedId, rows, canFullBody, account, loadFullBody, inlineImages]);
 
   /** Cached history from other screens: shown past this page's end, deduped. */
   const cachedOlder = (cache?.[account.id] ?? []).filter((entry) => !rows.some((live) => live.id === entry.id));

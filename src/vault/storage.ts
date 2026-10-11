@@ -718,6 +718,26 @@ export interface VaultPreferences {
    */
   mailCache: Record<string, CachedMailMessage[]>;
   /**
+   * Whether opening an HTML message also fetches its inline images.
+   *
+   * On by default because most mail is fine as it is; switched off in
+   * Optimize → Messages it is the largest per-message saving available —
+   * the reader skips up to four images of 512 KB each, which is a couple of
+   * megabytes of base64 that would otherwise sit in memory for the rest of
+   * the session. The message still opens: the images are simply not asked
+   * for, and cid: references render as the same labelled placeholder the
+   * app already uses for remote images.
+   */
+  mailInlineImages: boolean;
+  /**
+   * How many inbox headers one list request asks for.
+   *
+   * A page is one IMAP round trip either way, so this is purely about how
+   * much arrives per click: 100 is one trip for a long list, 25 keeps each
+   * answer — and the row state built from it — small.
+   */
+  mailPageSize: number;
+  /**
    * Whether the one-time Messages scoping has run: logins that had the
    * expander on by old default (rather than by choice) and are not related
    * to any connected mailbox get switched off, so a mailbox connected for
@@ -913,6 +933,8 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   confirmDeletes: true,
   gmailAccounts: [],
   mailCache: {},
+  mailInlineImages: true,
+  mailPageSize: 50,
   mailOptInMigrated: false,
   mailEveryLogin: false,
   /**
@@ -1181,6 +1203,13 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     }
     merged.mailCache = clean;
   }
+  // Mail loading costs, per Optimize → Messages. Absent reads as on (the
+  // shipped behaviour); only an explicit false skips the images. The page
+  // size is one of the three offered values, never a hostile number.
+  merged.mailInlineImages = merged.mailInlineImages !== false;
+  merged.mailPageSize = [25, 50, 100].includes(merged.mailPageSize)
+    ? merged.mailPageSize
+    : DEFAULT_PREFERENCES.mailPageSize;
   merged.alarms = Array.isArray(merged.alarms)
     ? merged.alarms
         .filter((alarm): alarm is Alarm => Boolean(alarm && typeof alarm.id === 'string' && typeof alarm.time === 'string'))

@@ -2863,6 +2863,7 @@ onCreate={vault.create}
     // All logins, folders, search — shows everything.
     gmailAccounts: prefs.gmailAccounts,
     mailCache: prefs.mailCache,
+    mailInlineImages: prefs.mailInlineImages,
     mailScope: {
       show: activeChannel?.showMail !== false,
       account:
@@ -3098,6 +3099,8 @@ onCreate={vault.create}
                   onOpenExternal={(url) => getPlatform().openExternal(url)}
                   onAddMailbox={() => setEditing('new')}
                   onOpenSettings={(tab) => openSettings(tab)}
+                  pageSize={prefs.mailPageSize}
+                  inlineImages={prefs.mailInlineImages}
                 />
               </div>
             ) : activeChannel?.kind === 'history' ? (
@@ -3495,6 +3498,8 @@ onCreate={vault.create}
             onCacheMessages={viewActions.onCacheMail}
             onOpenExternal={(url) => getPlatform().openExternal(url)}
             onClose={() => setMailboxFor(null)}
+            pageSize={prefs.mailPageSize}
+            inlineImages={prefs.mailInlineImages}
           />
         ) : null;
       })()}
@@ -3511,7 +3516,7 @@ onCreate={vault.create}
               item={liveItem}
               accounts={prefs.gmailAccounts}
               // A login whose own address is a connected mailbox reads exactly
-              // that one — the same narrowing the card expander applies, so the
+              // that one - the same narrowing the card expander applies, so the
               // window and the expander can never disagree.
               accountScope={mailboxOwnedBy(liveItem.username, prefs.gmailAccounts)?.id ?? 'all'}
               cache={prefs.mailCache}
@@ -3519,6 +3524,7 @@ onCreate={vault.create}
               onCacheMessages={viewActions.onCacheMail}
               onOpenExternal={(url) => getPlatform().openExternal(url)}
               defaultOpen
+              inlineImages={prefs.mailInlineImages}
             />
           </Modal>
         ) : null;

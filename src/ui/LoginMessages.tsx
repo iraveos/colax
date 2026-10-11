@@ -58,6 +58,7 @@ export function LoginMessages({
   onCacheMessages,
   onOpenExternal,
   defaultOpen,
+  inlineImages,
 }: {
   item: VaultItem;
   accounts: GmailAccount[];
@@ -73,6 +74,8 @@ export function LoginMessages({
   onOpenExternal?: (url: string) => void;
   /** Starts expanded with a read underway. Used when the expander lives in its own window. */
   defaultOpen?: boolean;
+  /** Whether opened messages fetch inline images. From Optimize → Messages. */
+  inlineImages?: boolean;
 }) {
   const [open, setOpen] = useState(!!defaultOpen);
   const [loading, setLoading] = useState(false);
@@ -249,7 +252,14 @@ export function LoginMessages({
     const account = accounts.find((entry) => entry.id === message.accountId);
     if (!account) return;
     requested.current.add(expandedId);
-    loadFullBody(expandedId, mailTargetOf(account), message.id, message.title, message.author || message.email);
+    loadFullBody(
+      expandedId,
+      mailTargetOf(account),
+      message.id,
+      message.title,
+      message.author || message.email,
+      inlineImages !== false,
+    );
   });
 
   const accountName = (id: string) => accounts.find((entry) => entry.id === id)?.address ?? '';
@@ -446,7 +456,7 @@ export function LoginMessages({
                                     const account = accounts.find((entry) => entry.id === message.accountId);
                                     if (account) {
                                       requested.current.delete(key);
-                                      loadFullBody(key, mailTargetOf(account), message.id, message.title, message.author || message.email);
+                                      loadFullBody(key, mailTargetOf(account), message.id, message.title, message.author || message.email, inlineImages !== false);
                                     }
                                   }}
                                 >
