@@ -86,16 +86,22 @@ export function Dock({
   // pointer live; release drops it exactly there, clamped on screen. The
   // nearest edge only decides row-vs-column orientation, never the spot. A
   // press without movement is not a drag, so slot clicks are unaffected — the
-  // threshold is what keeps the two gestures from fighting. Moves are folded
-  // through one rAF slot, so a fast pointer cannot queue more position writes
-  // than frames can paint (that backlog was the visible lag).
+  // threshold is what keeps the two gestures from fighting.
+  //
+  // The live position is LOCAL during the drag and only committed on release.
+  // Writing the stored placement on every frame meant each pointermove went
+  // through preferences, re-rendered the whole shell and re-applied the app
+  // background — which is what made the backdrop flicker under the bar while it
+  // was being moved. One write per drop is also a fraction of the storage churn.
   const dragFrom = useRef<{ x: number; y: number } | null>(null);
   const dragging = useRef(false);
   const raf = useRef(0);
+  const [live, setLive] = useState<DockPlacement | null>(null);
   const clamp01 = (value: number) => Math.min(0.94, Math.max(0.06, value));
   // Free placement: the bar sits exactly where it was dropped, centred on the
   // pointer. The snapped edge only decides row-vs-column orientation, never
   // pins the bar to a margin — every dock roams the whole screen.
+  const shown = live ?? pos;
 
   useEffect(
     () => () => {
@@ -108,7 +114,7 @@ export function Dock({
     if (raf.current) cancelAnimationFrame(raf.current);
     raf.current = requestAnimationFrame(() => {
       raf.current = 0;
-      onPosChange({ edge: edgeAt(x, y), fx: clamp01(x / window.innerWidth), fy: clamp01(y / window.innerHeight) });
+      setLive({ edge: edgeAt(x, y), fx: clamp01(x / window.innerWidth), fy: clamp01(y / window.innerHeight) });
     });
   };
 
@@ -124,11 +130,12 @@ export function Dock({
   return (
     <nav
       className="dock"
-      data-edge={pos.edge}
+      data-edge={shown.edge}
+      data-dragging={live ? '' : undefined}
       aria-label="Quick launch"
       style={{
-        left: `${pos.fx * 100}%`,
-        top: `${pos.fy * 100}%`,
+        left: `${shown.fx * 100}%`,
+        top: `${shown.fy * 100}%`,
         translate: '-50% -50%',
       } as React.CSSProperties}
       onContextMenu={(event) => {
@@ -165,9 +172,17 @@ export function Dock({
         if (!from || !wasDrag) return;
         const fx = clamp01(event.clientX / window.innerWidth);
         const fy = clamp01(event.clientY / window.innerHeight);
+        // The one write of the whole gesture: the drop point becomes the stored
+        // placement, and `live` is dropped so the component follows the prop again.
         onPosChange({ edge: edgeAt(event.clientX, event.clientY), fx, fy });
+        setLive(null);
       }}
-      onPointerCancel={endDrag}
+      onPointerCancel={() => {
+        endDrag();
+        // A cancelled drag never became a drop, so there is nothing to store:
+        // fall back to the placement that was already saved.
+        setLive(null);
+      }}
     >
       {slots.flatMap((slot, index) => {
         const Icon = slot.Icon;

@@ -20,7 +20,17 @@ export type ChannelAccent = 'slate' | 'sage' | 'dusk' | 'clay';
 
 export const CHANNEL_ACCENTS: ChannelAccent[] = ['slate', 'sage', 'dusk', 'clay'];
 
-export type ChannelKind = 'all' | 'favorites' | 'attention' | 'tags' | 'weak' | 'dashboard' | 'mail' | 'unassigned';
+export type ChannelKind =
+  | 'all'
+  | 'favorites'
+  | 'attention'
+  | 'tags'
+  | 'weak'
+  | 'dashboard'
+  | 'mail'
+  | 'unassigned'
+  /** The change log: what was added, edited or deleted, with restore. */
+  | 'history';
 
 /**
  * Human names for the built-in channel kinds.
@@ -40,6 +50,7 @@ export const CHANNEL_KIND_LABELS: Record<ChannelKind, string> = {
   dashboard: 'Dashboard',
   mail: 'Mail',
   unassigned: 'Unassigned',
+  history: 'History',
 };
 
 export interface Channel {
@@ -57,6 +68,16 @@ export interface Channel {
   accent: ChannelAccent;
   /** https URL or uploaded data URL. */
   backgroundImage: string;
+  /**
+   * How the picture behaves. These are the channel's *own* values rather than
+   * the global ones on purpose: a channel whose photo is stretched across the
+   * whole app wants a different strength from one painting a band behind its own
+   * rail row. Anything left at the shipped defaults follows the same look as
+   * before, so an existing channel keeps the appearance it had.
+   */
+  backgroundOpacity: number;
+  backgroundBlur: number;
+  backgroundDim: number;
   /** One of the four shipped channels. */
   builtin: boolean;
   /** Cannot be deleted or reordered away — there must always be one view. */
@@ -90,6 +111,10 @@ export interface Folder {
   hue: number;
   accent: ChannelAccent;
   backgroundImage: string;
+  /** The folder's own strength/blur/veil for that picture. See Channel. */
+  backgroundOpacity: number;
+  backgroundBlur: number;
+  backgroundDim: number;
   /** Whether the user has collapsed it in the sidebar. */
   collapsed: boolean;
   /** Optional second factor required to browse the channels inside. */
@@ -114,9 +139,56 @@ export function createFolder(name: string, patch: Partial<Folder> = {}): Folder 
     hue: Math.round(Math.random() * 359),
     accent: 'slate',
     backgroundImage: '',
+    backgroundOpacity: DEFAULT_BACKGROUND_LOOK.opacity,
+    backgroundBlur: DEFAULT_BACKGROUND_LOOK.blur,
+    backgroundDim: DEFAULT_BACKGROUND_LOOK.dim,
     collapsed: false,
     security: EMPTY_SECURITY,
     ...patch,
+  };
+}
+
+/**
+ * The strength, blur and veil a new channel or folder starts with.
+ *
+ * Mirrors the app-wide background defaults in storage.ts. Duplicated as a
+ * constant here rather than imported: storage.ts imports *this* module, and a
+ * runtime import back would be a cycle whose constants could evaluate before
+ * these exist.
+ */
+export const DEFAULT_BACKGROUND_LOOK = { opacity: 0.35, blur: 0, dim: 0.25 } as const;
+
+/**
+ * The same three values under their field names, for the built-in channels.
+ * Spreading one constant keeps the shipped rows in step with the defaults a new
+ * channel gets; spelling the numbers out seven times is how they drift.
+ */
+export const DEFAULT_BACKGROUND_FIELDS = {
+  backgroundOpacity: DEFAULT_BACKGROUND_LOOK.opacity,
+  backgroundBlur: DEFAULT_BACKGROUND_LOOK.blur,
+  backgroundDim: DEFAULT_BACKGROUND_LOOK.dim,
+} as const;
+
+/**
+ * Clamps one stored strength/blur/veil triple.
+ *
+ * Every value is bounded to the range its slider allows, so a hand-edited or
+ * partly-written record cannot leave a channel with a NaN veil (which would
+ * make `background: transparent` win over the whole row) or a 1000px blur that
+ * costs a frame per repaint. Missing fields fall back to the defaults, which is
+ * what makes this safe to run on records saved before these fields existed.
+ */
+export function normaliseBackgroundLook(raw: Partial<Pick<Channel, 'backgroundOpacity' | 'backgroundBlur' | 'backgroundDim'>>): {
+  backgroundOpacity: number;
+  backgroundBlur: number;
+  backgroundDim: number;
+} {
+  const clamp = (value: unknown, min: number, max: number, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+  return {
+    backgroundOpacity: clamp(raw.backgroundOpacity, 0, 1, DEFAULT_BACKGROUND_LOOK.opacity),
+    backgroundBlur: clamp(raw.backgroundBlur, 0, 40, DEFAULT_BACKGROUND_LOOK.blur),
+    backgroundDim: clamp(raw.backgroundDim, 0, 0.9, DEFAULT_BACKGROUND_LOOK.dim),
   };
 }
 
@@ -250,6 +322,76 @@ export function moveManualOrder(
  * If the requested folder is not in the tree the entry falls back to the root
  * rather than being dropped on the floor, which is what an earlier version did.
  */
+/** The folder the channel list is filed under, by name. */
+export const CHANNELS_FOLDER_NAME = 'Channels';
+
+/**
+ * Files every channel into one folder, leaving Dashboard and Mail at the top.
+ *
+ * The rail was one long list in which the two structural screens, the built-in
+ * filters and every channel anyone made all sat at the same level. This is the
+ * one-time tidy: Dashboard and Mail stay where they are, everything else becomes
+ * a single collapsible group whose order is the order the rail already had.
+ *
+ * Returns null when there is nothing to do — no channel to move, or they are
+ * already in exactly one folder — and the caller stamps the pass either way, so
+ * a rail the user has since rearranged is never reshuffled again.
+ */
+export function groupChannelsIntoFolder(
+  channels: Channel[],
+  folders: Folder[],
+  sidebar: SidebarEntry[],
+): { folders: Folder[]; sidebar: SidebarEntry[] } | null {
+  const kept = new Set(
+    channels.filter((channel) => channel.kind === 'dashboard' || channel.kind === 'mail').map((channel) => channel.id),
+  );
+  const movers = channels.filter((channel) => !kept.has(channel.id));
+  if (movers.length === 0) return null;
+  const moverIds = new Set(movers.map((channel) => channel.id));
+
+  // The order each mover sits in today, flattened, so the folder reads the way
+  // the rail read. Channels missing from the tree are appended.
+  const seenOrder: string[] = [];
+  const visit = (rows: SidebarEntry[]): void => {
+    for (const row of rows) {
+      if (row.kind === 'channel') seenOrder.push(row.id);
+      else if (row.kind === 'folder') visit(row.children);
+    }
+  };
+  visit(sidebar);
+  const ordered = [
+    ...seenOrder.filter((id) => moverIds.has(id)),
+    ...movers.map((channel) => channel.id).filter((id) => !seenOrder.includes(id)),
+  ];
+
+  const existing = folders.find(
+    (folder) => folder.name.trim().toLowerCase() === CHANNELS_FOLDER_NAME.toLowerCase(),
+  );
+  if (existing) {
+    const row = sidebar.find((entry) => entry.kind === 'folder' && entry.id === existing.id);
+    const children = row && row.kind === 'folder' ? row.children : [];
+    const childIds = new Set(children.flatMap((child) => (child.kind === 'channel' ? [child.id] : [])));
+    const allInside = ordered.every((id) => childIds.has(id));
+    const stray = sidebar.some((entry) => entry.kind === 'channel' && moverIds.has(entry.id));
+    const otherFolders = sidebar.filter((entry) => entry.kind === 'folder' && entry.id !== existing.id);
+    if (allInside && !stray && otherFolders.length === 0) return null;
+  }
+
+  const folder = existing ?? createFolder(CHANNELS_FOLDER_NAME, { icon: 'layers' });
+  const nextFolders = existing ? folders : [...folders, folder];
+  // Dashboard and Mail keep their slots, in their current order; the folder is
+  // the one thing appended after them.
+  const root: SidebarEntry[] = [
+    ...sidebar.filter((entry) => entry.kind === 'channel' && kept.has(entry.id)),
+    {
+      kind: 'folder',
+      id: folder.id,
+      children: ordered.map((id) => ({ kind: 'channel', id }) as SidebarEntry),
+    },
+  ];
+  return { folders: nextFolders, sidebar: root };
+}
+
 export function moveChannelToFolder(entries: SidebarEntry[], channelId: string, folderId: string | null): SidebarEntry[] {
   const targetList = folderId ?? 'root';
   const list = folderId ? entries.find((e) => e.kind === 'folder' && e.id === folderId) : undefined;
@@ -273,6 +415,7 @@ export function normaliseFolders(stored: Folder[] | undefined): Folder[] {
       hue: typeof raw.hue === 'number' && Number.isFinite(raw.hue) ? ((raw.hue % 360) + 360) % 360 : 212,
       accent: CHANNEL_ACCENTS.includes(raw.accent as ChannelAccent) ? (raw.accent as ChannelAccent) : 'slate',
       backgroundImage: typeof raw.backgroundImage === 'string' ? raw.backgroundImage : '',
+      ...normaliseBackgroundLook(raw),
       collapsed: Boolean(raw.collapsed),
       // Shared helper — this used to rebuild the block inline without
       // passcode, silently unprotecting passcode-only folders on reload.
@@ -343,16 +486,20 @@ export function selectableIds(entries: SidebarEntry[]): string[] {
 const DEFAULT_CHANNEL_HUE = 212;
 
 export const BUILTIN_CHANNELS: Channel[] = [
-  { id: 'all', name: 'All logins', kind: 'all', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: DEFAULT_CHANNEL_HUE, accent: 'slate', backgroundImage: '', showMail: true, mailAccount: 'all' },
-  { id: 'favorites', name: 'Favorites', kind: 'favorites', tagIds: [], builtin: true, locked: false, icon: 'star', hue: 44, accent: 'slate', backgroundImage: '', showMail: true, mailAccount: 'all' },
-  { id: 'attention', name: 'Needs attention', kind: 'attention', tagIds: [], builtin: true, locked: false, icon: 'flag', hue: 8, accent: 'clay', backgroundImage: '', showMail: true, mailAccount: 'all' },
-  { id: 'weak', name: 'Weak or reused', kind: 'weak', tagIds: [], builtin: true, locked: false, icon: 'shield', hue: 152, accent: 'sage', backgroundImage: '', showMail: true, mailAccount: 'all' },
-  { id: 'dashboard', name: 'Dashboard', kind: 'dashboard', tagIds: [], builtin: true, locked: true, icon: 'grid', hue: 268, accent: 'dusk', backgroundImage: '', showMail: true, mailAccount: 'all' },
-  { id: 'mail', name: 'Mail', kind: 'mail', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: 205, accent: 'slate', backgroundImage: '', showMail: false, mailAccount: 'all' },
+  { id: 'all', name: 'All logins', kind: 'all', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: DEFAULT_CHANNEL_HUE, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
+  { id: 'favorites', name: 'Favorites', kind: 'favorites', tagIds: [], builtin: true, locked: false, icon: 'star', hue: 44, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
+  { id: 'attention', name: 'Needs attention', kind: 'attention', tagIds: [], builtin: true, locked: false, icon: 'flag', hue: 8, accent: 'clay', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
+  { id: 'weak', name: 'Weak or reused', kind: 'weak', tagIds: [], builtin: true, locked: false, icon: 'shield', hue: 152, accent: 'sage', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
+  { id: 'dashboard', name: 'Dashboard', kind: 'dashboard', tagIds: [], builtin: true, locked: true, icon: 'grid', hue: 268, accent: 'dusk', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
+  { id: 'mail', name: 'Mail', kind: 'mail', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: 205, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all' },
+  // The change log is structural like the other two summary screens: there is
+  // exactly one, it cannot be deleted, and it can still be renamed, recoloured,
+  // moved into a folder or hidden like any other row.
+  { id: 'history', name: 'History', kind: 'history', tagIds: [], builtin: true, locked: true, icon: 'clock', hue: 28, accent: 'clay', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all' },
 ];
 
 /** Icon keys the sidebar knows how to draw. */
-export const CHANNEL_ICONS = ['inbox', 'star', 'flag', 'shield', 'layers', 'key', 'lock', 'cloud', 'grid'] as const;
+export const CHANNEL_ICONS = ['inbox', 'star', 'flag', 'shield', 'layers', 'key', 'lock', 'cloud', 'grid', 'clock'] as const;
 
 /** Ids that may be deleted. */
 export const DELETABLE_CHANNEL_KINDS: ChannelKind[] = ['all', 'favorites', 'attention', 'weak'];
@@ -366,7 +513,7 @@ export const DELETABLE_CHANNEL_KINDS: ChannelKind[] = ['all', 'favorites', 'atte
  * deletable list silently rewrote them to `all` on reload, which made the
  * Dashboard channel render the login list instead of the summary screen.
  */
-const VALID_CHANNEL_KINDS: ChannelKind[] = [...DELETABLE_CHANNEL_KINDS, 'tags', 'dashboard', 'mail', 'unassigned'];
+const VALID_CHANNEL_KINDS: ChannelKind[] = [...DELETABLE_CHANNEL_KINDS, 'tags', 'dashboard', 'mail', 'unassigned', 'history'];
 
 export function newChannelId(): string {
   return `ch_${crypto.randomUUID().slice(0, 8)}`;
@@ -416,7 +563,8 @@ export function applyChannel(channel: Channel, items: VaultItem[], staleAfterDay
       break;
     case 'dashboard':
     case 'mail':
-      // Both are summary screens rather than filtered lists. Treated as
+    case 'history':
+      // All three are summary screens rather than filtered lists. Treated as
       // "everything" so any tag narrowing still behaves predictably.
       list = items;
       break;
@@ -477,6 +625,8 @@ export function describeChannel(channel: Pick<Channel, 'kind' | 'tagIds'>, tags:
     case 'dashboard':
     case 'mail':
       return '';
+    case 'history':
+      return 'Everything that changed, newest first';
     case 'tags':
     default: {
       const names = channel.tagIds
@@ -527,11 +677,14 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
         ? (raw.accent as ChannelAccent)
         : preset?.accent ?? 'slate',
       backgroundImage: typeof raw.backgroundImage === 'string' ? raw.backgroundImage : '',
+      ...normaliseBackgroundLook(raw),
       // `builtin` is fixed by id so a hand-edited file cannot promote a channel.
       builtin: Boolean(preset),
-      // The fallback view and the summary screen are both structural: there must
-      // always be one of each, so neither can be deleted or reordered away.
-      locked: id === 'all' || kind === 'dashboard' || kind === 'mail',
+      // The fallback view and the summary screens are structural: there must
+      // always be one of each, so none can be deleted or reordered away. They
+      // can still be renamed, recoloured, hidden and moved — only deletion is
+      // off the table, and `locked` is what the menus read to say so.
+      locked: id === 'all' || kind === 'dashboard' || kind === 'mail' || kind === 'history',
       showMail: raw.showMail !== false,
       mailAccount: typeof raw.mailAccount === 'string' && raw.mailAccount ? raw.mailAccount : 'all',
     });
@@ -568,6 +721,21 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
     }
   }
 
+  // And the change log, which arrived the same way: a channel somebody made and
+  // named History/Log/Activity has to become the log they click, not gain a
+  // second row beside it that shows the same thing.
+  if (!channels.some((channel) => channel.kind === 'history')) {
+    const stray = channels.find(
+      (channel) => !channel.builtin && /^(history|log|activity|changelog|changes)$/i.test(channel.name),
+    );
+    if (stray) {
+      stray.kind = 'history';
+      stray.locked = true;
+      stray.icon = 'clock';
+      stray.hue = BUILTIN_CHANNELS.find((c) => c.kind === 'history')?.hue ?? stray.hue;
+    }
+  }
+
   for (const preset of BUILTIN_CHANNELS) {
     // The preset is only appended if nothing already plays that role.
     if (!seen.has(preset.id) && !channels.some((channel) => channel.kind === preset.kind)) {
@@ -595,6 +763,9 @@ export function createChannel(name: string, patch: Partial<Channel> = {}): Chann
     hue: Math.round(Math.random() * 359),
     accent: 'slate',
     backgroundImage: '',
+    backgroundOpacity: DEFAULT_BACKGROUND_LOOK.opacity,
+    backgroundBlur: DEFAULT_BACKGROUND_LOOK.blur,
+    backgroundDim: DEFAULT_BACKGROUND_LOOK.dim,
     showMail: true,
     mailAccount: 'all',
     ...safe,

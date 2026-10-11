@@ -9,6 +9,7 @@ import {
   totpCodeAt,
 } from '../src/crypto/security.ts';
 import { normalisePreferences, DEFAULT_PREFERENCES } from '../src/vault/storage.ts';
+import type { Folder } from '../src/vault/channels.ts';
 import { emptyItem, normaliseItem } from '../src/vault/types.ts';
 import { normaliseFolders } from '../src/vault/channels.ts';
 
@@ -90,7 +91,10 @@ test('folders keep a passcode-only second factor', () => {
       backgroundImage: '',
       collapsed: false,
       security: { totp: null, questions: [], passcode: { hash: 'h', salt: 's' } },
-    },
+      // Deliberately a record from before the background-strength fields
+      // existed: normalisation has to fill them in rather than leave a folder
+      // whose veil is `undefined` (which would paint as transparent).
+    } as unknown as Folder,
   ]);
   assert.deepEqual(out[0]?.security.passcode, { hash: 'h', salt: 's' });
   assert.ok(isSecured(out[0]?.security));

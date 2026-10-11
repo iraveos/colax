@@ -18,6 +18,7 @@ import {
 } from '../vault/channels.ts';
 import { MAX_APP_BACKGROUND_BYTES } from '../vault/types.ts';
 import { readImageFile } from './card-art.ts';
+import { useDraftAutoSave } from './hooks.ts';
 import { Modal, Toggle } from './primitives.tsx';
 import type { GmailAccount } from '../vault/storage.ts';
 import {
@@ -71,6 +72,7 @@ export function ChannelEditor({
   itemCount,
   accounts,
   onSave,
+  onAutosave,
   onDelete,
   onClose,
   onNotify,
@@ -83,6 +85,8 @@ export function ChannelEditor({
   /** Connected mailboxes, for the per-channel mail account picker. */
   accounts: GmailAccount[];
   onSave: (next: Channel) => void;
+  /** Writes a change to an existing channel without announcing it. */
+  onAutosave?: (next: Channel) => void;
   onDelete?: (id: string) => void;
   onClose: () => void;
   onNotify: (message: string) => void;
@@ -95,6 +99,12 @@ export function ChannelEditor({
   const fileInput = useRef<HTMLInputElement>(null);
 
   const patch = (next: Partial<Channel>) => setDraft((current) => ({ ...current, ...next }));
+
+  // Same rule as the folder editor: an existing, named channel writes itself as
+  // it is edited; a new one waits for Add so it cannot half-exist.
+  useDraftAutoSave(draft, Boolean(channel && onAutosave && draft.name.trim()), (next) =>
+    onAutosave?.({ ...next, id: next.id || newChannelId(), name: next.name.trim() }),
+  );
 
   function toggleTag(tagId: string) {
     patch({
@@ -150,12 +160,21 @@ export function ChannelEditor({
             </button>
           ) : null}
           <span style={{ flex: 1 }} />
-          <button className="btn btn--secondary" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn btn--primary" onClick={save} disabled={!draft.name.trim()}>
-            {channel ? 'Save' : 'Add channel'}
-          </button>
+          {channel ? (
+            // Already written as it was edited; this only closes the window.
+            <button className="btn btn--primary" onClick={onClose}>
+              Done
+            </button>
+          ) : (
+            <>
+              <button className="btn btn--secondary" onClick={onClose}>
+                Cancel
+              </button>
+              <button className="btn btn--primary" onClick={save} disabled={!draft.name.trim()}>
+                Add channel
+              </button>
+            </>
+          )}
         </>
       }
     >
@@ -338,7 +357,72 @@ export function ChannelEditor({
           className="sr-only"
           onChange={(event) => void onPick(event.target.files?.[0])}
         />
-        <p className="field__hint">A backdrop for this channel, behind the logins it shows.</p>
+        <p className="field__hint">
+          A backdrop for this channel: it fills the app while the channel is selected, and paints this channel's
+          own row in the rail.
+        </p>
+        {draft.backgroundImage ? (
+          <div className="bg-look">
+            <div className="bg-look__row">
+              <label className="field__label" htmlFor="channel-bg-opacity">
+                Strength
+              </label>
+              <div className="slider-row" style={{ flex: 1 }}>
+                <input
+                  id="channel-bg-opacity"
+                  className="slider"
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={draft.backgroundOpacity}
+                  onChange={(event) => patch({ backgroundOpacity: Number(event.target.value) })}
+                />
+                <span className="slider-row__value">{Math.round(draft.backgroundOpacity * 100)}%</span>
+              </div>
+            </div>
+            <div className="bg-look__row">
+              <label className="field__label" htmlFor="channel-bg-blur">
+                Blur
+              </label>
+              <div className="slider-row" style={{ flex: 1 }}>
+                <input
+                  id="channel-bg-blur"
+                  className="slider"
+                  type="range"
+                  min={0}
+                  max={40}
+                  step={1}
+                  value={draft.backgroundBlur}
+                  onChange={(event) => patch({ backgroundBlur: Number(event.target.value) })}
+                />
+                <span className="slider-row__value">{Math.round(draft.backgroundBlur)}px</span>
+              </div>
+            </div>
+            <div className="bg-look__row">
+              <label className="field__label" htmlFor="channel-bg-dim">
+                Veil
+              </label>
+              <div className="slider-row" style={{ flex: 1 }}>
+                <input
+                  id="channel-bg-dim"
+                  className="slider"
+                  type="range"
+                  min={0}
+                  max={0.9}
+                  step={0.05}
+                  value={draft.backgroundDim}
+                  onChange={(event) => patch({ backgroundDim: Number(event.target.value) })}
+                />
+                <span className="slider-row__value">{Math.round(draft.backgroundDim * 100)}%</span>
+              </div>
+            </div>
+            <p className="field__hint" style={{ margin: 0 }}>
+              A veil over the picture keeps the login text readable on a bright photo. These are this channel's
+              own values — they do not change the app-wide background.
+            </p>
+          </div>
+        ) : null}
       </div>
 
       <div className="field">

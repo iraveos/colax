@@ -117,9 +117,14 @@ export function emptyItem(id: string, now: number = Date.now()): VaultItem {
     security: { totp: null, questions: [] },
     favorite: false,
     needsAttention: false,
-    // On by default: a connected mailbox is no use if no login offers a way
-    // into it. A login that should stay quiet is switched off in the editor.
-    showMail: true,
+    // Off by default, and deliberately so. Mail is per login: connecting a
+    // mailbox for one login used to switch the Messages button on for every
+    // login, so five unrelated logins all loaded the same mailbox's messages.
+    // The login a mailbox belongs to still shows its mail without asking —
+    // `loginShowsMail` reads the linked case as on — so the connection the
+    // user actually made keeps working; everything else is opted in by hand in
+    // the editor's Inbox section, next to the control that connected it.
+    showMail: false,
     mailFilter: 'auto',
     tags: [],
     accentHue: null,
@@ -148,9 +153,10 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     needsAttention: Boolean(raw.needsAttention),
     // Opt-out for the *linked* login (its username is a connected mailbox's
     // address), opt-in for everything else — see `loginShowsMail`. A record
-    // saved before the field existed reads as on, which is the linked case's
-    // default; the one-time linked-only pass is what switches the unrelated
-    // logins off, so nothing here has to guess whether a `true` was a choice.
+    // saved before the field existed reads as on: that record predates the
+    // per-login idea entirely, and the one-time linked-only pass is what
+    // switches the unrelated logins off, so a legacy `true` is never re-read as
+    // a choice. Only *new* logins start switched off (see emptyItem).
     showMail: typeof raw.showMail === 'boolean' ? raw.showMail : true,
     mailFilter: raw.mailFilter === 'matched' || raw.mailFilter === 'recent' ? raw.mailFilter : 'auto',
     accentHue: typeof raw.accentHue === 'number' ? raw.accentHue : null,

@@ -154,6 +154,22 @@ export function cardSizeSummary(view: VaultView, size: CardSizePrefs): string {
   return `${width}px wide, ${Math.round(size.minHeight)}px min`;
 }
 
+/**
+ * The Security section's four groups, in the order they are shown.
+ *
+ * Named here rather than inline so the sub-tab list, the state's initial value
+ * and the panels cannot disagree about the ids — the same reason the Optimize
+ * panel keeps its switch list in optimize.ts.
+ */
+type SecurityGroup = 'locking' | 'clipboard' | 'warnings' | 'confirmations';
+
+const SECURITY_GROUPS: readonly { id: SecurityGroup; label: string; hint: string }[] = [
+  { id: 'locking', label: 'Locking', hint: 'Auto-lock, the vault second factor and the crypto in force' },
+  { id: 'clipboard', label: 'Clipboard', hint: 'What is wiped, and what is watched for' },
+  { id: 'warnings', label: 'Health warnings', hint: 'Stale passwords and addresses, reuse and masking' },
+  { id: 'confirmations', label: 'Confirmations', hint: 'Which actions ask first' },
+];
+
 export function Settings(props: {
   open: boolean;
   onClose: () => void;
@@ -195,6 +211,8 @@ export function Settings(props: {
 
   const hasPassword = protection === 'password';
   const set = (patch: Partial<VaultPreferences>) => void onUpdate(patch);
+  /** Which group of the Security section is showing. See SECURITY_GROUPS. */
+  const [securityGroup, setSecurityGroup] = useState<SecurityGroup>('locking');
 
   /* ---- Optimize ---------------------------------------------------------
      One place to trade eye-candy for CPU, GPU and battery. The app's real
@@ -522,14 +540,17 @@ export function Settings(props: {
             format={(v) => (v === 0 ? 'Off' : v < 0.6 ? 'Calm' : 'Full')}
             onChange={(motion) => set({ motion })}
           />
+          {/* The scale starts at Normal, not below it. It used to reach 0.25 —
+              "Languid" — and every stored value under 1 is pulled up to 1 on
+              load, so the level is gone rather than merely unlabelled. */}
           <Slider
             label="Animation speed"
-            hint="How quickly panels, menus and settings tabs move."
+            hint="How quickly panels, menus and settings tabs move. Faster is never slower to load — a transition is the same work, finished sooner."
             value={prefs.motionSpeed}
-            min={0.25}
+            min={1}
             max={2}
             step={0.25}
-            format={(v) => (v <= 0.5 ? 'Languid' : v < 0.9 ? 'Slow' : v <= 1.2 ? 'Normal' : v < 1.7 ? 'Fast' : 'Instant')}
+            format={(v) => (v <= 1.25 ? 'Normal' : v < 1.75 ? 'Fast' : 'Instant')}
             onChange={(motionSpeed) => set({ motionSpeed })}
           />
           <Slider
@@ -1209,52 +1230,123 @@ export function Settings(props: {
       icon: <ShieldIcon />,
       render: () => (
         <>
-          <Row label="Key derivation" hint="Rounds applied to your password before it can derive the vault key.">
+          {/* Seventeen rows used to sit in one column. Four short groups read as
+              a checklist of what protects the vault instead of a wall of
+              switches nobody scrolls to the end of. */}
+          <SubTabs
+            label="Security groups"
+            tabs={SECURITY_GROUPS}
+            active={securityGroup}
+            onChange={setSecurityGroup}
+          />
+          {securityGroup === 'locking' ? (
+            <>
+              <Row label="Auto-lock" hint="Lock after a period without activity.">
+                <Select
+                  label="Auto-lock"
+                  value={String(prefs.autoLockMinutes)}
+                  options={AUTO_LOCK_CHOICES.map((choice) => ({ value: String(choice.value), label: choice.label }))}
+                  onChange={(next) => set({ autoLockMinutes: Number(next) })}
+                  align="right"
+                />
+              </Row>
+              <Row
+                label="Vault second factor"
+                hint="After the vault opens, require an authenticator code or a recovery answer too. Optional, and per-device."
+                stacked
+              >
+                <SecurityForm
+                  security={prefs.vaultSecurity}
+                  onChange={(vaultSecurity) => set({ vaultSecurity })}
+                  onNotify={onNotify}
+                  label="Colax Vault"
+                />
+              </Row>
+              <Row label="Lock now" hint="Clears the decryption key from memory straight away.">
+                <button
+                  className="btn btn--secondary"
+                  onClick={() => {
+                    onLock();
+                    onClose();
+                  }}
+                >
+                  <LockIcon width="14" height="14" />
+                  Lock
+                </button>
+              </Row>
+              <Row label="Key derivation" hint="Rounds applied to your password before it can derive the vault key.">
             <span className="chip chip--accent">
               <CheckIcon width="11" height="11" />
               PBKDF2-SHA256 · {PBKDF2_ITERATIONS.toLocaleString()} rounds
             </span>
           </Row>
-          <Row label="Encryption" hint="Every login is sealed individually with a fresh nonce.">
-            <span className="chip chip--accent">
-              <CheckIcon width="11" height="11" />
-              AES-256-GCM
-            </span>
-          </Row>
-<Row label="Auto-lock" hint="Lock after a period without activity.">
-            <Select
-              label="Auto-lock"
-              value={String(prefs.autoLockMinutes)}
-              options={AUTO_LOCK_CHOICES.map((choice) => ({ value: String(choice.value), label: choice.label }))}
-              onChange={(next) => set({ autoLockMinutes: Number(next) })}
-              align="right"
-            />
-          </Row>
-<Row label="Clear clipboard" hint="Wipe the clipboard after copying.">
-            <Select
-              label="Clear clipboard"
-              value={String(prefs.clearClipboardSeconds)}
-              options={CLIPBOARD_CHOICES}
-              onChange={(next) => set({ clearClipboardSeconds: Number(next) })}
-              align="right"
-            />
-          </Row>
-          <Row label="Clear clipboard on lock" hint="Adds a wipe to the lock action itself.">
-            <Toggle
-              label="Clear clipboard on lock"
-              checked={prefs.clearClipboardOnLock}
-              onChange={(clearClipboardOnLock) => set({ clearClipboardOnLock })}
-            />
-          </Row>
-<Row label="Warn on reused passwords" hint="Tell you before opening a site whose password is shared.">
-            <Toggle
-              label="Warn on reuse"
-              checked={prefs.warnOnReuse}
-              onChange={(warnOnReuse) => set({ warnOnReuse })}
-            />
-          </Row>
-          <Row
-            label="Flag stale passwords"
+              <Row label="Encryption" hint="Every login is sealed individually with a fresh nonce.">
+                <span className="chip chip--accent">
+                  <CheckIcon width="11" height="11" />
+                  AES-256-GCM
+                </span>
+              </Row>
+            </>
+          ) : null}
+
+          {securityGroup === 'clipboard' ? (
+            <>
+              <Row label="Clear clipboard" hint="Wipe the clipboard after copying.">
+                <Select
+                  label="Clear clipboard"
+                  value={String(prefs.clearClipboardSeconds)}
+                  options={CLIPBOARD_CHOICES}
+                  onChange={(next) => set({ clearClipboardSeconds: Number(next) })}
+                  align="right"
+                />
+              </Row>
+              <Row label="Clear clipboard on lock" hint="Adds a wipe to the lock action itself.">
+                <Toggle
+                  label="Clear clipboard on lock"
+                  checked={prefs.clearClipboardOnLock}
+                  onChange={(clearClipboardOnLock) => set({ clearClipboardOnLock })}
+                />
+              </Row>
+              <Row label="Detect logins on the clipboard" hint="Watches for an email and a password copied together, and offers to save them.">
+                <Toggle
+                  label="Clipboard detection"
+                  checked={prefs.clipboardCapture}
+                  onChange={(clipboardCapture) => set({ clipboardCapture })}
+                />
+              </Row>
+              <Row label="Save clipboard logins straight away" hint="Skips the confirmation prompt from clipboard detection.">
+                <Toggle
+                  label="Auto-save clipboard logins"
+                  checked={prefs.clipboardAutoSave}
+                  onChange={(clipboardAutoSave) => set({ clipboardAutoSave })}
+                />
+              </Row>
+            </>
+          ) : null}
+
+          {securityGroup === 'warnings' ? (
+            <>
+              <Row
+                label="Warn on reused passwords"
+                hint="A tappable notice, not a dialog: it points at the Dashboard, which lists the shared logins."
+              >
+                <Toggle
+                  label="Warn on reuse"
+                  checked={prefs.warnOnReuse}
+                  onChange={(warnOnReuse) => set({ warnOnReuse })}
+                />
+              </Row>
+              <Row
+                label="Tag reused passwords"
+                hint="Files every login sharing a password under a “Reused password” tag, so the group has a sidebar row of its own."
+              >
+                <Toggle
+                  label="Tag reused passwords"
+                  checked={prefs.autoTagReused}
+                  onChange={(autoTagReused) => set({ autoTagReused })}
+                />
+              </Row>
+          <Row label="Flag stale passwords"
             hint="A password unchanged for this long counts as stale in the health views."
           >
             <Select
@@ -1286,72 +1378,41 @@ export function Settings(props: {
               align="right"
             />
           </Row>
-          <Row label="Confirm before export" hint="Ask for a password to protect the backup file.">
-            <Toggle
-              label="Confirm before export"
-              checked={prefs.confirmBeforeExport}
-              onChange={(confirmBeforeExport) => set({ confirmBeforeExport })}
-            />
-          </Row>
-          <Row label="Confirm deletions" hint="Ask before removing a login.">
-            <Toggle
-              label="Confirm deletions"
-              checked={prefs.confirmDeletes}
-              onChange={(confirmDeletes) => set({ confirmDeletes })}
-            />
-          </Row>
-          <Row label="Copy toasts" hint="Show a small confirmation after copying.">
-            <Toggle
-              label="Copy toasts"
-              checked={prefs.copyToasts}
-              onChange={(copyToasts) => set({ copyToasts })}
-            />
-          </Row>
-          <Row
-            label="Vault second factor"
-            hint="After the vault opens, require an authenticator code or a recovery answer too. Optional, and per-device."
-            stacked
-          >
-            <SecurityForm
-              security={prefs.vaultSecurity}
-              onChange={(vaultSecurity) => set({ vaultSecurity })}
-              onNotify={onNotify}
-              label="Colax Vault"
-            />
-          </Row>
-          <Row label="Detect logins on the clipboard" hint="Watches for an email and a password copied together, and offers to save them.">
-            <Toggle
-              label="Clipboard detection"
-              checked={prefs.clipboardCapture}
-              onChange={(clipboardCapture) => set({ clipboardCapture })}
-            />
-          </Row>
-          <Row label="Save clipboard logins straight away" hint="Skips the confirmation prompt from clipboard detection.">
-            <Toggle
-              label="Auto-save clipboard logins"
-              checked={prefs.clipboardAutoSave}
-              onChange={(clipboardAutoSave) => set({ clipboardAutoSave })}
-            />
-          </Row>
-          <Row label="Mask email addresses" hint="Shows the first letters only on cards and messages. Copying still copies the full address.">
-            <Toggle
-              label="Mask email addresses"
-              checked={prefs.maskEmails}
-              onChange={(maskEmails) => set({ maskEmails })}
-            />
-          </Row>
-          <Row label="Lock now" hint="Clears the decryption key from memory straight away.">
-            <button
-              className="btn btn--secondary"
-              onClick={() => {
-                onLock();
-                onClose();
-              }}
-            >
-              <LockIcon width="14" height="14" />
-              Lock
-            </button>
-          </Row>
+              <Row label="Mask email addresses" hint="Shows the first letters only on cards and messages. Copying still copies the full address.">
+                <Toggle
+                  label="Mask email addresses"
+                  checked={prefs.maskEmails}
+                  onChange={(maskEmails) => set({ maskEmails })}
+                />
+              </Row>
+            </>
+          ) : null}
+
+          {securityGroup === 'confirmations' ? (
+            <>
+              <Row label="Confirm before export" hint="Ask for a password to protect the backup file.">
+                <Toggle
+                  label="Confirm before export"
+                  checked={prefs.confirmBeforeExport}
+                  onChange={(confirmBeforeExport) => set({ confirmBeforeExport })}
+                />
+              </Row>
+              <Row label="Confirm deletions" hint="Ask before removing a login.">
+                <Toggle
+                  label="Confirm deletions"
+                  checked={prefs.confirmDeletes}
+                  onChange={(confirmDeletes) => set({ confirmDeletes })}
+                />
+              </Row>
+              <Row label="Copy toasts" hint="Show a small confirmation after copying.">
+                <Toggle
+                  label="Copy toasts"
+                  checked={prefs.copyToasts}
+                  onChange={(copyToasts) => set({ copyToasts })}
+                />
+              </Row>
+            </>
+          ) : null}
         </>
       ),
     },
@@ -1732,8 +1793,22 @@ export function Settings(props: {
           >
             <Toggle
               label="Reduce motion"
+              // Off returns to full motion at the top of the speed slider, which
+              // is the shipped pace: switching animation back on must not also
+              // hand back a slow one.
               checked={prefs.motion <= 0.001}
-              onChange={(on) => set({ motion: on ? 0 : 1, motionSpeed: on ? 0.25 : 1 })}
+              onChange={(on) => set({ motion: on ? 0 : 1, motionSpeed: on ? 1 : DEFAULT_PREFERENCES.motionSpeed })}
+            />
+          </Row>
+
+          <Row
+            label="Micro-animations"
+            hint="The small transitions on the controls that never had any — buttons, chips, tabs, rows and badges. They run only while you interact, so the cost is a few frames per click rather than a cost per second."
+          >
+            <Toggle
+              label="Micro-animations"
+              checked={prefs.microMotion}
+              onChange={(microMotion) => set({ microMotion })}
             />
           </Row>
 
@@ -2222,6 +2297,50 @@ function Row({
         {hint ? <div className="setting__hint">{hint}</div> : null}
       </div>
       <div className="setting__control">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * A row of sub-tabs inside one settings section.
+ *
+ * The window's own tabs answer "which area", and on a section with seventeen
+ * rows that is not enough: Security mixed auto-lock, clipboard wiping, health
+ * warnings, confirmation prompts and the vault's second factor into one column,
+ * so finding one switch meant reading all of them. A second level keeps the
+ * window's shape (one rail, one panel) and gives each group its own short list —
+ * which is what "tabs inside the tabs" asks for.
+ *
+ * Deliberately not a nested router or a second rail: the sub-tab lives inside
+ * the section's own content, so it can never take over the window's tab state,
+ * and a section that does not need groups simply does not render one.
+ */
+function SubTabs<T extends string>({
+  label,
+  tabs,
+  active,
+  onChange,
+}: {
+  label: string;
+  tabs: readonly { id: T; label: string; hint?: string }[];
+  active: T;
+  onChange: (id: T) => void;
+}) {
+  return (
+    <div className="subtabs" role="tablist" aria-label={label}>
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          role="tab"
+          className="subtabs__tab"
+          aria-selected={tab.id === active}
+          onClick={() => onChange(tab.id)}
+          title={tab.hint}
+        >
+          {tab.label}
+        </button>
+      ))}
     </div>
   );
 }

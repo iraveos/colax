@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { estimateStrength } from '../crypto/passwords.ts';
 import { findWeakItems, hostnameOf, relativeTime, staleDaysFor, type VaultItem } from '../vault/types.ts';
 import { maskEmail } from '../vault/site-intel.ts';
@@ -49,6 +49,10 @@ export function Dashboard({
   onAddLogin,
   onNewChannel,
   onBulkAdd,
+  /** A section to jump to when the screen opens, set by a notification. */
+  focus,
+  /** Called once the focus has been honoured. */
+  onFocusHandled,
 }: {
   channels: Channel[];
   tags: Tag[];
@@ -69,7 +73,24 @@ export function Dashboard({
   onNewChannel: () => void;
   /** Opens the bulk-add dialog. */
   onBulkAdd: () => void;
+  /**
+   * The section the screen should reveal on arrival. 'reused' scrolls the
+   * reused-password card into view and flashes it, which is where the
+   * notification about shared passwords sends you.
+   */
+  focus?: 'reused' | null;
+  onFocusHandled?: () => void;
 }) {
+  // Arriving from the reused-password notification: bring the card into view
+  // once, then hand the focus back so a later visit is an ordinary one.
+  const reusedCard = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (focus !== 'reused') return;
+    reusedCard.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const done = setTimeout(() => onFocusHandled?.(), 1600);
+    return () => clearTimeout(done);
+  }, [focus, onFocusHandled]);
+
   const health = useMemo(() => {
     const now = Date.now();
     // Deliberately the same source the "Weak or reused" channel filters on.
@@ -778,7 +799,12 @@ export function Dashboard({
 
             {/* Reuse clusters. The actionable one: each row is one password and
                 every login that shares it. */}
-            <article className="dash-card" tabIndex={0}>
+            <article
+              className="dash-card"
+              tabIndex={0}
+              ref={reusedCard}
+              data-flash={focus === 'reused' ? '' : undefined}
+            >
               <h3 className="dash-card__title">Reused passwords</h3>
               {reuseClusters.length === 0 ? (
                 <p className="dash-card__empty">

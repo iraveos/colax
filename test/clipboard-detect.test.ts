@@ -186,6 +186,58 @@ test('a labelled title beats a bare leading line', () => {
   assert.equal(out?.title, 'Real Name');
 });
 
+/**
+ * The reported paste: three bare lines, name first.
+ *
+ * "main / xxx@gmail.com / x" is how a login is written out by hand, and the
+ * line before the address is the name it belongs under. Before this it parsed
+ * as nothing at all (three lines matched none of the two-line shapes), so the
+ * paste either vanished or — in a `-`-divided bulk block — came out with
+ * "main" glued onto the front of the password.
+ */
+test('a bare name line above the address becomes the title', () => {
+  assert.deepEqual(detect('main\nxxx@gmail.com\nx'), {
+    username: 'xxx@gmail.com',
+    password: 'x',
+    title: 'main',
+  });
+  // A longer, human name works the same way.
+  assert.deepEqual(detect('Work Gmail\nme@x.com\nhunter2'), {
+    username: 'me@x.com',
+    password: 'hunter2',
+    title: 'Work Gmail',
+  });
+  // No name line: the address and password still parse, with no invented title.
+  assert.deepEqual(detect('me@x.com\none\ntwo'), { username: 'me@x.com', password: 'onetwo' });
+});
+
+test('a bare block refuses to guess when the lines are ambiguous', () => {
+  // Two names before the address is prose, not a credential block.
+  assert.equal(detect('first line\nsecond line\nme@x.com\nhunter2'), null);
+  // A password-looking line above the address is not a title, so nothing is
+  // created rather than a login named "hunter2".
+  assert.equal(detect('hunter2\nme@x.com\nx'), null);
+  // Prose after the address is not a password.
+  assert.equal(detect('main\nme@x.com\nsee the notes below'), null);
+  // Two addresses in one block: a bulk paste, not one login.
+  assert.equal(detect('main\nme@x.com\nyou@z.org\nhunter2'), null);
+});
+
+test('a bulk block reads its name line instead of gluing it to the password', () => {
+  assert.deepEqual(detectBulk('main\nme@x.com\nhunter2'), [
+    { username: 'me@x.com', password: 'hunter2', title: 'main' },
+  ]);
+  assert.deepEqual(detectBulk('main\nme@x.com\nhunter2\n-\nside\nyou@z.org\ns3cr3t'), [
+    { username: 'me@x.com', password: 'hunter2', title: 'main' },
+    { username: 'you@z.org', password: 's3cr3t', title: 'side' },
+  ]);
+  // A password is never promoted to a name: a block written password-first is
+  // genuinely ambiguous, so nothing is created rather than a login titled
+  // "hunter2" with half a password. (The plain two-line pair, in either order,
+  // is still read by `detect` — that shape has no ambiguity to resolve.)
+  assert.equal(detectBulk('hunter2\nme@x.com\ns3cr3t'), null);
+});
+
 test('a glued address+password splits on the real TLD', () => {
   assert.deepEqual(splitGluedEmail('me@x.comhunter2'), { username: 'me@x.com', password: 'hunter2' });
   // `com` wins over `co`: the longest *valid* TLD, not the longest letters.

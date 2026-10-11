@@ -1,17 +1,50 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type RefObject,
+} from 'react';
 import { VaultService } from '../vault/vault-service.ts';
 import {
   IndexedDbVaultStorage,
   MemoryVaultStorage,
+  appendHistory,
+  historyEventsFor,
   normalisePreferences,
   DEFAULT_PREFERENCES,
   type ThemeMode,
   type VaultPreferences,
   type VaultStorage,
 } from '../vault/storage.ts';
+import { appActiveNow, onAppActiveChange, watchAppActivity } from '../lib/activity.ts';
 import type { VaultItem } from '../vault/types.ts';
 import type { Channel } from '../vault/channels.ts';
 import type { VaultProtection } from '../crypto/vault-crypto.ts';
+
+/**
+ * Whether the window is being used: visible *and* focused.
+ *
+ * The one component-level reader of `lib/activity`. App renders its whole shell
+ * differently when this is false (an attribute that pauses the ambient mesh,
+ * the drifting grain and the list entrances), and the polling loops read the
+ * same source directly through `appActiveNow`.
+ */
+export function useAppActive(): boolean {
+  const [active, setActive] = useState(appActiveNow);
+  useEffect(() => {
+    const stop = watchAppActivity();
+    const unsubscribe = onAppActiveChange(setActive);
+    setActive(appActiveNow());
+    return () => {
+      unsubscribe();
+      stop();
+    };
+  }, []);
+  return active;
+}
 
 function pickStorage(): VaultStorage {
   // IndexedDB is the real store. The in-memory fallback keeps the app usable
@@ -133,31 +166,59 @@ export function useVault() {
     setStatus('locked');
   }, [service, sync]);
 
-  /**
-   * Wraps a mutation so the view always reflects the new ciphertext-backed state.
-   *
-   * Returns the action's result, so callers that create something (a login id,
-   * a channel id) can use it afterwards. Callers that ignore the return value
-   * behave exactly as before.
-   */
+  /** * Wraps a mutation so the view always reflects the new ciphertext-backed state.
+ *
+ * Returns the action's result, so callers that create something (a login id,
+ * a channel id) can use it afterwards. Callers that ignore the return value
+ * behave exactly as before.
+ *
+ * `log: false` is for a change the History channel itself is performing. The
+ * log is meant to describe what happened to logins; a restore triggered from a
+ * log row would otherwise write a fresh row every time, so the log grew every
+ * time the log was used. The change still happens, is still undoable, and still
+ * shows in the item's own fields — it just does not append a history event.
+ */
 const mutate = useCallback(
-    async <T,>(action: () => Promise<T>): Promise<T> => {
+    async <T,>(action: () => Promise<T>, options: { log?: boolean } = {}): Promise<T> => {
       // Snapshot before the change, so undo has somewhere to go back to.
       pushHistory();
+      const before = [...(service.items ?? [])];
       const result = await action();
       sync();
+      // The History channel's log, written here rather than at each call site.
+      // This is the one place that sees both sides of *every* mutation — paste,
+      // editor save, bulk delete, restore — so nothing can change a login without
+      // the log noticing, and no call site can forget to record it.
+      const events = options.log === false ? [] : historyEventsFor(before, service.items ?? []);
+      if (events.length > 0) {
+        const prefs = { ...prefsRef.current, history: appendHistory(prefsRef.current.history, events) };
+        prefsRef.current = prefs;
+        setPrefs(prefs);
+        await service.savePreferences(prefs);
+      }
       return result;
     },
-    [sync, pushHistory],
+    [service, sync, pushHistory],
   );
 
-/** Restores a snapshot and pushes the current state onto the opposite stack. */
+/**
+ * Restores a snapshot and pushes the current state onto the opposite stack.
+ *
+ * Deliberately does NOT apply the appearance here. This used to call
+ * `applyAppearance(snapshot.prefs)` on the spot, which repainted the *app-wide*
+ * backdrop for the frame before React re-rendered — and the effect that knows
+ * about the open channel's own picture then put that one back. Every undo of a
+ * preference change was therefore a one-frame flash of the wrong background,
+ * which is what Ctrl+Z looked like. The App effect is the single writer now: it
+ * runs after the state lands and sees both the restored preferences and the
+ * channel context, so there is only ever one backdrop change, and it is the
+ * right one.
+ */
 const restore = useCallback(
     async (snapshot: HistoryEntry) => {
       await service.replaceItems(snapshot.items);
       setPrefs(snapshot.prefs);
       prefsRef.current = snapshot.prefs;
-      applyAppearance(snapshot.prefs);
       await service.savePreferences(snapshot.prefs);
       sync();
     },
@@ -259,7 +320,10 @@ const updatePrefs = useCallback(
       const next = normalisePreferences({ ...prefsRef.current, ...patch });
       prefsRef.current = next;
       setPrefs(next);
-      applyAppearance(next);
+      // No eager `applyAppearance` here either — same double-write as `restore`
+      // above, and the same one-frame flash whenever a channel supplied its own
+      // background. The App effect applies the new appearance right after this
+      // render, which is soon enough to feel immediate.
       await service.savePreferences(next);
     },
     [service],
@@ -307,6 +371,9 @@ export function applyAppearance(prefs: VaultPreferences): void {
   root.style.setProperty('--glass-alpha', prefs.reduceTransparency ? '0' : '1');
   root.style.setProperty('--ui-scale', String(prefs.textScale / 100));
   root.dataset.motion = prefs.motion === 0 ? 'off' : 'on';
+  // Micro-animations are a separate switch from motion, so switching them off
+  // leaves the large transitions alone (and the other way round).
+  root.dataset.micro = prefs.microMotion ? 'on' : 'off';
   // One scalar every transition divides by, so the speed control is immediate
   // and consistent rather than per-component.
   root.style.setProperty('--motion-speed', String(prefs.motionSpeed));
@@ -369,10 +436,16 @@ export function applyChannelAppearance(prefs: VaultPreferences, channel: Channel
 
   const image = channel.backgroundImage || prefs.backgroundImage;
   if (image) {
+    // A channel that supplies its own picture supplies its own strength, blur
+    // and veil with it. Otherwise "brighter, for this one channel" meant editing
+    // the app-wide background and changing every other channel along with it. A
+    // channel with no picture of its own still borrows the preference's three
+    // values, so the app-wide photo is rendered exactly as it always was.
+    const own = channel.backgroundImage;
     root.style.setProperty('--bg-image', `url("${cssUrl(image)}")`);
-    root.style.setProperty('--bg-image-opacity', String(prefs.backgroundOpacity));
-    root.style.setProperty('--bg-image-blur', String(prefs.backgroundBlur));
-    root.style.setProperty('--bg-dim', String(prefs.backgroundDim));
+    root.style.setProperty('--bg-image-opacity', String(own ? channel.backgroundOpacity : prefs.backgroundOpacity));
+    root.style.setProperty('--bg-image-blur', String(own ? channel.backgroundBlur : prefs.backgroundBlur));
+    root.style.setProperty('--bg-dim', String(own ? channel.backgroundDim : prefs.backgroundDim));
   } else {
     root.style.setProperty('--bg-image', 'none');
     root.style.setProperty('--bg-image-opacity', '0');
@@ -406,6 +479,12 @@ export interface Toast {
   id: number;
   message: string;
   tone: 'ok' | 'error';
+  /**
+   * When set the toast becomes a button: pressing it runs this and dismisses.
+   * Used by the reused-password reminder, which is a "take me there" notice
+   * rather than an instruction to read.
+   */
+  onSelect?: () => void;
 }
 
 export function useToasts() {
@@ -417,9 +496,9 @@ export function useToasts() {
   }, []);
 
   const notify = useCallback(
-    (message: string, tone: Toast['tone'] = 'ok', duration = 2200) => {
+    (message: string, tone: Toast['tone'] = 'ok', duration = 2200, onSelect?: () => void) => {
       const id = (nextId.current += 1);
-      setToasts((current) => [...current.slice(-2), { id, message, tone }]);
+      setToasts((current) => [...current.slice(-2), { id, message, tone, onSelect }]);
       setTimeout(() => dismiss(id), duration);
     },
     [dismiss],
@@ -607,14 +686,87 @@ export function useHotkeys(
   }, [enabled, allowInInputs]);
 }
 
-/** Ticks once a second; drives TOTP codes and countdowns. */
-export function useNow(intervalMs = 1000): number {
-  const [now, setNow] = useState(() => Date.now());
+/**
+ * Applies a draft a short moment after the last change.
+ *
+ * Editors that live-apply their fields (folders, channels) use this instead of
+ * waiting for a Save click — an edit should just work — and the debounce keeps
+ * a slider drag from writing on every frame. `apply` is read through a ref so a
+ * fresh closure each render cannot restart the timer, and the first run after
+ * mount is skipped: opening an editor must not write back the record it read.
+ */
+export function useDraftAutoSave<T>(
+  draft: T,
+  enabled: boolean,
+  apply: (draft: T) => void,
+  delayMs = 350,
+): void {
+  const applyRef = useRef(apply);
+  applyRef.current = apply;
+  const first = useRef(true);
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(timer);
-  }, [intervalMs]);
-  return now;
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    if (!enabled) return;
+    const timer = setTimeout(() => applyRef.current(draft), delayMs);
+    return () => clearTimeout(timer);
+  }, [draft, enabled, delayMs]);
+}
+
+/**
+ * One shared once-a-second clock for the whole app.
+ *
+ * This used to be a private interval per component, which meant one running
+ * timer per rendered login row — the countdowns and TOTP codes on a long list
+ * cost a wake-up each, every second, whether or not anyone was looking. One
+ * shared clock is the same information for a single timer, and while the window
+ * is in the background it does no work at all: the interval is still there
+ * (Chromium throttles it to once a minute anyway) but it only publishes when
+ * the window is in use, and coming back to the app publishes immediately so a
+ * countdown is correct the instant it is visible rather than a second later.
+ */
+let clockNow = Date.now();
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+let clockStopWatch: (() => void) | null = null;
+const clockListeners = new Set<() => void>();
+
+function emitClock(): void {
+  clockNow = Date.now();
+  for (const listener of clockListeners) listener();
+}
+
+function subscribeClock(listener: () => void): () => void {
+  clockListeners.add(listener);
+  if (clockListeners.size === 1) {
+    clockTimer = setInterval(() => {
+      if (appActiveNow()) emitClock();
+    }, 1000);
+    clockStopWatch = onAppActiveChange((active) => {
+      if (active) emitClock();
+    });
+  }
+  return () => {
+    clockListeners.delete(listener);
+    if (clockListeners.size === 0) {
+      if (clockTimer !== null) clearInterval(clockTimer);
+      clockTimer = null;
+      clockStopWatch?.();
+      clockStopWatch = null;
+    }
+  };
+}
+
+/**
+ * The current time, once a second, from the shared clock.
+ *
+ * The parameter is kept for call-site readability — every caller wants "about
+ * once a second" — but the cadence is the shared clock's; a second timer for a
+ * second cadence would defeat the point of sharing it.
+ */
+export function useNow(_intervalMs = 1000): number {
+  return useSyncExternalStore(subscribeClock, () => clockNow, () => clockNow);
 }
 
 /** Calls `handler` on Escape and on a click outside the ref'd element. */

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { CHANNEL_ACCENTS, CHANNEL_ICONS, createFolder, type ChannelAccent, type Folder } from '../vault/channels.ts';
 import { MAX_APP_BACKGROUND_BYTES } from '../vault/types.ts';
 import { readImageFile } from './card-art.ts';
+import { useDraftAutoSave } from './hooks.ts';
 import { Modal } from './primitives.tsx';
 import { SecurityForm } from './SecurityForm.tsx';
 import {
@@ -33,10 +34,18 @@ const ICON_SET: Record<string, typeof InboxIcon> = {
 
 const ACCENT_HUES: Record<string, number> = { slate: 212, sage: 152, dusk: 268, clay: 28 };
 
-/** Editor for a sidebar folder: name, icon, hue, theme, image and its own lock. */
+/* * Editor for a sidebar folder: name, icon, hue, theme, image and its own lock.
+ *
+ * Every field lands as it is changed. There is no Save step on an existing
+ * folder: the name, colour, picture and image controls write themselves a
+ * moment after the last edit, so what you see in the rail while the editor is
+ * open is already the stored folder. A brand new folder still needs its Add
+ * button — there is nothing to update until it exists and has a name.
+ */
 export function FolderEditor({
   folder,
   onSave,
+  onAutosave,
   onDelete,
   onClose,
   onNotify,
@@ -44,6 +53,8 @@ export function FolderEditor({
   /** null means "create a new folder". */
   folder: Folder | null;
   onSave: (next: Folder) => void;
+  /** Writes a change to an existing folder without announcing it. */
+  onAutosave?: (next: Folder) => void;
   onDelete?: (id: string) => void;
   onClose: () => void;
   onNotify: (message: string) => void;
@@ -55,6 +66,12 @@ export function FolderEditor({
   const fileInput = useRef<HTMLInputElement>(null);
 
   const patch = (next: Partial<Folder>) => setDraft((current) => ({ ...current, ...next }));
+
+  // Only an existing, named folder autosaves: a half-typed new one would
+  // otherwise create itself the moment a letter was pressed.
+  useDraftAutoSave(draft, Boolean(folder && onAutosave && draft.name.trim()), (next) =>
+    onAutosave?.({ ...next, name: next.name.trim() }),
+  );
 
   async function onPick(file: File | undefined) {
     if (!file) return;
@@ -100,12 +117,21 @@ export function FolderEditor({
             </button>
           ) : null}
           <span style={{ flex: 1 }} />
-          <button className="btn btn--secondary" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn btn--primary" onClick={save} disabled={!draft.name.trim()}>
-            {folder ? 'Save' : 'Add folder'}
-          </button>
+          {folder ? (
+            // Already written as it was edited; this only closes the window.
+            <button className="btn btn--primary" onClick={onClose}>
+              Done
+            </button>
+          ) : (
+            <>
+              <button className="btn btn--secondary" onClick={onClose}>
+                Cancel
+              </button>
+              <button className="btn btn--primary" onClick={save} disabled={!draft.name.trim()}>
+                Add folder
+              </button>
+            </>
+          )}
         </>
       }
     >
@@ -212,6 +238,44 @@ export function FolderEditor({
               ) : null}
             </div>
             <input ref={fileInput} type="file" accept="image/*" className="sr-only" onChange={(event) => void onPick(event.target.files?.[0])} />
+            <p className="field__hint">
+              A backdrop for this folder: it fills the app while the folder is open, and paints the folder's own
+              row in the rail.
+            </p>
+            {/* The same three controls as a channel's, because the two do the
+                same thing — a folder's picture is just shown over a subtree. */}
+            {draft.backgroundImage ? (
+              <div className="bg-look">
+                {([
+                  { id: 'folder-bg-opacity', label: 'Strength', key: 'backgroundOpacity', min: 0, max: 1, step: 0.05, format: (v: number) => `${Math.round(v * 100)}%` },
+                  { id: 'folder-bg-blur', label: 'Blur', key: 'backgroundBlur', min: 0, max: 40, step: 1, format: (v: number) => `${Math.round(v)}px` },
+                  { id: 'folder-bg-dim', label: 'Veil', key: 'backgroundDim', min: 0, max: 0.9, step: 0.05, format: (v: number) => `${Math.round(v * 100)}%` },
+                ] as const).map((control) => (
+                  <div className="bg-look__row" key={control.id}>
+                    <label className="field__label" htmlFor={control.id}>
+                      {control.label}
+                    </label>
+                    <div className="slider-row" style={{ flex: 1 }}>
+                      <input
+                        id={control.id}
+                        className="slider"
+                        type="range"
+                        min={control.min}
+                        max={control.max}
+                        step={control.step}
+                        value={draft[control.key]}
+                        onChange={(event) => patch({ [control.key]: Number(event.target.value) })}
+                      />
+                      <span className="slider-row__value">{control.format(draft[control.key])}</span>
+                    </div>
+                  </div>
+                ))}
+                <p className="field__hint" style={{ margin: 0 }}>
+                  A veil over the picture keeps row text readable on a bright photo. These are the folder's own
+                  values — they do not change the app-wide background.
+                </p>
+              </div>
+            ) : null}
           </div>
         </>
       ) : (

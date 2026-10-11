@@ -13,6 +13,7 @@
  */
 
 import { hostnameOf } from './types.ts';
+import { createTag, type Tag } from './channels.ts';
 
 /** A login captured from a page. */
 export interface Capture {
@@ -397,6 +398,48 @@ function tagKey(name: string): string {
  * Substring and prefix matching on purpose: "Email" should be found for
  * "emails", and "work stuff" for "Work". Exact normalised equality wins outright.
  */
+/**
+ * Resolves the tags a brand-new login should carry.
+ *
+ * Two sources, in this order:
+ *
+ *  1. `inherited` — the tags of the channel (or, for a folder, the union of its
+ *     channels' tags) that is open when the login arrives. Pasting a login while
+ *     "Work" is selected should file it under Work rather than leave it in
+ *     Unassigned, and the same goes for a bulk paste. Only ids that still exist
+ *     in the catalogue are kept, so a stale inherited id cannot be written.
+ *  2. The draft itself — its website, and the email provider behind its address
+ *     — but only when automatic tagging is on. Off means off, everywhere.
+ *
+ * The catalogue comes back with the ids because a suggestion that is not in it
+ * yet has to be created, and that write belongs to the caller, not to this pure
+ * function.
+ */
+export function tagIdsForDraft(
+  draft: { url?: string; username?: string },
+  inherited: readonly string[],
+  catalogue: Tag[],
+  options: { autoTag: boolean },
+): { tagIds: string[]; catalogue: Tag[] } {
+  const tagIds = [...new Set(inherited.filter((id) => catalogue.some((tag) => tag.id === id)))];
+  let next = catalogue;
+  if (options.autoTag) {
+    for (const suggestion of suggestTagsForDraft(draft)) {
+      const existing = findSimilarTag(suggestion.name, next.map((tag) => ({ id: tag.id, name: tag.name })));
+      let id: string;
+      if (existing) {
+        id = existing.id;
+      } else {
+        const created = createTag(suggestion.name, next);
+        next = [...next, created];
+        id = created.id;
+      }
+      if (!tagIds.includes(id)) tagIds.push(id);
+    }
+  }
+  return { tagIds, catalogue: next };
+}
+
 export function findSimilarTag(name: string, catalogue: { id: string; name: string }[]): { id: string; name: string } | null {
   const key = tagKey(name);
   if (!key) return null;

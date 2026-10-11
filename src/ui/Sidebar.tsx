@@ -11,6 +11,7 @@ import type { Channel, Folder, SidebarEntry } from '../vault/channels.ts';
 import { moveSidebarEntry } from '../vault/channels.ts';
 import type { SidebarLabels } from '../vault/storage.ts';
 import {
+  ClockIcon,
   CloudIcon,
   EyeOffIcon,
   FlagIcon,
@@ -41,6 +42,7 @@ export const CHANNEL_ICONS_MAP: Record<string, typeof InboxIcon> = {
   cloud: CloudIcon,
   grid: GridIcon,
   folder: FolderIcon,
+  clock: ClockIcon,
 };
 
 export function Sidebar({
@@ -60,6 +62,10 @@ export function Sidebar({
   showCompactButton = true,
   showSettingsButton = true,
   showHideSidebarButton = true,
+  selectedRows,
+  onRowClick,
+  onBulkAction,
+  onBulkMove,
   onHideChrome,
   onSelect,
   onReorder,
@@ -106,6 +112,22 @@ export function Sidebar({
   showHideSidebarButton?: boolean;
   /** Right-click on a hideable button: App opens its Hide menu. */
   onHideChrome?: (id: 'sidebar-add' | 'footer-settings' | 'footer-lock' | 'footer-shortcuts' | 'footer-compact' | 'footer-hide', event: ReactMouseEvent) => void;
+  /**
+   * Rows picked with click-modifiers: channel ids and `folder:<id>`... Ids are
+   * the same strings the drop targets and folder counts already use, so a
+   * selection and a dragged entry cannot mean different things.
+   */
+  selectedRows?: ReadonlySet<string>;
+  /**
+   * A row was clicked. Modifier-clicks are handed up rather than acted on here:
+   * the selection lives in App (which can see the whole tree, the menus and the
+   * hide lists), and the rail stays a renderer.
+   */
+  onRowClick?: (id: string, event: ReactMouseEvent) => void;
+  /** One bulk action over everything selected. */
+  onBulkAction?: (action: 'hide' | 'show' | 'delete' | 'clear') => void;
+  /** Opens the "move to folder" picker for the selection. */
+  onBulkMove?: (event: ReactMouseEvent) => void;
   onSelect: (id: string) => void;
   onReorder: (next: SidebarEntry[]) => void;
   onToggleFolder: (folderId: string) => void;
@@ -135,6 +157,10 @@ export function Sidebar({
   const folderById = new Map(folders.map((folder) => [folder.id, folder]));
   const hidden = new Set(hiddenChannels);
   const hiddenFolderIds = new Set(hiddenFolders);
+  const selected = selectedRows ?? new Set<string>();
+  const multiSelected = selected.size > 1;
+  /** Rows and folders alone: a separator is not something to hide or delete. */
+  const selectableSelected = [...selected].filter((id) => id !== '' && channelById.has(id) || folderById.has(id));
   // Every channel hidden (or none present at all): the rail would render just
   // the footer, so say where the channels went instead of looking broken.
   // Folders always render — even empty — so a new folder is visible the
@@ -229,6 +255,28 @@ export function Sidebar({
     'data-over': overZone?.list === list && overZone.index === index ? '' : undefined,
   });
 
+  /**
+   * The CSS variables a row with its own picture needs.
+   *
+   * Written per row rather than into a shared class because every channel and
+   * folder carries its own strength and veil. The URL is escaped for a CSS
+   * `url()` token: an uploaded data URL is arbitrary bytes, and one unescaped
+   * quote in it would end the token and break the rest of the stylesheet.
+   */
+  const bandStyle = (
+    backgroundImage: string,
+    hue: number,
+    look: { backgroundOpacity: number; backgroundDim: number },
+  ): React.CSSProperties => {
+    const style: Record<string, string> = { '--channel-h': String(hue) };
+    if (backgroundImage) {
+      style['--row-image'] = `url("${backgroundImage.replace(/["'()\\\n\r]/g, '\\$&')}")`;
+      style['--row-strength'] = String(look.backgroundOpacity);
+      style['--row-dim'] = `hsl(220 24% 6% / ${look.backgroundDim})`;
+    }
+    return style as React.CSSProperties;
+  };
+
   const channelRow = (channel: Channel, list: string, index: number) => {
     const Icon = CHANNEL_ICONS_MAP[channel.icon] ?? LayersIcon;
     const count = counts[channel.id] ?? 0;
@@ -245,10 +293,18 @@ export function Sidebar({
       >
         <button
           className="nav-item"
-          style={{ ['--channel-h' as string]: String(channel.hue) }}
+          style={bandStyle(channel.backgroundImage, channel.hue, channel)}
           aria-current={activeId === channel.id}
-          onClick={() => onSelect(channel.id)}
-          title={narrowRail ? channel.name : `${channel.name} — right-click to edit`}
+          data-has-bg={channel.backgroundImage ? true : undefined}
+          data-selected={selected.has(channel.id) || undefined}
+          onClick={(event) =>
+            onRowClick ? onRowClick(channel.id, event) : onSelect(channel.id)
+          }
+          title={
+            narrowRail
+              ? channel.name
+              : `${channel.name} — right-click to edit, Ctrl+click to pick several`
+          }
         >
           <span className="nav-item__dot" aria-hidden="true" />
           {showIcon ? (
@@ -308,9 +364,17 @@ export function Sidebar({
           <div
             className="nav-item nav-item--folder"
             aria-current={active}
-            style={{ ['--channel-h' as string]: String(folder.hue) }}
-            onClick={() => onSelect(`folder:${folder.id}`)}
-            title={narrowRail ? folder.name : `${folder.name} — right-click to edit`}
+            data-selected={selected.has(`folder:${folder.id}`) || undefined}
+            data-has-bg={folder.backgroundImage ? true : undefined}
+            style={bandStyle(folder.backgroundImage, folder.hue, folder)}
+            onClick={(event) =>
+              onRowClick ? onRowClick(`folder:${folder.id}`, event) : onSelect(`folder:${folder.id}`)
+            }
+            title={
+              narrowRail
+                ? folder.name
+                : `${folder.name} — right-click to edit, Ctrl+click to pick several`
+            }
             role="button"
             tabIndex={0}
             onKeyDown={(event) => {
@@ -443,6 +507,55 @@ export function Sidebar({
           </button>
         ) : null}
       </nav>
+
+      {multiSelected ? (
+        <div className="sidebar__bulk" role="toolbar" aria-label="Selected channels">
+          <p className="sidebar__bulk-count">
+            <b>{selectableSelected.length}</b>
+            {selectableSelected.length === 1 ? 'row selected' : 'rows selected'}
+          </p>
+          <div className="sidebar__bulk-actions">
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={() => onBulkAction?.('hide')}
+              title="Hide every selected row"
+            >
+              Hide
+            </button>
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={() => onBulkAction?.('show')}
+              title="Unhide every selected row"
+            >
+              Show
+            </button>
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={(event) => onBulkMove?.(event)}
+              title="Move every selected channel into one folder"
+            >
+              Move to folder…
+            </button>
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={() => onBulkAction?.('delete')}
+              title="Delete every selected channel — the built-in three are kept"
+            >
+              Delete
+            </button>
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => onBulkAction?.('clear')}>
+              Clear
+            </button>
+          </div>
+          <p className="sidebar__bulk-hint">
+            Ctrl+click to keep picking, Shift+click for a run. Right-click any picked row for the same actions.
+          </p>
+        </div>
+      ) : null}
 
       <div className="sidebar__spacer" />
 

@@ -3,6 +3,7 @@ import type { GmailAccount } from '../vault/storage.ts';
 import { resolveConnection } from './../lib/mail-providers.ts';
 import { imapUidOf } from '../lib/mail-text.ts';
 import { getPlatform } from '../lib/platform.ts';
+import { appActiveNow } from '../lib/activity.ts';
 
 export { imapUidOf };
 
@@ -303,9 +304,13 @@ export function useGmail({
 
   const fetchOnce = useCallback(async () => {
     if (inFlight.current) return;
-    // A hidden window needs no fresh mail: skip the whole round trip (and, on
-    // desktop, the IMAP connections behind it) until it is visible again.
+    // A window nobody is looking at needs no fresh mail: skip the whole round
+    // trip (and, on desktop, the IMAP connections behind it) until it is in use
+    // again. This deliberately covers the unfocused-but-visible case too — a
+    // vault left open behind another app is exactly when the network cost is
+    // pure waste, and the read resumes on the next cadence after it gets focus.
     if (typeof document !== 'undefined' && document.hidden) return;
+    if (!appActiveNow()) return;
     const live = creds.current.filter((account) => account.enabled && hasMailCreds(account));
     if (live.length === 0) {
       setMessages([]);

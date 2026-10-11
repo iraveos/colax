@@ -7,16 +7,26 @@ import {
   createTag,
   normaliseChannels,
   normaliseSidebar,
+  groupChannelsIntoFolder,
   moveChannelToFolder,
   moveManualOrder,
+  selectableIds,
+  DEFAULT_BACKGROUND_FIELDS,
   CHANNEL_ACCENTS,
   CHANNEL_ICONS,
   type Channel,
   type Folder,
   type SidebarEntry,
 } from '../vault/channels.ts';
-import { DEFAULT_PREFERENCES, freeDockSpot, MAX_DOCKS, mergeMailCache, newDockId } from '../vault/storage.ts';
-import { captureToDraft, findSimilarTag, mailboxOwnedBy, mailboxUsable, planMailLinkedOnly, suggestTagsForDraft } from '../vault/site-intel.ts';
+import {
+  DEFAULT_DOCK_SLOTS,
+  DEFAULT_PREFERENCES,
+  freeDockSpot,
+  MAX_DOCKS,
+  mergeMailCache,
+  newDockId,
+} from '../vault/storage.ts';
+import { captureToDraft, findSimilarTag, mailboxOwnedBy, mailboxUsable, planMailLinkedOnly, suggestTagsForDraft, tagIdsForDraft } from '../vault/site-intel.ts';
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
 import { FolderEditor } from './FolderEditor.tsx';
@@ -29,6 +39,7 @@ import { ItemEditor } from './ItemEditor.tsx';
 import { AppearancePanel } from './AppearancePanel.tsx';
 import { Settings } from './Settings.tsx';
 import { Dashboard } from './Dashboard.tsx';
+import { HistoryPanel } from './HistoryPanel.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { ViewContextMenu, VIEW_OPTIONS, useViewShortcuts } from './ViewMenu.tsx';
 import { Dock, useDockShortcuts, type DockSlot } from './Dock.tsx';
@@ -42,6 +53,7 @@ import { LoginMessages } from './LoginMessages.tsx';
 import { MailboxWindow } from './MailboxWindow.tsx';
 import { MailCenter } from './MailCenter.tsx';
 import {
+  useAppActive,
   useAutoLock,
   useClipboard,
   useHotkeys,
@@ -56,6 +68,7 @@ import { useSelection } from './useSelection.ts';
 import { applyBulkEdit, bulkMenu, type BulkEdit } from './bulk-edit.ts';
 import { BulkAddDialog, BulkEditDialog } from './BulkEditDialog.tsx';
 import { formatLoginCompact, formatLoginForClipboard, formatLoginsForClipboard } from './login-format.ts';
+import { appActiveNow } from '../lib/activity.ts';
 import { getPlatform } from '../lib/platform.ts';
 import {
   AlertIcon,
@@ -87,6 +100,13 @@ import {
   XIcon,
 } from './icons.tsx';
 
+/**
+ * The tag auto-applied to every login whose password is shared with another.
+ * Matched by name (case-insensitively) so a vault that already has one keeps
+ * its colour and id rather than gaining a second tag called the same thing.
+ */
+const REUSED_TAG_NAME = 'Reused password';
+
 const SORT_LABELS: Record<SortMode, string> = {
   title: 'Name',
   recent: 'Recently updated',
@@ -106,6 +126,7 @@ const UNASSIGNED: Channel = {
   hue: 220,
   accent: 'slate',
   backgroundImage: '',
+  ...DEFAULT_BACKGROUND_FIELDS,
   builtin: false,
   locked: false,
   showMail: true,
@@ -134,6 +155,10 @@ export function App() {
   const vault = useVault();
   const { toasts, notify } = useToasts();
   const { copy } = useClipboard(vault.prefs.clearClipboardSeconds, notify, vault.prefs.copyToasts);
+  // False while the window is minimized, in the tray, or behind another app.
+  // Drives the `data-quiet` attribute below; the polling loops read the same
+  // source themselves (see lib/activity).
+  const appActive = useAppActive();
 
   const [activeId, setActiveId] = useState('all');
   const [query, setQuery] = useState('');
@@ -150,7 +175,15 @@ export function App() {
   const [bulkField, setBulkField] = useState<'title' | 'notes' | 'tags' | 'theme' | null>(null);
   const [bulkSecurity, setBulkSecurity] = useState(false);
   const [bulkAdding, setBulkAdding] = useState(false);
+  // True while a History restore is being written: two clicks on a slow disk
+  // would otherwise restore the same version twice and log it twice.
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [bulkDelete, setBulkDelete] = useState<VaultItem[] | null>(null);
+  /**
+   * A section of the Dashboard to jump to, set by the reused-password notice.
+   * Cleared as soon as it has been honoured so a later visit is not re-flashed.
+   */
+  const [dashboardFocus, setDashboardFocus] = useState<'reused' | null>(null);
   /**
    * Logins whose second factor has been cleared this session.
    *
@@ -174,6 +207,11 @@ export function App() {
   // every ctrl-click would re-register it mid-gesture.
   const bulkRef = useRef<ReadonlySet<string>>(new Set());
   bulkRef.current = selection.ids;
+  // Tags of whatever channel or folder is open, mirrored into a ref for the
+  // clipboard watcher below: that hook is wired up before the sidebar tree is
+  // computed, and a paste has to read the *current* selection, not the one from
+  // the render that first installed the watcher.
+  const focusedTagsRef = useRef<readonly string[]>([]);
   // The bulk menu itself, for the same reason: the window listener reads it but
   // must not depend on it.
   const selectionMenuRef = useRef<MenuItem[]>([]);
@@ -210,12 +248,15 @@ export function App() {
     unlocked: vault.status === 'unlocked',
     autoSave: prefs.clipboardAutoSave,
     onAutoSave: (creds) => {
-      // Left untagged, which is what puts it in the Unassigned channel. That is
-      // deliberate: a clipboard login has no site to categorise it by, so it
-      // waits there instead of being guessed into a channel that may be wrong.
-      // autoTagDomain applies when a login is edited in the app, not here.
-      void vault
-        .mutate(() =>
+      // Filed where the paste landed: the open tagged channel or folder's tags
+      // come first, then whatever the login's own address and site suggest. With
+      // neither, the login is left untagged and waits in Unassigned, as before.
+      const { tagIds, catalogue } = tagIdsForDraft(creds, focusedTagsRef.current, prefs.tags, {
+        autoTag: prefs.autoTagDomain,
+      });
+      void (async () => {
+        if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
+        await vault.mutate(() =>
           vault.service.addItem({
             // A clipboard block that carried a title keeps it; otherwise the
             // local part of the address is a better guess than "Clipboard login".
@@ -224,9 +265,11 @@ export function App() {
             password: creds.password,
             url: creds.url ?? '',
             notes: creds.notes ?? '',
+            tags: tagIds,
           }),
-        )
-        .then(() => notify('Saved credentials from the clipboard'));
+        );
+        notify('Saved credentials from the clipboard');
+      })();
     },
   });
 
@@ -423,6 +466,122 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     return channelLookup.find((channel) => channel.id === activeId) ?? channelLookup.find((c) => c.kind === 'all') ?? channels[0]!;
   }, [channelLookup, activeId, activeFolder, channels]);
 
+  /**
+   * The tags the open channel — or, for a folder, its channels — stands for.
+   *
+   * This is what a newly pasted login inherits: a login that arrives while a
+   * tagged channel is on screen belongs to that channel's subject matter. A
+   * folder's union is deliberate rather than "the first child's tags", because
+   * a folder is a group of channels and the paste cannot know which child it
+   * would have gone to.
+   */
+  const focusedTagIds = useMemo(() => {
+    if (activeFolder) {
+      const entry = sidebarBase.find((row) => row.kind === 'folder' && row.id === activeFolder.id);
+      const ids = new Set<string>();
+      if (entry && entry.kind === 'folder') {
+        for (const child of entry.children) {
+          if (child.kind !== 'channel') continue;
+          for (const tagId of channelLookup.find((channel) => channel.id === child.id)?.tagIds ?? []) {
+            ids.add(tagId);
+          }
+        }
+      }
+      return [...ids];
+    }
+    return activeChannel?.tagIds ?? [];
+  }, [activeFolder, activeChannel, sidebarBase, channelLookup]);
+  focusedTagsRef.current = focusedTagIds;
+
+  /** The Dashboard row, so the reused-password notice can lead there. */
+  const dashboardChannelId = useMemo(
+    () => channels.find((channel) => channel.kind === 'dashboard')?.id ?? null,
+    [channels],
+  );
+
+  /**
+   * Says that some passwords are shared, without standing in the way.
+   *
+   * This was a modal in front of the copy, so every click on a reused login
+   * became an interrogation. It is a notification now: it says its piece for a
+   * few seconds and tapping it jumps to the Dashboard, where the reused logins
+   * are listed. Nothing is reused means nothing is said.
+   */
+  const notifyReusedPasswords = useCallback(() => {
+    const shared = vault.items.filter((item) => item.password !== '' && duplicateIds.has(item.password));
+    if (shared.length === 0) return;
+    notify(
+      `${shared.length} ${shared.length === 1 ? 'login shares' : 'logins share'} a reused password — tap to review`,
+      'error',
+      3000,
+      () => {
+        if (!dashboardChannelId) return;
+        setActiveId(dashboardChannelId);
+        setDashboardFocus('reused');
+      },
+    );
+  }, [vault.items, duplicateIds, notify, dashboardChannelId]);
+
+  /* ---- The reused-password reminder, on a slow timer ---------------------
+     "From time to time" without nagging: once a few seconds after the vault
+     settles with something shared, then no more often than every two minutes,
+     and never while the window is in the background — a reminder nobody can
+     see is just wasted work. */
+  useEffect(() => {
+    if (vault.status !== 'unlocked' || !prefs.warnOnReuse || duplicateIds.size === 0) return;
+    const first = setTimeout(() => notifyReusedPasswords(), 6_000);
+    const repeat = setInterval(() => {
+      if (appActiveNow()) notifyReusedPasswords();
+    }, 120_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(repeat);
+    };
+  }, [vault.status, prefs.warnOnReuse, duplicateIds, notifyReusedPasswords]);
+
+  /* ---- A tag for reused passwords ----------------------------------------
+     Every login sharing a password is filed under one tag, so the group is a
+     sidebar row you can work through rather than a number on a panel. The ids
+     are collected on the spot and written once, and the write is deliberately
+     unlogged: the History channel is for changes a user made, not for this
+     housekeeping pass revisiting every reused login on every launch. */
+  const taggingReused = useRef(false);
+  useEffect(() => {
+    if (vault.status !== 'unlocked' || !prefs.autoTagReused || duplicateIds.size === 0) return;
+    if (taggingReused.current) return;
+    const existing = prefs.tags.find((tag) => tag.name.trim().toLowerCase() === REUSED_TAG_NAME.toLowerCase());
+    const targets = vault.items.filter(
+      (item) =>
+        item.password !== '' &&
+        duplicateIds.has(item.password) &&
+        !(existing && item.tags.includes(existing.id)),
+    );
+    if (targets.length === 0) return;
+    taggingReused.current = true;
+    void (async () => {
+      try {
+        let tagId = existing?.id;
+        if (!tagId) {
+          const created = createTag(REUSED_TAG_NAME, prefs.tags);
+          tagId = created.id;
+          await vault.updatePrefs({ tags: [...prefs.tags, created] });
+        }
+        const id = tagId;
+        await vault.mutate(async () => {
+          for (const item of targets) {
+            if (item.tags.includes(id)) continue;
+            await vault.service.updateItem(item.id, { tags: [...item.tags, id] });
+          }
+        }, { log: false });
+      } finally {
+        taggingReused.current = false;
+      }
+    })();
+    // `vault`'s actions are stable callbacks, so the effect keys off the data
+    // it reads rather than the object the hook returns each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault.status, vault.items, prefs.autoTagReused, prefs.tags, duplicateIds]);
+
 /** How long a password may go unchanged before the weak/stale view counts it. */
   const staleDays = prefs.passwordAgeDays;
 
@@ -433,7 +592,12 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     const counts: Record<string, number> = {};
     for (const channel of channelLookup) {
       if (channel.kind === 'dashboard') continue;
-      counts[channel.id] = applyChannel(channel, vault.items, staleDays).length;
+      // History counts what it *lists* — the logged changes — not the logins
+      // they refer to, so the badge matches the number of rows in the pane.
+      counts[channel.id] =
+        channel.kind === 'history'
+          ? prefs.history.length
+          : applyChannel(channel, vault.items, staleDays).length;
     }
     for (const folder of folders) {
       const entry = sidebarBase.find((row) => row.kind === 'folder' && row.id === folder.id);
@@ -445,7 +609,161 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       }
     }
     return counts;
-  }, [channelLookup, vault.items, staleDays, folders, sidebarBase]);
+  }, [channelLookup, vault.items, staleDays, folders, sidebarBase, prefs.history]);
+
+  /* ---- Picking several channels at once ------------------------------------
+     Ctrl/Cmd+click toggles one row in and out of the selection, Shift+click
+     takes the run between the last row touched and this one, and a plain click
+     clears the selection and just opens the channel as it always did — so
+     nothing about the everyday gesture changes, and the bulk bar appears only
+     while something is actually picked.
+
+     The anchor is a ref: it is bookkeeping for the next Shift+click, never
+     something the rail paints, and putting it in state would re-render the whole
+     shell on every click of a run. */
+  const [channelSelection, setChannelSelection] = useState<ReadonlySet<string>>(new Set());
+  const selectionAnchor = useRef<string | null>(null);
+  const selectionOrder = useMemo(() => selectableIds(sidebarBase), [sidebarBase]);
+
+  const clearChannelSelection = useCallback(() => setChannelSelection(new Set()), []);
+
+  const clickChannelRow = useCallback(
+    (id: string, event: React.MouseEvent) => {
+      if (event.shiftKey && selectionAnchor.current) {
+        const from = selectionOrder.indexOf(selectionAnchor.current);
+        const to = selectionOrder.indexOf(id);
+        if (from !== -1 && to !== -1) {
+          const [start, end] = from <= to ? [from, to] : [to, from];
+          setChannelSelection(new Set(selectionOrder.slice(start, end + 1)));
+          return;
+        }
+      }
+      if (event.ctrlKey || event.metaKey) {
+        selectionAnchor.current = id;
+        setChannelSelection((current) => {
+          const next = new Set(current);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+        return;
+      }
+      selectionAnchor.current = id;
+      clearChannelSelection();
+      setActiveId(id);
+    },
+    [clearChannelSelection, selectionOrder],
+  );
+
+  /** The ids behind the selection, split into channels and folders. */
+  const selectedChannelIds = useMemo(
+    () => [...channelSelection].filter((id) => channelLookup.some((channel) => channel.id === id)),
+    [channelSelection, channelLookup],
+  );
+  const selectedFolderIds = useMemo(
+    () => [...channelSelection]
+      .filter((id) => id.startsWith('folder:'))
+      .map((id) => id.slice('folder:'.length)),
+    [channelSelection],
+  );
+
+  /**
+   * Hide/show/delete for a whole selection.
+   *
+   * Deletion skips the locked rows instead of refusing outright, and says which
+   * ones it kept: Dashboard, Mail and History are structural (see
+   * normaliseChannels) and "delete 6 channels" should not silently take one of
+   * them, nor fail as a whole because one row was in the selection.
+   */
+  const runBulkChannelAction = useCallback(
+    (action: 'hide' | 'show' | 'delete' | 'clear') => {
+      if (action === 'clear') {
+        clearChannelSelection();
+        return;
+      }
+      if (action === 'hide') {
+        void vault
+          .updatePrefs({
+            hiddenChannels: [...new Set([...prefs.hiddenChannels, ...selectedChannelIds])],
+            hiddenFolders: [...new Set([...prefs.hiddenFolders, ...selectedFolderIds])],
+          })
+          .then(() =>
+            notify(
+              `Hid ${selectedChannelIds.length + selectedFolderIds.length} rows — bring them back in Settings › Hidden`,
+            ),
+          );
+        clearChannelSelection();
+        return;
+      }
+      if (action === 'show') {
+        const channels = new Set(selectedChannelIds);
+        const foldersToShow = new Set(selectedFolderIds);
+        void vault
+          .updatePrefs({
+            hiddenChannels: prefs.hiddenChannels.filter((id) => !channels.has(id)),
+            hiddenFolders: prefs.hiddenFolders.filter((id) => !foldersToShow.has(id)),
+          })
+          .then(() => notify('Selection is visible again'));
+        clearChannelSelection();
+        return;
+      }
+      // Delete.
+      const locked = selectedChannelIds.filter(
+        (id) => channelLookup.find((channel) => channel.id === id)?.locked,
+      );
+      const doomed = selectedChannelIds.filter((id) => !locked.includes(id));
+      if (doomed.length === 0) {
+        notify('Those rows are part of the app — they can be hidden, not deleted', 'error');
+        return;
+      }
+      const gone = new Set(doomed);
+      const goneFolders = new Set(selectedFolderIds);
+      // Strips the *stored* tree rather than the rendered one: the rail appends
+      // Unassigned and pins Dashboard, and writing that back would bake the
+      // pseudo-channel into the tree (so it would appear twice on next load).
+      const strip = (list: SidebarEntry[]): SidebarEntry[] =>
+        list
+          .filter((entry) => !(entry.kind === 'channel' && gone.has(entry.id)))
+          .filter((entry) => !(entry.kind === 'folder' && goneFolders.has(entry.id)))
+          .map((entry) => (entry.kind === 'folder' ? { ...entry, children: strip(entry.children) } : entry));
+      // A deleted channel's id is dropped from every list that referred to it:
+      // leaving it in `hiddenChannels` or `manualOrder` would make a later
+      // channel that reuses the id inherit the old row's state.
+      void vault
+        .updatePrefs({
+          channels: channels.filter((channel) => !gone.has(channel.id)),
+          folders: prefs.folders.filter((folder) => !goneFolders.has(folder.id)),
+          sidebar: strip(normaliseSidebar(prefs.sidebar, channels, folders)),
+          hiddenChannels: prefs.hiddenChannels.filter((id) => !gone.has(id)),
+          hiddenFolders: prefs.hiddenFolders.filter((id) => !goneFolders.has(id)),
+          manualOrder: prefs.manualOrder.filter((id) => !gone.has(id)),
+        })
+        .then(() => {
+          if (gone.has(activeId)) setActiveId('all');
+          notify(
+            `Deleted ${doomed.length} channel${doomed.length === 1 ? '' : 's'}` +
+              (goneFolders.size > 0 ? ` and ${goneFolders.size} folder${goneFolders.size === 1 ? '' : 's'}` : '') +
+              (locked.length > 0 ? ` — kept ${locked.length} built-in row${locked.length === 1 ? '' : 's'}` : ''),
+          );
+        });
+      clearChannelSelection();
+    },
+    [
+      activeId,
+      channelLookup,
+      channels,
+      clearChannelSelection,
+      folders,
+      notify,
+      prefs.folders,
+      prefs.hiddenChannels,
+      prefs.hiddenFolders,
+      selectedChannelIds,
+      selectedFolderIds,
+      sidebarBase,
+      vault,
+    ],
+  );
 
   // A channel carries its own accent and image, so the app re-skins while it is
   // selected. Anything the channel leaves blank falls back to the preference.
@@ -599,8 +917,13 @@ const visible = useMemo(() => {
 
   /* ---- Channel editing -------------------------------------------------- */
 
-  const saveChannel = useCallback(
-    (next: Channel) => {
+  /**
+   * Writes a channel. `announce` is what separates Add/Save from the live
+   * autosave the editor runs while you type: the write is identical, but a
+   * toast per keystroke-debounce would be noise, so only deliberate saves speak.
+   */
+  const writeChannel = useCallback(
+    (next: Channel, announce: boolean) => {
       const exists = channels.some((channel) => channel.id === next.id);
       const nextChannels = exists
         ? channels.map((channel) => (channel.id === next.id ? next : channel))
@@ -615,12 +938,15 @@ const visible = useMemo(() => {
       if (!exists) {
         setActiveId(next.id);
         notify(`Channel "${next.name}" added`);
-      } else {
+      } else if (announce) {
         notify(`Channel "${next.name}" updated`);
       }
     },
     [channels, vault, notify, sidebarBase, newChannelFolder],
   );
+
+  const saveChannel = useCallback((next: Channel) => writeChannel(next, true), [writeChannel]);
+  const autosaveChannel = useCallback((next: Channel) => writeChannel(next, false), [writeChannel]);
 
   const deleteChannel = useCallback(
     (id: string) => {
@@ -636,18 +962,22 @@ const visible = useMemo(() => {
     [channels, vault, activeId, notify, sidebarBase],
   );
 
-  const saveFolder = useCallback(
-    (next: Folder) => {
+  /** Same announce/quiet split as `writeChannel`, for the folder editor. */
+  const writeFolder = useCallback(
+    (next: Folder, announce: boolean) => {
       const exists = folders.some((folder) => folder.id === next.id);
       const nextFolders = exists ? folders.map((folder) => (folder.id === next.id ? next : folder)) : [...folders, next];
       const nextSidebar = exists
         ? sidebarBase
         : [...sidebarBase, { kind: 'folder', id: next.id, children: [] } as SidebarEntry];
       void vault.updatePrefs({ folders: nextFolders, sidebar: nextSidebar });
-      notify(exists ? `Folder "${next.name}" updated` : `Folder "${next.name}" added`);
+      if (announce) notify(exists ? `Folder "${next.name}" updated` : `Folder "${next.name}" added`);
     },
     [folders, sidebarBase, vault, notify],
   );
+
+  const saveFolder = useCallback((next: Folder) => writeFolder(next, true), [writeFolder]);
+  const autosaveFolder = useCallback((next: Folder) => writeFolder(next, false), [writeFolder]);
 
   const deleteFolder = useCallback(
     (id: string) => {
@@ -746,6 +1076,36 @@ const visible = useMemo(() => {
         icon: <RowsIcon />,
         onSelect: () => openSettings('channels'),
       },
+      { kind: 'separator' },
+      { kind: 'item', label: 'Bars', icon: <GridIcon />, disabled: true },
+      {
+        kind: 'item',
+        label: prefs.docks.length >= MAX_DOCKS ? `New bar (at most ${MAX_DOCKS})` : 'New bar',
+        icon: <PlusIcon />,
+        disabled: prefs.docks.length >= MAX_DOCKS,
+        // A bar is a second sidebar: the same slots, the same keys, dragged
+        // anywhere on screen like a docked panel in an editor. This used to be
+        // reachable only by right-clicking an existing bar, which is no use to
+        // anyone who has not found one yet.
+        onSelect: () => {
+          const fresh: DockState = {
+            id: newDockId(),
+            slots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })),
+            pos: freeDockSpot(prefs.docks),
+            enabled: true,
+          };
+          void vault
+            .updatePrefs({ docks: [...prefs.docks, fresh] })
+            .then(() => notify('New bar added — drag it anywhere by its grip'));
+        },
+      },
+      {
+        kind: 'item',
+        label: 'Configure bars…',
+        icon: <SettingsIcon />,
+        onSelect: () => openSettings('layout'),
+      },
+      { kind: 'item', label: 'Show hidden items…', icon: <EyeOffIcon />, onSelect: () => openSettings('hidden') },
       {
         kind: 'item',
         label: 'Hide sidebar',
@@ -838,6 +1198,65 @@ const visible = useMemo(() => {
   );
 
   /** Sidebar right-click: quick actions for one channel, then the full editor. */
+  /** Moves every picked channel into one folder (or out to the root). */
+  const moveSelectionTo = useCallback(
+    (folderId: string | null) => {
+      let next = sidebarBase;
+      for (const id of selectedChannelIds) next = moveChannelToFolder(next, id, folderId);
+      void vault
+        .updatePrefs({ sidebar: next })
+        .then(() =>
+          notify(
+            folderId
+              ? `Moved ${selectedChannelIds.length} channels into ${folders.find((f) => f.id === folderId)?.name ?? 'a folder'}`
+              : 'Moved the selection to the top level',
+          ),
+        );
+      clearChannelSelection();
+    },
+    [clearChannelSelection, folders, notify, selectedChannelIds, sidebarBase, vault],
+  );
+
+  /**
+   * The menu for a whole selection, opened by right-clicking any picked row.
+   *
+   * The same actions the bar under the rail offers, plus the move picker — two
+   * ways in, one implementation each, so neither can drift from the other.
+   */
+  const bulkChannelMenu = useCallback((): MenuItem[] => {
+    const picked = selectedChannelIds.length + selectedFolderIds.length;
+    return [
+      { kind: 'item', label: `${picked} rows picked`, disabled: true },
+      { kind: 'separator' },
+      { kind: 'item', label: 'Hide', onSelect: () => runBulkChannelAction('hide') },
+      { kind: 'item', label: 'Show (unhide)', onSelect: () => runBulkChannelAction('show') },
+      {
+        kind: 'submenu',
+        label: 'Move to folder',
+        heading: 'Put every picked channel in',
+        disabled: selectedChannelIds.length === 0,
+        items: [
+          { kind: 'item', label: 'Top level', checked: true, onSelect: () => moveSelectionTo(null) },
+          ...folders.map((folder): MenuItem => ({
+            kind: 'item',
+            label: folder.name,
+            onSelect: () => moveSelectionTo(folder.id),
+          })),
+        ],
+      },
+      { kind: 'item', label: 'Delete', danger: true, onSelect: () => runBulkChannelAction('delete') },
+      { kind: 'separator' },
+      { kind: 'item', label: 'Clear selection', onSelect: clearChannelSelection },
+    ];
+  }, [
+    clearChannelSelection,
+    folders,
+    moveSelectionTo,
+    runBulkChannelAction,
+    selectedChannelIds.length,
+    selectedFolderIds.length,
+  ]);
+
   const channelMenu = useCallback(
     (channel: Channel): MenuItem[] => {
       const label = channel.name;
@@ -1204,6 +1623,25 @@ const visible = useMemo(() => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vault.status]);
 
+  /* ---- One folder for the channels, once -----------------------------------
+     Files every channel except Dashboard and Mail into a single "Channels"
+     folder, so the top of the rail stays the two screens that are not a
+     filtered list. Runs once per vault (stamped in preferences) because a
+     migration that runs every launch would silently undo a rail the user had
+     since rearranged. */
+  useEffect(() => {
+    if (vault.status !== 'unlocked') return;
+    if (prefs.sidebarGrouped) return;
+    const grouped = groupChannelsIntoFolder(
+      normaliseChannels(prefs.channels),
+      prefs.folders,
+      normaliseSidebar(prefs.sidebar, normaliseChannels(prefs.channels), prefs.folders),
+    );
+    void vault.updatePrefs({ sidebarGrouped: true, ...(grouped ?? {}) });
+    // Once per unlock by design; the stamp it writes stops the next run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault.status]);
+
   /* ---- Look preset, once ---------------------------------------------------
      Instant animation, full motion and glow, high contrast, transparency and
      floating chrome are what the app ships with now. A vault stored before
@@ -1313,16 +1751,17 @@ const visible = useMemo(() => {
         notify(`${item.title || 'That login'} has no password saved`, 'error');
         return;
       }
-      if (warnAboutReuse) {
-        setConfirmDelete({ ...item, notes: '__reuse__' });
-        return;
-      }
+      // Warn, then do what the click asked for. The notice is tappable and
+      // leads to the Dashboard; it never blocks the copy, which is the whole
+      // point of a single click on a card.
+      if (warnAboutReuse) notifyReusedPasswords();
       void copy(item.password, 'Password');
       touchLogin(item.id);
     },
     [
       copy,
       notify,
+      notifyReusedPasswords,
       prefs.warnOnReuse,
       duplicateIds,
       vault.items.length,
@@ -1693,9 +2132,37 @@ label: 'Settings',
      Reads the event's clipboard data directly, so no permission prompt is
      involved; only fires outside text fields, menus and dialogs, so pasting
      into a form never creates anything. An exact username+password duplicate
-     is reported instead of duplicated — pasting twice must not fork the login. */
+     is reported instead of duplicated — pasting twice must not fork the login.
+
+     Pasted logins inherit the active channel's tags. Pasting into "Work" and
+     then finding the login only under All logins was the complaint: the channel
+     you are looking at is the context you pasted into, so it is the context the
+     new logins belong to. A folder's own tags are the ones *every* channel
+     inside it narrows by (an intersection) — tagging with a tag only some
+     children filter by would drop the new login out of them. */
   useEffect(() => {
     if (vault.status !== 'unlocked') return;
+    const pasteTags = (() => {
+      if (activeFolder) {
+        const entry = sidebarBase.find((row) => row.kind === 'folder' && row.id === activeFolder.id);
+        if (!entry || entry.kind !== 'folder') return [];
+        const children = entry.children
+          .filter((child): child is { kind: 'channel'; id: string } => child.kind === 'channel')
+          .map((child) => channelLookup.find((channel) => channel.id === child.id)?.tagIds ?? [])
+          .filter((tagIds) => tagIds.length > 0);
+        if (children.length === 0) return [];
+        return children.reduce((shared, tagIds) => shared.filter((tag) => tagIds.includes(tag)));
+      }
+      return activeChannel?.tagIds ?? [];
+    })();
+    /** Where the new logins landed, named the way the user sees it. */
+    const where =
+      pasteTags.length > 0
+        ? `${activeFolder ? activeFolder.name : activeChannel?.name ?? 'this channel'} (${pasteTags
+            .map((id) => prefs.tags.find((tag) => tag.id === id)?.name)
+            .filter(Boolean)
+            .join(', ')})`
+        : 'Unassigned';
     const onPaste = (event: ClipboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (
@@ -1736,14 +2203,15 @@ label: 'Settings',
                 password: creds.password,
                 url: creds.url ?? '',
                 notes: creds.notes ?? '',
+                tags: pasteTags,
               });
             }
           })
           .then(() =>
             notify(
               fresh.length === 1
-                ? 'Created login in Unassigned'
-                : `Created ${fresh.length} logins in Unassigned`,
+                ? `Created login in ${where}`
+                : `Created ${fresh.length} logins in ${where}`,
             ),
           );
         return;
@@ -1766,13 +2234,14 @@ label: 'Settings',
             password: creds.password,
             url: creds.url ?? '',
             notes: creds.notes ?? '',
+            tags: pasteTags,
           }),
         )
-        .then(() => notify('Created login in Unassigned'));
+        .then(() => notify(`Created login in ${where}`));
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [vault, notify]);
+  }, [vault, notify, activeChannel, activeFolder, sidebarBase, channelLookup, prefs.tags]);
 
   useViewShortcuts((next) => void vault.updatePrefs({ view: next }));
 
@@ -2376,8 +2845,7 @@ onCreate={vault.create}
 
   const showEmpty = visible.length === 0;
   // A reuse warning masquerades as a delete dialog; treat it separately.
-  const reuseWarning = confirmDelete?.notes === '__reuse__' ? confirmDelete : null;
-  const pendingDelete = reuseWarning ? null : confirmDelete;
+  const pendingDelete = confirmDelete;
 
   const commonProps = {
     items: visible,
@@ -2428,6 +2896,11 @@ onCreate={vault.create}
         data-compact-sidebar={prefs.compactSidebar || prefs.sidebarLabels === 'icon' || undefined}
         data-sidebar-hidden={prefs.showSidebar === false || undefined}
         data-floating={prefs.floatingChrome || undefined}
+        // Set while the window is minimized, hidden in the tray or behind
+        // another app: CSS pauses the ambient drift, the grain and the list
+        // entrances, and the polling loops above stop as well. Everything
+        // resumes on the next focus, so nothing about the app is lost.
+        data-quiet={appActive ? undefined : true}
         data-rail={prefs.sidebarPosition}
         data-labels={prefs.sidebarLabels}
       >
@@ -2453,13 +2926,30 @@ onCreate={vault.create}
           onSelect={setActiveId}
           onReorder={(next) => void vault.updatePrefs({ sidebar: next })}
           onToggleFolder={toggleFolderCollapse}
+          selectedRows={channelSelection}
+          onRowClick={clickChannelRow}
+          onBulkAction={runBulkChannelAction}
+          onBulkMove={(event) => {
+            setMenu({ x: event.clientX, y: event.clientY, items: bulkChannelMenu() });
+          }}
           onChannelMenu={(event, channel) => {
             event.preventDefault();
-            setMenu({ x: event.clientX, y: event.clientY, items: channelMenu(channel) });
+            // A right-click inside a live selection acts on the whole selection:
+            // the menu describes what the click meant, and clicking a row that is
+            // part of "these six" to act on six is what the user expects.
+            const items =
+              channelSelection.size > 1 && channelSelection.has(channel.id)
+                ? bulkChannelMenu()
+                : channelMenu(channel);
+            setMenu({ x: event.clientX, y: event.clientY, items });
           }}
           onFolderMenu={(event, folder) => {
             event.preventDefault();
-            setMenu({ x: event.clientX, y: event.clientY, items: folderMenu(folder) });
+            const items =
+              channelSelection.size > 1 && channelSelection.has(`folder:${folder.id}`)
+                ? bulkChannelMenu()
+                : folderMenu(folder);
+            setMenu({ x: event.clientX, y: event.clientY, items });
           }}
           onSeparatorMenu={(event, entryId) => {
             event.preventDefault();
@@ -2610,6 +3100,55 @@ onCreate={vault.create}
                   onOpenSettings={(tab) => openSettings(tab)}
                 />
               </div>
+            ) : activeChannel?.kind === 'history' ? (
+              <HistoryPanel
+                events={prefs.history}
+                items={vault.items}
+                busy={historyBusy}
+                onRestore={(event) => {
+                  if (!event.before) return;
+                  const snapshot = event.before;
+                  setHistoryBusy(true);
+                  void vault
+                    .mutate(
+                      async () => {
+                        if (vault.items.some((item) => item.id === snapshot.id)) {
+                          // An edit, or a delete followed by a re-add: put the old
+                          // fields back but keep the current `updatedAt` so the
+                          // restore reads as the most recent change, which it is.
+                          const { updatedAt: _when, ...patch } = snapshot;
+                          await vault.service.updateItem(snapshot.id, patch);
+                        } else {
+                          await vault.service.restoreItem(snapshot);
+                        }
+                      },
+                      // A restore is the log acting on itself: recording it
+                      // would append a row for every row you press Restore on.
+                      { log: false },
+                    )
+                    .then(() =>
+                      notify(
+                        event.action === 'deleted'
+                          ? `Restored “${event.title || 'login'}” exactly as it was`
+                          : `Put the earlier version of “${event.title || 'login'}” back`,
+                      ),
+                    )
+                    .catch((cause: unknown) =>
+                      notify(cause instanceof Error ? cause.message : 'Could not restore that version', 'error'),
+                    )
+                    .finally(() => setHistoryBusy(false));
+                }}
+                onOpenLogin={(item) => requestEdit(item)}
+                onCopy={viewActions.onCopy}
+                onForget={(id) =>
+                  void vault.updatePrefs({ history: prefs.history.filter((entry) => entry.id !== id) })
+                }
+                onClear={() =>
+                  void vault
+                    .updatePrefs({ history: [] })
+                    .then(() => notify('History cleared — the log is empty, nothing in the vault changed'))
+                }
+              />
             ) : activeChannel?.kind === 'dashboard' ? (
               <div className="content__inner content__inner--dash">
                 <Dashboard
@@ -2618,6 +3157,8 @@ onCreate={vault.create}
                   items={vault.items}
                   prefs={prefs}
                   usage={prefs.usage}
+                  focus={dashboardFocus}
+                  onFocusHandled={() => setDashboardFocus(null)}
                   onSelectChannel={(id) => setActiveId(id)}
                   onOpenLogin={(item) => requestEdit(item)}
                   // Same window the dock's mailbox slot opens, so the two are
@@ -2685,11 +3226,25 @@ onCreate={vault.create}
         <BulkAddDialog
           existingUsernames={new Set(vault.items.map((item) => item.username.trim().toLowerCase()).filter(Boolean))}
           onAdd={(entries) => {
-            void vault
-              .mutate(async () => {
+            void (async () => {
+              // Tags are resolved up front, against one running catalogue: every
+              // login in the paste is filed by what it is for (its email provider,
+              // its site) plus the open channel's tags, and a tag created for the
+              // first entry is reused by the rest rather than duplicated.
+              let catalogue = prefs.tags;
+              const planned = entries.map((entry) => {
+                const { tagIds, catalogue: next } = tagIdsForDraft(entry, focusedTagIds, catalogue, {
+                  autoTag: prefs.autoTagDomain,
+                });
+                catalogue = next;
+                return { entry, tagIds };
+              });
+              const created = catalogue !== prefs.tags;
+              if (created) await vault.updatePrefs({ tags: catalogue });
+              const added = await vault.mutate(async () => {
                 const saved = new Set(vault.items.map((item) => item.username.trim().toLowerCase()).filter(Boolean));
-                let added = 0;
-                for (const entry of entries) {
+                let count = 0;
+                for (const { entry, tagIds } of planned) {
                   // Re-checked at write time, so an address saved while the
                   // dialog was open still cannot duplicate.
                   if (saved.has(entry.username.toLowerCase())) continue;
@@ -2698,12 +3253,17 @@ onCreate={vault.create}
                     title: entry.username.split('@')[0] || entry.username,
                     username: entry.username,
                     password: entry.password,
+                    tags: tagIds,
                   });
-                  added += 1;
+                  count += 1;
                 }
-                return added;
-              })
-              .then((added) => notify(added === 1 ? 'Added 1 login' : `Added ${added} logins`));
+                return count;
+              });
+              notify(
+                (added === 1 ? 'Added 1 login' : `Added ${added} logins`) +
+                  (planned.some((row) => row.tagIds.length > 0) ? ' — tagged by what they are for' : ''),
+              );
+            })();
           }}
           onCancel={() => setBulkAdding(false)}
           onNotify={notify}
@@ -2851,6 +3411,7 @@ onCreate={vault.create}
           key={editingFolder}
           folder={editingFolder === 'new' ? null : folders.find((entry) => entry.id === editingFolder) ?? null}
           onSave={saveFolder}
+          onAutosave={autosaveFolder}
           onDelete={deleteFolder}
           onClose={() => setEditingFolder(null)}
           onNotify={notify}
@@ -2869,20 +3430,25 @@ onCreate={vault.create}
               <button
                 className="btn btn--primary"
                 onClick={() => {
-                  // Untagged, so it lands in Unassigned. A clipboard login has no
-                  // site to categorise it by and guessing a channel here would
-                  // quietly file it somewhere the user did not choose.
-                  void vault
-                    .mutate(() =>
+                  // Same rule as the auto-save path: the open channel or folder
+                  // supplies the tags, the login's own address adds any it earns.
+                  const { tagIds, catalogue } = tagIdsForDraft(clipPending, focusedTagIds, prefs.tags, {
+                    autoTag: prefs.autoTagDomain,
+                  });
+                  void (async () => {
+                    if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
+                    await vault.mutate(() =>
                       vault.service.addItem({
                         title: clipPending.title?.trim() || clipPending.username.split('@')[0] || 'Clipboard login',
                         username: clipPending.username,
                         password: clipPending.password,
                         url: clipPending.url ?? '',
                         notes: clipPending.notes ?? '',
+                        tags: tagIds,
                       }),
-                    )
-                    .then(() => notify('Saved from the clipboard'));
+                    );
+                    notify('Saved from the clipboard');
+                  })();
                   dismissClip();
                 }}
               >
@@ -2909,7 +3475,11 @@ onCreate={vault.create}
               </>
             ) : null}
           </dl>
-          <p className="capture__note">Saves untagged, so it waits in Unassigned until you file it.</p>
+          <p className="capture__note">
+            {focusedTagIds.length > 0
+              ? 'Saves with this channel’s tags, so it lands where you are.'
+              : 'Saves untagged, so it waits in Unassigned until you file it.'}
+          </p>
           <p className="capture__note">Turn this off in Settings &gt; Security if it prompts too often.</p>
         </Modal>
       ) : null}
@@ -2970,6 +3540,7 @@ onCreate={vault.create}
                 ).length
           }
           onSave={saveChannel}
+          onAutosave={autosaveChannel}
           onDelete={deleteChannel}
           onClose={() => setEditingChannel(null)}
           onNotify={notify}
@@ -3118,34 +3689,6 @@ onCreate={vault.create}
               Nothing is stored until you choose Save. Dismissing remembers the site and stops asking.
             </p>
           </div>
-        </Modal>
-      ) : null}
-
-      {reuseWarning ? (
-        <Modal
-          title="This password is reused"
-          onClose={() => setConfirmDelete(null)}
-          footer={
-            <>
-              <button className="btn btn--secondary" onClick={() => setConfirmDelete(null)}>
-                Cancel
-              </button>
-              <button
-                className="btn btn--primary"
-                onClick={() => {
-                  void copy(reuseWarning.password, 'Password');
-                  setConfirmDelete(null);
-                }}
-              >
-                Copy anyway
-              </button>
-            </>
-          }
-        >
-          <Alert tone="warn">
-            <strong>{reuseWarning.title || 'This login'}</strong> shares its password with at least one other
-            entry. If one site is breached, the others fall too.
-          </Alert>
         </Modal>
       ) : null}
 

@@ -23,6 +23,7 @@ import {
   type VaultItem,
 } from '../vault/types.ts';
 import { createTag, type Tag } from '../vault/channels.ts';
+import { mailboxUsable } from '../vault/site-intel.ts';
 import { readImageFile } from './card-art.ts';
 import { Alert, Modal, StrengthMeter, Toggle } from './primitives.tsx';
 import { formatLoginCompact } from './login-format.ts';
@@ -669,7 +670,30 @@ export function ItemEditor({
             </div>
           </div>
         ) : null}
-        <InboxSection accounts={gmailAccounts} onAccountsChange={onGmailAccountsChange} onNotify={onNotify} onCacheMessages={onCacheMail} />
+        <InboxSection
+          accounts={gmailAccounts}
+          onAccountsChange={(next) => {
+            // Connecting a mailbox *for this login* switches its messages on.
+            // New logins start with mail off (so one connected mailbox cannot
+            // put messages on every other login), and without this the very
+            // link the user just made would have arrived switched off.
+            const before = new Set(
+              gmailAccounts.filter((account) => mailboxUsable(account)).map((account) => account.id),
+            );
+            const added = next.filter((account) => mailboxUsable(account) && !before.has(account.id));
+            const mine = (draft.username ?? '').trim().toLowerCase();
+            if (
+              draft.showMail !== true &&
+              mine !== '' &&
+              added.some((account) => account.address.trim().toLowerCase() === mine)
+            ) {
+              patch({ showMail: true });
+            }
+            onGmailAccountsChange(next);
+          }}
+          onNotify={onNotify}
+          onCacheMessages={onCacheMail}
+        />
       </>
     ),
 

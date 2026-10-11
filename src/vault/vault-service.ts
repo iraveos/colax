@@ -161,6 +161,19 @@ async #persist(item: VaultItem): Promise<VaultItem> {
     return this.#persist({ ...emptyItem(newItemId(), now), ...draft });
   }
 
+  /**
+   * Writes a login back exactly as it was, id included.
+   *
+   * History's Restore needs this rather than `addItem`: a restored login has to
+   * come back as the same record, or every tag, dock slot, use count and mail
+   * link that pointed at it would point at nothing. The stored timestamps are
+   * kept — the login did not change while it was gone — so its age, health flags
+   * and "recently updated" position all read the same as before the delete.
+   */
+  async restoreItem(item: VaultItem): Promise<VaultItem> {
+    return this.#persist(normaliseItem({ ...item }, item.createdAt || Date.now()));
+  }
+
   async updateItem(id: string, patch: Partial<VaultItem>): Promise<void> {
     const current = this.#items.find((item) => item.id === id);
     if (!current) throw new Error('That item no longer exists.');

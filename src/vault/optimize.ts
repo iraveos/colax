@@ -32,6 +32,8 @@ const DEFAULT_BACKGROUND = { opacity: 0.35, blur: 0, dim: 0.25 };
 export interface OptimizeStyle {
   motion: number;
   motionSpeed: number;
+  /** The small transitions on buttons, chips, tabs, rows and badges. */
+  microMotion: boolean;
   ambient: number;
   reduceTransparency: boolean;
   density: Density;
@@ -69,6 +71,7 @@ export const FULL_DETAIL_STYLE: OptimizeStyle = {
   // step with DEFAULT_PREFERENCES so "restore my look" restores the speed the
   // app ships with rather than half-speed.
   motionSpeed: 2,
+  microMotion: true,
   ambient: 1,
   reduceTransparency: false,
   density: 'comfortable',
@@ -81,22 +84,37 @@ export const FULL_DETAIL_STYLE: OptimizeStyle = {
   disableSpellcheck: false,
 };
 
-/** Halfway: still animated, slower, flatter, and mail on a 5-minute cadence. */
+/** Halfway: less motion, flatter, and mail on a 5-minute cadence. */
 export const BALANCED_STYLE: OptimizeStyle = {
   ...FULL_DETAIL_STYLE,
   motion: 0.4,
-  motionSpeed: 0.6,
+  // 1 — the app's normal pace. This used to be 0.6, which stretched every
+  // transition *at the same time as* cutting animation: the profile was called
+  // "Balanced" and felt like a slow-motion mode.
+  motionSpeed: 1,
+  // The small transitions stay: they are what the profile is trading down from,
+  // and they cost a few frames per interaction rather than per second.
+  microMotion: true,
   ambient: 0.3,
   reduceTransparency: true,
   cardDepth: 0.4,
   mailRefreshSeconds: 300,
 };
 
-/** Everything off: no motion, no ambient gradient, no blur, flat compact cards, 15-minute mail. */
+/**
+ * Everything off: no motion at all, no ambient gradient, no blur, flat compact
+ * cards, 15-minute mail.
+ *
+ * `motionSpeed` is pinned at the fastest setting rather than the slowest — with
+ * `motion: 0` there is nothing left to slow down, but the value is what a user
+ * sees if they switch motion back on from here, and it used to be 0.25
+ * ("Languid"), so the profile could hand back a slower app than it found.
+ */
 export const MAX_SAVINGS_STYLE: OptimizeStyle = {
   ...FULL_DETAIL_STYLE,
   motion: 0,
-  motionSpeed: 0.25,
+  motionSpeed: 2,
+  microMotion: false,
   ambient: 0,
   reduceTransparency: true,
   density: 'compact',
@@ -119,6 +137,10 @@ const SLOW_MAIL_SECONDS = 300;
  */
 export const OPTIMISATIONS = [
   { id: 'motion', on: (prefs: VaultPreferences) => prefs.motion <= 0.001 },
+  // Micro-animations are counted here as their own saving: they are the only
+  // animation left when `motion` is off, so a profile cannot call itself "max"
+  // while still painting transitions on every hover.
+  { id: 'micro', on: (prefs: VaultPreferences) => !prefs.microMotion },
   { id: 'ambient', on: (prefs: VaultPreferences) => prefs.ambient <= 0.05 },
   { id: 'transparency', on: (prefs: VaultPreferences) => prefs.reduceTransparency },
   { id: 'density', on: (prefs: VaultPreferences) => prefs.density === 'compact' },
@@ -149,6 +171,7 @@ export function styleFromPrefs(prefs: VaultPreferences): OptimizeStyle {
   return {
     motion: prefs.motion,
     motionSpeed: prefs.motionSpeed,
+    microMotion: prefs.microMotion,
     ambient: prefs.ambient,
     reduceTransparency: prefs.reduceTransparency,
     density: prefs.density,
@@ -188,6 +211,7 @@ export function stylePatch(prefs: VaultPreferences, style: OptimizeStyle): Parti
   const patch: Partial<VaultPreferences> = {
     motion: style.motion,
     motionSpeed: style.motionSpeed,
+    microMotion: style.microMotion,
     ambient: style.ambient,
     reduceTransparency: style.reduceTransparency,
     density: style.density,
@@ -212,6 +236,7 @@ export function sameStyle(a: OptimizeStyle, b: OptimizeStyle): boolean {
   return (
     a.motion === b.motion &&
     a.motionSpeed === b.motionSpeed &&
+    a.microMotion === b.microMotion &&
     a.ambient === b.ambient &&
     a.reduceTransparency === b.reduceTransparency &&
     a.density === b.density &&
@@ -245,7 +270,10 @@ export function readStyle(raw: unknown): OptimizeStyle | null {
   const mailRaw = record.mailRefreshSeconds;
   return {
     motion: clamp(record.motion, 0, 1, FULL_DETAIL_STYLE.motion),
-    motionSpeed: clamp(record.motionSpeed, 0.25, 2, FULL_DETAIL_STYLE.motionSpeed),
+    motionSpeed: clamp(record.motionSpeed, 1, 2, FULL_DETAIL_STYLE.motionSpeed),
+    // A profile saved before this switch existed has no field; it restores the
+    // full-detail behavior (on) rather than silently turning animations off.
+    microMotion: record.microMotion !== false,
     ambient: clamp(record.ambient, 0, 1, FULL_DETAIL_STYLE.ambient),
     reduceTransparency: record.reduceTransparency === true,
     density,

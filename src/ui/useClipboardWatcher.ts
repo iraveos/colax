@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { appActiveNow } from '../lib/activity.ts';
 
 export interface ClipCredentials {
   username: string;
@@ -64,9 +65,11 @@ export function useClipboardWatcher({
     let cancelled = false;
 
     const tick = async () => {
-      // A hidden tab needs nothing from the clipboard: skip the read, the
-      // parse and any waking of the renderer on its behalf.
-      if (document.hidden) return;
+      // A window nobody is using needs nothing from the clipboard: skip the
+      // read, the parse and any waking of the renderer on its behalf. Focus
+      // counts as well as visibility — a vault open behind another app was
+      // reading the clipboard every 2.5 seconds for a user who was elsewhere.
+      if (document.hidden || !appActiveNow()) return;
       let text = '';
       try {
         text = await navigator.clipboard.readText();
@@ -145,6 +148,15 @@ export function detect(text: string): ClipCredentials | null {
   // "password: 123" being the password.
   const hasLabel = lines.some((line) => splitLabelled(line) !== null);
   if (hasLabel) return detectLabelled(lines);
+
+  // Three lines or more, no labels: `name / address / password`. This is how a
+  // login gets sent between people by hand, and the line before the address is
+  // the name it should be saved under — the user's "the title is main or the
+  // words that are before the email". Tried before the two-line pair rules it
+  // generalises, and only for three-plus lines so nothing about a plain pair
+  // (either order, either shape) changes.
+  const bareBlock = detectBareBlock(lines);
+  if (bareBlock) return bareBlock;
 
   if (lines.length === 2) {
     const [first, second] = lines as [string, string];
@@ -233,6 +245,67 @@ function detectLabelled(lines: string[]): ClipCredentials | null {
   const title = found.title;
   if (title && title.length <= 120 && !title.includes('\n')) creds.title = title;
   if (found.notes && found.notes.length <= 2000) creds.notes = found.notes;
+  return creds;
+}
+
+/**
+ * A line that reads as a name rather than as a credential.
+ *
+ * Deliberately loose — "main", "Work Gmail", "the shared one" are all titles —
+ * and bounded where it has to be: no address (that is the username line), no
+ * `label:` (a labelled line is a different format with its own reader), no URL,
+ * and short enough to fit a name.
+ */
+function looksLikeTitle(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 120) return false;
+  if (trimmed.includes('@') || trimmed.includes(':')) return false;
+  if (/^https?:\/\//i.test(trimmed)) return false;
+  return true;
+}
+
+/**
+ * A line that names the login rather than being part of the credential.
+ *
+ * A title must look like a name *and* not be a single-token password: `hunter2`
+ * above an address is a password that was written first, while `main` and
+ * `Work Gmail` are names. Spaces settle it — a password fragment never has any
+ * (the pair readers require single tokens), so a name with a space in it can
+ * never be mistaken for one.
+ */
+function looksLikeName(value: string): boolean {
+  if (!looksLikeTitle(value)) return false;
+  return /\s/.test(value) || !looksLikePassword(value);
+}
+
+/**
+ * Reads a bare block: an optional name line, exactly one address, then the
+ * password (which may wrap over several lines, and may be absent).
+ *
+ * Refuses anything with a second address or with prose after the address, so a
+ * note pasted under a login does not become its password: a line after the
+ * address has to be a single token to count, exactly as the bulk reader
+ * requires.
+ */
+function detectBareBlock(lines: string[]): ClipCredentials | null {
+  if (lines.length < 3) return null;
+  const addresses = lines
+    .map((line, index) => ({ line, index }))
+    .filter((entry) => /^[^\s:]+@[^\s:]+$/.test(entry.line));
+  if (addresses.length !== 1) return null;
+  const { line: username, index } = addresses[0]!;
+  const before = lines.slice(0, index);
+  if (before.length > 1) return null;
+  // A name, and not a password that happens to sit above the address: without
+  // the second half, the block "hunter2 / me@x.com / pw" titled itself
+  // "hunter2" — a wrong title is worse than no match, since the reader leaves
+  // the block alone and nothing is created at all.
+  const title = before[0]?.trim();
+  if (title !== undefined && !looksLikeName(title)) return null;
+  const after = lines.slice(index + 1);
+  if (after.some((line) => /\s/.test(line) || /^https?:\/\/\S+$/i.test(line))) return null;
+  const creds: ClipCredentials = { username, password: after.join('').slice(0, 256) };
+  if (title) creds.title = title;
   return creds;
 }
 
@@ -342,6 +415,7 @@ export function detectBulkBlock(block: string): ClipCredentials | null {
   if (lines.some((line) => splitLabelled(line) !== null)) return detectLabelled(lines);
 
   let username: string | null = null;
+  let title: string | null = null;
   const fragments: string[] = [];
   for (const line of lines) {
     const spaced = /^([^\s:]+@[^\s:]+)[\s:]+(\S.*)$/.exec(line);
@@ -360,6 +434,13 @@ export function detectBulkBlock(block: string): ClipCredentials | null {
       username = line;
       continue;
     }
+    // A short line *before* the address is the login's name — the same rule the
+    // single-paste reader applies. Without this it fell through to the password
+    // fragments and "main" ended up glued onto the front of the password.
+    if (!username && fragments.length === 0 && looksLikeName(line)) {
+      title ??= line;
+      continue;
+    }
     fragments.push(line);
   }
   if (!username) return null;
@@ -368,7 +449,7 @@ export function detectBulkBlock(block: string): ClipCredentials | null {
     .filter((fragment) => !/^https?:\/\/\S+$/i.test(fragment))
     .join('')
     .slice(0, 256);
-  return { username, password };
+  return title ? { username, password, title } : { username, password };
 }
 
 /**
@@ -386,23 +467,40 @@ export function detectBulkLines(text: string): ClipCredentials[] | null {
     .filter(Boolean);
   if (lines.length === 0) return null;
   const out: ClipCredentials[] = [];
-  let current: { username: string; fragments: string[] } | null = null;
+  let current: { username: string; fragments: string[]; title: string | null } | null = null;
+  // A name line waiting for the address it belongs to. Held rather than pushed
+  // straight onto the entry being built, because a name arrives *before* the
+  // address and there is no entry yet at that point.
+  let pendingTitle: string | null = null;
   const flush = () => {
     if (current) {
-      out.push({ username: current.username, password: current.fragments.join('').slice(0, 256) });
+      const creds: ClipCredentials = {
+        username: current.username,
+        password: current.fragments.join('').slice(0, 256),
+      };
+      if (current.title) creds.title = current.title;
+      out.push(creds);
       current = null;
     }
   };
   for (const line of lines) {
     if (/^[^\s:]+@[^\s:]+$/.test(line)) {
       flush();
-      current = { username: line, fragments: [] };
+      current = { username: line, fragments: [], title: pendingTitle };
+      pendingTitle = null;
       continue;
     }
     const glued = splitGluedEmail(line);
     if (glued) {
       flush();
-      current = { username: glued.username, fragments: [glued.password] };
+      current = { username: glued.username, fragments: [glued.password], title: pendingTitle };
+      pendingTitle = null;
+      continue;
+    }
+    // A name for the next address — `main` above `me@x.com`. Only possible
+    // before an entry has started, so a name can never be read as a password.
+    if (!current && looksLikeName(line)) {
+      pendingTitle = line;
       continue;
     }
     // A password fragment: one token, no spaces, not a URL, not an address.
@@ -411,6 +509,8 @@ export function detectBulkLines(text: string): ClipCredentials[] | null {
     }
     current.fragments.push(line);
   }
+  // A trailing name with no address behind it means this was not a pairs paste.
+  if (pendingTitle) return null;
   flush();
   // Pairs mode only when at least one password actually showed up — otherwise
   // this is a plain address list wearing no disguise.

@@ -330,14 +330,33 @@ export function Toasts({ toasts }: { toasts: Toast[] }) {
   if (toasts.length === 0) return null;
   return (
     <div className="toasts" role="status" aria-live="polite">
-      {toasts.map((toast) => (
-        <div key={toast.id} className={toast.tone === 'error' ? 'toast toast--error' : 'toast'}>
+      {toasts.map((toast) => {
+        const icon = (
           <span className="toast__icon">
             {toast.tone === 'error' ? <XIcon width="14" height="14" /> : <CheckIcon width="14" height="14" />}
           </span>
-          {toast.message}
-        </div>
-      ))}
+        );
+        const className = [
+          'toast',
+          toast.tone === 'error' ? 'toast--error' : '',
+          toast.onSelect ? 'toast--action' : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        // A toast with an action is a real button, so it is keyboard reachable
+        // and announced as one — the reused-password reminder leads somewhere.
+        return toast.onSelect ? (
+          <button key={toast.id} type="button" className={className} onClick={toast.onSelect}>
+            {icon}
+            {toast.message}
+          </button>
+        ) : (
+          <div key={toast.id} className={className}>
+            {icon}
+            {toast.message}
+          </div>
+        );
+      })}
     </div>
   );
 }

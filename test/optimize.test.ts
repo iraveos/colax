@@ -21,7 +21,10 @@ import { DEFAULT_PREFERENCES, normalisePreferences, newGmailAccountId } from '..
 const prefs = () => normalisePreferences(undefined);
 
 test('the counter can reach its own total, and shipped defaults score honest', () => {
-  assert.equal(OPTIMISATION_COUNT, 8, 'eight switches, eight countable savings');
+  // Nine since micro-animations joined the list: they are the only animation
+  // left once "reduce motion" is on, so a profile called "maximum savings" has
+  // to be able to turn them off and count it.
+  assert.equal(OPTIMISATION_COUNT, 9, 'nine switches, nine countable savings');
   const base = prefs();
   // Shipped defaults score exactly two, and both are facts the panel shows as
   // locked switches: no full-bleed photo is being repainted, and no mailbox is
@@ -41,6 +44,7 @@ test('a style round-trips through the preferences it describes', () => {
   for (const key of [
     'motion',
     'motionSpeed',
+    'microMotion',
     'ambient',
     'reduceTransparency',
     'density',

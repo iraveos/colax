@@ -6,7 +6,7 @@
  * Nothing here ever receives a master password or a plaintext credential.
  */
 
-import type { StoredItem } from './types.ts';
+import { normaliseItem, type StoredItem, type VaultItem } from './types.ts';
 import type { VaultHeader } from '../crypto/vault-crypto.ts';
 
 import {
@@ -306,6 +306,159 @@ export function newAlarmId(): string {
   return `al_${crypto.randomUUID().slice(0, 8)}`;
 }
 
+/**
+ * How many history events are kept. Bounded because every delete and every
+ * edit carries a snapshot of the login, and prefs travel in backups.
+ */
+export const MAX_HISTORY_EVENTS = 200;
+
+/**
+ * Rough ceiling on the whole log, in serialized characters. A login with an
+ * uploaded card image is megabytes on its own, so the count cap alone cannot
+ * bound this: the oldest entries are evicted until the log fits again.
+ */
+export const MAX_HISTORY_CHARS = 400_000;
+
+/**
+ * True when two versions of a login differ in nothing a user would call a
+ * change: every field matches apart from the save clocks. Used to keep a
+ * re-save out of the History log.
+ */
+function sameContent(a: VaultItem, b: VaultItem): boolean {
+  const strip = (item: VaultItem) => {
+    const { updatedAt: _u, passwordUpdatedAt: _p, usernameUpdatedAt: _n, ...rest } = item;
+    return JSON.stringify(rest);
+  };
+  return strip(a) === strip(b);
+}
+
+/**
+ * One thing that happened to one login.
+ *
+ * `before` is the login as it stood *prior* to the change, and exists only for
+ * the actions that overwrote or removed it. `restore` writes it back; for an
+ * addition there is nothing to go back to, so the row offers to remove the
+ * login instead.
+ */
+export interface HistoryEvent {
+  id: string;
+  at: number;
+  action: 'added' | 'edited' | 'deleted';
+  itemId: string;
+  /** Name as it read at the time, so the log stays readable after a rename. */
+  title: string;
+  username: string;
+  before: VaultItem | null;
+}
+
+export function newHistoryEventId(): string {
+  return `he_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-3)}`;
+}
+
+/**
+ * Reads the stored log back, dropping anything malformed.
+ *
+ * Shape-checked field by field like the rest of preferences: a truncated or
+ * hand-edited record must not be able to make the History channel throw, and a
+ * `before` snapshot that is not an object is exactly what a partial write looks
+ * like — better no restore than a login restored from half a record.
+ */
+export function normaliseHistory(raw: unknown): HistoryEvent[] {
+  if (!Array.isArray(raw)) return [];
+  const out: HistoryEvent[] = [];
+  for (const entry of raw.slice(0, MAX_HISTORY_EVENTS)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const action = record.action;
+    if (action !== 'added' && action !== 'edited' && action !== 'deleted') continue;
+    const itemId = typeof record.itemId === 'string' ? record.itemId : '';
+    if (!itemId) continue;
+    const before = record.before;
+    out.push({
+      id: typeof record.id === 'string' && record.id ? record.id : newHistoryEventId(),
+      at: typeof record.at === 'number' && Number.isFinite(record.at) ? record.at : 0,
+      action,
+      itemId,
+      title: typeof record.title === 'string' ? record.title.slice(0, 200) : '',
+      username: typeof record.username === 'string' ? record.username.slice(0, 200) : '',
+      before:
+        before && typeof before === 'object'
+          ? normaliseItem(before as Partial<VaultItem> & { id: string }, 0)
+          : null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Turns "what the items were" and "what they are now" into log entries.
+ *
+ * Three shapes only: something that appeared is `added`, something that
+ * vanished is `deleted` (carrying the login as it was, which is the only copy
+ * left once the record is gone), and something whose `updatedAt` moved is
+ * `edited` (carrying the version it replaced). Ordering is the after-list first,
+ * so a paste of five logins reads top to bottom the way it was pasted, then the
+ * deletions.
+ *
+ * A bulk action produces one entry per login on purpose: "delete 12 logins" is
+ * twelve restorable rows, not one lump that can only come back whole.
+ *
+ * Lives here rather than in the UI because it is the interesting half of the
+ * feature and it needs no React: the caller has the before/after lists anyway,
+ * and a diff that can be called from a test is a diff that can be trusted.
+ * `now` is injectable so the tests do not have to race the clock.
+ */
+export function historyEventsFor(
+  before: readonly VaultItem[],
+  after: readonly VaultItem[],
+  now: number = Date.now(),
+): HistoryEvent[] {
+  const previous = new Map(before.map((item) => [item.id, item]));
+  const events: HistoryEvent[] = [];
+  const describe = (item: VaultItem) => ({
+    title: item.title || item.username || 'Untitled',
+    username: item.username,
+  });
+  for (const item of after) {
+    const was = previous.get(item.id);
+    if (!was) {
+      events.push({ id: newHistoryEventId(), at: now, action: 'added', itemId: item.id, ...describe(item), before: null });
+      continue;
+    }
+    // A bump to `updatedAt` with nothing else different is a re-save, not a
+    // change. Logging those was how the log filled with rows that described
+    // nothing — open a login, save it untouched, and a row appeared. Only the
+    // fields that make a login what it is are compared; the two clocks
+    // (`updatedAt`, and the per-field `passwordUpdatedAt` / `usernameUpdatedAt`
+    // that move with it) are what a no-op save touches.
+    if (was.updatedAt !== item.updatedAt && !sameContent(was, item)) {
+      events.push({ id: newHistoryEventId(), at: now, action: 'edited', itemId: item.id, ...describe(was), before: was });
+    }
+  }
+  const alive = new Set(after.map((item) => item.id));
+  for (const item of before) {
+    if (alive.has(item.id)) continue;
+    events.push({ id: newHistoryEventId(), at: now, action: 'deleted', itemId: item.id, ...describe(item), before: item });
+  }
+  return events;
+}
+
+/**
+ * Prepends an event and trims the log to its count and size budgets.
+ *
+ * Purely functional so the caller can fold several events from one mutation
+ * into one write, and so the trimming rule is testable without a vault.
+ */
+export function appendHistory(existing: HistoryEvent[], additions: HistoryEvent[]): HistoryEvent[] {
+  if (additions.length === 0) return existing;
+  let log = [...additions, ...existing].slice(0, MAX_HISTORY_EVENTS);
+  let size = () => JSON.stringify(log).length;
+  while (log.length > 1 && size() > MAX_HISTORY_CHARS) {
+    log = log.slice(0, Math.max(1, Math.floor(log.length / 2)));
+  }
+  return log;
+}
+
 export interface VaultPreferences {
   theme: ThemeMode;
   accent: AccentName;
@@ -313,8 +466,23 @@ export interface VaultPreferences {
   // -- Appearance
   /** 0 = no motion, 1 = full. Honoured on top of the OS reduced-motion setting. */
   motion: number;
-  /** Duration multiplier for every transition. 0.25 = instant, 2 = languid. */
+  /**
+   * Duration multiplier for every transition: every duration divides by it, so
+   * 2 is the fastest setting and 1 is the app's normal pace.
+   *
+   * The scale deliberately stops at 1. It used to reach 0.25 — labelled
+   * "Languid" — which made every panel, menu and tab drag, and reads as a bug
+   * next to the rest of the app. Nothing slower than normal is offered now, so
+   * no stored value, profile or slider position can produce it.
+   */
   motionSpeed: number;
+  /**
+   * Small transitions on the controls that never had any: buttons, chips, tabs,
+   * toggles, rows and badges. On by default, because "nothing moves" is not the
+   * calm the app is going for; switched off from Optimize when frames matter
+   * more than feel. Larger motion (cards, panels) is `motion`.
+   */
+  microMotion: boolean;
   /** Mesh-gradient background intensity, 0 to 1. */
   ambient: number;
   density: Density;
@@ -477,6 +645,12 @@ export interface VaultPreferences {
   /** Shows a channel for logins that have no tags at all. */
   showUnassignedChannel: boolean;
   /**
+   * Stamp for the one-time tidy that files every non-Dashboard/Mail channel
+   * into a single "Channels" folder. A stamp rather than a rule: running it on
+   * every load would undo the user's own rearranging of the rail.
+   */
+  sidebarGrouped?: boolean;
+  /**
    * Channel ids hidden from the sidebar. Hidden is not deleted: the channel
    * keeps its logins, stays editable in Settings, and still works from the
    * dock or the dashboard — it just takes up no rail space.
@@ -574,6 +748,19 @@ export interface VaultPreferences {
    */
   lookPresetMigrated: boolean;
 
+  // -- History
+  /**
+   * What changed in the vault, newest first — the History channel's data.
+   *
+   * A log rather than a diff engine: every mutation records what it did and, for
+   * a change that destroyed something (a delete, an edit), the login as it was.
+   * That snapshot is what makes "Restore" possible at all, since a deleted
+   * record is gone from storage and an edited one has already been overwritten.
+   * It lives in preferences, which are sealed with the vault, so a snapshot of a
+   * password is exactly as protected as the password itself.
+   */
+  history: HistoryEvent[];
+
   // -- Alarms
   alarms: Alarm[];
 
@@ -588,8 +775,18 @@ export interface VaultPreferences {
   revealPasswords: boolean;
   /** Shows the "reused" and "old" badges. */
   showHealthBadges: boolean;
-  /** Warns before opening a site whose password is reused elsewhere. */
+  /**
+   * Warns when a login about to be copied shares its password elsewhere. The
+   * warning is a tappable notification, not a modal: it says its piece for a
+   * few seconds and then gets out of the way.
+   */
   warnOnReuse: boolean;
+  /**
+   * Files a login whose password is reused under a "Reused password" tag, so
+   * the group is visible in the sidebar and can be worked through in one place
+   * instead of being rediscovered from the health panel.
+   */
+  autoTagReused: boolean;
   /** Requires the vault password before a backup can be written. */
   confirmBeforeExport: boolean;
 
@@ -619,6 +816,10 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   // at 1 ("Normal") and, at this user's request, moves at full speed by
   // default — a languid default is the thing they complained about.
   motionSpeed: 2,
+  // On: the small transitions are what make the controls feel like controls.
+  // Nothing here is on a timer — they only run in response to the pointer or a
+  // state change — so the cost is a few compositor frames per interaction.
+  microMotion: true,
   ambient: 1,
   density: 'comfortable',
   roundness: 1,
@@ -698,6 +899,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   revealPasswords: false,
   showHealthBadges: true,
   warnOnReuse: true,
+  autoTagReused: true,
   confirmBeforeExport: false,
   passwordGenerator: {
     length: 20,
@@ -730,6 +932,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
    * preferences always win over defaults.
    */
   lookPresetMigrated: false,
+  history: [],
 };
 
 /**
@@ -862,7 +1065,10 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.showSettingsButton = merged.showSettingsButton !== false;
   merged.showHideSidebarButton = merged.showHideSidebarButton !== false;
   merged.showSidebar = merged.showSidebar !== false;
+  merged.sidebarGrouped = merged.sidebarGrouped === true;
   merged.autoTagDomain = Boolean(merged.autoTagDomain);
+  // Opt-out, like the other helpful defaults: only a real `false` turns it off.
+  merged.autoTagReused = merged.autoTagReused !== false;
   merged.showLetterGroups = merged.showLetterGroups !== false;
   merged.clipboardCapture = Boolean(merged.clipboardCapture);
   merged.clipboardAutoSave = Boolean(merged.clipboardAutoSave);
@@ -1025,7 +1231,13 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.density = oneOf(merged.density, ['compact', 'comfortable', 'spacious'] as const, DEFAULT_PREFERENCES.density);
 
   merged.motion = clampRange(merged.motion, 0, 1, DEFAULT_PREFERENCES.motion);
-  merged.motionSpeed = clampRange(merged.motionSpeed, 0.25, 2, DEFAULT_PREFERENCES.motionSpeed);
+  // Floor of 1, not 0.25: the sub-normal end of this scale was the "Languid"
+  // setting, and a vault stored with it would otherwise keep dragging for good.
+  merged.motionSpeed = clampRange(merged.motionSpeed, 1, 2, DEFAULT_PREFERENCES.motionSpeed);
+  // Only an explicit false turns micro-animations off, so a record from before
+  // the switch existed (no field at all) keeps them, like a fresh vault.
+  merged.microMotion = merged.microMotion !== false;
+  merged.history = normaliseHistory(merged.history);
 
   // Flow card width used to be one global percentage of the content column,
   // which contradicted the per-view px cap and left two live controls fighting

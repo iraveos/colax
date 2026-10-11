@@ -344,8 +344,11 @@ test('duplicate account addresses collapse to one', () => {
   assert.equal(out.gmailAccounts.length, 1);
 });
 
-test('messages are on per login unless switched off, old records keep showing mail', () => {
-  assert.equal(emptyItem('x', 1000).showMail, true, 'new logins start opted in');
+test('messages are opt-in per login, and old records keep showing mail', () => {
+  // New logins start switched off: mail follows the login it was connected
+  // for, never every login in the vault. The linked login still shows its own
+  // mailbox through `loginShowsMail`, which reads the link as on.
+  assert.equal(emptyItem('x', 1000).showMail, false, 'new logins start opted out');
   assert.equal(normaliseItem({ ...emptyItem('x', 1000), showMail: true }).showMail, true);
   assert.equal(normaliseItem({ ...emptyItem('x', 1000), showMail: false }).showMail, false);
   const { showMail: _dropped, ...legacy } = emptyItem('x', 1000);

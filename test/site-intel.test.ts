@@ -17,6 +17,7 @@ import {
   normaliseHost,
   planMailLinkedOnly,
   siteNameFor,
+  tagIdsForDraft,
 } from '../src/vault/site-intel.ts';
 
 test('a host is lowercased and loses a leading www', () => {
@@ -274,4 +275,51 @@ test('an accepted capture becomes a usable draft', () => {
     password: 'Tr0ub4dor&3',
     url: 'https://github.com',
   });
+});
+test('a pasted login keeps the tags of the channel it was pasted into', () => {
+  const work = { id: 'tag_work', name: 'Work', hue: 12 };
+  const other = { id: 'tag_other', name: 'Personal', hue: 200 };
+  const catalogue = [work, other];
+
+  // The open channel's tags come first and are always applied, even with
+  // automatic tagging switched off: they are a filing decision, not a guess.
+  const inherited = tagIdsForDraft({ username: 'me@x.com' }, ['tag_work'], catalogue, { autoTag: false });
+  assert.deepEqual(inherited.tagIds, ['tag_work']);
+  assert.equal(inherited.catalogue, catalogue, 'nothing to create, so the catalogue is untouched');
+
+  // A stale id — a tag deleted while the channel still referenced it — is
+  // dropped rather than written onto the login.
+  assert.deepEqual(tagIdsForDraft({}, ['tag_gone'], catalogue, { autoTag: false }).tagIds, []);
+
+  // With auto-tagging on, the draft's own hints are added after the inherited
+  // ones and never duplicated.
+  const gmail = tagIdsForDraft({ username: 'me@gmail.com' }, ['tag_work'], catalogue, { autoTag: true });
+  assert.equal(gmail.tagIds[0], 'tag_work');
+  assert.equal(gmail.tagIds.length, 2);
+  assert.ok(gmail.catalogue.length > catalogue.length, 'a new tag is created for the new hint');
+  // …and off really means off.
+  assert.deepEqual(tagIdsForDraft({ username: 'me@gmail.com' }, [], catalogue, { autoTag: false }).tagIds, []);
+});
+
+test('mail belongs to the login it was connected for, and nowhere else', () => {
+  const account = { id: 'mb_1', address: 'me@gmail.com', enabled: true, refreshSeconds: 300, appPassword: 'x' };
+  // A new login — switched off, not linked: no mail, even with a mailbox
+  // connected and the channel happy to show it.
+  assert.equal(loginShowsMail({ username: 'other@x.com', showMail: false }, [account]), false);
+  // The login the mailbox was connected for reads that mailbox — never another
+  // login's mail, and never the other way round.
+  assert.equal(
+    loginShowsMail({ username: 'me@gmail.com', showMail: true }, [account]),
+    true,
+    'the linked login reads its own mailbox',
+  );
+  // …and the editor's switch is still honoured there, so a login can be
+  // silenced without disconnecting the mailbox.
+  assert.equal(loginShowsMail({ username: 'me@gmail.com', showMail: false }, [account]), false);
+  // Switched on by hand, an unrelated login shows the channel's scope instead.
+  assert.equal(loginShowsMail({ username: 'other@x.com', showMail: true }, [account]), true);
+  // A channel that hides mail wins over both.
+  assert.equal(loginShowsMail({ username: 'me@gmail.com', showMail: true }, [account], false), false);
+  // No mailbox connected means nothing to show anywhere.
+  assert.equal(loginShowsMail({ username: 'me@gmail.com', showMail: true }, []), false);
 });

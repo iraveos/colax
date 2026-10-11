@@ -889,6 +889,18 @@ var(--ease),color var(--fast) var(--ease)}
 .toast{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);border:1px solid var(--border);border-radius:var(--radius-full);background:var(--glass-strong);backdrop-filter:blur(20px);box-shadow:var(--shadow-lg);font-size:var(--text-sm);white-space:nowrap;pointer-events:auto}
 .toast__icon{color:var(--accent-text);display:flex}
 .toast--error .toast__icon{color:var(--danger)}
+/* A toast that leads somewhere: a button, so it needs the button defaults
+   undone (font, colour, inheritance) before it can look like a toast. */
+.toast--action{font:inherit;color:inherit;cursor:pointer;text-align:left}
+.toast--action:hover{border-color:var(--accent);color:var(--accent)}
+.toast--action::after{content:'›';margin-left:var(--space-1);opacity:.7}
+/* Flash the card a notification sent the user to, so the arrival is obvious
+   and then stops being obvious. */
+.dash-card[data-flash]{animation:dash-flash calc(1.4s / var(--motion-speed,1)) ease-out 1}
+@keyframes dash-flash{
+  0%{box-shadow:0 0 0 2px var(--accent),var(--shadow-lg)}
+  100%{box-shadow:0 0 0 0 transparent,var(--shadow-lg)}
+}
 .view-menu{position:relative}
 /* Opaque for the same reason as the select list: this floats over the card list. */
 .view-menu__panel{position:absolute;top:calc(100% + 8px);z-index:30;width:264px;max-width:calc(100vw - 16px);padding:5px;border:1px solid var(--border-strong);border-radius:var(--radius-lg);background:var(--surface);box-shadow:var(--shadow-lg);transform-origin:top right}
@@ -1635,3 +1647,486 @@ body.is-reordering,body.is-reordering *{user-select:none !important;cursor:grabb
 .alarms__dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--text-faint)}
 .alarms__dot--on{background:hsl(152 55% 55%)}
 .integrations .field{margin-bottom:var(--space-4)}
+/* ==========================================================================
+   Micro-animations — the controls that never had any
+   ==========================================================================
+
+   Every interactive thing in the app responded to the pointer by changing
+   colour instantly: buttons, chips, tabs, rows, badges, toggles, selects. The
+   panels around them moved, so the controls read as the flat part of an
+   otherwise animated app — "add animation to what does not have animations".
+
+   These are *transitions*, not keyframes: they run only while the user is
+   interacting, and a transition costs a frame per change rather than a frame
+   per second. That is why they can be on by default and why switching them off
+   (Optimize › Micro-animations) gives back very little — the switch says so in
+   its own hint rather than pretending to be a saving.
+
+   Everything reads the shared duration tokens, so the animation-speed slider
+   and reduce-motion apply here exactly as they do everywhere else. Kept in one
+   block on purpose: adding a selector is a deliberate act, not something that
+   happens by accident across two dozen unrelated rules.
+   ========================================================================== */
+[data-micro='on'] .btn,
+[data-micro='on'] .chip,
+[data-micro='on'] .tag-chip,
+[data-micro='on'] .segmented__option,
+[data-micro='on'] .settings-tab,
+[data-micro='on'] .sec__tab,
+[data-micro='on'] .mailbox__tab,
+[data-micro='on'] .nav-item,
+[data-micro='on'] .dash-row,
+[data-micro='on'] .card-row,
+[data-micro='on'] .alarms__row,
+[data-micro='on'] .option-card,
+[data-micro='on'] .accent-swatch,
+[data-micro='on'] .icon-picker__option,
+[data-micro='on'] .select__trigger,
+[data-micro='on'] .history__row {
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease),
+    transform var(--fast) var(--ease-out),
+    translate var(--fast) var(--ease-out);
+}
+/* The lift is what makes the movement visible: a colour swap alone still reads
+   as an instant change. One pixel, so a wall of chips under the pointer is a
+   shimmer rather than a fairground. */
+[data-micro='on'] .btn:hover:not(:disabled),
+[data-micro='on'] .chip:hover,
+[data-micro='on'] .tag-chip:hover,
+[data-micro='on'] .option-card:hover,
+[data-micro='on'] .accent-swatch:hover,
+[data-micro='on'] .icon-picker__option:hover,
+[data-micro='on'] .settings-tab:hover,
+[data-micro='on'] .sec__tab:hover,
+[data-micro='on'] .mailbox__tab:hover {
+  transform: translateY(-1px);
+}
+[data-micro='on'] .btn:active:not(:disabled),
+[data-micro='on'] .chip:active,
+[data-micro='on'] .tag-chip:active,
+[data-micro='on'] .segmented__option:active,
+[data-micro='on'] .icon-picker__option:active,
+[data-micro='on'] .option-card:active {
+  transform: translateY(0) scale(0.97);
+}
+/* Rows get the horizontal nudge instead of the lift: raising one row of a list
+   would drag its neighbours' text along with it. */
+[data-micro='on'] .card-row:hover,
+[data-micro='on'] .dash-row:hover,
+[data-micro='on'] .alarms__row:hover,
+[data-micro='on'] .history__row:hover {
+  translate: 2px 0;
+}
+/* [data-motion='off'] means the app does not animate, and that has to include
+   these; it is written from the same preference that switches the large
+   animations off, so the two can never disagree. */
+[data-motion='off'] .btn,
+[data-motion='off'] .chip,
+[data-motion='off'] .tag-chip,
+[data-motion='off'] .segmented__option,
+[data-motion='off'] .settings-tab,
+[data-motion='off'] .sec__tab,
+[data-motion='off'] .mailbox__tab,
+[data-motion='off'] .nav-item,
+[data-motion='off'] .dash-row,
+[data-motion='off'] .card-row,
+[data-motion='off'] .alarms__row,
+[data-motion='off'] .option-card,
+[data-motion='off'] .accent-swatch,
+[data-motion='off'] .icon-picker__option,
+[data-motion='off'] .select__trigger,
+[data-motion='off'] .history__row {
+  transition: none;
+}
+
+/* ==========================================================================
+   Quiet mode — a window nobody is looking at
+   ==========================================================================
+
+   Minimized, hidden in the tray, or simply behind another app: the shell gets
+   `data-quiet` and the things that exist only to be watched stop. The ambient
+   mesh is three huge blurred blobs on 26-32 second loops, and a visible but
+   unfocused window keeps every one of those animations running and compositing
+   — which is the case `visibilitychange` alone cannot see.
+
+   Polling stops in the same state, in JS: mail checks (useGmail) and the
+   clipboard watcher (useClipboardWatcher). Nothing needs a resume step — a
+   paused animation un-pauses when the attribute goes away, and the loops run
+   again on their next tick.
+   ========================================================================== */
+.shell[data-quiet] .ambient__blob,
+.shell[data-quiet] .grain,
+.shell[data-quiet] .rb-animated-list,
+.shell[data-quiet] .rb-animated-list * {
+  animation-play-state: paused !important;
+}
+/* The gradient keeps its colour and simply stops drifting. Blanking it out
+   would change how the app looks the instant focus moved to another window,
+   which is a bigger change than "stop animating" — and on a second monitor it
+   would be visible to someone who is still looking at the app. Pausing the
+   animation is what removes the per-frame cost; the static mesh is one paint. */
+.shell[data-quiet] .ambient__blob {
+  will-change: auto;
+}
+/* Frosted panels are the other per-frame cost, and with nothing on screen to
+   look at, blurring the backdrop is work done for an empty room. */
+.shell[data-quiet] .glass,
+.shell[data-quiet] .editor-window,
+.shell[data-quiet] .settings-window,
+.shell[data-quiet] .modal {
+  backdrop-filter: none;
+}
+
+/* ==========================================================================
+   Channel and folder backgrounds on the rail row
+   ========================================================================== */
+
+/* A channel or folder with a picture paints its own band under its own text,
+   dimmed by --row-dim so a bright photo cannot swallow the label. The band
+   inherits the row's radius, so it reads as a card rather than a stripe drawn
+   across the rail. */
+.nav-item[data-has-bg] {
+  position: relative;
+  overflow: hidden;
+}
+.nav-item[data-has-bg]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: var(--row-image);
+  background-size: cover;
+  background-position: center;
+  opacity: var(--row-strength, 1);
+  /* The veil is drawn as a huge inset shadow, which paints above the image
+     inside the same pseudo-element: one layer, no extra element per row. */
+  box-shadow: inset 0 0 0 999px var(--row-dim, transparent);
+  pointer-events: none;
+}
+.nav-item[data-has-bg] > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ==========================================================================
+   Sidebar: several rows picked at once
+   ========================================================================== */
+/*
+   A picked row has to be unmistakable: the bulk bar above the rail says "4 rows
+   selected" and the rows themselves have to say which four. The first version of
+   this rule was a soft 22%-alpha wash, and it lost outright in floating chrome:
+   `.sidebar[data-floating] .nav-item` sets `background` and `box-shadow` at a
+   higher specificity, so the wash never painted and selection looked broken
+   while the bar counted rows. Hence the ring in the floating rule below and a
+   fill strong enough to read against the glass.
+*/
+.nav-item[data-selected] {
+  background: hsl(var(--channel-h, 212) 48% 55% / 0.34);
+  box-shadow: inset 0 0 0 2px hsl(var(--channel-h, 212) 62% 66% / 0.9);
+  color: var(--text);
+  font-weight: 600;
+}
+.nav-item[data-selected] .nav-item__count {
+  color: var(--text);
+  font-weight: 600;
+}
+/* Same rule for floating chrome, which otherwise wins on specificity (see
+   above) — the rail is floating by default, so this is the normal case. */
+.sidebar[data-floating] .nav-item[data-selected] {
+  background: hsl(var(--channel-h, 212) 48% 55% / 0.34);
+  box-shadow: inset 0 0 0 2px hsl(var(--channel-h, 212) 62% 66% / 0.9);
+  color: var(--text);
+}
+.sidebar[data-floating] .nav-item[data-selected]:hover {
+  background: hsl(var(--channel-h, 212) 48% 55% / 0.42);
+  box-shadow: inset 0 0 0 2px hsl(var(--channel-h, 212) 66% 70% / 0.95);
+}
+.sidebar__bulk {
+  margin: 0 var(--space-2) var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
+}
+.sidebar__bulk-count {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.sidebar__bulk-count b {
+  color: var(--text);
+}
+.sidebar__bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.sidebar__bulk-hint {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+/* Docked top or bottom the rail is a strip, so the bar sits beside the rows
+   instead of under them — otherwise it doubles the strip's height. */
+.shell[data-rail='top'] .sidebar__bulk,
+.shell[data-rail='bottom'] .sidebar__bulk {
+  margin: 0 0 0 var(--space-2);
+  flex-shrink: 0;
+}
+.shell[data-rail='top'] .sidebar__bulk-hint,
+.shell[data-rail='bottom'] .sidebar__bulk-hint {
+  display: none;
+}
+
+/* ==========================================================================
+   History channel
+   ========================================================================== */
+.history__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+.history__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-muted);
+}
+.history__title h2 {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.history__count {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.history__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.history__search {
+  flex: 1 1 260px;
+  max-width: 440px;
+}
+.history__filter {
+  flex-shrink: 0;
+}
+.history__groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.history__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.history__day {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 640;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.history__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.history__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.history__row[data-action='deleted'] {
+  border-color: hsl(357 45% 55% / 0.4);
+}
+.history__badge {
+  flex-shrink: 0;
+  min-width: 62px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 620;
+  text-align: center;
+}
+.history__badge[data-action='added'] {
+  background: hsl(152 45% 45% / 0.2);
+  color: hsl(152 50% 68%);
+}
+.history__badge[data-action='edited'] {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.history__badge[data-action='deleted'] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.history__what {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.history__name {
+  font-weight: 560;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.history__meta {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.history__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+/* ==========================================================================
+   Horizontal rails: the edge lines
+   ==========================================================================
+
+   Docked top or bottom, each channel is a pill. Two things were wrong with the
+   way it was drawn, and both show at the pills' edges over a photo — which is
+   how this was reported:
+
+   1. The current-channel marker was docked *below* the row (`bottom:-4px`) in
+      the horizontal layout. The strip scrolls sideways and therefore has
+      `overflow-y: hidden`, so the marker was clipped to whatever fraction of
+      3px landed inside the box: a stray tick of colour at the bottom edge of
+      the active pill, sitting at an arbitrary height that depended on the row's
+      padding. Measured on the running app: `.sidebar__nav` reported
+      clientHeight 42 against scrollHeight 46, so 4px of content was cut off.
+      The marker now sits inside the pill, where nothing can clip it.
+
+   2. Pills were translucent rectangles with no border at all. Over a photo two
+      neighbours' fills met with nothing between them, so the boundary read as a
+      smeared seam rather than as two separate things. Each chip now carries a
+      real hairline edge, and the active one takes its own channel's colour.
+
+   Nothing here changes the left/right rail, where the pills are a full-width
+   list and neither problem is visible.
+   ========================================================================== */
+.shell[data-rail='top'] .nav-item,
+.shell[data-rail='bottom'] .nav-item {
+  border: 1px solid var(--border);
+  background: var(--glass-strong);
+  box-shadow: var(--channel-shadow);
+}
+.shell[data-rail='top'] .nav-item:hover,
+.shell[data-rail='bottom'] .nav-item:hover {
+  border-color: var(--border-strong);
+}
+.shell[data-rail='top'] .nav-item[aria-current='true'],
+.shell[data-rail='bottom'] .nav-item[aria-current='true'] {
+  border-color: hsl(var(--channel-h, 212) 48% 58% / 0.55);
+}
+/* The marker moves inside the pill: a short rule under the label, in the
+   channel's own colour, 3px from the bottom edge. */
+.shell[data-rail='top'] .nav-item[aria-current='true']::before,
+.shell[data-rail='bottom'] .nav-item[aria-current='true']::before {
+  left: 50%;
+  top: auto;
+  bottom: 3px;
+  width: 16px;
+  height: 3px;
+  translate: -50% 0;
+}
+/* Folder headers on the strip get the same edge as channels: they are chips too
+   once the rail is horizontal, and an outlined channel next to an unoutlined
+   folder header reads as a rendering mistake rather than as a grouping. */
+.shell[data-rail='top'] .nav-item--folder,
+.shell[data-rail='bottom'] .nav-item--folder {
+  border: 1px solid var(--border);
+  background: var(--glass-strong);
+  box-shadow: var(--channel-shadow);
+}
+
+/* Sub-tabs inside a settings section (Security, and any other section that
+   grows past a screenful). A segmented row rather than a second rail: the
+   window already has one rail, and two columns of tabs on one screen reads as
+   two navigation systems fighting over the same click. */
+.subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-sunken, var(--glass));
+  width: fit-content;
+  max-width: 100%;
+}
+.subtabs__tab {
+  padding: 5px var(--space-3);
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 560;
+  cursor: pointer;
+}
+.subtabs__tab:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.subtabs__tab[aria-selected='true'] {
+  background: var(--grad-soft);
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px hsl(var(--accent-h) 48% 58% / 0.35);
+}
+.subtabs__tab:focus-visible {
+  outline: 2px solid hsl(var(--accent-h) 55% 58% / 0.7);
+  outline-offset: 1px;
+}
+
+/* The channel/folder picture controls in their editors: three sliders the
+   editors only render once a picture exists, so the block never appears as
+   three dead controls on a channel with no background. */
+.bg-look {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken, var(--glass));
+}
+.bg-look__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.bg-look__row .field__label {
+  min-width: 70px;
+  margin: 0;
+}
