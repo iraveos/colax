@@ -94,10 +94,8 @@ fn read_state() -> ShellState {
 
 /// Best-effort write: a read-only config directory must not stop the app.
 ///
-/// No switch exists yet that changes the state -- the Settings surface
-/// arrives in a later phase -- so this is written for that path and dead
-/// until then.
-#[allow(dead_code)]
+/// Written alongside the preferences copy of the same four switches, so the
+/// tray (alive before unlock) and the vault agree — see `mirror_shell_flags`.
 fn write_state(state: ShellState) {
     let path = state_path();
     if let Some(dir) = path.parent() {
@@ -470,6 +468,41 @@ fn refresh_appearance(ui: &MainWindow, state: &Shared) {
     appearance::apply_appearance(ui, &prefs);
 }
 
+/// Writes preferences back through the engine and re-applies them, the
+/// `savePreferences` path in `hooks.ts:useVault`. Returns false when the write
+/// failed, so a settings screen can say so rather than pretend it held.
+fn save_prefs(ui: &MainWindow, state: &Shared, prefs: &colax_core::VaultPreferences) -> bool {
+    let raw = match serde_json::to_value(prefs) {
+        Ok(raw) => raw,
+        Err(_) => return false,
+    };
+    let saved = state
+        .borrow_mut()
+        .engine
+        .save_preferences(raw)
+        .is_ok();
+    if saved {
+        appearance::apply_appearance(ui, prefs);
+    }
+    saved
+}
+
+/// The four shell switches exist twice — in `shell.json` (read by the tray,
+/// which is alive before any vault is unlocked) and in the vault's
+/// preferences (so they follow a backup to another machine). Any change must
+/// land in both, and the shell file is written first: it is the one the next
+/// launch reads for tray behaviour even if the vault write is refused.
+fn mirror_shell_flags(ui: &MainWindow, state: &Shared, shell: &mut ShellState, prefs: &colax_core::VaultPreferences) {
+    shell.tray_enabled = prefs.tray_enabled;
+    shell.close_to_tray = prefs.close_to_tray;
+    shell.launch_at_login = prefs.launch_at_login;
+    shell.sounds_muted = prefs.sounds_muted;
+    write_state(*shell);
+    // The Run key is an OS change, not a preference: apply it as it flips.
+    apply_autostart(prefs.launch_at_login);
+    save_prefs(ui, state, prefs);
+}
+
 /// Replace this device's vault with a parsed backup, keeping whatever
 /// protection the backup itself carried.
 fn restore_backup(
@@ -605,7 +638,7 @@ Entry point
 ========================================================================== */
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let state_file = read_state();
+    let mut state_file = read_state();
 
     // Only ever re-affirmed at boot, never withdrawn: if no shell.json exists
     // yet but a Run entry does (set by an earlier build), starting this app
@@ -654,6 +687,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // is open — including before the first unlock, which is why this runs
     // here and not after a screen change.
     if let Some(state) = &app_state {
+        // shell.json is where the Tauri/Electron builds kept these four
+        // switches. Adopt them into the vault preferences only when the
+        // preferences document has never recorded them — once it has, the
+        // preferences are the newer copy (a restore can bring them from
+        // another machine) and shell.json follows them instead.
+        let mut shell = state_file;
+        let (mut prefs, unmirrored) = {
+            let guard = state.borrow();
+            let raw = guard.engine.preferences();
+            let missing = raw.get("trayEnabled").is_none()
+                && raw.get("closeToTray").is_none()
+                && raw.get("launchAtLogin").is_none()
+                && raw.get("soundsMuted").is_none();
+            (colax_core::normalise_preferences(raw), missing)
+        };
+        if unmirrored {
+            prefs.tray_enabled = shell.tray_enabled;
+            prefs.close_to_tray = shell.close_to_tray;
+            prefs.launch_at_login = shell.launch_at_login;
+            prefs.sounds_muted = shell.sounds_muted;
+            mirror_shell_flags(&ui, state, &mut shell, &prefs);
+            state_file = shell;
+        }
         refresh_appearance(&ui, state);
     }
 

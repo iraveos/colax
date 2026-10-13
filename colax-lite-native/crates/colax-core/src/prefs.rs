@@ -34,6 +34,13 @@ pub struct VaultPreferences {
     pub show_urls: bool,
     pub sidebar_position: String,
     pub sidebar_labels: String,
+    // Shell switches. They live in `shell.json` too so the tray (which exists
+    // before unlock) can read them, and the two are written together — see
+    // `mirror_shell_flags` in the app.
+    pub tray_enabled: bool,
+    pub close_to_tray: bool,
+    pub launch_at_login: bool,
+    pub sounds_muted: bool,
     // retained as an opaque pocket for keys we do not model yet, so nothing
     // is dropped on a round trip through this build. The TS build writes
     // many more fields here; we keep the ones we understand typed and let
@@ -65,6 +72,10 @@ impl Default for VaultPreferences {
             show_urls: true,
             sidebar_position: "left".into(),
             sidebar_labels: "both".into(),
+            tray_enabled: true,
+            close_to_tray: true,
+            launch_at_login: false,
+            sounds_muted: false,
             extra: Value::Object(serde_json::Map::new()),
         }
     }
@@ -116,12 +127,19 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.show_urls = get_bool!("showUrls", true);
     out.sidebar_position = one_of(o.get("sidebarPosition").unwrap_or(&Value::Null), &["left","right","top","bottom"], "left");
     out.sidebar_labels = one_of(o.get("sidebarLabels").unwrap_or(&Value::Null), &["icon","name","both"], "both");
+    // Boolean(...) in JS: anything truthy reads as true, so a legacy string
+    // here is still honoured rather than reset.
+    out.tray_enabled = truthy(o.get("trayEnabled"), true);
+    out.close_to_tray = truthy(o.get("closeToTray"), true);
+    out.launch_at_login = truthy(o.get("launchAtLogin"), false);
+    out.sounds_muted = truthy(o.get("soundsMuted"), false);
 
     // absorb everything we didn't model
     let mut extra = serde_json::Map::new();
     let known = ["theme","accent","textScale","motion","motionSpeed","ambient","density","roundness",
         "cardDepth","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",
-        "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels"];
+        "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
+        "trayEnabled","closeToTray","launchAtLogin","soundsMuted"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
@@ -138,6 +156,18 @@ fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
 fn num(v: Option<&Value>, dflt: f64) -> f64 {
     match v.and_then(Value::as_f64) {
         Some(n) if n.is_finite() => n,
+        _ => dflt,
+    }
+}
+
+/// JS `Boolean(v)`: a JSON `true`/`false` as itself, a non-empty string or
+/// non-zero number as true, absent as the default.
+fn truthy(v: Option<&Value>, dflt: bool) -> bool {
+    match v {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Number(n)) => n.as_f64().map(|f| f != 0.0).unwrap_or(dflt),
+        Some(Value::Array(a)) => !a.is_empty(),
         _ => dflt,
     }
 }
