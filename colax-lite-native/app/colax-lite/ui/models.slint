@@ -1,0 +1,23 @@
+// Cross-file data models shared by the engine bridge and the screens.
+export enum Screen {
+    Error,
+    CreateChoose,
+    CreatePassword,
+    CreateConfirm,
+    UnlockPassword,
+    UnlockDevice,
+    ImportPassword,
+    Vault,
+}
+
+/// One row of the vault list. Deliberately holds no secret: passwords stay
+/// in the engine and are fetched by id when the user asks to copy one.
+/// `tile` is the accent colour for the row's icon, computed in Rust.
+export struct ItemRow {
+    id: string,
+    title: string,
+    username: string,
+    subtitle: string,
+    initial: string,
+    tile: color,
+}

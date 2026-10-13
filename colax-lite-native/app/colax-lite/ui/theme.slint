@@ -1,0 +1,26 @@
+// Colax Lite native -- design tokens.
+//
+// Mirrors src/styles/tokens.css. Colours are *pushed from Rust* by
+// applyAppearance() (Phase 2); here we only keep the dark defaults so a
+// cold launch is never blank. Widgets in widgets.slint reference Theme and
+// never branch on it.
+export global Theme {
+    out property <color> bg: #101319;
+    out property <color> text: #f0f3f9;
+    out property <color> muted: #a0a6b5;
+    out property <color> faint: #767b86;
+    out property <color> accent: #75a5c7;
+    out property <color> accent-strong: #90b8d6;
+    out property <color> accent-press: #518db8;
+    out property <color> accent-soft: #75a5c733;
+    out property <color> danger: #e07b80;
+    out property <color> danger-soft: #e07b802b;
+    out property <color> good: #7dd3a0;
+    out property <color> good-soft: #7dd3a02b;
+    out property <color> card: #1a1e27;
+    out property <color> border: #ffffff17;
+    out property <color> border-strong: #ffffff2b;
+    out property <color> field: #ffffff0f;
+    out property <color> field-focus: #ffffff1a;
+    out property <color> row-hover: #ffffff0a;
+}
