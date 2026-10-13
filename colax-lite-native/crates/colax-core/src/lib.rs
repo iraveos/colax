@@ -16,6 +16,7 @@ pub mod crypto;
 pub mod engine;
 pub mod error;
 pub mod model;
+pub mod prefs;
 pub mod storage;
 pub mod util;
 
@@ -27,4 +28,5 @@ pub use crypto::{
 pub use engine::{new_item_id, verify_backup_password, VaultEngine};
 pub use error::VaultError;
 pub use model::{empty_item, normalise_item, normalize_url, LoginSecurity, StoredItem, VaultItem};
+pub use prefs::{normalise_preferences, VaultPreferences};
 pub use storage::{parse_backup, serialize_backup, BackupFile, VaultStorage, BACKUP_FORMAT};

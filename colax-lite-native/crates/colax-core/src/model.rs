@@ -74,6 +74,15 @@ pub struct VaultItem {
     pub favorite: bool,
     /// Marks the login as needing attention. Separate from `favorite`.
     pub needs_attention: bool,
+    /// Whether this login shows its message expander. Opt-in per login: new
+    /// logins start with it off (`empty_item`), while a record saved before the
+    /// field existed reads as on (`normalise_item`) so the one-time
+    /// linked-only pass is what switches unrelated logins off — a legacy `true`
+    /// is never re-read as a choice.
+    pub show_mail: bool,
+    /// Which messages the expander shows: `auto`, `matched` or `recent`.
+    /// Anything else coerces to `auto`.
+    pub mail_filter: String,
     /// Ids from the global tag catalogue — ids rather than names so a tag can
     /// be renamed everywhere at once.
     pub tags: Vec<String>,
@@ -108,6 +117,11 @@ pub fn empty_item(id: &str, now: i64) -> VaultItem {
         totp_secret: String::new(),
         favorite: false,
         needs_attention: false,
+        // Off by default, and deliberately so: mail is per login, so connecting
+        // a mailbox for one login does not put a Messages button on every
+        // other login.
+        show_mail: false,
+        mail_filter: "auto".to_string(),
         tags: Vec::new(),
         security: LoginSecurity::default(),
         accent_hue: None,
@@ -202,6 +216,18 @@ pub fn normalise_item(raw: &Value, now: i64) -> VaultItem {
         _ => Vec::new(),
     };
     item.needs_attention = get("needsAttention").is_some_and(js_truthy);
+    // Off for a *new* login (`empty_item`), but a record saved before the field
+    // existed reads as on: that record predates the per-login idea, and the
+    // one-time linked-only pass is what switches unrelated logins off. A legacy
+    // `true` is never re-read as a choice.
+    item.show_mail = match get("showMail") {
+        Some(Value::Bool(b)) => *b,
+        _ => true,
+    };
+    item.mail_filter = match get("mailFilter").and_then(Value::as_str) {
+        Some(v) if v == "matched" || v == "recent" => v.to_string(),
+        _ => "auto".to_string(),
+    };
     item.accent_hue = get("accentHue").and_then(Value::as_f64);
     item.reminder_days = match get("reminderDays").and_then(Value::as_f64) {
         Some(value) if value.is_finite() => (value * 1e6).round() / 1e6,

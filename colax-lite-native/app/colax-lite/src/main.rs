@@ -15,6 +15,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod appearance;
 mod platform;
 
 use std::cell::RefCell;
@@ -442,7 +443,12 @@ fn unlock_with(ui: &MainWindow, state: &Shared, password: &str) {
     let result = { state.borrow_mut().engine.unlock(password) };
     ui.set_busy(false);
     match result {
-        Ok(true) => goto(ui, state, Screen::Vault),
+        Ok(true) => {
+            // Unlock re-reads the document, so the preferences may have
+            // changed since boot (another device, a restore, an import).
+            refresh_appearance(ui, state);
+            goto(ui, state, Screen::Vault);
+        }
         Ok(false) => {
             ui.set_password_value("".into());
             ui.set_error_text("That vault password is not correct.".into());
@@ -452,6 +458,16 @@ fn unlock_with(ui: &MainWindow, state: &Shared, password: &str) {
             ui.set_error_text(err.to_string().into());
         }
     }
+}
+
+/// Re-pushes the vault's preferences into the Theme global. Safe to call any
+/// time the engine has a document; a no-op with nothing to read.
+fn refresh_appearance(ui: &MainWindow, state: &Shared) {
+    let prefs = {
+        let guard = state.borrow();
+        colax_core::normalise_preferences(guard.engine.preferences())
+    };
+    appearance::apply_appearance(ui, &prefs);
 }
 
 /// Replace this device's vault with a parsed backup, keeping whatever
@@ -474,6 +490,8 @@ fn restore_backup(
     match result {
         Ok(()) => {
             state.borrow_mut().pending_backup = None;
+            // The backup carries its own preferences document.
+            refresh_appearance(ui, state);
             goto(ui, state, Screen::Vault);
             tray_lock_enabled(tray, true);
             notice(ui, "Backup imported.");
@@ -630,6 +648,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
+
+    // ---- Appearance ------------------------------------------------------
+    // Preferences ride in the vault document, so they are known the moment it
+    // is open — including before the first unlock, which is why this runs
+    // here and not after a screen change.
+    if let Some(state) = &app_state {
+        refresh_appearance(&ui, state);
+    }
 
     // ---- Tray callbacks ---------------------------------------------------
     let weak = ui.as_weak();

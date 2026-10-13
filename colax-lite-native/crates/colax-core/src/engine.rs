@@ -402,7 +402,9 @@ impl VaultEngine {
             exported_at: now_iso(),
             header: self.require_header()?.clone(),
             items: self.stored.clone(),
-            preferences: None,
+            // Preferences ride along in the backup: the TS build writes them,
+            // and dropping them here made a restore lose the user's theme.
+            preferences: Some(self.preferences.clone()),
         })
     }
 
@@ -437,6 +439,9 @@ impl VaultEngine {
 
         self.header = Some(header);
         self.stored = backup.items.clone();
+        if let Some(prefs) = &backup.preferences {
+            self.preferences = prefs.clone();
+        }
         self.save_document()?;
         self.items = self.decrypt_all(&handle);
         self.handle = Some(handle);

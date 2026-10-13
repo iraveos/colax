@@ -15,6 +15,9 @@ import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Btn, Field, Alert } from "widgets.slint";
 import { Screen, ItemRow } from "models.slint";
+// Re-exported so Rust can reach it: applyAppearance pushes every token into
+// this global (ADR-2), which needs the type in the generated module.
+export { Theme }
 
 export component MainWindow inherits Window {
     title: "Colax Lite";
@@ -24,7 +27,7 @@ export component MainWindow inherits Window {
     min-width: 880px;
     min-height: 560px;
     default-font-family: "Segoe UI";
-    background: @linear-gradient(160deg, #141824, Theme.bg);
+    background: @linear-gradient(160deg, Theme.bg-deep, Theme.bg);
 
     in property <Screen> screen;
     // Messages are written by the Rust side *and* cleared by `changed
@@ -89,7 +92,7 @@ export component MainWindow inherits Window {
                 width: 30px;
                 height: 30px;
                 border-radius: 8px;
-                background: @linear-gradient(120deg, #4d93cf, #7d86d8);
+                background: @linear-gradient(120deg, Theme.grad-from, Theme.grad-to);
 
                 Text {
                     width: parent.width;
@@ -195,7 +198,7 @@ export component MainWindow inherits Window {
 
             for row in root.items : Rectangle {
                 height: 64px;
-                border-radius: 12px;
+                border-radius: Theme.radius-md;
                 background: row-touch.has-hover ? Theme.row-hover : #00000000;
 
                 // Behind the row content: clicks land here, clicks on the
@@ -271,7 +274,7 @@ export component MainWindow inherits Window {
                     y: parent.height - 1px;
                     width: parent.width - 24px;
                     height: 1px;
-                    background: #ffffff10;
+                    background: Theme.hairline;
                 }
             }
         }
@@ -287,7 +290,7 @@ export component MainWindow inherits Window {
             y: (root.height - self.height) / 2;
             width: 440px;
             height: inner.preferred-height;
-            border-radius: 18px;
+            border-radius: Theme.radius-lg;
             border-width: 1px;
             border-color: Theme.border;
             background: Theme.card;
@@ -333,7 +336,7 @@ export component MainWindow inherits Window {
                         width: 54px;
                         height: 54px;
                         border-radius: 14px;
-                        background: @linear-gradient(120deg, #4d93cf, #7d86d8);
+                        background: @linear-gradient(120deg, Theme.grad-from, Theme.grad-to);
 
                         Rectangle {
                             x: (parent.width - 20px) / 2;

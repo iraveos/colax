@@ -1,26 +1,82 @@
 // Colax Lite native -- design tokens.
 //
-// Mirrors src/styles/tokens.css. Colours are *pushed from Rust* by
-// applyAppearance() (Phase 2); here we only keep the dark defaults so a
-// cold launch is never blank. Widgets in widgets.slint reference Theme and
-// never branch on it.
+// Mirrors src/styles/tokens.css. Every colour here is *resolved in Rust* by
+// `applyAppearance()` (src/appearance.rs): Slint has no `hsl()` builtin, so
+// the accent hue, the theme and the density/roundness scalars are computed
+// there and pushed into these properties (ADR-2). The values below are the
+// dark/slate defaults so a cold launch is never blank and a build that has
+// not called applyAppearance still looks right.
+//
+// Widgets never branch on the theme: they read Theme and nothing else, the
+// same rule the CSS keeps.
 export global Theme {
-    out property <color> bg: #101319;
-    out property <color> text: #f0f3f9;
-    out property <color> muted: #a0a6b5;
-    out property <color> faint: #767b86;
-    out property <color> accent: #75a5c7;
-    out property <color> accent-strong: #90b8d6;
-    out property <color> accent-press: #518db8;
-    out property <color> accent-soft: #75a5c733;
-    out property <color> danger: #e07b80;
-    out property <color> danger-soft: #e07b802b;
-    out property <color> good: #7dd3a0;
-    out property <color> good-soft: #7dd3a02b;
-    out property <color> card: #1a1e27;
-    out property <color> border: #ffffff17;
-    out property <color> border-strong: #ffffff2b;
-    out property <color> field: #ffffff0f;
-    out property <color> field-focus: #ffffff1a;
-    out property <color> row-hover: #ffffff0a;
+    // -- Surfaces ----------------------------------------------------------
+    in-out property <color> bg: #101319;
+    in-out property <color> bg-deep: #0c0e13;
+    in-out property <color> card: #1a1e27;
+    in-out property <color> surface: #212633;
+    in-out property <color> surface-raised: #272c3a;
+    in-out property <color> surface-hover: #2f3545;
+    in-out property <color> plate: #ffffff0d;
+    in-out property <color> glass: #ffffff0d;
+    in-out property <color> glass-strong: #ffffff16;
+
+    // -- Text --------------------------------------------------------------
+    in-out property <color> text: #f0f3f9;
+    in-out property <color> muted: #a0a6b5;
+    in-out property <color> faint: #767b86;
+
+    // -- Accent (hue comes from the `accent` preference) --------------------
+    in-out property <color> accent: #75a5c7;
+    in-out property <color> accent-strong: #90b8d6;
+    in-out property <color> accent-press: #518db8;
+    in-out property <color> accent-soft: #75a5c733;
+    // Text sitting *on* the accent, or tinted by it: brighter than --accent
+    // on dark, darker than it on light, so it always clears contrast.
+    in-out property <color> accent-text: #a7c6de;
+    in-out property <color> accent-hover: #90b8d6;
+    in-out property <color> border-focus: #9dc3de;
+    // --grad-primary: 120deg, accent-h -> accent-h-2. Slint gradients take
+    // colours, not hues, so the two stops are resolved here like everything
+    // else and the components just write @linear-gradient(120deg, ...).
+    in-out property <color> grad-from: #6ba3d0;
+    in-out property <color> grad-to: #7d9ee0;
+
+    // -- Status ------------------------------------------------------------
+    in-out property <color> danger: #e07b80;
+    in-out property <color> danger-soft: #e07b802b;
+    in-out property <color> warn: #e6b878;
+    in-out property <color> warn-soft: #e6b8782b;
+    in-out property <color> good: #7dd3a0;
+    in-out property <color> good-soft: #7dd3a02b;
+
+    // -- Lines and fills ---------------------------------------------------
+    in-out property <color> border: #ffffff17;
+    in-out property <color> border-strong: #ffffff2b;
+    in-out property <color> field: #ffffff0f;
+    in-out property <color> field-focus: #ffffff1a;
+    in-out property <color> row-hover: #ffffff0a;
+    // The hairline under a list row.
+    in-out property <color> hairline: #ffffff10;
+
+    // -- Scalars, all driven from preferences ------------------------------
+    // Corner radii: one multiplier, derived from `roundness` (0.6 - 1.4),
+    // exactly as the CSS derives --radius-* from the same scalar.
+    in-out property <length> radius-sm: 8px;
+    in-out property <length> radius-md: 12px;
+    in-out property <length> radius-lg: 18px;
+    in-out property <length> radius-xl: 26px;
+    in-out property <length> radius-2xl: 34px;
+    // Spacing multiplier: compact 0.74, comfortable 1, spacious 1.24.
+    in-out property <float> density: 1.0;
+    // Font-size multiplier: textScale / 100.
+    in-out property <float> ui-scale: 1.0;
+    // 0 disables animation entirely, 1 is the normal speed.
+    in-out property <float> motion: 1.0;
+    // Divides every duration, so the speed control is one number.
+    in-out property <float> motion-speed: 1.0;
+    // 0 = flat cards, 1 = deep stack.
+    in-out property <float> card-depth: 0.4;
+    // Which theme won the resolve, for anything that must special-case it.
+    in-out property <string> resolved-theme: "dark";
 }
