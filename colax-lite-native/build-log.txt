@@ -1,0 +1,8 @@
+﻿cargo :    Compiling colax-lite v1.1.0 (E:\acc2\colax-lite-native\app\colax-lite)
+At line:1 char:1
++ cargo build 2>&1 | Out-File -Encoding utf8 build-log.txt; Get-Content ...
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling co...app\colax-lite):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1m 07s

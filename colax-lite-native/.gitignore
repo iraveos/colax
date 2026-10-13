@@ -1,0 +1,5 @@
+# Build artifacts. Debug trees run to gigabytes; release trees to hundreds of MB.
+target/
+# Packaged installers live beside the folder, never in it.
+*.exe
+*.pdb

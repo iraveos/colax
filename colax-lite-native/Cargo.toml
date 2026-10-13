@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = ["crates/colax-core", "app/colax-lite"]
+
+[workspace.package]
+version = "1.1.0"
+edition = "2021"
+authors = ["iraveos"]
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Vault engine (colax-core): byte-compatible port of the TypeScript crypto in
+# `lite version/src/crypto/vault-crypto.ts` — PBKDF2-HMAC-SHA256 -> AES-256-GCM.
+aes-gcm = "0.10"
+base64 = "0.22"
+hmac = "0.12"
+pbkdf2 = "0.12"
+rand = "0.8"
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+
+# The point of the native build is a small, quiet binary, same as the lite
+# profile: LTO and one codegen unit cost build time and buy a smaller exe.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+panic = "abort"
+
+# Tests exercise the real 600k-iteration PBKDF2, which is unusably slow at
+# opt-level 0. Workspace crates get opt-level 1 (pbkdf2's generic loop is
+# monomorphized into colax-core), the SHA-256/HMAC leaf crates get full
+# optimization, and the rest of the dependency tree — Slint included — stays
+# at the fast-to-build default.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 0
+
+[profile.dev.package.aes]
+opt-level = 3
+[profile.dev.package.aes-gcm]
+opt-level = 3
+[profile.dev.package.block-buffer]
+opt-level = 3
+[profile.dev.package.crypto-common]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.generic-array]
+opt-level = 3
+[profile.dev.package.ghash]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.inout]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.polyval]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.subtle]
+opt-level = 3

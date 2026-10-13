@@ -1,0 +1,34 @@
+{
+  "format": "aegis-vault-backup",
+  "version": 1,
+  "exportedAt": "2026-10-13T04:01:26.871Z",
+  "header": {
+    "v": 1,
+    "protection": "password",
+    "kdf": "PBKDF2-SHA256",
+    "iterations": 600000,
+    "salt": "sMKGctr7v_FWZUxU3oArZg",
+    "wrapped": {
+      "iv": "T2RCDM7LeNQA-rPu",
+      "ct": "r06dnNkQV6E8bCvVB46ulFWJeQasKbNAS6m-GkJzWSZPPlfqgYe_k-jFfsuEJTZQ"
+    }
+  },
+  "items": [
+    {
+      "id": "496a97bc-cdcd-4209-adfa-81e536bc8d83",
+      "blob": {
+        "iv": "g0ia01xBcaHGxVDP",
+        "ct": "oSCKLZBCT8Icm89vlNsyrNtAAh9e2ipCNOlJNRqmM6j1axZHgo7A591WE0_xaP2WZp-gqso7p_0P1vm0vGO_1AVSD2gina8HzB4jS_vuSvAXN3N6tanUJlfV5Y8q_43tO0gpPLcabZfmyyACtB9ff8Zfc5YYLYWdvOiCteT2hhV4YX7E8VOtiaCjlKXcl0r0q6nco7ZlPYKQOzOO7PXUwohSlah1kr7U1dFaXGx6e1rHP0FSUrWmIhHu-QlHnUOvcnmAYuNWW4FF82hrbDNXp3yPDQl_MiC1q4SfODJzlWR8nw0oDy3apLbRm5iEOycD2qS9JX6fP0ps369kl-piQKsbsUelvFgG1zWrX_58YO9XMyFUmZgr6bOjINjS5FDyX92cqfslCbmyVvy35dCvPF98k8vB2ObNTEqWUqX9KWGhVCZj2tDD405IFXRMEhqSPPA4lH0FWr9gTDn2HRz4O99aZpLEA97bkJSZheYv2gXKMedmAzsBU-dibDN4WmJ5Q6q2dna4gGkROVrVQu8mF3KwMqaAsoJr6AbqBIhmDNgfcuvJk-__E6PezkxHoVGX3U6bmikmbBr88OdofLv4tkniTVMNM6nHVNqsICM7N8ldcG9h7V6FB6khPf9zxwd4mejEF9sCdvISeV8Ks8vYWNKB0bEUmXW9"
+      },
+      "updatedAt": 1791864086869
+    },
+    {
+      "id": "34ffb87a-70fc-4143-94a0-9e6c4bc45c84",
+      "blob": {
+        "iv": "sF7TEZR4xyiPeYJc",
+        "ct": "CjbcWBOjaiuZfO-ZiJCgbtsniS-0wiJS0xoP-67lCkrBKf4Ll_ryY-ODaQqFzZNFW9_CirThoU1UdPBKCqrPEilSLpmlUBvy0Hx_SNoTRbDpLD9ZLN6J824nNbCSqAzFb13_GIMZ_mo1F2J1D-2QcIyWXiux5CO1KYdTWpkypk4ouwKmuRI4BsnvKZd4z6azKhc-zHD4W79SeK4et9JItKbaN2xe7-lzNwXBIGWCuRYdF1WI2bzOBPxAHtSNzoD9Pom6h7BN3qTUY0waSqvyC9zoKyujPFuktmJtHEIwQuko6RUYjm3Ta6DAsDy2CDo92o5lCpek2-ndLLAx94Zeks_l-rJpxHY6E8Y75Qx03OwzG3iHnNTOrU7529Kjlx_QiEMY2djRKZk9E_YEXZpdNvtCVuJ7dAsvf_P429ASKJTYlEeFkad_JYnofcnZLQEs1-ciaMzmf8fGM7YFsSUGOquVKh2sypYd-zH9vqCIVHCtz0SuEqw5Xx5bfKBSgWLKCYJLg3905PLhIQsdCMGR-_6_oj-gIwPCYZbGdwDF4pEUlWzjqxrAf2Oaz5YYz0i-FKD32aELYukdy45SihGn5n7jvI4VZDtstbF7CvxnFxtvKSrH9mrsDqCKoEq3mhhSSqpbu8WxiK65uCx7J-T5j9KfZTuaDQNUYaU4lkmmsDZ1YUWkuYaDIbtfHgfhmqk8FX1v2JG9TWuqebgsnW0GfFLhwgGGwgt5SoJ_FsFqXdiUxHpK"
+      },
+      "updatedAt": 1791864086870
+    }
+  ]
+}

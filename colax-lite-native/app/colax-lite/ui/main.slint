@@ -1,0 +1,818 @@
+// Colax Lite's native interface -- Phase 2.
+//
+// One window, eight screens: first run (choose a protection), create
+// (password -> confirm), unlock (password or device), import (backup
+// password), the vault list itself, and an error screen for a vault file
+// that cannot be opened at all.
+//
+// Division of labour with Rust (`src/main.rs`): every state *transition*
+// lives there -- this file only renders the screen it is told to show and
+// reports what the user did. The two `if` branches at the bottom of
+// MainWindow are the whole screen switch; inputs inside a stage block are
+// recreated when the stage appears, which is what focuses them (`init`).
+
+import { ListView } from "std-widgets.slint";
+
+export enum Screen {
+    Error,
+    CreateChoose,
+    CreatePassword,
+    CreateConfirm,
+    UnlockPassword,
+    UnlockDevice,
+    ImportPassword,
+    Vault,
+}
+
+/// One row of the vault list. Deliberately holds no secret: passwords stay
+/// in the engine and are fetched by id when the user asks to copy one.
+/// `tile` is the accent colour for the row's icon, computed in Rust (the
+/// lite app's `accentOf`, same hue maths).
+export struct ItemRow {
+    id: string,
+    title: string,
+    username: string,
+    subtitle: string,
+    initial: string,
+    tile: color,
+}
+
+// The lite app's dark palette (tokens.css), flattened: where the web build
+// composites translucent glass over a gradient, this build picks the
+// resulting colour directly.
+global Theme {
+    out property <color> bg: #101319;
+    out property <color> text: #f0f3f9;
+    out property <color> muted: #a0a6b5;
+    out property <color> faint: #767b86;
+    out property <color> accent: #75a5c7;
+    out property <color> accent-strong: #90b8d6;
+    out property <color> accent-press: #518db8;
+    out property <color> accent-soft: #75a5c733;
+    out property <color> danger: #e07b80;
+    out property <color> danger-soft: #e07b802b;
+    out property <color> good: #7dd3a0;
+    out property <color> good-soft: #7dd3a02b;
+    out property <color> card: #1a1e27;
+    out property <color> border: #ffffff17;
+    out property <color> border-strong: #ffffff2b;
+    out property <color> field: #ffffff0f;
+    out property <color> field-focus: #ffffff1a;
+    out property <color> row-hover: #ffffff0a;
+}
+
+// A button shaped like the lite app's: accent-filled for the main action,
+// outlined for alternatives, text-only for Back. Self-contained (TouchArea
+// on top) so it works anywhere without std-widgets' styling.
+component Btn inherits Rectangle {
+    in property <string> label;
+    // 0 = primary, 1 = secondary (outline), 2 = ghost (text only)
+    in property <int> kind;
+    in property <bool> enabled: true;
+    in property <length> h: 40px;
+    callback clicked();
+
+    height: root.h;
+    border-radius: 10px;
+    border-width: root.kind == 1 ? 1px : 0px;
+    animate background { duration: 100ms; }
+
+    background: !root.enabled
+        ? #ffffff08
+        : root.kind == 0
+            ? (touch.pressed ? Theme.accent-press : touch.has-hover ? Theme.accent-strong : Theme.accent)
+            : root.kind == 1
+                ? (touch.pressed ? #ffffff0d : touch.has-hover ? #ffffff1f : #ffffff14)
+                : (touch.pressed ? #ffffff0d : touch.has-hover ? #ffffff14 : #00000000);
+    border-color: root.kind == 1
+        ? (root.enabled ? Theme.border-strong : #ffffff12)
+        : #00000000;
+
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        alignment: center;
+
+        Text {
+            text: root.label;
+            color: !root.enabled
+                ? Theme.faint
+                : root.kind == 0
+                    ? #10182a
+                    : root.kind == 2
+                        ? Theme.muted
+                        : Theme.text;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A text field with lite-app chrome: dark inset, accent focus ring,
+// placeholder, optional password masking. `init` focuses it the moment it
+// is created, so each stage's field is live without the window having to
+// know element ids.
+component Field inherits Rectangle {
+    in-out property <string> value;
+    in property <string> placeholder;
+    in property <bool> password: false;
+    in property <bool> enabled: true;
+    callback accepted();
+    callback edited();
+
+    height: 44px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: !root.enabled
+        ? #ffffff10
+        : input.has-focus
+            ? Theme.accent
+            : Theme.border;
+    background: !root.enabled
+        ? #ffffff08
+        : input.has-focus
+            ? Theme.field-focus
+            : Theme.field;
+    clip: true;
+
+    init => { input.focus(); }
+
+    Text {
+        visible: root.value == "" && !input.has-focus;
+        x: 14px;
+        width: parent.width - 28px;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.faint;
+        font-size: 14px;
+        vertical-alignment: center;
+    }
+
+    input := TextInput {
+        x: 14px;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        text <=> root.value;
+        input-type: root.password ? InputType.password : InputType.text;
+        color: Theme.text;
+        font-size: 14px;
+        vertical-alignment: center;
+        selection-background-color: Theme.accent-soft;
+        selection-foreground-color: #0d1420;
+        enabled: root.enabled;
+        accepted => { root.accepted(); }
+        edited => { root.edited(); }
+        // Keep the caret inside the field: the TextInput does not scroll
+        // itself, so nudge x when the cursor walks past either edge.
+        cursor-position-changed(position) => {
+            if (position.x + self.x < 14px) {
+                self.x = 14px - position.x;
+            } else if (position.x + self.x > root.width - 14px - self.text-cursor-width) {
+                self.x = root.width - 14px - self.text-cursor-width - position.x;
+            }
+        }
+    }
+}
+
+// The red/green message strip. Lives in both branches of the screen switch
+// so errors are visible on the vault screen too (clipboard failures, ...).
+component Alert inherits Rectangle {
+    in property <string> message;
+    in property <bool> good: false;
+
+    border-radius: 9px;
+    border-width: 1px;
+    background: root.good ? Theme.good-soft : Theme.danger-soft;
+    border-color: root.good ? #7dd3a055 : #e07b8055;
+
+    VerticalLayout {
+        padding-top: 9px;
+        padding-bottom: 9px;
+        padding-left: 14px;
+        padding-right: 14px;
+
+        Text {
+            text: root.message;
+            color: root.good ? #9fe3bd : #f0a5a8;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Colax Lite";
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 1180px;
+    preferred-height: 760px;
+    min-width: 880px;
+    min-height: 560px;
+    default-font-family: "Segoe UI";
+    background: @linear-gradient(160deg, #141824, Theme.bg);
+
+    in property <Screen> screen;
+    // Messages are written by the Rust side *and* cleared by `changed
+    // screen` here, so they have to be `in-out`.
+    in-out property <string> error-text;
+    in-out property <string> notice-text;
+    in property <bool> busy: false;
+    in property <[ItemRow]> items;
+    // "3 logins" / "1 login", assembled in Rust: pluralisation beats a
+    // format function in the UI layer.
+    in property <string> count-label;
+    in-out property <string> search-text;
+    in-out property <string> password-value;
+    in-out property <string> confirm-value;
+
+    callback create-no-password();
+    callback create-with-password();
+    callback create-import();
+    callback password-next();
+    callback create-back();
+    callback create-submit();
+    callback unlock-submit();
+    callback open-device();
+    callback import-submit();
+    callback import-back();
+    callback import-from-vault();
+    callback lock-vault();
+    callback copy-password(id: string);
+    callback search-changed(query: string);
+    callback quit-app();
+
+    // Every transition resets the transient layer: messages always, the
+    // typed-in text whenever it cannot still be needed (the create flow
+    // stashes the password in Rust before leaving its stage), and the
+    // search box whenever the list is left behind.
+    changed screen => {
+        root.error-text = "";
+        root.notice-text = "";
+        if (root.screen != Screen.Vault) {
+            root.password-value = "";
+            root.confirm-value = "";
+        }
+        if (root.screen == Screen.Vault) {
+            root.search-text = "";
+        }
+    }
+
+    // -- Vault list -------------------------------------------------------
+    if (root.screen == Screen.Vault) : VerticalLayout {
+        width: root.width;
+        height: root.height;
+        padding-top: 26px;
+        padding-bottom: 16px;
+        padding-left: 34px;
+        padding-right: 34px;
+        spacing: 14px;
+
+        HorizontalLayout {
+            spacing: 10px;
+
+            Rectangle {
+                width: 30px;
+                height: 30px;
+                border-radius: 8px;
+                background: @linear-gradient(120deg, #4d93cf, #7d86d8);
+
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "C";
+                    color: #ffffff;
+                    font-size: 15px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: "Colax Lite";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.count-label;
+                color: Theme.muted;
+                font-size: 13px;
+                vertical-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; width: 1px; }
+
+            Btn {
+                label: "Import";
+                kind: 1;
+                h: 36px;
+                enabled: !root.busy;
+                clicked => { root.import-from-vault(); }
+            }
+
+            Btn {
+                label: root.busy ? "Working..." : "Lock";
+                kind: 0;
+                h: 36px;
+                enabled: !root.busy;
+                clicked => { root.lock-vault(); }
+            }
+        }
+
+        if (root.error-text != "") : Alert {
+            message: root.error-text;
+        }
+
+        if (root.notice-text != "") : Alert {
+            message: root.notice-text;
+            good: true;
+        }
+
+        search-input := Field {
+            placeholder: "Search logins...";
+            value <=> root.search-text;
+            edited => { root.search-changed(root.search-text); }
+        }
+
+        if (root.items.length == 0) : VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            spacing: 6px;
+
+            if (root.search-text == "") : Text {
+                text: "No logins yet";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+
+            if (root.search-text == "") : Text {
+                text: "Use Import to bring your logins over from Colax Lite.";
+                color: Theme.muted;
+                font-size: 13.5px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+
+            if (root.search-text != "") : Text {
+                text: "No matches";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+
+            if (root.search-text != "") : Text {
+                text: "Nothing in this vault matches \"" + root.search-text + "\".";
+                color: Theme.muted;
+                font-size: 13.5px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        if (root.items.length > 0) : ListView {
+            vertical-stretch: 1;
+
+            for row in root.items : Rectangle {
+                height: 64px;
+                border-radius: 12px;
+                background: row-touch.has-hover ? Theme.row-hover : #00000000;
+
+                // Behind the row content: clicks land here, clicks on the
+                // Copy button land on the button (topmost wins).
+                row-touch := TouchArea {
+                    clicked => { root.copy-password(row.id); }
+                }
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 12px;
+
+                    Rectangle {
+                        width: 40px;
+                        height: 40px;
+                        border-radius: 10px;
+                        background: row.tile;
+
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: row.initial;
+                            color: #ffffff;
+                            font-size: 16px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 2px;
+
+                        Text {
+                            text: row.title == "" ? row.username : row.title;
+                            color: Theme.text;
+                            font-size: 14.5px;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            text: row.username == "" ? "(no username)" : row.username;
+                            color: Theme.muted;
+                            font-size: 12.5px;
+                            overflow: elide;
+                        }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                    if (row.subtitle != "") : Text {
+                        width: 240px;
+                        text: row.subtitle;
+                        color: Theme.faint;
+                        font-size: 12.5px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+
+                    Btn {
+                        label: "Copy";
+                        kind: 1;
+                        h: 32px;
+                        enabled: !root.busy;
+                        clicked => { root.copy-password(row.id); }
+                    }
+                }
+
+                Rectangle {
+                    x: 12px;
+                    y: parent.height - 1px;
+                    width: parent.width - 24px;
+                    height: 1px;
+                    background: #ffffff10;
+                }
+            }
+        }
+    }
+
+    // -- Everything else: the centered card -------------------------------
+    if (root.screen != Screen.Vault) : Rectangle {
+        width: root.width;
+        height: root.height;
+
+        card := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: 440px;
+            height: inner.preferred-height;
+            border-radius: 18px;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: Theme.card;
+
+            inner := VerticalLayout {
+                padding-top: 34px;
+                padding-bottom: 30px;
+                padding-left: 34px;
+                padding-right: 34px;
+                spacing: 14px;
+
+                property <string> title: root.screen == Screen.CreateChoose
+                    ? "Set up your vault"
+                    : root.screen == Screen.CreatePassword
+                        ? "Add a vault password"
+                        : root.screen == Screen.CreateConfirm
+                            ? "Confirm your vault password"
+                            : root.screen == Screen.ImportPassword
+                                ? "This backup is protected"
+                                : root.screen == Screen.Error
+                                    ? "Something went wrong"
+                                    : "Welcome back";
+
+                property <string> hint: root.screen == Screen.Error
+                    ? root.error-text
+                    : root.screen == Screen.CreateChoose
+                        ? "Colax encrypts your logins on this device. Choose how this vault is protected - you can change it later in Settings."
+                        : root.screen == Screen.CreatePassword
+                            ? "This password encrypts your vault. It is never stored and cannot be recovered if you forget it."
+                            : root.screen == Screen.CreateConfirm
+                                ? "Type the same password once more to confirm it."
+                                : root.screen == Screen.ImportPassword
+                                    ? "Enter the password this backup was exported with to unlock and import it."
+                                    : root.screen == Screen.UnlockDevice
+                                        ? "This vault has no password, so it opens straight away."
+                                        : "Enter your vault password to decrypt it.";
+
+                // Brand block: the same lock mark the lite lock screen wears.
+                HorizontalLayout {
+                    spacing: 16px;
+
+                    Rectangle {
+                        width: 54px;
+                        height: 54px;
+                        border-radius: 14px;
+                        background: @linear-gradient(120deg, #4d93cf, #7d86d8);
+
+                        Rectangle {
+                            x: (parent.width - 20px) / 2;
+                            y: 11px;
+                            width: 20px;
+                            height: 20px;
+                            border-radius: 10px;
+                            border-width: 3.5px;
+                            border-color: #ffffff;
+                            background: #00000000;
+                        }
+
+                        Rectangle {
+                            x: (parent.width - 26px) / 2;
+                            y: 23px;
+                            width: 26px;
+                            height: 17px;
+                            border-radius: 5px;
+                            background: #ffffff;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 5px;
+
+                        Text {
+                            text: inner.title;
+                            color: Theme.text;
+                            font-size: 21px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: inner.hint;
+                            color: Theme.muted;
+                            font-size: 13.5px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // On the error screen the message *is* the hint, so the
+                // strip would only repeat it.
+                if (root.error-text != "" && root.screen != Screen.Error) : Alert {
+                    message: root.error-text;
+                }
+
+                if (root.notice-text != "") : Alert {
+                    message: root.notice-text;
+                    good: true;
+                }
+
+                if (root.screen == Screen.CreateChoose) : VerticalLayout {
+                    spacing: 10px;
+
+                    Btn {
+                        label: root.busy ? "Working..." : "Continue without a password";
+                        kind: 0;
+                        enabled: !root.busy;
+                        clicked => { root.create-no-password(); }
+                    }
+
+                    Btn {
+                        label: "Add a vault password";
+                        kind: 1;
+                        enabled: !root.busy;
+                        clicked => { root.create-with-password(); }
+                    }
+
+                    Btn {
+                        label: "Import a backup";
+                        kind: 1;
+                        enabled: !root.busy;
+                        clicked => { root.create-import(); }
+                    }
+
+                    Text {
+                        text: "A device vault opens for anyone who can use this computer.";
+                        color: Theme.faint;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if (root.screen == Screen.CreatePassword) : VerticalLayout {
+                    spacing: 10px;
+
+                    Text {
+                        text: "Vault password";
+                        color: Theme.muted;
+                        font-size: 13px;
+                        font-weight: 600;
+                    }
+
+                    Field {
+                        placeholder: "Enter a new vault password";
+                        password: true;
+                        enabled: !root.busy;
+                        value <=> root.password-value;
+                        accepted => { root.password-next(); }
+                    }
+
+                    Text {
+                        text: "At least 8 characters.";
+                        color: Theme.faint;
+                        font-size: 12.5px;
+                    }
+
+                    Btn {
+                        label: root.busy ? "Working..." : "Continue";
+                        kind: 0;
+                        enabled: !root.busy;
+                        clicked => { root.password-next(); }
+                    }
+
+                    Btn {
+                        label: "Back";
+                        kind: 2;
+                        enabled: !root.busy;
+                        clicked => { root.create-back(); }
+                    }
+                }
+
+                if (root.screen == Screen.CreateConfirm) : VerticalLayout {
+                    spacing: 10px;
+
+                    Text {
+                        text: "Confirm password";
+                        color: Theme.muted;
+                        font-size: 13px;
+                        font-weight: 600;
+                    }
+
+                    Field {
+                        placeholder: "Type the same password again";
+                        password: true;
+                        enabled: !root.busy;
+                        value <=> root.confirm-value;
+                        accepted => { root.create-submit(); }
+                    }
+
+                    Btn {
+                        label: root.busy ? "Working..." : "Create vault";
+                        kind: 0;
+                        enabled: !root.busy;
+                        clicked => { root.create-submit(); }
+                    }
+
+                    Btn {
+                        label: "Back";
+                        kind: 2;
+                        enabled: !root.busy;
+                        clicked => { root.create-back(); }
+                    }
+                }
+
+                if (root.screen == Screen.UnlockPassword) : VerticalLayout {
+                    spacing: 10px;
+
+                    Text {
+                        text: "Vault password";
+                        color: Theme.muted;
+                        font-size: 13px;
+                        font-weight: 600;
+                    }
+
+                    Field {
+                        placeholder: "Vault password";
+                        password: true;
+                        enabled: !root.busy;
+                        value <=> root.password-value;
+                        accepted => { root.unlock-submit(); }
+                    }
+
+                    Btn {
+                        label: root.busy ? "Decrypting..." : "Unlock";
+                        kind: 0;
+                        enabled: !root.busy;
+                        clicked => { root.unlock-submit(); }
+                    }
+                }
+
+                if (root.screen == Screen.UnlockDevice) : VerticalLayout {
+                    spacing: 10px;
+
+                    Btn {
+                        label: root.busy ? "Opening..." : "Open vault";
+                        kind: 0;
+                        enabled: !root.busy;
+                        clicked => { root.open-device(); }
+                    }
+
+                    Text {
+                        text: "Anyone with access to this device can open the vault. You can add a password later in Settings.";
+                        color: Theme.faint;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if (root.screen == Screen.ImportPassword) : VerticalLayout {
+                    spacing: 10px;
+
+                    Text {
+                        text: "Backup password";
+                        color: Theme.muted;
+                        font-size: 13px;
+                        font-weight: 600;
+                    }
+
+                    Field {
+                        placeholder: "Password this backup was exported with";
+                        password: true;
+                        enabled: !root.busy;
+                        value <=> root.password-value;
+                        accepted => { root.import-submit(); }
+                    }
+
+                    Btn {
+                        label: root.busy ? "Importing..." : "Import";
+                        kind: 0;
+                        enabled: !root.busy;
+                        clicked => { root.import-submit(); }
+                    }
+
+                    Btn {
+                        label: "Back";
+                        kind: 2;
+                        enabled: !root.busy;
+                        clicked => { root.import-back(); }
+                    }
+                }
+
+                if (root.screen == Screen.Error) : VerticalLayout {
+                    spacing: 10px;
+
+                    Btn {
+                        label: "Quit";
+                        kind: 1;
+                        clicked => { root.quit-app(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The tray is its own top-level component: Slint's SystemTrayIcon has no
+// window, and a visible one is what keeps the event loop alive while the
+// main window is hidden to it. Menu entries mirror the Tauri shell's four
+// items one for one; the activated callbacks reach Rust through generated
+// accessors instead of an IPC channel.
+export component AppTray inherits SystemTrayIcon {
+    icon: @image-url("../assets/icon.png");
+    tooltip: "Colax Lite";
+
+    // Locked until a vault exists: a "Lock now" that does nothing is worse
+    // than a grey one, and there is nothing to lock before first run.
+    in property <bool> lock-enabled: false;
+
+    callback show-requested();
+    callback lock-requested();
+    callback mute-requested();
+    callback quit-requested();
+    // The builtin `clicked` callback has no generated Rust accessor on a
+    // top-level component, so forward it through one of ours.
+    callback icon-clicked();
+    clicked => { icon-clicked(); }
+
+    Menu {
+        MenuItem {
+            title: "Show Colax";
+            activated => { show-requested(); }
+        }
+        MenuItem {
+            title: "Lock now";
+            enabled: root.lock-enabled;
+            activated => { lock-requested(); }
+        }
+        MenuItem {
+            title: "Mute";
+            // Sounds arrive in a later phase.
+            enabled: false;
+            activated => { mute-requested(); }
+        }
+        MenuItem {
+            title: "Quit";
+            activated => { quit-requested(); }
+        }
+    }
+}
