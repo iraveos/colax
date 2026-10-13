@@ -12,14 +12,17 @@
 //! `lite version/test/crypto.test.ts`.
 
 pub mod bytes;
+pub mod channels;
 pub mod crypto;
 pub mod engine;
 pub mod error;
 pub mod model;
 pub mod prefs;
 pub mod storage;
+pub mod strength;
 pub mod util;
 
+pub use channels::{apply_channel, builtin_channels, find_reused_passwords, Channel, ChannelAccent, ChannelKind};
 pub use crypto::{
     create_device_header, create_password_header, open_item, open_vault_key, resolve_header,
     rewrap_vault_key, seal_item, SealedBlob, VaultHeader, VaultKeyHandle, VaultProtection,
@@ -30,3 +33,7 @@ pub use error::VaultError;
 pub use model::{empty_item, normalise_item, normalize_url, LoginSecurity, StoredItem, VaultItem};
 pub use prefs::{normalise_preferences, VaultPreferences};
 pub use storage::{parse_backup, serialize_backup, BackupFile, VaultStorage, BACKUP_FORMAT};
+pub use strength::{
+    estimate_strength, generate_passphrase, generate_password, passphrase_word_count,
+    suggest_master_password, GeneratorOptions, Strength,
+};

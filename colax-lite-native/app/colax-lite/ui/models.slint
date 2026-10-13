@@ -10,6 +10,23 @@ export enum Screen {
     Vault,
 }
 
+/// Where the sidebar rail sits: `--sidebarPosition` in the preferences.
+export enum RailPosition {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// The four card layouts: `Flow` (animated list), `Orbit` (carousel),
+/// `List` (basic), `Grid` — matching `VaultView` in storage.ts.
+export enum ViewKind {
+    Flow,
+    Orbit,
+    List,
+    Grid,
+}
+
 /// One row of the vault list. Deliberately holds no secret: passwords stay
 /// in the engine and are fetched by id when the user asks to copy one.
 /// `tile` is the accent colour for the row's icon, computed in Rust.
@@ -20,4 +37,73 @@ export struct ItemRow {
     subtitle: string,
     initial: string,
     tile: color,
+}
+
+/// A health badge on a card: "weak", "stale", "reused", "secured".
+/// `tone` picks the colour: 0 neutral, 1 warn, 2 danger, 3 good, 4 info.
+export struct Badge {
+    label: string,
+    tone: int,
+}
+
+/// A tag pill. `compact` drops it to the one-line form used in list rows.
+export struct TagChip {
+    name: string,
+    hue: color,
+    compact: bool,
+}
+
+/// One login, ready to render. Built in Rust from a `VaultItem`, so the
+/// plaintext password is *not* here: `masked-password` is dots, and reveal
+/// asks the engine by id (Task 3.6 / Phase 6's SecurityGate).
+export struct LoginCard {
+    id: string,
+    // labelOf: title || username || hostname || "Untitled"
+    label: string,
+    title: string,
+    username: string,
+    hostname: string,
+    url: string,
+    initial: string,
+    // accent_of() over the title -> solid tile colour.
+    tile: color,
+    favorite: bool,
+    needs-attention: bool,
+    has-totp: bool,
+    // Empty when the login has no TOTP; Rust owns the clock.
+    totp-code: string,
+    totp-remaining: int,
+    badges: [Badge],
+    tags: [TagChip],
+    notes: string,
+    // Always dots. The plaintext only crosses this boundary on reveal.
+    masked-password: string,
+    // "Password 2 days ago · Username last week"
+    modified-note: string,
+    // Gates reveal/edit behind the security gate.
+    secured: bool,
+    selected: bool,
+    duplicate: bool,
+    // Per-card accent hue, for the card's own gradient.
+    hue: int,
+    has-image: bool,
+    image: image,
+}
+
+/// One sidebar row: a channel, a folder, or a separator between sections.
+/// `kind` is 0 channel, 1 folder, 2 separator. Counts and selection are
+/// computed in Rust so the sidebar never has to know the filtering rules.
+export struct SidebarRow {
+    id: string,
+    kind: int,
+    label: string,
+    icon: string,
+    hue: color,
+    count: int,
+    depth: int,
+    expanded: bool,
+    hidden: bool,
+    locked: bool,
+    selected: bool,
+    is-builtin: bool,
 }
