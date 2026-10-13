@@ -16,6 +16,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod appearance;
+mod items;
 mod platform;
 
 use std::cell::RefCell;
@@ -23,7 +24,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use colax_core::model::accent_of;
 use colax_core::{
     resolve_header, BackupFile, VaultEngine, VaultError, VaultProtection, VaultStorage,
 };
@@ -78,11 +78,27 @@ impl Default for ShellState {
     }
 }
 
-fn state_path() -> PathBuf {
+/// Where this profile keeps its files.
+///
+/// `COLAX_DEV_DIR` redirects both `shell.json` and `vault.json` at a
+/// scratch directory, so a debug build can be driven with demo data without
+/// ever opening -- let alone overwriting -- the real vault. Debug builds
+/// only; a release build always uses the real config directory, because a
+/// switch that repointed the app at somebody else's file would be a bug of a
+/// different order.
+fn app_dir() -> PathBuf {
+    if cfg!(debug_assertions) {
+        if let Some(dir) = std::env::var_os("COLAX_DEV_DIR") {
+            return PathBuf::from(dir);
+        }
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(APP_DIR)
-        .join(STATE_FILE)
+}
+
+fn state_path() -> PathBuf {
+    app_dir().join(STATE_FILE)
 }
 
 fn read_state() -> ShellState {
@@ -282,10 +298,7 @@ struct AppState {
 type Shared = Rc<RefCell<AppState>>;
 
 fn vault_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(APP_DIR)
-        .join("vault.json")
+    app_dir().join("vault.json")
 }
 
 /// The screen a locked or missing vault should start on.
@@ -308,85 +321,77 @@ fn lock_screen_for(engine: &VaultEngine) -> Screen {
     }
 }
 
-/// The row icon's fill: the item's own accent hue, or the title's, turned
-/// into a solid colour at the lite app's card saturation and lightness.
-fn tile_color(hue: i32) -> slint::Color {
-    let h = hue.rem_euclid(360) as f64 / 60.0;
-    let (s, l): (f64, f64) = (0.48, 0.46);
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let x = c * (1.0 - (h.rem_euclid(2.0) - 1.0).abs());
-    let m = l - c / 2.0;
-    let (r, g, b) = match h.floor() as i32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let channel = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
-    slint::Color::from_rgb_u8(channel(r), channel(g), channel(b))
-}
-
-/// One list row. The initial is the first character of the first non-empty
-/// label, uppercased; the hue is the item's own accent or the title's, the
-/// same derivation the lite cards use.
-fn row_for(item: &colax_core::VaultItem) -> ItemRow {
-    let source = if !item.title.is_empty() {
-        item.title.as_str()
-    } else if !item.username.is_empty() {
-        item.username.as_str()
-    } else if !item.url.is_empty() {
-        item.url.as_str()
-    } else {
-        "?"
-    };
-    let initial = source
-        .trim()
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().collect::<String>())
-        .unwrap_or_else(|| "?".to_string());
-
-    ItemRow {
-        id: item.id.clone().into(),
-        title: item.title.clone().into(),
-        username: item.username.clone().into(),
-        subtitle: item.url.clone().into(),
-        initial: initial.into(),
-        tile: tile_color(accent_of(item)),
-    }
-}
-
 /// Rebuilds the visible rows from the engine and the current query.
 ///
 /// Called after every screen change (the query box resets with it) and on
 /// each keystroke. Reads the query from the UI rather than from a handler
 /// argument so both paths stay identical.
+///
+/// Three models go out together — the rail, the cards and the count — because
+/// they are one derivation: channel filter, then sort, then text query. Pushing
+/// them separately would let them disagree mid-keystroke.
 fn refresh_items(ui: &MainWindow, state: &Shared) {
     let query = ui.get_search_text().to_lowercase();
+    let channel_id = ui.get_active_channel().to_string();
     let guard = state.borrow();
-    let (rows, total) = match guard.engine.items() {
-        Some(items) => (
-            items
-                .iter()
-                .filter(|item| {
-                    query.is_empty()
-                        || item.title.to_lowercase().contains(&query)
-                        || item.username.to_lowercase().contains(&query)
-                        || item.url.to_lowercase().contains(&query)
-                })
-                .map(row_for)
-                .collect::<Vec<_>>(),
-            items.len(),
-        ),
-        None => (Vec::new(), 0),
+    let prefs = items::prefs_from(guard.engine.preferences());
+    let channel = items::channel_by_id(&channel_id);
+    let (cards, sidebar, total) = match guard.engine.items() {
+        Some(items) => {
+            let cards = items::build_cards(items, &channel, &prefs, &query);
+            let sidebar = items::build_sidebar(items, &channel_id, &prefs);
+            (cards, sidebar, items.len())
+        }
+        None => (Vec::new(), items::build_sidebar(&[], &channel_id, &prefs), 0),
     };
     drop(guard);
 
-    let label = format!("{total} {}", if total == 1 { "login" } else { "logins" });
-    ui.set_items(ModelRc::new(VecModel::from(rows)));
+    let shown = cards.len();
+    let label = if query.is_empty() && shown == total {
+        format!("{total} {}", if total == 1 { "login" } else { "logins" })
+    } else {
+        format!("{shown} of {total} {}", if total == 1 { "login" } else { "logins" })
+    };
+
+    // The empty state names the *channel*, because "no matches" and "this
+    // view is empty" are different problems with different fixes.
+    let (empty_title, empty_hint) = if total == 0 {
+        (
+            "No logins yet",
+            "Use Import to bring your logins over from Colax Lite.",
+        )
+    } else if shown == 0 {
+        match channel.id.as_str() {
+            "all" => ("No logins yet", "Add one, or import from Colax Lite."),
+            "favorites" => (
+                "No favorites",
+                "Star a login to keep it one click away.",
+            ),
+            "attention" => (
+                "Nothing needs attention",
+                "Logins you flag will show up here.",
+            ),
+            "weak" => (
+                "No weak passwords",
+                "Everything here is unique, current and strong.",
+            ),
+            "history" => (
+                "No changes yet",
+                "Edits and restores are listed here once they happen.",
+            ),
+            _ => ("Nothing here yet", "This view has no logins in it."),
+        }
+    } else {
+        ("", "")
+    };
+
+    ui.set_cards(ModelRc::new(VecModel::from(cards)));
+    ui.set_sidebar(ModelRc::new(VecModel::from(sidebar)));
     ui.set_count_label(label.into());
+    ui.set_channel_name(channel.name.as_str().into());
+    ui.set_show_urls(prefs.show_urls);
+    ui.set_cards_empty_title(empty_title.into());
+    ui.set_cards_empty_hint(empty_hint.into());
 }
 
 /// Switches screens. Setting `screen` runs `changed screen` in the Slint
@@ -418,6 +423,143 @@ fn tray_lock_enabled(tray: &Weak<AppTray>, enabled: bool) {
 }
 
 /* ---- Flows -------------------------------------------------------------- */
+
+/// Debug-only: build a throwaway vault full of representative logins and
+/// open it, so the shell can be seen with real content.
+///
+/// Gated on `debug_assertions` and `COLAX_DEV_SEED`, and only ever writes to
+/// `COLAX_DEV_DIR`. A release build contains neither the code nor the flag:
+/// this exists so a screenshot can be taken of the rail and the card list
+/// without a human typing six logins into a scratch profile first.
+#[cfg(debug_assertions)]
+fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
+    if std::env::var_os("COLAX_DEV_SEED").is_none() {
+        return false;
+    }
+    if std::env::var_os("COLAX_DEV_DIR").is_none() {
+        eprintln!("COLAX_DEV_SEED also needs COLAX_DEV_DIR: refusing to seed the real vault");
+        return false;
+    }
+
+    let created = {
+        let mut guard = state.borrow_mut();
+        let result = (|| -> Result<(), VaultError> {
+            if !guard.engine.exists() {
+                guard.engine.create(None)?;
+            } else if !guard.engine.is_unlocked() {
+                guard.engine.unlock("")?;
+            }
+            if guard.engine.items().map(|items| items.is_empty()).unwrap_or(true) {
+                for draft in demo_drafts() {
+                    guard.engine.add_item(&draft)?;
+                }
+            }
+            Ok(())
+        })();
+        result
+    };
+
+    match created {
+        Ok(()) => {
+            goto(ui, state, Screen::Vault);
+            tray_lock_enabled(tray, true);
+            true
+        }
+        Err(err) => {
+            ui.set_error_text(err.to_string().into());
+            false
+        }
+    }
+}
+
+/// A spread of logins chosen to exercise the cards: a favorite, a stale one,
+/// a reused password, an old password, a note-only login, and something with
+/// a username and nothing else.
+#[cfg(debug_assertions)]
+fn demo_drafts() -> Vec<serde_json::Value> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let days = |n: i64| now - n * 86_400_000;
+    let row = |title: &str, username: &str, url: &str, password: &str, extra: serde_json::Value| {
+        let mut draft = serde_json::json!({
+            "title": title,
+            "username": username,
+            "url": url,
+            "password": password,
+            "createdAt": days(900),
+            "updatedAt": days(3),
+            // `add_item` spreads the draft over `emptyItem`, whose own stamps
+            // are "now" -- so without these every card would read "Created
+            // just now" no matter how old the login is meant to be.
+            "passwordUpdatedAt": days(3),
+            "usernameUpdatedAt": days(900),
+        });
+        draft.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        draft
+    };
+
+    vec![
+        row(
+            "GitHub",
+            "iraveos",
+            "https://github.com",
+            // A strong random password: this row is the "nothing wrong" card
+            // in the screenshot, so it must not pick up a `weak` badge.
+            "9x!Km2$vQpLz7Rw",
+            serde_json::json!({ "favorite": true, "showMail": true }),
+        ),
+        row(
+            "Proton Mail",
+            "iraveos@proton.me",
+            "https://mail.proton.me",
+            "Pr0ton-super-secret-1",
+            serde_json::json!({}),
+        ),
+        row(
+            "Work VPN",
+            "iraveos",
+            "https://vpn.example.com",
+            "password",
+            serde_json::json!({ "updatedAt": days(400) }),
+        ),
+        row(
+            "Gym Wi-Fi",
+            "",
+            "",
+            "member2019",
+            serde_json::json!({ "updatedAt": days(700) }),
+        ),
+        row(
+            "Old Bank",
+            "iraveos",
+            "https://bank.example.com",
+            "Pr0ton-super-secret-1",
+            serde_json::json!({ "notes": "Call the branch before resetting.", "updatedAt": days(400) }),
+        ),
+        row(
+            "Zephyr",
+            "",
+            "https://zephyr.example.com",
+            "short",
+            serde_json::json!({ "needsAttention": true }),
+        ),
+        row(
+            "Delta Bank",
+            "iraveos",
+            "https://delta.example.com",
+            // A mixed random string rather than a word passphrase: the
+            // estimator deliberately reads known-word passphrases as weaker
+            // than their length suggests, so only a random one reliably earns
+            // no `weak` badge.
+            "V7#kq2Lm!zR9wXe",
+            // The only login with a second factor: it is the one that has to
+            // earn the `2FA` badge, and the one that must not earn `weak`.
+            serde_json::json!({ "security": { "totp": { "seed": "JBSWY3DPEHPK3PXP" } } }),
+        ),
+    ]
+}
 
 /// First run: make a vault with the chosen protection and land in it.
 fn create_vault(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>, password: Option<&str>) {
@@ -659,9 +801,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pending_password: String::new(),
                 pending_backup: None,
             }));
+            // Debug scratch profiles open straight into the vault with demo
+            // content; everything else starts on the real startup screen.
+            #[cfg(debug_assertions)]
+            let seeded = {
+                let tray_weak = tray.as_weak();
+                dev_seed(&ui, &state, &tray_weak)
+            };
+            #[cfg(not(debug_assertions))]
+            let seeded = false;
+
             let (screen, exists) = {
                 let guard = state.borrow();
-                (startup_screen(&guard.engine), guard.engine.exists())
+                (if seeded { Ok(Screen::Vault) } else { startup_screen(&guard.engine) }, guard.engine.exists())
             };
             tray.set_lock_enabled(exists);
             match screen {
@@ -917,6 +1069,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let st = state.clone();
             ui.on_search_changed(move |_query| {
                 if let Some(ui) = weak.upgrade() {
+                    refresh_items(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_selected(move |_id| {
+                if let Some(ui) = weak.upgrade() {
+                    // A new channel is a new scope: a query that meant
+                    // something in the old one would silently filter the new
+                    // one, so the box empties with the switch (App.tsx L167).
+                    ui.set_search_text("".into());
                     refresh_items(&ui, &st);
                 }
             });

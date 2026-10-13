@@ -365,26 +365,33 @@ export component Chip inherits Rectangle {
 export component Badge inherits Rectangle {
     in property <string> label;
     in property <int> tone: 0; // 0 neutral, 1 warn, 2 danger, 3 good, 4 info
+
     height: 18px;
-    Rectangle {
-        border-radius: 9px;
-        background: root.tone == 2 ? Theme.danger-soft :
-                    root.tone == 1 ? #ffffff0d :
-                    root.tone == 3 ? Theme.good-soft :
-                    (root.tone == 4 ? Theme.accent-soft : #ffffff0a);
-        HorizontalLayout {
-            padding-left: 8px; padding-right: 8px;
-            Text {
-                text: root.label;
-                color: root.tone == 2 ? Theme.danger :
-                       root.tone == 1 ? Theme.danger
- :
-                       root.tone == 3 ? Theme.good :
-                       (root.tone == 4 ? Theme.accent : Theme.faint);
-                font-size: 11px; font-weight: 600;
-                vertical-alignment: center;
-            }
-        }
+    // Sits at its text's own width. `horizontal-stretch: 0` on its own is
+    // not enough: the parent row still hands the pill whatever width it has
+    // spare, which is how a three-character "2FA" ends up a bar 110px across.
+    horizontal-stretch: 0;
+    // Measured from the text, which is a *direct* child with no width of its
+    // own. Sizing the text from its parent instead would close the loop --
+    // parent sized by text, text sized by parent -- and the pill would grow
+    // to fill the card.
+    width: badge-text.preferred-width + 16px;
+    border-radius: 9px;
+    background: root.tone == 2 ? Theme.danger-soft :
+                root.tone == 1 ? #ffffff0d :
+                root.tone == 3 ? Theme.good-soft :
+                (root.tone == 4 ? Theme.accent-soft : #ffffff0a);
+
+    badge-text := Text {
+        x: 8px;
+        height: parent.height;
+        text: root.label;
+        color: root.tone == 2 ? Theme.danger :
+               root.tone == 1 ? Theme.danger :
+               root.tone == 3 ? Theme.good :
+               (root.tone == 4 ? Theme.accent : Theme.faint);
+        font-size: 11px; font-weight: 600;
+        vertical-alignment: center;
     }
 }
 

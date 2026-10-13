@@ -30,7 +30,10 @@ pub use crypto::{
 };
 pub use engine::{new_item_id, verify_backup_password, VaultEngine};
 pub use error::VaultError;
-pub use model::{empty_item, normalise_item, normalize_url, LoginSecurity, StoredItem, VaultItem};
+pub use model::{
+    empty_item, is_secured, is_weak_password, normalise_item, normalise_security, normalize_url,
+    security_level, stale_days_for, LoginSecurity, StoredItem, VaultItem,
+};
 pub use prefs::{normalise_preferences, VaultPreferences};
 pub use storage::{parse_backup, serialize_backup, BackupFile, VaultStorage, BACKUP_FORMAT};
 pub use strength::{

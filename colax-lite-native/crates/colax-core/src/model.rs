@@ -60,6 +60,54 @@ pub struct LoginSecurity {
     pub questions: Vec<SecurityQuestion>,
 }
 
+/// How many second factors guard this login: `none`, `partial` or `full`.
+///
+/// Port of `securityLevel` in `src/crypto/security.ts` L333-343. TOTP, the
+/// extra passcode and the recovery questions each count once, whatever their
+/// number — three questions is one factor, not three.
+pub fn security_level(security: &LoginSecurity) -> &'static str {
+    let factors = usize::from(security.totp.is_some())
+        + usize::from(security.passcode.is_some())
+        + usize::from(!security.questions.is_empty());
+    match factors {
+        0 => "none",
+        1 => "partial",
+        _ => "full",
+    }
+}
+
+/// True when the password itself is guessable, regardless of reuse or age.
+///
+/// Port of `isWeakPassword` in `src/vault/types.ts` L329-331. Empty means
+/// "no password", not "weak" — an empty field must never earn a badge, or
+/// every login-in-progress would flash warnings while being typed.
+pub fn is_weak_password(password: &str) -> bool {
+    !password.is_empty() && crate::estimate_strength(password).score <= 1
+}
+
+/// Days before this login's password counts as stale: its own reminder when
+/// set, else the global setting. Every stale check goes through here so a
+/// per-login choice is honored everywhere at once.
+///
+/// Port of `staleDaysFor` in `src/vault/types.ts` L338-340.
+pub fn stale_days_for(item: &VaultItem, global_days: f64) -> f64 {
+    if item.reminder_days > 0.0 {
+        item.reminder_days
+    } else {
+        global_days
+    }
+}
+
+/// True when this login has any second factor at all.
+///
+/// Port of `isSecured`. This is what the "Secured" badge means: *a second
+/// factor is configured*. It says nothing about how strong the password is,
+/// which is a separate badge — conflating the two is how a vault ends up
+/// telling someone their login is protected when only their password is long.
+pub fn is_secured(security: &LoginSecurity) -> bool {
+    security_level(security) != "none"
+}
+
 /// A decrypted credential. Only ever held in memory while the vault is unlocked.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -509,6 +557,65 @@ mod tests {
             security.questions[1].salt, "",
             "missing salt defaults to empty"
         );
+    }
+
+    #[test]
+    fn security_level_counts_factors_not_entries() {
+        // No factors at all.
+        assert_eq!(security_level(&LoginSecurity::default()), "none");
+        // One factor: TOTP.
+        let totp = normalise_security(Some(&json!({ "totp": { "seed": "GEZDGNBVGY3TQOJQ" } })));
+        assert_eq!(security_level(&totp), "partial");
+        assert!(is_secured(&totp));
+        // Three questions are still one factor: they recover *the same*
+        // login, they do not stack into three.
+        let questions = normalise_security(Some(&json!({
+            "questions": [
+                { "prompt": "Pet?", "hash": "h1", "salt": "s1" },
+                { "prompt": "City?", "hash": "h2", "salt": "s2" },
+                { "prompt": "Street?", "hash": "h3", "salt": "s3" },
+            ]
+        })));
+        assert_eq!(security_level(&questions), "partial");
+        // Two distinct factors: full.
+        let both = normalise_security(Some(&json!({
+            "totp": { "seed": "GEZDGNBVGY3TQOJQ" },
+            "passcode": { "hash": "abc", "salt": "s" },
+        })));
+        assert_eq!(security_level(&both), "full");
+        assert!(is_secured(&both));
+    }
+
+    #[test]
+    fn a_second_factor_is_not_a_strong_password() {
+        // The regression this pair exists to prevent: `2FA` must come from
+        // the security block only, so a long password cannot earn it and a
+        // weak one with TOTP cannot lose it.
+        let weak_with_totp = normalise_security(Some(&json!({ "totp": { "seed": "abc" } })));
+        assert!(is_secured(&weak_with_totp));
+        // A mixed random string, not a passphrase: the estimator deliberately
+        // reads known-word passphrases as weaker than their length suggests,
+        // so it would never call one "not weak".
+        assert!(is_weak_password("password"), "strength is judged on its own");
+        assert!(
+            !is_weak_password("V7#kq2Lm!zR9wXe"),
+            "a strong password is not weak"
+        );
+    }
+
+    #[test]
+    fn an_empty_password_is_never_weak() {
+        // A login still being typed would otherwise flash a warning on every
+        // keystroke before the first character.
+        assert!(!is_weak_password(""));
+    }
+
+    #[test]
+    fn a_per_login_reminder_overrides_the_global_one() {
+        let mut item = empty_item("id-1", 1_700_000_000_000);
+        assert_eq!(stale_days_for(&item, 180.0), 180.0, "unset follows global");
+        item.reminder_days = 15.0 / 1440.0;
+        assert_eq!(stale_days_for(&item, 180.0), 15.0 / 1440.0);
     }
 
     #[test]

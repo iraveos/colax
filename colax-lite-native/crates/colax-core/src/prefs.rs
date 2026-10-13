@@ -34,6 +34,16 @@ pub struct VaultPreferences {
     pub show_urls: bool,
     pub sidebar_position: String,
     pub sidebar_labels: String,
+    // Sort and delete behaviour (Task 3.5 / 3.6).
+    /// Favourites float to the top of every sort mode.
+    pub pin_favorites: bool,
+    /// Drag order for `sort == "manual"`. Ids not listed sort after the
+    /// placed ones, in title order, so a new login needs no bookkeeping.
+    pub manual_order: Vec<String>,
+    /// Days before a password counts as stale. 0 disables the check.
+    pub password_age_days: i64,
+    /// Ask before deleting, rather than deleting straight to undo.
+    pub confirm_deletes: bool,
     // Shell switches. They live in `shell.json` too so the tray (which exists
     // before unlock) can read them, and the two are written together — see
     // `mirror_shell_flags` in the app.
@@ -70,6 +80,10 @@ impl Default for VaultPreferences {
             view: "animated".into(),
             sort: "title".into(),
             show_urls: true,
+            pin_favorites: true,
+            manual_order: Vec::new(),
+            password_age_days: 180,
+            confirm_deletes: true,
             sidebar_position: "left".into(),
             sidebar_labels: "both".into(),
             tray_enabled: true,
@@ -125,6 +139,30 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.view = one_of(o.get("view").unwrap_or(&Value::Null), &["animated","carousel","basic","grid"], "animated");
     out.sort = one_of(o.get("sort").unwrap_or(&Value::Null), &["title","recent","oldest","strength","username","manual"], "title");
     out.show_urls = get_bool!("showUrls", true);
+    // JS Boolean(...) again: a stored string still reads as a choice.
+    out.pin_favorites = truthy(o.get("pinFavorites"), true);
+    out.confirm_deletes = truthy(o.get("confirmDeletes"), true);
+    // The list is deduplicated and emptied of anything that is not a non-empty
+    // id, so a hand-edited record cannot put nulls in the drag order.
+    out.manual_order = match o.get("manualOrder") {
+        Some(Value::Array(ids)) => {
+            let mut seen = std::collections::HashSet::new();
+            let mut out: Vec<String> = Vec::new();
+            for id in ids.iter().filter_map(Value::as_str) {
+                if !id.is_empty() && seen.insert(id) {
+                    out.push(id.to_string());
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
+    };
+    // The shipped set is 0/30/60/90/180/365/730; anything else falls back
+    // rather than being kept (storage.ts L1408).
+    out.password_age_days = match o.get("passwordAgeDays").and_then(Value::as_i64) {
+        Some(d) if [0, 30, 60, 90, 180, 365, 730].contains(&d) => d,
+        _ => 180,
+    };
     out.sidebar_position = one_of(o.get("sidebarPosition").unwrap_or(&Value::Null), &["left","right","top","bottom"], "left");
     out.sidebar_labels = one_of(o.get("sidebarLabels").unwrap_or(&Value::Null), &["icon","name","both"], "both");
     // Boolean(...) in JS: anything truthy reads as true, so a legacy string
@@ -139,7 +177,8 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     let known = ["theme","accent","textScale","motion","motionSpeed","ambient","density","roundness",
         "cardDepth","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",
         "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
-        "trayEnabled","closeToTray","launchAtLogin","soundsMuted"];
+        "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
+        "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
@@ -279,5 +318,31 @@ mod tests {
         assert_eq!(normalise_preferences(&json!(null)), VaultPreferences::default());
         assert_eq!(normalise_preferences(&json!("dark")), VaultPreferences::default());
         assert_eq!(normalise_preferences(&json!([1, 2])), VaultPreferences::default());
+    }
+
+    #[test]
+    fn sort_and_delete_preferences_follow_the_documented_rules() {
+        let d = normalise_preferences(&json!({}));
+        assert!(d.pin_favorites);
+        assert!(d.confirm_deletes);
+        assert_eq!(d.password_age_days, 180);
+        assert!(d.manual_order.is_empty());
+
+        let p = normalise_preferences(&json!({
+            "pinFavorites": false,
+            "confirmDeletes": false,
+            // Not one of 0/30/60/90/180/365/730 -> falls back.
+            "passwordAgeDays": 17,
+            "manualOrder": ["a", "b", "a", "", null, 7, "c"],
+        }));
+        assert!(!p.pin_favorites);
+        assert!(!p.confirm_deletes);
+        assert_eq!(p.password_age_days, 180);
+        // Deduped, non-strings dropped, empty ids dropped, order kept.
+        assert_eq!(p.manual_order, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+
+        // 0 is a legitimate value (never stale) and must survive.
+        let never = normalise_preferences(&json!({"passwordAgeDays": 0}));
+        assert_eq!(never.password_age_days, 0);
     }
 }

@@ -13,11 +13,15 @@
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Btn, Field, Alert } from "widgets.slint";
-import { Screen, ItemRow } from "models.slint";
+// `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
+// and one name cannot mean both here.
+import { Btn, Field, Alert, Badge as BadgeBox, EmptyState } from "widgets.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition } from "models.slint";
 // Re-exported so Rust can reach it: applyAppearance pushes every token into
-// this global (ADR-2), which needs the type in the generated module.
+// this global (ADR-2), and items.rs builds the models, which needs all of
+// these types in the generated module.
 export { Theme }
+export { Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition }
 
 export component MainWindow inherits Window {
     title: "Colax Lite";
@@ -35,7 +39,22 @@ export component MainWindow inherits Window {
     in-out property <string> error-text;
     in-out property <string> notice-text;
     in property <bool> busy: false;
-    in property <[ItemRow]> items;
+    // The derived models: rail (channels + a separator) and the visible
+    // cards. Pushed together by `refresh_items` so they cannot disagree.
+    in property <[LoginCard]> cards;
+    in property <[SidebarRow]> sidebar;
+    // The active channel. `in-out` because clicking a rail row writes it
+    // here, and `channel-selected` then asks Rust to re-derive both models.
+    in-out property <string> active-channel: "all";
+    // The rail label for the active channel, pushed with the models above
+    // (a channel may be renamed, and "All logins" is only the default).
+    in property <string> channel-name;
+    // Empty-state copy for the *channel*, not the query: a search with no
+    // hits is a different problem from an empty channel and says so.
+    in property <string> cards-empty-title;
+    in property <string> cards-empty-hint;
+    // `--showUrls`: the hostname column is a preference, not a constant.
+    in property <bool> show-urls: true;
     // "3 logins" / "1 login", assembled in Rust: pluralisation beats a
     // format function in the UI layer.
     in property <string> count-label;
@@ -57,6 +76,7 @@ export component MainWindow inherits Window {
     callback lock-vault();
     callback copy-password(id: string);
     callback search-changed(query: string);
+    callback channel-selected(id: string);
     callback quit-app();
 
     // Every transition resets the transient layer: messages always, the
@@ -75,206 +95,350 @@ export component MainWindow inherits Window {
         }
     }
 
-    // -- Vault list -------------------------------------------------------
-    if (root.screen == Screen.Vault) : VerticalLayout {
+    // -- Vault: rail + content ------------------------------------------
+    if (root.screen == Screen.Vault) : HorizontalLayout {
         width: root.width;
         height: root.height;
-        padding-top: 26px;
-        padding-bottom: 16px;
-        padding-left: 34px;
-        padding-right: 34px;
-        spacing: 14px;
 
-        HorizontalLayout {
-            spacing: 10px;
+        // ---- The rail -------------------------------------------------
+        Rectangle {
+            width: 244px;
+            background: Theme.bg-deep;
 
-            Rectangle {
-                width: 30px;
-                height: 30px;
-                border-radius: 8px;
-                background: @linear-gradient(120deg, Theme.grad-from, Theme.grad-to);
-
-                Text {
-                    width: parent.width;
-                    height: parent.height;
-                    text: "C";
-                    color: #ffffff;
-                    font-size: 15px;
-                    font-weight: 800;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-
-            Text {
-                text: "Colax Lite";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 700;
-                vertical-alignment: center;
-            }
-
-            Text {
-                text: root.count-label;
-                color: Theme.muted;
-                font-size: 13px;
-                vertical-alignment: center;
-            }
-
-            Rectangle { horizontal-stretch: 1; width: 1px; }
-
-            Btn {
-                label: "Import";
-                kind: 1;
-                h: 36px;
-                enabled: !root.busy;
-                clicked => { root.import-from-vault(); }
-            }
-
-            Btn {
-                label: root.busy ? "Working..." : "Lock";
-                kind: 0;
-                h: 36px;
-                enabled: !root.busy;
-                clicked => { root.lock-vault(); }
-            }
-        }
-
-        if (root.error-text != "") : Alert {
-            message: root.error-text;
-        }
-
-        if (root.notice-text != "") : Alert {
-            message: root.notice-text;
-            good: true;
-        }
-
-        search-input := Field {
-            placeholder: "Search logins...";
-            value <=> root.search-text;
-            edited => { root.search-changed(root.search-text); }
-        }
-
-        if (root.items.length == 0) : VerticalLayout {
-            vertical-stretch: 1;
-            alignment: center;
-            spacing: 6px;
-
-            if (root.search-text == "") : Text {
-                text: "No logins yet";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 600;
-                horizontal-alignment: center;
-            }
-
-            if (root.search-text == "") : Text {
-                text: "Use Import to bring your logins over from Colax Lite.";
-                color: Theme.muted;
-                font-size: 13.5px;
-                horizontal-alignment: center;
-                wrap: word-wrap;
-            }
-
-            if (root.search-text != "") : Text {
-                text: "No matches";
-                color: Theme.text;
-                font-size: 16px;
-                font-weight: 600;
-                horizontal-alignment: center;
-            }
-
-            if (root.search-text != "") : Text {
-                text: "Nothing in this vault matches \"" + root.search-text + "\".";
-                color: Theme.muted;
-                font-size: 13.5px;
-                horizontal-alignment: center;
-                wrap: word-wrap;
-            }
-        }
-
-        if (root.items.length > 0) : ListView {
-            vertical-stretch: 1;
-
-            for row in root.items : Rectangle {
-                height: 64px;
-                border-radius: Theme.radius-md;
-                background: row-touch.has-hover ? Theme.row-hover : #00000000;
-
-                // Behind the row content: clicks land here, clicks on the
-                // Copy button land on the button (topmost wins).
-                row-touch := TouchArea {
-                    clicked => { root.copy-password(row.id); }
-                }
+            VerticalLayout {
+                padding-top: 26px;
+                padding-bottom: 20px;
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 4px;
 
                 HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
-                    spacing: 12px;
+                    padding-left: 8px;
+                    padding-bottom: 18px;
+                    spacing: 10px;
 
                     Rectangle {
-                        width: 40px;
-                        height: 40px;
-                        border-radius: 10px;
-                        background: row.tile;
+                        width: 30px;
+                        height: 30px;
+                        border-radius: 8px;
+                        background: @linear-gradient(120deg, Theme.grad-from, Theme.grad-to);
 
                         Text {
                             width: parent.width;
                             height: parent.height;
-                            text: row.initial;
+                            text: "C";
                             color: #ffffff;
-                            font-size: 16px;
-                            font-weight: 700;
+                            font-size: 15px;
+                            font-weight: 800;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
                     }
 
-                    VerticalLayout {
-                        spacing: 2px;
+                    Text {
+                        text: "Colax Lite";
+                        color: Theme.text;
+                        font-size: 16px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
 
-                        Text {
-                            text: row.title == "" ? row.username : row.title;
-                            color: Theme.text;
-                            font-size: 14.5px;
-                            font-weight: 600;
-                            overflow: elide;
+                // The rail itself: channels and one hairline before the
+                // summary screens. A separator is `kind: 2` and has no id —
+                // nothing can select it.
+                for row in root.sidebar : Rectangle {
+                    height: row.kind == 2 ? 20px : 34px;
+
+                    if (row.kind == 2) : Rectangle {
+                        x: 8px;
+                        y: (parent.height - 1px) / 2;
+                        width: parent.width - 16px;
+                        height: 1px;
+                        background: Theme.hairline;
+                    }
+
+                    if (row.kind != 2) : rail-row := Rectangle {
+                        border-radius: Theme.radius-sm;
+                        background: row.selected ? Theme.accent-soft
+                            : (rail-touch.has-hover ? Theme.row-hover : #00000000);
+
+                        rail-touch := TouchArea {
+                            clicked => {
+                                root.active-channel = row.id;
+                                root.channel-selected(row.id);
+                            }
                         }
 
-                        Text {
-                            text: row.username == "" ? "(no username)" : row.username;
-                            color: Theme.muted;
-                            font-size: 12.5px;
-                            overflow: elide;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 10px;
+
+                            Rectangle {
+                                width: 16px;
+                                height: 16px;
+                                border-radius: 8px;
+                                background: row.hue;
+                                opacity: row.selected ? 1.0 : 0.65;
+                            }
+
+                            Text {
+                                text: row.label;
+                                color: row.selected ? Theme.text : Theme.muted;
+                                font-size: 13px;
+                                font-weight: row.selected ? 600 : 500;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                            if (row.count > 0) : Text {
+                                text: row.count;
+                                color: row.selected ? Theme.accent-text : Theme.faint;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
                         }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; height: 1px; }
+
+                Text {
+                    text: root.count-label;
+                    color: Theme.faint;
+                    font-size: 12px;
+                }
+            }
+        }
+
+        // ---- The content ----------------------------------------------
+        Rectangle {
+            horizontal-stretch: 1;
+
+            VerticalLayout {
+                padding-top: 26px;
+                padding-bottom: 16px;
+                padding-left: 30px;
+                padding-right: 34px;
+                spacing: 14px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+
+                    Text {
+                        text: root.active-channel == "all"
+                            ? "All logins"
+                            : root.channel-name;
+                        color: Theme.text;
+                        font-size: 20px;
+                        font-weight: 700;
+                        vertical-alignment: center;
                     }
 
                     Rectangle { horizontal-stretch: 1; width: 1px; }
 
-                    if (row.subtitle != "") : Text {
-                        width: 240px;
-                        text: row.subtitle;
-                        color: Theme.faint;
-                        font-size: 12.5px;
-                        overflow: elide;
-                        vertical-alignment: center;
+                    Btn {
+                        label: "Import";
+                        kind: 1;
+                        h: 36px;
+                        enabled: !root.busy;
+                        clicked => { root.import-from-vault(); }
                     }
 
                     Btn {
-                        label: "Copy";
-                        kind: 1;
-                        h: 32px;
+                        label: root.busy ? "Working..." : "Lock";
+                        kind: 0;
+                        h: 36px;
                         enabled: !root.busy;
-                        clicked => { root.copy-password(row.id); }
+                        clicked => { root.lock-vault(); }
                     }
                 }
 
-                Rectangle {
-                    x: 12px;
-                    y: parent.height - 1px;
-                    width: parent.width - 24px;
-                    height: 1px;
-                    background: Theme.hairline;
+                if (root.error-text != "") : Alert {
+                    message: root.error-text;
+                }
+
+                if (root.notice-text != "") : Alert {
+                    message: root.notice-text;
+                    good: true;
+                }
+
+                search-input := Field {
+                    placeholder: "Search logins...";
+                    value <=> root.search-text;
+                    edited => { root.search-changed(root.search-text); }
+                }
+
+                if (root.cards.length == 0) : VerticalLayout {
+                    vertical-stretch: 1;
+                    alignment: center;
+                    spacing: 6px;
+
+                    if (root.search-text != "") : EmptyState {
+                        title: "No matches";
+                        hint: "Nothing in this vault matches \"" + root.search-text + "\".";
+                        horizontal-stretch: 1;
+                        vertical-stretch: 1;
+                    }
+
+                    if (root.search-text == "") : EmptyState {
+                        title: root.cards-empty-title;
+                        hint: root.cards-empty-hint;
+                        horizontal-stretch: 1;
+                        vertical-stretch: 1;
+                    }
+                }
+
+                if (root.cards.length > 0) : ListView {
+                    vertical-stretch: 1;
+
+                    for card in root.cards : Rectangle {
+                        // Four lines now: badges, title, username, dates.
+                        height: 86px;
+                        border-radius: Theme.radius-md;
+                        background: card.selected ? Theme.accent-soft
+                            : (card-touch.has-hover ? Theme.row-hover : #00000000);
+                        border-width: card.selected ? 1px : 0px;
+                        border-color: card.selected ? Theme.border-focus : #00000000;
+
+                        card-touch := TouchArea {
+                            clicked => { root.copy-password(card.id); }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 14px;
+
+                            Rectangle {
+                                width: 44px;
+                                height: 44px;
+                                border-radius: 12px;
+                                background: card.tile;
+
+                                if (!card.has-image) : Text {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    text: card.initial;
+                                    color: #ffffff;
+                                    font-size: 17px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                if (card.has-image) : Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: card.image;
+                                    image-fit: contain;
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 3px;
+                                vertical-stretch: 1;
+
+                                // Badges sit above the title, not beside the
+                                // username: a login with three of them would
+                                // otherwise push the name out of the card
+                                // (the reason `HealthBadges` got its own row
+                                // in views.tsx).
+                                if (card.badges.length > 0) : HorizontalLayout {
+                                    spacing: 6px;
+                                    // Left-aligned at the badges' own widths:
+                                    // the default stretch would spread three
+                                    // chips evenly across the whole card.
+                                    alignment: start;
+
+                                    for badge in card.badges : BadgeBox {
+                                        label: badge.label;
+                                        tone: badge.tone;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+
+                                    Text {
+                                        text: card.label;
+                                        color: Theme.text;
+                                        font-size: 14.5px;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+
+                                    if (card.favorite) : Text {
+                                        text: "★";
+                                        color: Theme.warn;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
+
+                                    if (card.needs-attention) : Text {
+                                        text: "!";
+                                        color: Theme.danger;
+                                        font-size: 12px;
+                                        font-weight: 800;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Text {
+                                    text: card.username == ""
+                                        ? (card.hostname == "" ? "(no username)" : card.hostname)
+                                        : card.username;
+                                    color: Theme.muted;
+                                    font-size: 12.5px;
+                                    overflow: elide;
+                                }
+
+                                if (card.modified-note != "") : Text {
+                                    text: card.modified-note;
+                                    color: Theme.faint;
+                                    font-size: 11.5px;
+                                    overflow: elide;
+                                }
+                            }
+
+                            Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                            VerticalLayout {
+                                spacing: 2px;
+                                alignment: center;
+
+                                if (root.show-urls && card.hostname != "") : Text {
+                                    width: 200px;
+                                    text: card.hostname;
+                                    color: Theme.faint;
+                                    font-size: 12.5px;
+                                    horizontal-alignment: right;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    width: 200px;
+                                    text: card.masked-password;
+                                    color: Theme.muted;
+                                    font-size: 13px;
+                                    horizontal-alignment: right;
+                                    letter-spacing: 1px;
+                                }
+                            }
+
+                            Btn {
+                                label: "Copy";
+                                kind: 1;
+                                h: 32px;
+                                enabled: !root.busy;
+                                clicked => { root.copy-password(card.id); }
+                            }
+                        }
+                    }
                 }
             }
         }
