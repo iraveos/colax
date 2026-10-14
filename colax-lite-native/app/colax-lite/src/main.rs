@@ -20,6 +20,7 @@ mod items;
 mod platform;
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -293,6 +294,30 @@ Vault UI state
 /// between the create stages, the parsed backup before its password is
 /// entered).
 ///
+/// What an open SecurityGate is holding up, and the factor it checks
+/// against. The panel is thrown away when it closes; *this* is not, because
+/// it is what a passed check resumes.
+#[derive(Clone)]
+struct PendingGate {
+    intent: GateIntent,
+    security: LoginSecurity,
+}
+
+/// The flows SecurityGate.tsx is invoked from that this build has screens
+/// for. Folder locks and pending items arrive with their own screens, and
+/// the per-view reveal collapses into the editor's: the views copy, and
+/// opening a secured login is already gated once.
+#[derive(Clone)]
+enum GateIntent {
+    /// `prefs.vaultSecurity`, checked on every landing on the shell.
+    Vault,
+    /// A secured login's editor does not open without this -- the TS
+    /// `pendingItem` flow with intent `edit`.
+    Edit(String),
+    /// The password inside the editor stays hidden without it (`reveal`).
+    Reveal(String),
+}
+
 /// Behinds a `RefCell` because the Slint callbacks are plain `Fn` closures
 /// on one thread -- no `Send`/`Sync` needed, but the borrows still have to
 /// be short: `goto` re-enters handlers.
@@ -334,6 +359,17 @@ struct AppState {
     /// cloud's: Slint reports the geometry, Rust answers with the count of
     /// things that fit in it.
     vault_width: f64,
+    /// The open SecurityGate, if any: the flow it interrupted and the factor
+    /// it verifies against. The gate is modal, so a resumed action simply
+    /// re-enters its own handler -- there is no callback to remember.
+    gate: Option<PendingGate>,
+    /// Logins whose second factor was cleared this session (TS's
+    /// `verifiedItems`): the gate asks once per login, not once per click.
+    verified: HashSet<String>,
+    /// The vault's own factor, cleared for the session (TS's
+    /// `vaultVerified`), and spent again on lock: the vault was sealed, so
+    /// the proof went with it.
+    vault_verified: bool,
 }
 
 type Shared = Rc<RefCell<AppState>>;
@@ -562,6 +598,13 @@ fn labels_picked(ui: &MainWindow, state: &Shared, labels: &str) {
 fn goto(ui: &MainWindow, state: &Shared, screen: Screen) {
     ui.set_screen(screen);
     refresh_items(ui, state);
+    // A second factor on the vault gates the *shell*, so every landing on it
+    // passes this check -- the render-time condition TS keeps at App.tsx
+    // L2830 becomes an entry-time one here, with `vault_verified` standing in
+    // for the session's "already proved it".
+    if screen == Screen::Vault {
+        maybe_gate_vault(ui, state);
+    }
 }
 
 /// A green strip that clears itself. `Timer::single_shot` owns its own
@@ -647,7 +690,8 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
     // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
     // the four presentations live on the vault screen itself, so the run
     // stays exactly where the app opened it and drives the switcher from
-    // there. `COLAX_DEV_RAIL` is the same deal for the rail's dials.
+    // there. `COLAX_DEV_RAIL` is the same deal for the rail's dials, and
+    // `COLAX_DEV_GATE` walks the SecurityGate across every factor it knows.
     if std::env::var_os("COLAX_DEV_VIEW").is_some() {
         let weak = ui.as_weak();
         let timer = slint::Timer::default();
@@ -675,6 +719,23 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
             move || {
                 if let Some(ui) = weak.upgrade() {
                     dev_rail(&ui, &st);
+                }
+            },
+        );
+        std::mem::forget(timer);
+        return;
+    }
+
+    if std::env::var_os("COLAX_DEV_GATE").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_gate(&ui, &st);
                 }
             },
         );
@@ -833,7 +894,7 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
 #[cfg(debug_assertions)]
 fn dev_dump(ui: &MainWindow, tag: &str) {
     let dump = format!(
-        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} rail=[{}/{}] compact={} hidden={} {}\n",
+        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} rail=[{}/{}] compact={} hidden={} gate={} gf=[{}/{}/{}] gerr=[{}] {}\n",
         ui.get_screen() == Screen::Editor,
         ui.get_screen() == Screen::Vault,
         ui.get_editor_section(),
@@ -888,6 +949,13 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
         ui.get_labels_mode(),
         ui.get_rail_compact(),
         ui.get_rail_hidden(),
+        // ...and the gate's: up or down, which factors it was handed, and
+        // the error a failed attempt left behind.
+        ui.get_gate_open(),
+        ui.get_gate_has_passcode(),
+        ui.get_gate_has_totp(),
+        ui.get_gate_has_questions(),
+        ui.get_gate_error(),
         describe_cards(ui),
     );
     let path = app_dir().join("dev-dump.txt");
@@ -1261,6 +1329,154 @@ fn write_sidebar_prefs(ui: &MainWindow, state: &Shared, show: bool, compact: boo
     if save_prefs(ui, state, &prefs) {
         refresh_items(ui, state);
     }
+}
+
+/// The bulk write `dev_gate` needs: one prefs round trip for the vault's own
+/// factor, the way Settings will do it when Settings exists.
+#[cfg(debug_assertions)]
+fn write_vault_security(ui: &MainWindow, state: &Shared, security: LoginSecurity) {
+    let mut prefs = items::prefs_from(state.borrow().engine.preferences());
+    prefs.vault_security = security;
+    if !save_prefs(ui, state, &prefs) {
+        ui.set_error_text("That factor could not be saved.".into());
+    }
+}
+
+/// Debug-only: put a second factor on the scratch vault and walk every
+/// branch the gate has -- a wrong factor and its exact sentence, a right one,
+/// the proof surviving a second landing, lock spending it, all three factor
+/// types, an edit-gated login, and Cancel's one unusual outcome (the vault's
+/// own gate locks). Everything runs through the functions the screen calls
+/// (prefs writes, `goto`, `invoke_gate_unlock`, `invoke_gate_cancel`), so the
+/// run covers the paths a real click takes. What a line can show is what
+/// reached the window; the panel itself is read off by hand once the desktop
+/// is unlocked.
+#[cfg(debug_assertions)]
+fn dev_gate(ui: &MainWindow, state: &Shared) {
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    // 1. A fresh vault carries no vault factor, so nothing raises.
+    dev_dump(ui, "gate1.bare");
+
+    // 2. Give it a passcode over "123456" and take the landing that looks
+    //    for one.
+    let (hash, salt) = hash_passcode("123456");
+    write_vault_security(
+        ui,
+        state,
+        LoginSecurity {
+            totp: None,
+            passcode: Some(SecurityPasscode { hash, salt }),
+            questions: Vec::new(),
+        },
+    );
+    goto(ui, state, Screen::Vault);
+    dev_dump(ui, "gate2.open");
+
+    // 3. Wrong: SecurityGate.tsx's own sentence, and the gate stays up.
+    ui.invoke_gate_unlock("passcode".into(), "000000".into(), "".into());
+    dev_dump(ui, "gate3.refused");
+
+    // 4. Right: the gate drops.
+    ui.invoke_gate_unlock("passcode".into(), "123456".into(), "".into());
+    dev_dump(ui, "gate4.verified");
+
+    // 5. ...and the proof holds for the session: no second asking.
+    goto(ui, state, Screen::Vault);
+    dev_dump(ui, "gate5.silent");
+
+    // 6-7. Lock spends the proof; the next unlock asks again.
+    lock_vault(ui, state);
+    dev_dump(ui, "gate6.locked");
+    unlock_with(ui, state, "");
+    dev_dump(ui, "gate7.reasks");
+
+    // 8. The recovery-question path. Swap the factor for one stored
+    //    question, then lock and unlock once more so the new one is what the
+    //    gate is handed.
+    let (hash, salt) = hash_answer("Rex");
+    write_vault_security(
+        ui,
+        state,
+        LoginSecurity {
+            totp: None,
+            passcode: None,
+            questions: vec![SecurityQuestion {
+                id: "q1".into(),
+                prompt: "First pet's name?".into(),
+                hash,
+                salt,
+            }],
+        },
+    );
+    lock_vault(ui, state);
+    unlock_with(ui, state, "");
+    dev_dump(ui, "gate8.question-open");
+
+    // 9-10. Its wrong sentence, then its pass.
+    ui.invoke_gate_unlock("question".into(), "Fido".into(), "q1".into());
+    dev_dump(ui, "gate9.answer-refused");
+    ui.invoke_gate_unlock("question".into(), "Rex".into(), "q1".into());
+    dev_dump(ui, "gate10.answer-ok");
+
+    // 11-12. An edit-gated login: a secured record lands straight from the
+    //       engine (its own passcode), and opening it raises the gate with
+    //       the TS title. Cancel abandons the open and stays out of the
+    //       editor -- the vault's cancel, which locks, is a different intent.
+    let (hash, salt) = hash_passcode("654321");
+    let secured_login = {
+        let mut guard = state.borrow_mut();
+        guard
+            .engine
+            .add_item(&serde_json::json!({
+                "title": "Secured Bank",
+                "url": "bank.example",
+                "username": "ada",
+                "password": "hunter22hunter2",
+                "security": { "passcode": { "hash": hash, "salt": salt } },
+            }))
+            .ok()
+            .map(|item| item.id)
+    };
+    let Some(id) = secured_login else {
+        dev_dump(ui, "gate11.no-item");
+        return;
+    };
+    open_editor(ui, state, &id);
+    dev_dump(ui, "gate11.edit-open");
+    ui.invoke_gate_cancel();
+    dev_dump(ui, "gate12.edit-cancel");
+
+    // 13-15. The authenticator path: a seed on the vault, a stale code
+    //       refused first, then the *current* one -- from the same core
+    //       clock `verify_totp` reads.
+    let seed = "GEZDGNBVGY3TQOJQ".to_string();
+    write_vault_security(
+        ui,
+        state,
+        LoginSecurity {
+            totp: Some(TotpSecret { seed: seed.clone() }),
+            passcode: None,
+            questions: Vec::new(),
+        },
+    );
+    lock_vault(ui, state);
+    unlock_with(ui, state, "");
+    dev_dump(ui, "gate13.totp-open");
+    ui.invoke_gate_unlock("totp".into(), "000000".into(), "".into());
+    dev_dump(ui, "gate14.code-refused");
+    let code = colax_core::totp::current_totp_code(&seed).unwrap_or_default();
+    ui.invoke_gate_unlock("totp".into(), code.as_str().into(), "".into());
+    dev_dump(ui, "gate15.code-ok");
+
+    // 16-17. And the vault gate's one unusual outcome: cancel *locks*
+    //       (the TS `onCancel` at L2839), which a line ending on the lock
+    //       screen shows.
+    lock_vault(ui, state);
+    unlock_with(ui, state, "");
+    dev_dump(ui, "gate16.reasked");
+    ui.invoke_gate_cancel();
+    dev_dump(ui, "gate17.cancel-locks");
 }
 
 /// A spread of logins chosen to exercise the cards: a favorite, a stale one,
@@ -1961,6 +2177,28 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
             ui.set_error_text("That login no longer exists.".into());
             return;
         };
+        // A second factor on this login gates the editor itself (the TS
+        // `pendingItem` flow with intent `edit`, App.tsx L3399-3410): the
+        // gate resumes *this* open once a factor clears, and `verified`
+        // keeps it from asking twice in one session.
+        if colax_core::is_secured(&item.security)
+            && !state.borrow().verified.contains(&item.id)
+        {
+            let title = if item.title.is_empty() {
+                "this login".to_string()
+            } else {
+                format!("Unlock {}", item.title)
+            };
+            open_gate(
+                ui,
+                state,
+                GateIntent::Edit(item.id.clone()),
+                item.security.clone(),
+                &title,
+                "This login has a second factor. Clear it to open the editor.",
+            );
+            return;
+        }
         ui.set_edit_id(item.id.as_str().into());
         ui.set_edit_title(item.title.as_str().into());
         ui.set_edit_url(item.url.as_str().into());
@@ -2284,11 +2522,186 @@ fn toggle_favorite(ui: &MainWindow, state: &Shared, id: &str) {
     }
 }
 
-fn editor_reveal(ui: &MainWindow) {
+fn editor_reveal(ui: &MainWindow, state: &Shared) {
     if ui.get_screen() != Screen::Editor {
         return;
     }
+    // Only *showing* is gated; hiding what is already shown is free. The
+    // title and hint are the `reveal` intent's own strings (App.tsx L3401-05).
+    if !ui.get_gen_reveal_editor() {
+        let id = ui.get_edit_id().to_string();
+        let (secured, verified, security) = {
+            let guard = state.borrow();
+            (
+                colax_core::is_secured(&guard.editor_security),
+                guard.verified.contains(&id),
+                guard.editor_security.clone(),
+            )
+        };
+        if secured && !verified && !id.is_empty() {
+            open_gate(
+                ui,
+                state,
+                GateIntent::Reveal(id),
+                security,
+                "Show password",
+                "This login has a second factor. Clear it to reveal the password.",
+            );
+            return;
+        }
+    }
     ui.set_gen_reveal_editor(!ui.get_gen_reveal_editor());
+}
+
+/* ---- SecurityGate -------------------------------------------------------- */
+
+/// Raise the gate over whatever is on screen. The title and hint are the
+/// exact strings SecurityGate.tsx prints for the flow being resumed; the
+/// factors go out first and `gate-open` last, because opening builds the
+/// panel and the panel reads its options at construction.
+fn open_gate(
+    ui: &MainWindow,
+    state: &Shared,
+    intent: GateIntent,
+    security: LoginSecurity,
+    title: &str,
+    hint: &str,
+) {
+    ui.set_gate_has_passcode(security.passcode.is_some());
+    ui.set_gate_has_totp(
+        security
+            .totp
+            .as_ref()
+            .map(|totp| !totp.seed.is_empty())
+            .unwrap_or(false),
+    );
+    ui.set_gate_has_questions(!security.questions.is_empty());
+    let prompts: Vec<QuestionRow> = security
+        .questions
+        .iter()
+        .map(|question| QuestionRow {
+            id: question.id.clone().into(),
+            prompt: question.prompt.clone().into(),
+        })
+        .collect();
+    ui.set_gate_questions(ModelRc::new(VecModel::from(prompts)));
+    ui.set_gate_title(title.into());
+    ui.set_gate_hint(hint.into());
+    ui.set_gate_error("".into());
+    state.borrow_mut().gate = Some(PendingGate { intent, security });
+    ui.set_gate_open(true);
+}
+
+/// A second factor on the vault itself gates the shell ("Vault
+/// verification", App.tsx L2829-2844). TS keeps this as a render-time
+/// condition; here every landing on the vault re-checks it, and
+/// `vault_verified` is the session's already-proved-it.
+fn maybe_gate_vault(ui: &MainWindow, state: &Shared) {
+    if state.borrow().vault_verified {
+        return;
+    }
+    let security = {
+        let guard = state.borrow();
+        colax_core::normalise_preferences(guard.engine.preferences()).vault_security
+    };
+    if !colax_core::is_secured(&security) {
+        return;
+    }
+    open_gate(
+        ui,
+        state,
+        GateIntent::Vault,
+        security,
+        "Vault verification",
+        "The vault is open, but this account added a second factor. Prove it is you.",
+    );
+}
+
+/// One attempt. The mode decides which stored factor is checked and which
+/// sentence a wrong answer earns -- the three are SecurityGate.tsx's own
+/// (L48, L61, L74). The PBKDF2 behind a passcode or an answer runs here on
+/// the UI thread, exactly where the unlock password already runs it: one
+/// timing story, told in one place.
+fn gate_unlock(
+    ui: &MainWindow,
+    state: &Shared,
+    mode: &str,
+    value: &str,
+    question_id: &str,
+) {
+    // A second click queued behind the first (the check freezes the thread)
+    // arrives after the gate is already gone; without a gate there is
+    // nothing left to submit to.
+    let Some(gate) = state.borrow().gate.clone() else {
+        return;
+    };
+    let ok = match mode {
+        "passcode" => gate
+            .security
+            .passcode
+            .as_ref()
+            .map(|passcode| verify_passcode(value, &passcode.hash, &passcode.salt))
+            .unwrap_or(false),
+        "totp" => {
+            let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+            let digits: String = digits.chars().take(6).collect();
+            gate.security
+                .totp
+                .as_ref()
+                .map(|totp| verify_totp(&totp.seed, &digits))
+                .unwrap_or(false)
+        }
+        _ => gate
+            .security
+            .questions
+            .iter()
+            .find(|question| question.id == question_id)
+            .map(|question| verify_answer(value, &question.hash, &question.salt))
+            .unwrap_or(false),
+    };
+    if !ok {
+        let error = match mode {
+            "passcode" => "That passcode does not match.",
+            "totp" => "That code did not match. Try the current one.",
+            _ => "That answer does not match.",
+        };
+        ui.set_gate_error(error.into());
+        return;
+    }
+
+    // A pass is spent: close the gate, remember it against the flow that
+    // asked, then re-run that flow -- which now finds its own proof waiting.
+    // The error line goes with the panel (and `open_gate` clears it again on
+    // every reopen, so a failed attempt can never be read twice).
+    {
+        let mut guard = state.borrow_mut();
+        guard.gate = None;
+        match gate.intent {
+            GateIntent::Vault => guard.vault_verified = true,
+            GateIntent::Edit(ref id) | GateIntent::Reveal(ref id) => {
+                guard.verified.insert(id.clone());
+            }
+        }
+    }
+    ui.set_gate_open(false);
+    ui.set_gate_error("".into());
+    match gate.intent {
+        GateIntent::Vault => {}
+        GateIntent::Edit(id) => open_editor(ui, state, &id),
+        GateIntent::Reveal(_) => editor_reveal(ui, state),
+    }
+}
+
+/// Cancel: the interrupted flow is abandoned (the `onCancel` each TS
+/// invocation passes in). The vault's gate has one other outcome in TS --
+/// cancel *locks* the vault (L2839) -- and that difference lives here.
+fn gate_cancel(ui: &MainWindow, state: &Shared) {
+    let intent = state.borrow_mut().gate.take().map(|gate| gate.intent);
+    ui.set_gate_open(false);
+    ui.set_gate_error("".into());
+    if matches!(intent, Some(GateIntent::Vault)) {
+        lock_vault(ui, state);
+    }
 }
 
 fn editor_section_selected(ui: &MainWindow, id: &str) {
@@ -2985,9 +3398,19 @@ fn lock_vault(ui: &MainWindow, state: &Shared) {
         // An undo offering to restore a row cannot outlive the lock: the
         // offer would still be on screen while the vault is sealed.
         guard.last_deleted = None;
+        // Neither can the vault's proof: sealed again means asked again on
+        // the next unlock (TS rebuilds `vaultVerified` along with the locked
+        // component tree).
+        guard.vault_verified = false;
+        // A gate is proof-seeking for what is being sealed. Closing it here
+        // is what stops a lock raised from the tray -- no backdrop sits in
+        // front of that menu -- from parking the panel over the lock screen.
+        guard.gate = None;
         lock_screen_for(&guard.engine)
     };
     ui.set_undo_text("".into());
+    ui.set_gate_open(false);
+    ui.set_gate_error("".into());
     goto(ui, state, screen);
 }
 
@@ -3038,6 +3461,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Wide enough for three grid columns before anything has
                 // reported a width (the content area at the default window).
                 vault_width: 800.0,
+                gate: None,
+                verified: HashSet::new(),
+                vault_verified: false,
             }));
             // Debug scratch profiles open straight into the vault with demo
             // content; everything else starts on the real startup screen.
@@ -3063,6 +3489,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // first frame of the vault would otherwise be empty.
                     if screen == Screen::Vault {
                         refresh_items(&ui, &state);
+                        // Device vaults -- and a debug profile that opens
+                        // unlocked -- land here without passing `goto`, so the
+                        // vault's own factor has to be checked here too.
+                        maybe_gate_vault(&ui, &state);
                     }
                 }
                 Err(err) => {
@@ -3380,6 +3810,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let weak = ui.as_weak();
             let st = state.clone();
+            ui.on_gate_unlock(move |mode, value, question_id| {
+                if let Some(ui) = weak.upgrade() {
+                    gate_unlock(&ui, &st, &mode, &value, &question_id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_gate_cancel(move || {
+                if let Some(ui) = weak.upgrade() {
+                    gate_cancel(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
             ui.on_toggle_favorite(move |id| {
                 if let Some(ui) = weak.upgrade() {
                     toggle_favorite(&ui, &st, &id);
@@ -3453,9 +3899,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let weak = ui.as_weak();
+            let st = state.clone();
             ui.on_editor_reveal(move || {
                 if let Some(ui) = weak.upgrade() {
-                    editor_reveal(&ui);
+                    editor_reveal(&ui, &st);
                 }
             });
 

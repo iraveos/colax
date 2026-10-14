@@ -11,6 +11,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::model::{normalise_security, LoginSecurity};
+
 /// One entry of the global tag catalogue: logins reference these by id rather
 /// than by name, so renaming or recolouring one here changes every login that
 /// carries it -- and a tag a login no longer references can be spotted by
@@ -60,6 +62,10 @@ pub struct VaultPreferences {
     /// before unlock too, so the tray can show it -- but the geometry is the
     /// shell's job).
     pub show_sidebar: bool,
+    /// `prefs.vaultSecurity`: a second factor over the whole vault. TS gates
+    /// the shell itself on it (App.tsx L2830, "Vault verification"), and the
+    /// native gate verifies against this same stored factor.
+    pub vault_security: LoginSecurity,
     // Sort and delete behaviour (Task 3.5 / 3.6).
     /// Favourites float to the top of every sort mode.
     pub pin_favorites: bool,
@@ -120,6 +126,7 @@ impl Default for VaultPreferences {
             sidebar_labels: "both".into(),
             compact_sidebar: false,
             show_sidebar: true,
+            vault_security: LoginSecurity::default(),
             tray_enabled: true,
             close_to_tray: true,
             launch_at_login: false,
@@ -210,6 +217,9 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // stored vault from the web build brings its own.
     out.compact_sidebar = truthy(o.get("compactSidebar"), false);
     out.show_sidebar = truthy(o.get("showSidebar"), true);
+    // The vault's own second factor, through the same helper the items use:
+    // a stored vault.json from the web build verifies exactly the same way.
+    out.vault_security = normalise_security(o.get("vaultSecurity"));
     // Boolean(...) in JS: anything truthy reads as true, so a legacy string
     // here is still honoured rather than reset.
     out.tray_enabled = truthy(o.get("trayEnabled"), true);
@@ -228,7 +238,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     let known = ["theme","accent","textScale","motion","motionSpeed","ambient","density","roundness",
         "cardDepth","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",
         "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
-        "compactSidebar","showSidebar",
+        "compactSidebar","showSidebar","vaultSecurity",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
         "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes","tags"];
     for (k,v) in o.iter() {
@@ -381,6 +391,7 @@ mod tests {
         assert!(p.show_urls);
         assert_eq!(p.sidebar_position, "left");
         assert_eq!(p.sidebar_labels, "both");
+        assert_eq!(p.vault_security, LoginSecurity::default());
     }
 
     #[test]
@@ -421,6 +432,7 @@ mod tests {
             "theme": "dark", "accent": "sage", "density": "spacious",
             "view": "grid", "sort": "recent", "sidebarPosition": "right",
             "sidebarLabels": "icon", "compactSidebar": true, "showSidebar": false,
+            "vaultSecurity": { "totp": { "seed": "GEZDGNBVGY3TQOJQ" } },
         }));
         assert_eq!(p.theme, "dark");
         assert_eq!(p.accent, "sage");
@@ -431,10 +443,15 @@ mod tests {
         assert_eq!(p.sidebar_labels, "icon");
         assert!(p.compact_sidebar);
         assert!(!p.show_sidebar);
-        // Both are *known* now: they must not linger in `extra` and get
+        assert_eq!(
+            p.vault_security,
+            normalise_security(Some(&json!({ "totp": { "seed": "GEZDGNBVGY3TQOJQ" } })))
+        );
+        // All three are *known* now: they must not linger in `extra` and get
         // written a second time alongside their typed fields.
         assert!(p.extra.get("compactSidebar").is_none());
         assert!(p.extra.get("showSidebar").is_none());
+        assert!(p.extra.get("vaultSecurity").is_none());
     }
 
     #[test]

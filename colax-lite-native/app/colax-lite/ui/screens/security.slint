@@ -1,0 +1,340 @@
+// SecurityGate: the ask-and-verify pass for a login or for the vault itself.
+//
+// Port of `src/ui/SecurityGate.tsx` (217 lines). Any one factor passes -- a
+// passcode, an authenticator code, an answer to a stored question -- in the
+// order that file prefers: a passcode is the fastest thing to type, so it
+// leads when present, and the segmented row only exists when there is more
+// than one thing to segment (L87-137). Nothing is stored here: the panel
+// asks, Rust verifies against the factor it was opened with, and the hashes
+// it checks never leave that side of the boundary.
+//
+// The instance owns everything typed. The gate is built fresh on every open
+// (`if (root.gate-open)` in main), which is what clears the fields, resets
+// the chosen factor, and -- because the mode default is a binding read at
+// construction -- lets the first tab be whichever factor the security
+// actually has.
+
+import { Theme } from "../theme.slint";
+import { Btn, Field, Label, Note } from "../widgets.slint";
+import { QuestionRow } from "../models.slint";
+
+// One segment of the factor row. Content-hug like `Btn` -- the layout inside
+// *is* the width -- but flat, because these are tabs on one control rather
+// than buttons on a form (the `.segmented` pair, SecurityGate.tsx L120-136).
+component GateTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    callback clicked();
+
+    height: 34px;
+    border-radius: 8px;
+    background: root.selected
+        ? Theme.accent-soft
+        : (tab-touch.has-hover ? Theme.row-hover : #ffffff0f);
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : #00000000;
+
+    tab-touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+
+        Text {
+            text: root.label;
+            color: root.selected ? Theme.accent : Theme.muted;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component SecurityGate inherits Rectangle {
+    in property <string> title;
+    // `.field__note` under the modal's heading (L115-118); the caller swaps
+    // it for the flow's own sentence (the vault's, or "clear it to ...").
+    in property <string> hint: "This is protected. Prove it is you to continue.";
+    in property <bool> has-passcode: false;
+    in property <bool> has-totp: false;
+    in property <bool> has-questions: false;
+    in property <[QuestionRow]> questions;
+    in property <string> error: "";
+
+    // Sent on Unlock with what was typed and the factor it belongs to. Rust
+    // holds the hashes and the item, so the panel hands back only its own
+    // contents -- the same one-directional rule the editor's Security
+    // section follows.
+    callback unlock(mode: string, value: string, question-id: string);
+    callback cancel();
+
+    // Passcode first: a passcode is the fastest thing to type (L29-33).
+    // Without one the authenticator leads; the question is what is left.
+    in-out property <string> mode: root.has-passcode
+        ? "passcode"
+        : (root.has-totp ? "totp" : "question");
+    property <int> mode-count: (root.has-passcode ? 1 : 0)
+        + (root.has-totp ? 1 : 0)
+        + (root.has-questions ? 1 : 0);
+
+    in-out property <string> passcode-value: "";
+    in-out property <string> code-value: "";
+    in-out property <string> answer-value: "";
+    in-out property <int> question-index: 0;
+
+    // TS disables Unlock until there is something to check: exactly six
+    // characters in the code field, anything at all in the other two
+    // (L88-93). Slint strings have no length to count in a binding -- and no
+    // way to ask for one -- so this is "something typed": the six-digit
+    // rule itself is Rust's, which prints the same mismatch sentence for a
+    // short code that it prints for a wrong one.
+    property <bool> can-unlock: root.mode == "totp"
+        ? root.code-value != ""
+        : (root.mode == "passcode"
+            ? root.passcode-value != ""
+            : root.answer-value != "");
+
+    // The root inherits Rectangle, so with no geometry of its own it covers
+    // the wrapper the window puts it in: a full-window backdrop that keeps
+    // the shell behind it inert (TS renders the modal over everything too),
+    // with the panel floating in the middle of the same box.
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        z: 1;
+        // Clicking off the panel cancels, the same as the button: the TS
+        // modal's close affordance lands on that one handler (L96-98).
+        clicked => { root.cancel(); }
+    }
+
+    Rectangle {
+        z: 2;
+        width: 420px;
+        height: panel-inner.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: Theme.radius-md;
+        background: Theme.bg;
+        border-width: 1px;
+        border-color: Theme.border;
+        clip: true;
+
+        panel-inner := VerticalLayout {
+            padding-top: 22px;
+            padding-bottom: 20px;
+            padding-left: 24px;
+            padding-right: 24px;
+            spacing: 14px;
+
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+                vertical-stretch: 0;
+            }
+
+            Note {
+                text: root.hint;
+            }
+
+            // Segmented control, only when there is a choice to make (L119).
+            if (root.mode-count > 1) : HorizontalLayout {
+                spacing: 6px;
+                vertical-stretch: 0;
+
+                if (root.has-passcode) : GateTab {
+                    label: "Passcode";
+                    selected: root.mode == "passcode";
+                    clicked => { root.mode = "passcode"; }
+                }
+                if (root.has-totp) : GateTab {
+                    label: "Authenticator";
+                    selected: root.mode == "totp";
+                    clicked => { root.mode = "totp"; }
+                }
+                if (root.has-questions) : GateTab {
+                    label: "Recovery question";
+                    selected: root.mode == "question";
+                    clicked => { root.mode = "question"; }
+                }
+            }
+
+            // Passcode (L139-161).
+            if (root.mode == "passcode" && root.has-passcode) : VerticalLayout {
+                spacing: 6px;
+                vertical-stretch: 0;
+
+                Label { text: "Passcode"; }
+
+                Field {
+                    value <=> root.passcode-value;
+                    placeholder: "Your passcode";
+                    password: true;
+                    accepted => {
+                        if (root.can-unlock) {
+                            root.unlock("passcode", root.passcode-value, "");
+                        }
+                    }
+                }
+            }
+
+            // Authenticator (L163-184). The digits are filtered on the way
+            // into Rust rather than here; six characters of anything is what
+            // the button waits for, as above.
+            if (root.mode == "totp" && root.has-totp) : VerticalLayout {
+                spacing: 6px;
+                vertical-stretch: 0;
+
+                Label { text: "6-digit code"; }
+
+                Field {
+                    value <=> root.code-value;
+                    placeholder: "000000";
+                    accepted => {
+                        if (root.can-unlock) {
+                            root.unlock("totp", root.code-value, "");
+                        }
+                    }
+                }
+            }
+
+            // Recovery question (L186-224). TS uses a `<select>`; this app
+            // has no `Select` -- eight sentences will not fit a `Segmented`
+            // -- so it steps, exactly as the editor's add-question row does
+            // (editor.slint, the Prev/prompt/Next trio).
+            if (root.mode == "question" && root.has-questions) : VerticalLayout {
+                spacing: 6px;
+                vertical-stretch: 0;
+
+                Label { text: "Question"; }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    vertical-stretch: 0;
+
+                    Btn {
+                        label: "Prev";
+                        kind: 1;
+                        h: 44px;
+                        width: 64px;
+                        enabled: root.questions.length > 1;
+                        clicked => {
+                            root.question-index = root.question-index > 0
+                                ? root.question-index - 1
+                                : root.questions.length - 1;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 44px;
+                        border-radius: 10px;
+                        background: #ffffff0a;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        clip: true;
+
+                        Text {
+                            x: 12px;
+                            width: parent.width - 24px;
+                            height: parent.height;
+                            text: root.questions.length > 0
+                                ? root.questions[root.question-index].prompt
+                                : "";
+                            color: Theme.text;
+                            font-size: 13px;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Btn {
+                        label: "Next";
+                        kind: 1;
+                        h: 44px;
+                        width: 64px;
+                        enabled: root.questions.length > 1;
+                        clicked => {
+                            root.question-index = root.question-index + 1 < root.questions.length
+                                ? root.question-index + 1
+                                : 0;
+                        }
+                    }
+                }
+
+                Label { text: "Answer"; }
+
+                Field {
+                    value <=> root.answer-value;
+                    placeholder: "Your answer";
+                    autofocus: true;
+                    accepted => {
+                        if (root.can-unlock) {
+                            root.unlock(
+                                "question",
+                                root.answer-value,
+                                root.questions.length > 0
+                                    ? root.questions[root.question-index].id
+                                    : "",
+                            );
+                        }
+                    }
+                }
+            }
+
+            // `.sec__error`, shown only when a check came back wrong
+            // (L227): Rust fills it with the exact sentence the TS file
+            // would print for the factor that failed.
+            if (root.error != "") : Text {
+                text: root.error;
+                color: Theme.danger;
+                font-size: 13px;
+                wrap: word-wrap;
+                width: parent.width - 48px;
+                vertical-stretch: 0;
+            }
+
+            // Footer: Cancel then Unlock, the pair right-aligned as the TS
+            // modal's footer is (L99-113).
+            HorizontalLayout {
+                spacing: 10px;
+                vertical-stretch: 0;
+
+                Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                Btn {
+                    label: "Cancel";
+                    kind: 1;
+                    h: 40px;
+                    width: 96px;
+                    clicked => { root.cancel(); }
+                }
+
+                Btn {
+                    label: "Unlock";
+                    kind: 0;
+                    h: 40px;
+                    width: 96px;
+                    enabled: root.can-unlock;
+                    clicked => {
+                        if (root.mode == "totp") {
+                            root.unlock("totp", root.code-value, "");
+                        } else if (root.mode == "passcode") {
+                            root.unlock("passcode", root.passcode-value, "");
+                        } else {
+                            root.unlock(
+                                "question",
+                                root.answer-value,
+                                root.questions.length > 0
+                                    ? root.questions[root.question-index].id
+                                    : "",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

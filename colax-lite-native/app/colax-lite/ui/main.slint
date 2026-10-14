@@ -18,6 +18,7 @@ import { Theme } from "theme.slint";
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState } from "widgets.slint";
 import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow } from "models.slint";
 import { Editor } from "screens/editor.slint";
+import { SecurityGate } from "screens/security.slint";
 
 // ---- The vault's four presentations -------------------------------------
 // `VIEW_OPTIONS` in ViewMenu.tsx: Flow, Orbit, List, Grid -- four cards with
@@ -693,6 +694,25 @@ export component MainWindow inherits Window {
     // pref's own whitelist before it writes.
     callback rail-picked(position: string);
     callback labels-picked(labels: string);
+    // ---- SecurityGate ----------------------------------------------------
+    // A blocking verification for a login or for the vault itself: any one
+    // factor passes, and the open panel holds everything typed until Rust
+    // says a check came back right (SecurityGate.tsx L12-93). The window
+    // keeps only what it is handed *at open* -- the title, the hint, which
+    // factors exist -- plus the error a failed attempt prints; the three
+    // fields live in the panel and die with it.
+    in property <bool> gate-open: false;
+    in property <string> gate-title: "";
+    in property <string> gate-hint: "This is protected. Prove it is you to continue.";
+    in property <bool> gate-has-passcode: false;
+    in property <bool> gate-has-totp: false;
+    in property <bool> gate-has-questions: false;
+    in property <[QuestionRow]> gate-questions;
+    in property <string> gate-error: "";
+    // mode: "passcode" | "totp" | "question"; question-id is the stored
+    // question the answer was typed against.
+    callback gate-unlock(mode: string, value: string, question-id: string);
+    callback gate-cancel();
     callback undo-clicked();
     callback undo-dismissed();
     callback quit-app();
@@ -768,6 +788,12 @@ export component MainWindow inherits Window {
     // applied to its root -- the root keeps the height of its own content,
     // which parked the editor's footer in the middle of the window, one
     // section deep. A layout, by contrast, sizes its children directly.
+    // The screens lay out inside this box; the gate floats over them (a
+    // layout child is *placed*, and a full-window overlay must not be).
+    // The tree below keeps the indentation it already had -- Slint reads
+    // structure, not columns -- so the only new lines here are this one and
+    // its closing brace.
+    Rectangle {
     VerticalLayout {
         spacing: 0px;
         // What the window opens at is decided by the `Window` above:
@@ -1825,6 +1851,28 @@ export component MainWindow inherits Window {
         }
 
     } // VerticalLayout
+
+        // -- The SecurityGate ------------------------------------------------
+        // One panel, whichever flow opened it: the vault's own factor the
+        // moment it is unlocked, a secured login before its editor opens, the
+        // reveal behind its second factor. A later sibling of the layout
+        // above, so it draws over every screen in it, with a backdrop that
+        // keeps the shell inert while it is up.
+        if (root.gate-open) : SecurityGate {
+            z: 50;
+            title: root.gate-title;
+            hint: root.gate-hint;
+            has-passcode: root.gate-has-passcode;
+            has-totp: root.gate-has-totp;
+            has-questions: root.gate-has-questions;
+            questions: root.gate-questions;
+            error: root.gate-error;
+            unlock(mode, value, question-id) => {
+                root.gate-unlock(mode, value, question-id);
+            }
+            cancel => { root.gate-cancel(); }
+        }
+    }
 }
 
 // The tray is its own top-level component: Slint's SystemTrayIcon has no
