@@ -120,7 +120,9 @@ fn accent_hues(name: &str) -> (f64, f64) {
 }
 
 /// `hsl(h s% l% / a)` as a Slint colour. The same conversion CSS does.
-fn hsl(h: f64, s: f64, l: f64, a: f64) -> slint::Color {
+/// `pub(crate)` because the editor's Appearance preview and swatch row need
+/// the same conversion, and there is no reason for two of them.
+pub(crate) fn hsl(h: f64, s: f64, l: f64, a: f64) -> slint::Color {
     let s = (s / 100.0).clamp(0.0, 1.0);
     let l = (l / 100.0).clamp(0.0, 1.0);
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;

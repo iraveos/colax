@@ -24,9 +24,15 @@ use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use colax_core::model::{SecurityPasscode, SecurityQuestion, TotpSecret};
+use colax_core::totp::{
+    extract_totp_secret, generate_totp_seed, otpauth_url, qr_matrix, verify_totp,
+};
 use colax_core::{
-    estimate_strength, generate_passphrase, generate_password, resolve_header, BackupFile,
-    GeneratorOptions, VaultEngine, VaultError, VaultItem, VaultProtection, VaultStorage,
+    answer_too_weak, estimate_strength, generate_passphrase, generate_password, hash_answer,
+    hash_passcode, passcode_too_weak, resolve_header, security_level, verify_answer,
+    verify_passcode, BackupFile, GeneratorOptions, LoginSecurity, VaultEngine, VaultError,
+    VaultItem, VaultProtection, VaultStorage,
 };
 use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
@@ -298,6 +304,19 @@ struct AppState {
     /// whole rather than as an id, because `delete_item` has already dropped
     /// the record by the time Undo is pressed.
     last_deleted: Option<VaultItem>,
+    /// The Security half of the editor's draft. It lives here rather than in
+    /// Slint for the same reason passwords stay in the engine: a PBKDF2 hash
+    /// and its salt are not something a screen should hold. The panel is sent
+    /// only what it can read (the level, the two flags, the prompts) and every
+    /// action it reports comes back here to be hashed once, in one place.
+    editor_security: LoginSecurity,
+    /// A TOTP key that was generated or pasted but *not* yet confirmed by a
+    /// code. Staged exactly as `stagedSeed` is in `SecurityForm.tsx` L47:
+    /// nothing about the record changes until a code proves a phone holds the
+    /// key, and leaving the editor drops it.
+    editor_staged_seed: Option<String>,
+    /// Which of `QUESTION_PROMPTS` the add-question row is showing.
+    editor_prompt_index: usize,
 }
 
 type Shared = Rc<RefCell<AppState>>;
@@ -489,10 +508,18 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// saved login), or `editor-<section>` for any of its tabs.
 #[cfg(debug_assertions)]
 fn dev_screen(ui: &MainWindow, state: &Shared) {
-    let Ok(want) = std::env::var("COLAX_DEV_SCREEN") else {
-        return;
+    // `COLAX_DEV_SEC` implies the Security section: it exists so this panel
+    // can be verified without *looking* at it -- the desktop may be locked,
+    // when a screenshot comes back white -- and then one variable is enough.
+    let want = match std::env::var_os("COLAX_DEV_SEC") {
+        Some(_) => "editor-security".to_string(),
+        None => {
+            let Ok(want) = std::env::var("COLAX_DEV_SCREEN") else {
+                return;
+            };
+            want.to_lowercase()
+        }
     };
-    let want = want.to_lowercase();
     if want.is_empty() || want == "vault" {
         return;
     }
@@ -517,6 +544,31 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
             ui.set_gen_show(true);
             regenerate(ui);
         }
+    }
+
+    // The Security panel's own run: drive every callback it has and dump what
+    // came back, then stop -- the generic timeline below would only append
+    // noise to a file whose whole point is one line per step.
+    //
+    // One tick late, because `dev_screen` runs before `main` has wired any
+    // callbacks and this sequence *invokes* them; calling it inline would
+    // quietly do nothing at all.
+    if std::env::var_os("COLAX_DEV_SEC").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_sec(&ui, &st);
+                }
+            },
+        );
+        // Dropping the handle would cancel it before it fires.
+        std::mem::forget(timer);
+        return;
     }
 
     // Temporary: what the UI actually holds, so a blank field can be told
@@ -585,7 +637,7 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
 #[cfg(debug_assertions)]
 fn dev_dump(ui: &MainWindow, tag: &str) {
     let dump = format!(
-        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}]\n",
+        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}]\n",
         ui.get_screen() == Screen::Editor,
         ui.get_screen() == Screen::Vault,
         ui.get_editor_section(),
@@ -599,11 +651,139 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
         ui.get_edit_needs_attention(),
         ui.get_edit_reminder_days(),
         ui.get_edit_reminder_label(),
+        // The Security half: the level and the flags Rust computed, the QR
+        // side, and whatever each tab would be showing as an inline error --
+        // enough to tell a factor that was never set from one whose panel
+        // simply is not on screen, without a picture to look at.
+        ui.get_edit_sec_level(),
+        ui.get_edit_sec_totp(),
+        ui.get_edit_sec_totp_staged(),
+        ui.get_edit_sec_passcode(),
+        ui.get_edit_qr_size(),
+        ui.get_edit_sec_questions_note(),
+        ui.get_edit_sec_new_prompt(),
+        ui.get_edit_sec_totp_note(),
+        ui.get_edit_sec_passcode_error(),
+        ui.get_edit_sec_answer_error(),
+        ui.get_notice_text(),
     );
     let path = app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&dump);
     let _ = std::fs::write(path, existing);
+}
+
+/// Debug-only: drive the Security panel end to end, dumping one line after
+/// each step.
+///
+/// The panel's job is to change state *in Rust* and show what came back -- a
+/// staged key becoming a saved one, a hash the screen never gets to hold --
+/// and none of that can be confirmed from a screenshot even when one can be
+/// taken. Each tag says what the following line must say; anything else is a
+/// broken wire. Run with `COLAX_DEV_SEC=1` (plus `COLAX_DEV_DIR`/`_SEED`),
+/// which implies `COLAX_DEV_SCREEN=editor-security`.
+#[cfg(debug_assertions)]
+fn dev_sec(ui: &MainWindow, state: &Shared) {
+    dev_dump(ui, "sec1.open");
+
+    // Stage a key. Nothing is saved by this: the line must show `staged=true`
+    // with `totp=false`, and a QR symbol for the phone to scan.
+    ui.invoke_editor_sec_totp_generate();
+    dev_dump(ui, "sec2.generated");
+
+    // A code this clock disagrees with must refuse -- and must not save.
+    ui.set_edit_sec_totp_code("000000".into());
+    ui.invoke_editor_sec_totp_check();
+    dev_dump(ui, "sec3.wrong-code");
+
+    // The real one is the single line that writes the factor.
+    let seed = state.borrow().editor_staged_seed.clone();
+    let Some(seed) = seed else {
+        dev_dump(ui, "sec4.no-seed");
+        return;
+    };
+    let code = colax_core::totp::current_totp_code(&seed).unwrap_or_default();
+    ui.set_edit_sec_totp_code(code.as_str().into());
+    ui.invoke_editor_sec_totp_check();
+    dev_dump(ui, "sec4.confirmed");
+
+    // Stepping the prompt list...
+    ui.invoke_editor_sec_prompt_step(1);
+    ui.invoke_editor_sec_prompt_step(1);
+    dev_dump(ui, "sec5.prompt-step");
+    // ...and clean past the end, which must wrap rather than stick.
+    for _ in 0..10 {
+        ui.invoke_editor_sec_prompt_step(1);
+    }
+    dev_dump(ui, "sec6.prompt-wrap");
+
+    // An answer a stranger could guess must be refused...
+    ui.set_edit_sec_new_answer("yes".into());
+    ui.invoke_editor_sec_question_add();
+    dev_dump(ui, "sec7.answer-weak");
+
+    // ...and a real one must land as a prompt plus a hash nobody can read.
+    ui.set_edit_sec_new_answer("the cobbled lane behind the mill".into());
+    ui.invoke_editor_sec_question_add();
+    dev_dump(ui, "sec8.answer-added");
+
+    // Checking it back: open the box, fail, then pass. Three lines, because
+    // opening and verifying are two different things that could break.
+    let question_id = state
+        .borrow()
+        .editor_security
+        .questions
+        .first()
+        .map(|question| question.id.clone())
+        .unwrap_or_default();
+    if !question_id.is_empty() {
+        ui.invoke_editor_sec_question_check(question_id.as_str().into());
+        ui.set_edit_sec_check_input("not the answer".into());
+        ui.invoke_editor_sec_question_check(question_id.as_str().into());
+        dev_dump(ui, "sec9.answer-wrong");
+        ui.set_edit_sec_check_input("the cobbled lane behind the mill".into());
+        ui.invoke_editor_sec_question_check(question_id.as_str().into());
+        dev_dump(ui, "sec10.answer-ok");
+    }
+
+    // The passcode, in the TS order: too weak, then a mismatch, then saved.
+    // With an authenticator already set, the saved one has to be 12+.
+    ui.set_edit_sec_passcode_new("abc".into());
+    ui.set_edit_sec_passcode_confirm("abc".into());
+    ui.invoke_editor_sec_passcode_save();
+    dev_dump(ui, "sec11.passcode-weak");
+
+    ui.set_edit_sec_passcode_new("correct horse battery staple".into());
+    ui.set_edit_sec_passcode_confirm("correct horse battery stapl".into());
+    ui.invoke_editor_sec_passcode_save();
+    dev_dump(ui, "sec12.passcode-mismatch");
+
+    ui.set_edit_sec_passcode_confirm("correct horse battery staple".into());
+    ui.invoke_editor_sec_passcode_save();
+    dev_dump(ui, "sec13.passcode-saved");
+
+    // Checking it back against the hash just written.
+    ui.set_edit_sec_passcode_input("wrong".into());
+    ui.invoke_editor_sec_passcode_check();
+    dev_dump(ui, "sec14.passcode-wrong");
+    ui.set_edit_sec_passcode_input("correct horse battery staple".into());
+    ui.invoke_editor_sec_passcode_check();
+    dev_dump(ui, "sec15.passcode-ok");
+
+    // All three factors at once: `full`.
+    dev_dump(ui, "sec16.all-set");
+
+    // Then take them away again, so the file ends on the state a screenshot
+    // -- if the desktop ever unlocks -- would be expected to show. Asking for
+    // `still` leaves all three factors on, which is the picture worth taking.
+    if std::env::var("COLAX_DEV_SEC").map(|value| value == "still").unwrap_or(false) {
+        dev_dump(ui, "sec17.standing");
+        return;
+    }
+    ui.invoke_editor_sec_question_remove(question_id.as_str().into());
+    ui.invoke_editor_sec_passcode_remove();
+    ui.invoke_editor_sec_totp_remove();
+    dev_dump(ui, "sec17.cleared");
 }
 
 /// A spread of logins chosen to exercise the cards: a favorite, a stale one,
@@ -918,6 +1098,258 @@ fn reminder_label(days: f64) -> String {
         .unwrap_or_default()
 }
 
+/// The mail filter: what the record stores, and what the screen shows. One
+/// table for both halves, like `REMINDER_PRESETS`, so `Segmented`'s index
+/// cannot drift from the value the normaliser coerces to.
+const MAIL_FILTERS: [(&str, &str); 3] = [
+    ("auto", "Auto"),
+    ("matched", "Matched only"),
+    ("recent", "Recent only"),
+];
+
+fn mail_filter_label(value: &str) -> String {
+    MAIL_FILTERS
+        .iter()
+        .find(|(v, _)| *v == value)
+        .map(|(_, label)| (*label).to_string())
+        // The model coerces anything unknown to `auto`, so this can only be
+        // reached by a value that has not been through it yet — and agreeing
+        // with it beats showing a lit segment for a stored value that is not.
+        .unwrap_or_else(|| MAIL_FILTERS[0].1.to_string())
+}
+
+fn mail_filter_value(label: &str) -> &'static str {
+    MAIL_FILTERS
+        .iter()
+        .find(|(_, l)| *l == label)
+        .map(|(value, _)| *value)
+        .unwrap_or(MAIL_FILTERS[0].0)
+}
+
+/// `HUE_PRESETS` in `ItemEditor.tsx` L879, in order. Auto carries -1 rather
+/// than a hue: the choice is to *derive* one from the title, not to pick
+/// hue zero, and the swatch row checks this number to light the active chip.
+const HUE_PRESETS: [(&str, f64); 8] = [
+    ("Auto", -1.0),
+    ("Slate", 212.0),
+    ("Sage", 152.0),
+    ("Dusk", 268.0),
+    ("Clay", 28.0),
+    ("Sea", 196.0),
+    ("Moss", 118.0),
+    ("Plum", 316.0),
+];
+
+/// The eight recovery prompts, in `QUESTION_PROMPTS` order in
+/// `SecurityForm.tsx` L627. Copy lives beside the presets for the same reason
+/// they do: Rust steps the index and shows one of them, and a list written in
+/// two files would have two chances to drift.
+const QUESTION_PROMPTS: [&str; 8] = [
+    "The name of the street you grew up on",
+    "The name of your first pet",
+    "The make of your first car",
+    "The name of the school you attended",
+    "The name of a city you have lived in",
+    "The name of your favourite teacher",
+    "The model of your first phone",
+    "The name of a book that mattered to you",
+];
+
+/// Only http(s) and inline images are allowed, so a login cannot smuggle in
+/// markup (`isAllowedImageSrc`, `types.ts` L251). Anything else is stored as
+/// the empty string rather than as a value the card would later trust.
+fn allowed_image(src: &str) -> String {
+    let src = src.trim();
+    if src.starts_with("data:image/")
+        || src.starts_with("https://")
+        || src.starts_with("http://")
+    {
+        src.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Pushes the Appearance section's read-outs: the eight swatches, the hue as
+/// text, where the slider sits, the blur read-out and the preview gradient.
+///
+/// The hue is the draft's when it has one, and `hue_for(title || username ||
+/// url || "aegis")` when it does not — `accentOf()` in `types.ts` — so the
+/// preview shows exactly the colour the card will show, before anything is
+/// saved. Call it whenever a field that feeds it changes.
+fn push_appearance(ui: &MainWindow) {
+    let title = ui.get_edit_title().to_string();
+    let username = ui.get_edit_username().to_string();
+    let url = ui.get_edit_url().to_string();
+    let chosen = ui.get_edit_accent_hue();
+
+    let seed = if !title.is_empty() {
+        title.as_str()
+    } else if !username.is_empty() {
+        username.as_str()
+    } else if !url.is_empty() {
+        url.as_str()
+    } else {
+        "aegis"
+    };
+    let hue = if chosen.is_finite() && chosen >= 0.0 {
+        chosen.rem_euclid(360.0)
+    } else {
+        colax_core::model::hue_for(seed) as f32
+    };
+
+    ui.set_edit_hue_slider(hue);
+    let hue_text = format!("{}\u{b0}", hue.round() as i32);
+    ui.set_edit_hue_readout(hue_text.as_str().into());
+    // The card's own gradient: 135deg, hsl(h 40% 56%) -> hsl(h+34 36% 44%),
+    // which is what `accentOf()` renders through the same two stops.
+    ui.set_edit_preview_from(appearance::hsl(f64::from(hue), 40.0, 56.0, 1.0));
+    ui.set_edit_preview_to(appearance::hsl(f64::from(hue) + 34.0, 36.0, 44.0, 1.0));
+
+    let blur_text = format!("{}", ui.get_edit_bg_blur().round() as i32);
+    ui.set_edit_blur_readout(blur_text.as_str().into());
+    // `title.trim()[0] ?? '?'`, upper-cased — including when the name is
+    // empty, because the card in the list falls back to the username or the
+    // host instead and this preview must not pretend to show that.
+    let initial = title
+        .trim()
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "?".to_string());
+    ui.set_edit_preview_initial(initial.as_str().into());
+
+    let swatches: Vec<HueSwatch> = HUE_PRESETS
+        .iter()
+        .map(|(label, preset)| {
+            // Auto's chip is a sweep of the calm set, which is the stand-in
+            // here for CSS's conic gradient; every other chip is the same
+            // 135° pair the card draws.
+            let (from, to) = if *preset < 0.0 {
+                (
+                    appearance::hsl(212.0, 40.0, 58.0, 1.0),
+                    appearance::hsl(152.0, 40.0, 58.0, 1.0),
+                )
+            } else {
+                (
+                    appearance::hsl(*preset, 40.0, 56.0, 1.0),
+                    appearance::hsl(*preset + 34.0, 36.0, 44.0, 1.0),
+                )
+            };
+            HueSwatch {
+                label: (*label).into(),
+                hue: *preset as f32,
+                from,
+                to,
+            }
+        })
+        .collect();
+    ui.set_edit_hue_swatches(ModelRc::new(VecModel::from(swatches)));
+}
+
+/// Pushes the Security section's readable half: the level, the two flags, the
+/// question rows (prompts only), the prompt the add row offers, and the QR
+/// symbol for whichever key is live.
+///
+/// The draft itself is read from `state` and never from the screen — a hash
+/// cannot round-trip through Slint, so this is the one place the two are
+/// reconciled. Call it after every action that changes a factor, and from
+/// `open_editor` once the draft has been seeded.
+fn push_security(ui: &MainWindow, state: &Shared) {
+    let (sec, staged, prompt_index) = {
+        let guard = state.borrow();
+        (
+            guard.editor_security.clone(),
+            guard.editor_staged_seed.clone(),
+            guard.editor_prompt_index,
+        )
+    };
+
+    ui.set_edit_sec_level(security_level(&sec).into());
+    ui.set_edit_sec_totp(sec.totp.is_some());
+    ui.set_edit_sec_passcode(sec.passcode.is_some());
+    // Staged is a *separate* flag from saved, as `stagedSeed` is in TS: a
+    // key the phone has never confirmed must never look like a set factor.
+    ui.set_edit_sec_totp_staged(staged.is_some());
+
+    // "Not set" / "1 question" / "2 questions": composed here because Slint
+    // cannot turn a number into part of a string.
+    let note = match sec.questions.len() {
+        0 => "Not set".to_string(),
+        1 => "1 question".to_string(),
+        n => format!("{n} questions"),
+    };
+    ui.set_edit_sec_questions_note(note.as_str().into());
+
+    let rows: Vec<QuestionRow> = sec
+        .questions
+        .iter()
+        .map(|q| QuestionRow {
+            id: q.id.clone().into(),
+            prompt: q.prompt.clone().into(),
+        })
+        .collect();
+    ui.set_edit_sec_questions(ModelRc::new(VecModel::from(rows)));
+
+    let prompt = QUESTION_PROMPTS
+        .get(prompt_index)
+        .copied()
+        .unwrap_or(QUESTION_PROMPTS[0]);
+    ui.set_edit_sec_new_prompt(prompt.into());
+
+    push_security_qr(ui, &sec, staged.as_deref());
+}
+
+/// The QR half, split out because the login's *name* feeds it too: the
+/// `otpauth://` URI carries the name, so renaming a login has to regenerate
+/// the symbol — the TS effect depends on `[activeSeed, label]`.
+fn push_security_qr(ui: &MainWindow, sec: &LoginSecurity, staged: Option<&str>) {
+    let seed = staged.or_else(|| sec.totp.as_ref().map(|t| t.seed.as_str()));
+    let Some(seed) = seed else {
+        ui.set_edit_qr_size(0);
+        ui.set_edit_qr_cells(ModelRc::new(VecModel::from(Vec::<QrCell>::new())));
+        ui.set_edit_sec_otpauth("".into());
+        return;
+    };
+
+    // `label={draft.title || 'login'}` in ItemEditor.tsx L559; `otpauth_url`
+    // then does the `|| 'vault'` fallback byte-for-byte with TS.
+    let title = ui.get_edit_title().to_string();
+    let label = if title.is_empty() { "login" } else { title.as_str() };
+    let url = otpauth_url(label, seed);
+
+    let symbol = qr_matrix(&url).map(|(side, bits)| {
+        // Only the dark half is shipped — a symbol is half light — and each
+        // module keeps its own row and column, because Slint has no `%` to
+        // split a flat index back apart again.
+        let cells: Vec<QrCell> = bits
+            .iter()
+            .enumerate()
+            .filter(|(_, dark)| **dark)
+            .map(|(i, _)| QrCell {
+                col: (i % side) as i32,
+                row: (i / side) as i32,
+            })
+            .collect();
+        (side as i32, cells)
+    });
+
+    match symbol {
+        Some((side, cells)) => {
+            ui.set_edit_qr_size(side);
+            ui.set_edit_qr_cells(ModelRc::new(VecModel::from(cells)));
+            ui.set_edit_sec_otpauth(url.as_str().into());
+        }
+        None => {
+            // No symbol can hold this URI. TS treats that as "no QR" and
+            // keeps the setup key usable; the screen says so and shows it.
+            ui.set_edit_qr_size(0);
+            ui.set_edit_qr_cells(ModelRc::new(VecModel::from(Vec::<QrCell>::new())));
+            ui.set_edit_sec_otpauth(url.as_str().into());
+        }
+    }
+}
+
 /// Pushes the strength read-out for `password` into the editor's meter.
 ///
 /// An empty password pushes -1, which `StrengthMeter` draws as five dead
@@ -1017,6 +1449,18 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
         ui.set_edit_reminder_days(0.0);
         ui.set_edit_reminder_label(REMINDER_PRESETS[0].0.into());
         ui.set_edit_can_delete(false);
+        // New logins start on auto colour, no background, no icon and mail
+        // off — the last one deliberately: one connected mailbox must not put
+        // a Messages button on every login created after it.
+        ui.set_edit_accent_hue(-1.0);
+        ui.set_edit_bg_image("".into());
+        ui.set_edit_bg_blur(0.0);
+        ui.set_edit_avatar_image("".into());
+        ui.set_edit_show_mail(false);
+        ui.set_edit_mail_filter(MAIL_FILTERS[0].0.into());
+        ui.set_edit_mail_filter_label(MAIL_FILTERS[0].1.into());
+        // A new login starts with no second factor, exactly `EMPTY_SECURITY`.
+        state.borrow_mut().editor_security = LoginSecurity::default();
     } else {
         let found = {
             let guard = state.borrow();
@@ -1041,6 +1485,21 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
         ui.set_edit_reminder_days(item.reminder_days as f32);
         ui.set_edit_reminder_label(reminder_label(item.reminder_days).as_str().into());
         ui.set_edit_can_delete(true);
+        ui.set_edit_accent_hue(
+            item.accent_hue
+                .filter(|hue| hue.is_finite())
+                .map(|hue| hue as f32)
+                .unwrap_or(-1.0),
+        );
+        ui.set_edit_bg_image(item.background_image.as_str().into());
+        ui.set_edit_bg_blur(item.background_blur as f32);
+        ui.set_edit_avatar_image(item.avatar_image.as_str().into());
+        ui.set_edit_show_mail(item.show_mail);
+        ui.set_edit_mail_filter(item.mail_filter.as_str().into());
+        ui.set_edit_mail_filter_label(mail_filter_label(&item.mail_filter).as_str().into());
+        // The Security draft is Rust's, so it is seeded here rather than in
+        // the panel: whatever this record carries is what Save will write back.
+        state.borrow_mut().editor_security = item.security.clone();
     }
 
     // The transient layer `changed screen` cannot reach: this runs while the
@@ -1053,8 +1512,36 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
     ui.set_gen_reveal_editor(false);
     ui.set_error_text("".into());
     ui.set_notice_text("".into());
+
+    // The Security transient layer. `changed screen` cannot reach it (the
+    // editor may already be open, and this runs before the screen changes),
+    // and the staged key in particular must not survive one login being
+    // closed for another: it would arm a record it was never confirmed for.
+    {
+        let mut guard = state.borrow_mut();
+        guard.editor_staged_seed = None;
+        guard.editor_prompt_index = 0;
+    }
+    ui.set_edit_sec_totp_seed("".into());
+    ui.set_edit_sec_totp_code("".into());
+    ui.set_edit_sec_totp_note("".into());
+    ui.set_edit_sec_passcode_new("".into());
+    ui.set_edit_sec_passcode_confirm("".into());
+    ui.set_edit_sec_passcode_input("".into());
+    ui.set_edit_sec_passcode_error("".into());
+    ui.set_edit_sec_answer_error("".into());
+    ui.set_edit_sec_checking_id("".into());
+    ui.set_edit_sec_check_input("".into());
+    ui.set_edit_sec_new_answer("".into());
+
     let password = ui.get_edit_password().to_string();
     push_strength(ui, &password);
+    // The Appearance read-outs depend on the name, so they are pushed last,
+    // once both branches have filled the draft.
+    push_appearance(ui);
+    // ...and so does the QR code, because the `otpauth://` URI carries the
+    // name -- same reason, same place.
+    push_security(ui, state);
 
     goto(ui, state, Screen::Editor);
 }
@@ -1077,6 +1564,17 @@ fn editor_save(ui: &MainWindow, state: &Shared) {
     }
 
     let id = ui.get_edit_id().to_string();
+    let hue = ui.get_edit_accent_hue();
+    // The Security half of the draft lives in Rust, not in the screen, so it
+    // is read here -- hashes never crossed the boundary to be read back.
+    let security = state.borrow().editor_security.clone();
+    // -1 is the draft's "auto": saved as null so the card keeps deriving its
+    // colour from the name, which is what `accentOf()` does with a null.
+    let accent_hue: Option<f64> = if hue.is_finite() && hue >= 0.0 {
+        Some(f64::from(hue))
+    } else {
+        None
+    };
     let patch = serde_json::json!({
         "title": title,
         "url": url,
@@ -1086,6 +1584,15 @@ fn editor_save(ui: &MainWindow, state: &Shared) {
         "favorite": ui.get_edit_favorite(),
         "needsAttention": ui.get_edit_needs_attention(),
         "reminderDays": f64::from(ui.get_edit_reminder_days()),
+        "accentHue": accent_hue,
+        "backgroundImage": allowed_image(ui.get_edit_bg_image().as_str()),
+        "backgroundBlur": f64::from(ui.get_edit_bg_blur()),
+        "avatarImage": allowed_image(ui.get_edit_avatar_image().as_str()),
+        "showMail": ui.get_edit_show_mail(),
+        "mailFilter": mail_filter_value(ui.get_edit_mail_filter_label().as_str()),
+        // A whole value rather than a serialisation inside the macro, so a
+        // factor can never be written as `null` by a failed conversion.
+        "security": serde_json::to_value(&security).unwrap_or(serde_json::Value::Null),
     });
 
     ui.set_busy(true);
@@ -1306,6 +1813,359 @@ fn editor_reminder_picked(ui: &MainWindow, index: i32) {
     }
 }
 
+fn editor_hue_picked(ui: &MainWindow, hue: f32) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    // Committing an explicit hue, which is what dragging past the swatches
+    // does in TS too — the only way back to "auto" is the Auto chip.
+    ui.set_edit_accent_hue(hue);
+    push_appearance(ui);
+}
+
+fn editor_title_edited(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    push_appearance(ui);
+    // The `otpauth://` URI carries the name, so renaming the login changes
+    // the QR symbol too -- the TS effect depends on `[activeSeed, label]`.
+    // Pushing all of Security rather than only the symbol keeps one place
+    // that decides what the panel shows.
+    push_security(ui, state);
+}
+
+fn editor_bg_blur_changed(ui: &MainWindow, value: f32) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    // The slider reports the raw position; the stored value is a whole pixel
+    // of blur, as the TS range input's step of 1 gives it.
+    let rounded = value.round();
+    ui.set_edit_bg_blur(rounded);
+    let text = format!("{}", rounded as i32);
+    ui.set_edit_blur_readout(text.as_str().into());
+}
+
+fn editor_mail_filter_picked(ui: &MainWindow, index: i32) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    if let Some((value, label)) = MAIL_FILTERS.get(index.max(0) as usize) {
+        ui.set_edit_mail_filter((*value).into());
+        ui.set_edit_mail_filter_label((*label).into());
+    }
+}
+
+/* --------------------------------------------------------------------------
+Security: the second factor
+
+Every handler here follows the same shape as the TS form it ports -- stage,
+prove, then write -- with one difference: the write lands in
+`AppState::editor_security` instead of on the record, and only Save carries
+the whole thing. Hashing stays in `colax-core`, so the web build and this one
+produce byte-identical digests for the same input.
+-------------------------------------------------------------------------- */
+
+/// Paste a setup key or an `otpauth://` link and *stage* it.
+///
+/// Staged, not saved: see the note on `stagedSeed` in SecurityForm.tsx L47-58.
+/// The refusal lands inline beside the field rather than in a toast, because
+/// the mistake and its explanation then sit on the same line.
+fn editor_sec_totp_attach(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let input = ui.get_edit_sec_totp_seed().to_string();
+    let Some(seed) = extract_totp_secret(&input) else {
+        ui.set_edit_sec_totp_note("That does not look like an authenticator key".into());
+        return;
+    };
+    ui.set_edit_sec_totp_seed("".into());
+    ui.set_edit_sec_totp_code("".into());
+    ui.set_edit_sec_totp_note("".into());
+    state.borrow_mut().editor_staged_seed = Some(seed);
+    push_security(ui, state);
+    notice(ui, "Scan the code, then confirm one to keep the key");
+}
+
+/// Mint a fresh key and stage it -- the same staging, from a seed the app
+/// generated rather than one the user pasted.
+fn editor_sec_totp_generate(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let seed = generate_totp_seed();
+    ui.set_edit_sec_totp_code("".into());
+    ui.set_edit_sec_totp_note("".into());
+    state.borrow_mut().editor_staged_seed = Some(seed);
+    push_security(ui, state);
+    notice(ui, "Scan the code, then confirm one to keep the key");
+}
+
+/// Check the typed code against whichever key is live: the staged one while
+/// confirming, otherwise the saved one -- `activeSeed` in TS.
+///
+/// The first successful check of a staged key is the line that writes it, so
+/// until it passes, nothing has happened.
+fn editor_sec_totp_check(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let code = ui.get_edit_sec_totp_code().to_string();
+    let (staged, saved) = {
+        let guard = state.borrow();
+        (
+            guard.editor_staged_seed.clone(),
+            guard
+                .editor_security
+                .totp
+                .as_ref()
+                .map(|totp| totp.seed.clone()),
+        )
+    };
+    let Some(seed) = staged.clone().or(saved) else {
+        return;
+    };
+    // The screen cannot count characters (Slint has no `length` on a string),
+    // so the button is enabled on any text and the count is checked here.
+    if code.chars().filter(char::is_ascii_digit).count() != 6 {
+        ui.set_edit_sec_totp_note("A code is six digits.".into());
+        return;
+    }
+    if !verify_totp(&seed, &code) {
+        ui.set_edit_sec_totp_note("That code did not match. Check the clock on this device.".into());
+        return;
+    }
+    ui.set_edit_sec_totp_note("".into());
+    if staged.is_some() {
+        // First successful confirmation is what saves the key. Until this
+        // block runs, nothing about the login has changed.
+        {
+            let mut guard = state.borrow_mut();
+            guard.editor_security.totp = Some(TotpSecret { seed });
+            guard.editor_staged_seed = None;
+        }
+        push_security(ui, state);
+        notice(ui, "Authenticator key saved");
+    } else {
+        notice(ui, "Authenticator confirmed");
+    }
+}
+
+/// Drop a staged key without touching the record -- which is the whole point
+/// of staging: walking away leaves no trace.
+fn editor_sec_totp_discard(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    state.borrow_mut().editor_staged_seed = None;
+    ui.set_edit_sec_totp_code("".into());
+    ui.set_edit_sec_totp_note("".into());
+    push_security(ui, state);
+}
+
+/// Remove the saved key from the draft.
+fn editor_sec_totp_remove(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    {
+        let mut guard = state.borrow_mut();
+        guard.editor_security.totp = None;
+        guard.editor_staged_seed = None;
+    }
+    ui.set_edit_sec_totp_code("".into());
+    ui.set_edit_sec_totp_note("".into());
+    push_security(ui, state);
+    notice(ui, "Authenticator removed");
+}
+
+/// Set the extra passcode. The three refusals are checked in the TS order so
+/// the first message the user sees is the one that describes *their* mistake,
+/// not the last rule the string happened to break.
+fn editor_sec_passcode_save(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let new = ui.get_edit_sec_passcode_new().to_string();
+    let confirm = ui.get_edit_sec_passcode_confirm().to_string();
+    if passcode_too_weak(&new, false) {
+        ui.set_edit_sec_passcode_error(
+            "Use at least 8 characters, and mix letters, numbers or symbols. Not \"password\"."
+                .into(),
+        );
+        return;
+    }
+    if new != confirm {
+        ui.set_edit_sec_passcode_error("Those two do not match.".into());
+        return;
+    }
+    // Refuse to make the gate the credential itself: a 10-character passcode
+    // beside an authenticator would be the weakest factor guarding the login.
+    let totp_set = state.borrow().editor_security.totp.is_some();
+    if totp_set && new.chars().count() < 12 {
+        ui.set_edit_sec_passcode_error(
+            "With an authenticator already set, use at least 12 characters.".into(),
+        );
+        return;
+    }
+    let (hash, salt) = hash_passcode(&new);
+    state.borrow_mut().editor_security.passcode = Some(SecurityPasscode { hash, salt });
+    ui.set_edit_sec_passcode_new("".into());
+    ui.set_edit_sec_passcode_confirm("".into());
+    ui.set_edit_sec_passcode_error("".into());
+    ui.set_edit_sec_passcode_input("".into());
+    push_security(ui, state);
+    notice(ui, "Passcode saved");
+}
+
+/// Prove the typed passcode against the stored hash.
+fn editor_sec_passcode_check(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let input = ui.get_edit_sec_passcode_input().to_string();
+    let stored = {
+        let guard = state.borrow();
+        guard
+            .editor_security
+            .passcode
+            .as_ref()
+            .map(|passcode| (passcode.hash.clone(), passcode.salt.clone()))
+    };
+    let Some((hash, salt)) = stored else {
+        return;
+    };
+    if verify_passcode(&input, &hash, &salt) {
+        ui.set_edit_sec_passcode_input("".into());
+        ui.set_edit_sec_passcode_error("".into());
+        notice(ui, "Passcode confirmed");
+    } else {
+        ui.set_edit_sec_passcode_error("That does not match the stored passcode.".into());
+    }
+}
+
+/// Drop the extra passcode from the draft.
+fn editor_sec_passcode_remove(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    state.borrow_mut().editor_security.passcode = None;
+    ui.set_edit_sec_passcode_input("".into());
+    ui.set_edit_sec_passcode_error("".into());
+    push_security(ui, state);
+    notice(ui, "Passcode removed");
+}
+
+/// Add a recovery question. Only the prompt is shown to the screen; the hash
+/// and salt are built here and stay here.
+fn editor_sec_question_add(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let prompt = ui.get_edit_sec_new_prompt().to_string();
+    let answer = ui.get_edit_sec_new_answer().to_string();
+    if prompt.trim().is_empty() {
+        return;
+    }
+    if answer_too_weak(&answer) {
+        ui.set_edit_sec_answer_error(
+            "Use something a stranger could not guess, not a single word or \"yes\".".into(),
+        );
+        return;
+    }
+    let (hash, salt) = hash_answer(&answer);
+    // `sq_` plus eight characters, as `sq_${...slice(2, 10)}` gives in TS --
+    // opaque either way, and this id only ever has to be unique in a record.
+    let id = format!("sq_{}", &colax_core::new_item_id().replace('-', "")[..8]);
+    state
+        .borrow_mut()
+        .editor_security
+        .questions
+        .push(SecurityQuestion {
+            id,
+            prompt: prompt.trim().to_string(),
+            hash,
+            salt,
+        });
+    ui.set_edit_sec_new_answer("".into());
+    ui.set_edit_sec_answer_error("".into());
+    push_security(ui, state);
+    notice(ui, "Recovery question added");
+}
+
+/// Two-stage, exactly as `checkQuestion` in TS: the first press for an id
+/// opens its answer box, the second verifies what is typed in it.
+fn editor_sec_question_check(ui: &MainWindow, state: &Shared, id: &str) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    if ui.get_edit_sec_checking_id().to_string() != id {
+        ui.set_edit_sec_checking_id(id.into());
+        ui.set_edit_sec_check_input("".into());
+        ui.set_edit_sec_answer_error("".into());
+        return;
+    }
+    let answer = ui.get_edit_sec_check_input().to_string();
+    let stored = {
+        let guard = state.borrow();
+        guard
+            .editor_security
+            .questions
+            .iter()
+            .find(|question| question.id == id)
+            .map(|question| (question.hash.clone(), question.salt.clone()))
+    };
+    let Some((hash, salt)) = stored else {
+        // Removed while its box was open: the row is gone, so the box is too.
+        ui.set_edit_sec_checking_id("".into());
+        ui.set_edit_sec_check_input("".into());
+        return;
+    };
+    if verify_answer(&answer, &hash, &salt) {
+        ui.set_edit_sec_checking_id("".into());
+        ui.set_edit_sec_check_input("".into());
+        ui.set_edit_sec_answer_error("".into());
+        notice(ui, "Answer confirmed");
+    } else {
+        ui.set_edit_sec_answer_error("That does not match the stored answer.".into());
+    }
+}
+
+/// Remove a question, and close its box if that is the one that was open.
+fn editor_sec_question_remove(ui: &MainWindow, state: &Shared, id: &str) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    if ui.get_edit_sec_checking_id().to_string() == id {
+        ui.set_edit_sec_checking_id("".into());
+        ui.set_edit_sec_check_input("".into());
+    }
+    state
+        .borrow_mut()
+        .editor_security
+        .questions
+        .retain(|question| question.id != id);
+    push_security(ui, state);
+}
+
+/// Step the prompt the add row offers. The list is fixed, so it wraps: a
+/// stepper that stopped at either end would make the last prompt unreachable.
+fn editor_sec_prompt_step(ui: &MainWindow, state: &Shared, delta: i32) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let len = QUESTION_PROMPTS.len() as i32;
+    let index = {
+        let mut guard = state.borrow_mut();
+        guard.editor_prompt_index =
+            (guard.editor_prompt_index as i32 + delta).rem_euclid(len) as usize;
+        guard.editor_prompt_index
+    };
+    ui.set_edit_sec_new_prompt(QUESTION_PROMPTS[index].into());
+}
+
 fn editor_use_generated(ui: &MainWindow) {
     if ui.get_screen() != Screen::Editor {
         return;
@@ -1389,6 +2249,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pending_password: String::new(),
                 pending_backup: None,
                 last_deleted: None,
+                editor_security: LoginSecurity::default(),
+                editor_staged_seed: None,
+                editor_prompt_index: 0,
             }));
             // Debug scratch profiles open straight into the vault with demo
             // content; everything else starts on the real startup screen.
@@ -1802,6 +2665,134 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_editor_reminder_picked(move |index| {
                 if let Some(ui) = weak.upgrade() {
                     editor_reminder_picked(&ui, index);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_hue_picked(move |hue| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_hue_picked(&ui, hue);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_title_edited(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_title_edited(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_bg_blur_changed(move |value| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_bg_blur_changed(&ui, value);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_mail_filter_picked(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_mail_filter_picked(&ui, index);
+                }
+            });
+
+            // ---- Security -------------------------------------------------
+            // Each of these reads or writes the draft in `AppState`, so each
+            // takes a handle on it as well as on the window.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_totp_attach(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_totp_attach(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_totp_generate(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_totp_generate(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_totp_check(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_totp_check(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_totp_discard(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_totp_discard(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_totp_remove(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_totp_remove(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_passcode_save(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_passcode_save(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_passcode_check(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_passcode_check(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_passcode_remove(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_passcode_remove(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_question_add(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_question_add(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_question_check(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_question_check(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_question_remove(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_question_remove(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_sec_prompt_step(move |delta| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_sec_prompt_step(&ui, &st, delta);
                 }
             });
 

@@ -1,14 +1,16 @@
 // The item editor: one login, edited in place.
 //
 // Port of `src/ui/ItemEditor.tsx` (1,096 lines). The TS version has nine
-// sections down its rail; this ships the five that need no extra subsystem
-// -- Identity, Credentials, Reminders, Notes, Flags. Security, Organise,
-// Appearance and Inbox arrive with their own phases (7 and 9) and are left
-// off the rail until then: a tab that does nothing yet is worse than a tab
-// that is not there yet, and adding one later is a one-line change.
+// sections down its rail; this ships eight -- Identity, Credentials,
+// Security, Reminders, Appearance, Notes, Inbox, Flags. Organise arrives
+// with its own subsystem (the tag catalogue) and is still left off the rail:
+// a tab that does nothing yet is worse than a tab that is not there yet,
+// and adding one later is a one-line change. The *indices* below already
+// reserve every slot in the TS order, so landing it does not renumber
+// anything.
 //
 // The draft lives here, not in Rust. Every field is `in-out`, so the user
-// can visit all five tabs without anything being written, and `save` hands
+// can visit all seven tabs without anything being written, and `save` hands
 // the whole object over once (`onSave(draft)` in the TS app).
 //
 // Everything with a *choice* in it is an index, not a label: `Segmented`
@@ -21,6 +23,7 @@ import {
     Btn, Field, Alert, Toggle, Checkbox, Chip, Slider, Segmented,
     Label, Note, Area, StrengthMeter
 } from "../widgets.slint";
+import { HueSwatch, QuestionRow, QrCell } from "../models.slint";
 
 export component Editor inherits VerticalLayout {
     // The login being edited, or "" for a new one. Decides the heading and
@@ -84,6 +87,103 @@ export component Editor inherits VerticalLayout {
     in property <bool> busy: false;
     in property <string> error-text;
     in property <string> notice-text;
+
+    // ---- Security -----------------------------------------------------
+    // Port of `SecurityForm.tsx` (623 lines). The state lives in Rust: every
+    // action here either asks Rust to compute something (a hash, a QR
+    // matrix, a code check) or reports that the user pushed a button, and
+    // Rust replies by pushing these properties back. Nothing is written to
+    // the record until Save, exactly as the TS form only calls `onChange`
+    // once a factor is proven to work.
+    //
+    // Which of the four factors is on show. Pure view state -- the TS
+    // version uses four `useState` flags for it -- so it stays here and
+    // resets when the editor element is recreated, instead of travelling to
+    // Rust and back for no one to read it.
+    property <string> sec-tab: "authenticator";
+    // "none" / "partial" / "full", straight from `security_level()`.
+    in property <string> sec-level: "none";
+    // The recovery tile's note ("Not set" / "2 questions"). Composed in
+    // Rust beside the list itself: Slint cannot put a number into a string.
+    in property <string> sec-questions-note: "Not set";
+
+    // --- Authenticator (TOTP) ---
+    in property <bool> sec-totp: false;
+    // The `otpauth://` URI, pushed from Rust with the login's name in it.
+    in property <string> sec-otpauth;
+    // The QR symbol as one entry per *dark* module, in module units. Rust
+    // walks `qr_matrix()` and ships only the dark half (a symbol is half
+    // light), and keeps row and column as two fields rather than one index:
+    // Slint has neither `%` nor a trustworthy integer divide to recover them.
+    in property <int> qr-size: 0;
+    in property <[QrCell]> qr-cells;
+    // A key the user has generated or pasted but has *not* confirmed. Saving
+    // is what makes it real -- see the note on `stagedSeed` in
+    // SecurityForm.tsx L47-58.
+    in property <bool> sec-totp-staged: false;
+    // The inline error under the code box: the TS `codeError`, and the
+    // refusal when a pasted string is not a key. Successes are the notice,
+    // as in TS -- an error slot is the wrong place to congratulate.
+    in property <string> sec-totp-note;
+    in-out property <string> sec-totp-seed;
+    // The code to check. Rust reads it to verify and clears it after; Slint
+    // only shows it. No digit filter here: `verify_totp` skips non-digits
+    // itself, so "123 456" pasted from the phone app still works.
+    in-out property <string> sec-totp-code;
+
+    // --- Passcode ---
+    in property <bool> sec-passcode: false;
+    in-out property <string> sec-passcode-new;
+    in-out property <string> sec-passcode-confirm;
+    // The typed passcode being checked against the stored hash.
+    in-out property <string> sec-passcode-input;
+    in property <string> sec-passcode-error;
+
+    // --- Recovery questions ---
+    in property <[QuestionRow]> sec-questions;
+    in property <string> sec-answer-error;
+    // The question whose answer is being checked right now ("" = none). Two
+    // rounds like the TS form: the row's button opens the box, the second
+    // press verifies what is typed in it.
+    in-out property <string> sec-checking-id;
+    in-out property <string> sec-check-input;
+    // The prompt the add row offers. Rust owns the list of eight -- they are
+    // copy, and copy belongs in one place -- and steps it.
+    in property <string> sec-new-prompt;
+    in-out property <string> sec-new-answer;
+
+    // ---- Appearance ---------------------------------------------------
+    // The draft's accent. -1 is "auto": not a hue but the choice to derive
+    // one from the title, exactly `accentHue: null` in the record.
+    in-out property <float> accent-hue: -1;
+    // What the hue slider shows — the chosen hue, or the auto one when the
+    // draft is on auto. The slider cannot sit at -1, and dragging it commits
+    // an explicit hue, which is what the TS range input does.
+    in-out property <float> hue-slider: 212;
+    // Numbers cannot become text in Slint at all (no `str`, no interpolation),
+    // so the readouts beside the sliders are composed in Rust beside the
+    // numbers they describe.
+    in property <string> hue-readout;
+    in property <string> blur-readout;
+    // The preview's gradient and initial: resolved in Rust, because Slint
+    // has no `hsl()` — same reason Theme's stops are resolved there too.
+    in property <color> preview-from;
+    in property <color> preview-to;
+    in property <string> preview-initial: "?";
+    in property <[HueSwatch]> hue-swatches;
+    in-out property <string> bg-image;
+    in-out property <float> bg-blur: 0;
+    in-out property <string> avatar-image;
+
+    // ---- Inbox --------------------------------------------------------
+    in-out property <bool> show-mail: false;
+    // The value and, beside it, the label `Segmented` shows: Rust owns both
+    // halves of the mapping, so the screen only counts in indices.
+    in property <string> mail-filter: "auto";
+    in property <string> mail-filter-label: "Auto";
+    property <int> mail-filter-index: root.mail-filter-label == "Matched only" ? 1
+        : root.mail-filter-label == "Recent only" ? 2
+        : 0;
     // Delete asks first when `confirmDeletes` is on. `can-delete` is false
     // for a login that has never been saved, so a half-typed new login
     // cannot offer to delete itself.
@@ -111,31 +211,88 @@ export component Editor inherits VerticalLayout {
     callback use-generated();
     callback copy-generated();
     callback reminder-picked(index: int);
+    // Appearance. The image fields need no callback: they are `in-out`, the
+    // preview shows the gradient rather than the photo (there is no image
+    // decode on this screen yet), and nothing else derives from them.
+    callback hue-picked(hue: float);
+    // The name drives the auto hue, so the preview follows every keystroke.
+    callback title-edited();
+    callback bg-blur-changed(value: float);
+    callback mail-filter-picked(index: int);
+    // Security. The heavy lifting is Rust's: hashing a passcode or an answer
+    // is PBKDF2, which must not be written twice, and checking a TOTP code is
+    // a whole RFC. These callbacks say what the user did; the results come
+    // back as the properties above.
+    // Paste a seed (bare or otpauth://) and stage it.
+    callback sec-totp-attach();
+    // Mint a fresh seed and stage it -- staged, never saved, until a code
+    // confirms it. See the note on `stagedSeed` in SecurityForm.tsx L47-58.
+    callback sec-totp-generate();
+    // Check the typed code against the staged-or-saved seed. `value` is not
+    // passed: it is already `<=>`-bound, and a copy could disagree with it.
+    callback sec-totp-check();
+    callback sec-totp-discard();
+    callback sec-totp-remove();
+    callback sec-passcode-save();
+    callback sec-passcode-check();
+    callback sec-passcode-remove();
+    callback sec-question-add();
+    callback sec-question-remove(id: string);
+    // Two-stage like the TS form: first press opens the answer box, second
+    // verifies what is typed in it.
+    callback sec-question-check(id: string);
+    // Walk the fixed list of eight prompts. There is no `Select` in this
+    // app and eight sentences will not fit a `Segmented`, so the add row
+    // shows one prompt and steps through them with the two arrows.
+    callback sec-prompt-step(delta: int);
 
     // The section rail. The hint repeats here so the panel header and the
-    // rail cannot spell the same sentence two different ways.
-    property <[string]> section-ids: ["identity", "credentials", "reminders", "notes", "flags"];
-    property <[string]> section-labels: ["Identity", "Credentials", "Reminders", "Notes", "Flags"];
+    // rail cannot spell the same sentence two different ways. Organise is
+    // still missing from the list -- see the note at the top -- which is why
+    // the rail highlights by *id* below rather than by position: the two
+    // lists are deliberately not parallel while one slot is unimplemented.
+    property <[string]> section-ids: ["identity", "credentials", "security", "reminders", "appearance", "notes", "inbox", "flags"];
+    property <[string]> section-labels: ["Identity", "Credentials", "Security", "Reminders", "Appearance", "Notes", "Inbox", "Flags"];
 
+    // Keyed by *id*, not by position in the two lists above: the TS order is
+    // identity, credentials, security, reminders, organise, appearance,
+    // notes, inbox, flags, and the section not built yet (organise) still
+    // holds its slot.
     property <int> section-index: root.section == "credentials" ? 1
-        : root.section == "reminders" ? 2
-        : root.section == "notes" ? 3
-        : root.section == "flags" ? 4
+        : root.section == "security" ? 2
+        : root.section == "reminders" ? 3
+        : root.section == "organise" ? 4
+        : root.section == "appearance" ? 5
+        : root.section == "notes" ? 6
+        : root.section == "inbox" ? 7
+        : root.section == "flags" ? 8
         : 0;
 
     property <string> active-title: root.section-index == 1 ? "Credentials"
-        : root.section-index == 2 ? "Reminders"
-        : root.section-index == 3 ? "Notes"
-        : root.section-index == 4 ? "Flags"
+        : root.section-index == 2 ? "Security"
+        : root.section-index == 3 ? "Reminders"
+        : root.section-index == 4 ? "Organise"
+        : root.section-index == 5 ? "Appearance"
+        : root.section-index == 6 ? "Notes"
+        : root.section-index == 7 ? "Inbox"
+        : root.section-index == 8 ? "Flags"
         : "Identity";
     property <string> active-hint: root.section-index == 1
             ? "The secrets. Nothing here leaves this device."
         : root.section-index == 2
-            ? "When this login asks for a fresh password."
+            ? "Optional second factor for this login alone."
         : root.section-index == 3
-            ? "Anything else worth remembering."
+            ? "When this login asks for a fresh password."
         : root.section-index == 4
-            ? "Favourites and warnings."
+            ? "Tags and the dates behind the health warnings."
+        : root.section-index == 5
+            ? "Icon, colours and images."
+        : root.section-index == 6
+            ? "Anything else worth remembering."
+        : root.section-index == 7
+            ? "Connect a mailbox and read recent mail here."
+        : root.section-index == 8
+            ? "Sorting, favourites and warnings."
         : "What this login is called and where it lives.";
 
     // `Segmented` counts in indices; these turn Rust's strings back into one.
@@ -225,7 +382,7 @@ export component Editor inherits VerticalLayout {
                     height: 34px;
                     vertical-stretch: 0;
                     border-radius: 9px;
-                    background: i == root.section-index
+                    background: root.section-ids[i] == root.section
                         ? (row-touch.pressed ? #ffffff1f : #ffffff12)
                         : #00000000;
 
@@ -238,9 +395,9 @@ export component Editor inherits VerticalLayout {
                         width: parent.width - 24px;
                         height: parent.height;
                         text: label;
-                        color: i == root.section-index ? Theme.text : Theme.muted;
+                        color: root.section-ids[i] == root.section ? Theme.text : Theme.muted;
                         font-size: 13.5px;
-                        font-weight: i == root.section-index ? 600 : 500;
+                        font-weight: root.section-ids[i] == root.section ? 600 : 500;
                         overflow: elide;
                         vertical-alignment: center;
                     }
@@ -315,6 +472,9 @@ export component Editor inherits VerticalLayout {
                             value <=> root.title;
                             placeholder: "GitHub";
                             autofocus: root.section-index == 0;
+                            // The auto hue is derived from the name, so the
+                            // Appearance preview follows it as it is typed.
+                            edited => { root.title-edited(); }
                         }
                     }
 
@@ -549,8 +709,577 @@ export component Editor inherits VerticalLayout {
                     }
                 }
 
-                // ---- Reminders -----------------------------------------
+                // ---- Security ------------------------------------------
+                // Port of `SecurityForm.tsx` (L230-580). Four factors, one
+                // tile each: the tile is both the status and the tab, so the
+                // common question ("is this login protected, and by what")
+                // is answered by the row itself rather than by reading past a
+                // QR code.
                 if (root.section-index == 2) : VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 0;
+
+                    // What is actually configured. `secured-note` is pushed
+                    // from Rust beside `security_level()`, so the sentence and
+                    // the factor count cannot drift apart.
+                    Rectangle {
+                        height: sec-state.preferred-height + 20px;
+                        vertical-stretch: 0;
+                        border-radius: 10px;
+                        background: #ffffff0a;
+
+                        sec-state := Text {
+                            x: 14px;
+                            y: 10px;
+                            width: parent.width - 28px;
+                            text: root.sec-level == "full"
+                                ? "Protected. A code or a passcode stands between this login and anyone who opens it."
+                                : root.sec-level == "partial"
+                                    ? "Partly protected. One factor is set; a second one would mean a stolen password is not enough."
+                                    : "No second factor. Everything below is optional -- with nothing set, this login works exactly as before.";
+                            color: Theme.muted;
+                            font-size: 12.5px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // The four tiles. One row, each a third of the panel.
+                    HorizontalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 0;
+
+                        for tab in ["authenticator", "passcode", "recovery", "passkey"] : Rectangle {
+                            vertical-stretch: 0;
+                            height: 62px;
+                            border-radius: 10px;
+                            background: root.sec-tab == tab
+                                ? (tile-touch.pressed ? #ffffff1f : #ffffff14)
+                                : (tile-touch.has-hover ? #ffffff10 : #ffffff08);
+                            border-width: 1px;
+                            border-color: root.sec-tab == tab ? Theme.accent : Theme.border;
+
+                            tile-touch := TouchArea {
+                                // Passkey is shown as a fourth tile because the
+                                // TS form shows it, and is not clickable for
+                                // the same reason it is not wired there: see
+                                // the note under the disabled panel.
+                                enabled: tab != "passkey";
+                                clicked => { root.sec-tab = tab; }
+                            }
+
+                            VerticalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 2px;
+
+                                Text {
+                                    text: tab == "authenticator" ? "Authenticator"
+                                        : tab == "passcode" ? "Passcode"
+                                        : tab == "recovery" ? "Recovery" : "Passkey";
+                                    color: Theme.text;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                }
+                                // Each tile says its own status. The two
+                                // bools are the very ones Rust counted for
+                                // the level above, so the note and the
+                                // sentence cannot disagree -- and the count
+                                // is pushed from Rust, because Slint cannot
+                                // put a number into a string.
+                                Text {
+                                    text: tab == "authenticator"
+                                        ? (root.sec-totp ? "Key attached - a code is needed" : "Not set")
+                                        : tab == "passcode"
+                                            ? (root.sec-passcode ? "Set - it gates this login" : "Not set")
+                                            : tab == "recovery"
+                                                ? root.sec-questions-note
+                                                : "Unavailable here";
+                                    color: Theme.faint;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- Authenticator --------------------------------
+                    // Two states, exactly as the TS form branches on
+                    // `activeSeed`: with a key (staged or saved) the symbol
+                    // and the check; without one, the row that makes a key.
+                    // The symbol and the controls sit side by side rather
+                    // than stacked, because the panel clips: there is no
+                    // Flickable in this app, and a QR, its caption, the code
+                    // box and the errors stacked vertically do not fit the
+                    // ~360px the section has left.
+                    if (root.sec-tab == "authenticator") : VerticalLayout {
+                        spacing: 12px;
+                        vertical-stretch: 0;
+
+                        if (root.sec-totp-staged || root.sec-totp) : HorizontalLayout {
+                            spacing: 16px;
+                            vertical-stretch: 0;
+
+                            // The symbol. Painted as one dark rectangle per
+                            // dark module over a light plate: no image
+                            // decoding, no PNG round-trip, and it stays crisp
+                            // at whatever size the window is dragged to. The
+                            // 10px of white around the 200px symbol is the
+                            // quiet zone a phone needs to lock on.
+                            VerticalLayout {
+                                width: 220px;
+                                spacing: 6px;
+                                vertical-stretch: 0;
+
+                                Rectangle {
+                                    height: 220px;
+                                    vertical-stretch: 0;
+                                    border-radius: 12px;
+                                    background: #ffffff;
+                                    clip: true;
+
+                                    if (root.qr-size > 0) : Rectangle {
+                                        x: 10px;
+                                        y: 10px;
+                                        width: 200px;
+                                        height: 200px;
+
+                                        for cell in root.qr-cells : Rectangle {
+                                            x: cell.col * (200px / root.qr-size);
+                                            y: cell.row * (200px / root.qr-size);
+                                            width: 200px / root.qr-size;
+                                            height: 200px / root.qr-size;
+                                            background: #101319;
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "Scan this with your authenticator app, then confirm a code below.";
+                                    color: Theme.faint;
+                                    font-size: 11.5px;
+                                    wrap: word-wrap;
+                                    vertical-stretch: 0;
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 10px;
+                                vertical-stretch: 0;
+
+                                if (root.sec-totp-staged) : Text {
+                                    text: "Not saved yet. Confirm a code below and the key is kept; leave without confirming and nothing changes.";
+                                    color: Theme.warn;
+                                    font-size: 12.5px;
+                                    wrap: word-wrap;
+                                    vertical-stretch: 0;
+                                }
+
+                                // The QRCode library refuses a URL that will
+                                // not fit, and TS treats that as "no QR" and
+                                // falls back to the setup key. Show it rather
+                                // than hide it: the string still works.
+                                if (root.qr-size == 0 && root.sec-otpauth != "") : Note {
+                                    text: "This key is too long for a code the phone can scan. The setup key still works: " + root.sec-otpauth;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    vertical-stretch: 0;
+
+                                    Field {
+                                        value <=> root.sec-totp-code;
+                                        placeholder: "Enter a code to check";
+                                        autofocus: false;
+                                    }
+                                    Btn {
+                                        label: "Check";
+                                        kind: 1;
+                                        h: 44px;
+                                        width: 84px;
+                                        enabled: !root.busy && root.sec-totp-code != "";
+                                        clicked => { root.sec-totp-check(); }
+                                    }
+                                }
+
+                                if (root.sec-totp-note != "") : Text {
+                                    text: root.sec-totp-note;
+                                    color: Theme.danger;
+                                    font-size: 12.5px;
+                                    wrap: word-wrap;
+                                    vertical-stretch: 0;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    vertical-stretch: 0;
+
+                                    if (root.sec-totp-staged) : Btn {
+                                        label: "Discard";
+                                        kind: 2;
+                                        h: 38px;
+                                        width: 90px;
+                                        enabled: !root.busy;
+                                        clicked => { root.sec-totp-discard(); }
+                                    }
+
+                                    if (root.sec-totp) : Btn {
+                                        label: "Remove";
+                                        kind: 2;
+                                        h: 38px;
+                                        width: 90px;
+                                        enabled: !root.busy;
+                                        clicked => { root.sec-totp-remove(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!root.sec-totp-staged && !root.sec-totp) : VerticalLayout {
+                            spacing: 12px;
+                            vertical-stretch: 0;
+
+                            Btn {
+                                label: "Generate a key";
+                                kind: 0;
+                                h: 44px;
+                                width: 170px;
+                                enabled: !root.busy;
+                                clicked => { root.sec-totp-generate(); }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                vertical-stretch: 0;
+
+                                Field {
+                                    value <=> root.sec-totp-seed;
+                                    placeholder: "Or paste the setup key / otpauth:// link";
+                                    autofocus: false;
+                                }
+                                Btn {
+                                    label: "Attach";
+                                    kind: 1;
+                                    h: 44px;
+                                    width: 84px;
+                                    enabled: !root.busy && root.sec-totp-seed != "";
+                                    clicked => { root.sec-totp-attach(); }
+                                }
+                            }
+
+                            if (root.sec-totp-note != "") : Text {
+                                text: root.sec-totp-note;
+                                color: Theme.danger;
+                                font-size: 12.5px;
+                                wrap: word-wrap;
+                                vertical-stretch: 0;
+                            }
+
+                            Note {
+                                text: "Generating one here and scanning the QR code is the easiest path.";
+                            }
+                        }
+                    }
+
+                    // ---- Passcode -------------------------------------
+                    if (root.sec-tab == "passcode") : VerticalLayout {
+                        spacing: 12px;
+                        vertical-stretch: 0;
+
+                        // The TS `sec__head`: the factor's name and its own
+                        // Remove. The tile above already says whether one is
+                        // set, so this row only acts on it.
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            Text {
+                                text: "Passcode";
+                                color: Theme.text;
+                                font-size: 14px;
+                                font-weight: 600;
+                            }
+
+                            Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                            if (root.sec-passcode) : Btn {
+                                label: "Remove";
+                                kind: 2;
+                                h: 32px;
+                                width: 84px;
+                                enabled: !root.busy;
+                                clicked => { root.sec-passcode-remove(); }
+                            }
+                        }
+
+                        Note {
+                            text: "A password of your own that gates this login. Stored hashed, so it is never written to disk in the clear. It must not be the same as the login's own password.";
+                        }
+
+                        // Check the one that is set, or set one: the two
+                        // halves of the TS form's single conditional.
+                        if (root.sec-passcode) : HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            Field {
+                                value <=> root.sec-passcode-input;
+                                placeholder: "Enter it to check";
+                                password: true;
+                                autofocus: false;
+                            }
+                            Btn {
+                                label: "Check";
+                                kind: 1;
+                                h: 44px;
+                                width: 84px;
+                                enabled: !root.busy && root.sec-passcode-input != "";
+                                clicked => { root.sec-passcode-check(); }
+                            }
+                        }
+
+                        if (!root.sec-passcode) : HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            Field {
+                                value <=> root.sec-passcode-new;
+                                placeholder: "New passcode";
+                                password: true;
+                                autofocus: false;
+                            }
+                            Field {
+                                value <=> root.sec-passcode-confirm;
+                                placeholder: "Repeat it";
+                                password: true;
+                                autofocus: false;
+                                accepted => { root.sec-passcode-save(); }
+                            }
+                            Btn {
+                                label: "Set";
+                                kind: 0;
+                                h: 44px;
+                                width: 76px;
+                                enabled: !root.busy
+                                    && root.sec-passcode-new != ""
+                                    && root.sec-passcode-confirm != "";
+                                clicked => { root.sec-passcode-save(); }
+                            }
+                        }
+
+                        if (root.sec-passcode-error != "") : Text {
+                            text: root.sec-passcode-error;
+                            color: Theme.danger;
+                            font-size: 12.5px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // ---- Recovery questions ---------------------------
+                    if (root.sec-tab == "recovery") : VerticalLayout {
+                        spacing: 12px;
+                        vertical-stretch: 0;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            Text {
+                                text: "Recovery questions";
+                                color: Theme.text;
+                                font-size: 14px;
+                                font-weight: 600;
+                            }
+
+                            Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                            Text {
+                                text: root.sec-questions-note;
+                                color: Theme.faint;
+                                font-size: 12px;
+                            }
+                        }
+
+                        Note {
+                            text: "Answers are hashed with a salt and never stored. Pick something you could reconstruct and nobody else could guess.";
+                        }
+
+                        VerticalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            for q in root.sec-questions : VerticalLayout {
+                                spacing: 6px;
+                                vertical-stretch: 0;
+
+                                Rectangle {
+                                    height: 46px;
+                                    vertical-stretch: 0;
+                                    border-radius: 10px;
+                                    background: #ffffff08;
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 6px;
+                                        spacing: 6px;
+
+                                        Text {
+                                            text: q.prompt;
+                                            color: Theme.text;
+                                            font-size: 13px;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: "answer hashed";
+                                            color: Theme.faint;
+                                            font-size: 11.5px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        // Two rounds, as in `checkQuestion`:
+                                        // the first press opens the box below,
+                                        // the second verifies what is in it.
+                                        Btn {
+                                            label: root.sec-checking-id == q.id ? "Verify" : "Check answer";
+                                            kind: 1;
+                                            h: 32px;
+                                            width: 116px;
+                                            enabled: !root.busy;
+                                            clicked => { root.sec-question-check(q.id); }
+                                        }
+
+                                        Btn {
+                                            label: "Remove";
+                                            kind: 2;
+                                            h: 32px;
+                                            width: 76px;
+                                            enabled: !root.busy;
+                                            clicked => { root.sec-question-remove(q.id); }
+                                        }
+                                    }
+                                }
+
+                                if (root.sec-checking-id == q.id) : HorizontalLayout {
+                                    spacing: 8px;
+                                    vertical-stretch: 0;
+
+                                    Field {
+                                        value <=> root.sec-check-input;
+                                        placeholder: "Your answer";
+                                        autofocus: true;
+                                        accepted => { root.sec-question-check(q.id); }
+                                    }
+                                    Btn {
+                                        label: "Cancel";
+                                        kind: 2;
+                                        h: 44px;
+                                        width: 76px;
+                                        enabled: !root.busy;
+                                        clicked => {
+                                            root.sec-checking-id = "";
+                                            root.sec-check-input = "";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Adding one. The prompts are a fixed list of eight
+                        // held in Rust (they are copy), and there is no
+                        // `Select` in this app -- eight sentences will not fit
+                        // a `Segmented` -- so the row shows one and steps.
+                        Label { text: "Add a question"; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            Btn {
+                                label: "Prev";
+                                kind: 1;
+                                h: 44px;
+                                width: 64px;
+                                enabled: !root.busy;
+                                clicked => { root.sec-prompt-step(-1); }
+                            }
+
+                            Rectangle {
+                                vertical-stretch: 0;
+                                height: 44px;
+                                border-radius: 10px;
+                                background: #ffffff0a;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                clip: true;
+
+                                Text {
+                                    x: 12px;
+                                    width: parent.width - 24px;
+                                    height: parent.height;
+                                    text: root.sec-new-prompt;
+                                    color: Theme.text;
+                                    font-size: 13px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Btn {
+                                label: "Next";
+                                kind: 1;
+                                h: 44px;
+                                width: 64px;
+                                enabled: !root.busy;
+                                clicked => { root.sec-prompt-step(1); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            Field {
+                                value <=> root.sec-new-answer;
+                                placeholder: "Your answer";
+                                autofocus: false;
+                                accepted => { root.sec-question-add(); }
+                            }
+                            Btn {
+                                label: "Add";
+                                kind: 0;
+                                h: 44px;
+                                width: 76px;
+                                enabled: !root.busy && root.sec-new-answer != "";
+                                clicked => { root.sec-question-add(); }
+                            }
+                        }
+
+                        if (root.sec-answer-error != "") : Text {
+                            text: root.sec-answer-error;
+                            color: Theme.danger;
+                            font-size: 12.5px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // ---- Passkey --------------------------------------
+                    // Shown, and honestly reported as unavailable. A stored
+                    // field that claims to be a passkey but is not one is worse
+                    // than no field, because the user would trust it.
+                    if (root.sec-tab == "passkey") : VerticalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 0;
+
+                        Note {
+                            text: "Passkeys need a server to register the credential against. This vault has no server, so a real passkey cannot be issued here.";
+                        }
+                    }
+                }
+
+                // ---- Reminders -----------------------------------------
+                if (root.section-index == 3) : VerticalLayout {
                     spacing: 6px;
                     vertical-stretch: 0;
 
@@ -565,8 +1294,166 @@ export component Editor inherits VerticalLayout {
                     }
                 }
 
+                // ---- Appearance ----------------------------------------
+                // Port of `ThemePicker` (ItemEditor.tsx L890): the preset
+                // swatches, the custom hue, then the two image URLs. Uploads
+                // are deliberately absent until `platform.rs` grows an open
+                // dialog — a button that cannot open one is worse than no
+                // button — and the preview shows the gradient rather than the
+                // photo, because nothing on this screen decodes an image yet.
+                if (root.section-index == 5) : VerticalLayout {
+                    spacing: 16px;
+                    vertical-stretch: 0;
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Colour theme"; }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            vertical-stretch: 0;
+                            alignment: start;
+
+                            for swatch in root.hue-swatches : Rectangle {
+                                width: 66px;
+                                height: 62px;
+                                vertical-stretch: 0;
+                                border-radius: 10px;
+                                background: #ffffff0a;
+                                border-width: 2px;
+                                // -1 is Auto's own hue, so the check also
+                                // lights up when the draft derives its colour.
+                                border-color: root.accent-hue == swatch.hue ? Theme.accent : #00000000;
+
+                                touch := TouchArea {
+                                    clicked => { root.hue-picked(swatch.hue); }
+                                }
+                                Rectangle {
+                                    x: (parent.width - 42px) / 2;
+                                    y: 9px;
+                                    width: 42px;
+                                    height: 26px;
+                                    border-radius: 8px;
+                                    background: @linear-gradient(135deg, swatch.from, swatch.to);
+                                    border-width: 1px;
+                                    border-color: #ffffff26;
+                                }
+                                Text {
+                                    y: 39px;
+                                    width: parent.width;
+                                    height: 16px;
+                                    text: swatch.label;
+                                    color: touch.has-hover ? Theme.text : Theme.muted;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Slider {
+                        label: "Custom hue";
+                        formatted: root.hue-readout;
+                        minimum: 0;
+                        maximum: 359;
+                        value <=> root.hue-slider;
+                        changed(value) => {
+                            root.hue-slider = round(value);
+                            root.hue-picked(round(value));
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Background image"; }
+
+                        Rectangle {
+                            height: 92px;
+                            vertical-stretch: 0;
+                            border-radius: 12px;
+                            background: @linear-gradient(135deg, root.preview-from, root.preview-to);
+                            clip: true;
+
+                            Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: root.preview-initial;
+                                color: #ffffffe6;
+                                font-size: 34px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+                            Field {
+                                value <=> root.bg-image;
+                                placeholder: "https://example.com/photo.jpg";
+                                autofocus: false;
+                            }
+                            if (root.bg-image != "") : Btn {
+                                label: "Remove";
+                                kind: 1;
+                                h: 44px;
+                                width: 90px;
+                                clicked => { root.bg-image = ""; }
+                            }
+                        }
+                        Note {
+                            text: "A URL is fetched when the card renders, and only http(s) or an inline image is accepted. An image stored inside the record never leaves this device.";
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Icon image"; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+                            Field {
+                                value <=> root.avatar-image;
+                                placeholder: "https://example.com/logo.png";
+                                autofocus: false;
+                            }
+                            if (root.avatar-image != "") : Btn {
+                                label: "Remove";
+                                kind: 1;
+                                h: 44px;
+                                width: 90px;
+                                clicked => { root.avatar-image = ""; }
+                            }
+                        }
+                        Note {
+                            text: "Separate from the card background, so a logo stays readable at 40px while the card keeps its photo. Leave it empty to fall back to the background image.";
+                        }
+                    }
+
+                    // Only once a background exists: `backgroundBlur` is read
+                    // with `?? 0` in TS, and a slider for an image that is
+                    // not there is a control over nothing.
+                    if (root.bg-image != "") : Slider {
+                        label: "Background blur";
+                        formatted: root.blur-readout;
+                        minimum: 0;
+                        maximum: 8;
+                        value <=> root.bg-blur;
+                        changed(value) => {
+                            root.bg-blur = round(value);
+                            root.bg-blur-changed(round(value));
+                        }
+                    }
+                }
+
                 // ---- Notes ---------------------------------------------
-                if (root.section-index == 3) : VerticalLayout {
+                if (root.section-index == 6) : VerticalLayout {
                     spacing: 6px;
                     vertical-stretch: 1;
 
@@ -578,8 +1465,52 @@ export component Editor inherits VerticalLayout {
                     }
                 }
 
+                // ---- Inbox ----------------------------------------------
+                // The two per-login controls are real today and round-trip
+                // through the record. The mailbox list itself arrives with
+                // the mail engine, so this says what is and is not wired
+                // rather than showing a form that cannot connect anything.
+                if (root.section-index == 7) : VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 0;
+
+                    Toggle {
+                        label: "Show messages on this login";
+                        hint: root.show-mail
+                            ? "This login shows its Messages button."
+                            : "Switched off here, so this login shows no Messages button.";
+                        checked <=> root.show-mail;
+                    }
+                    Note {
+                        text: "A login whose email is a connected mailbox reads that mailbox — the address it was connected for, never another login's mail. Other logins stay off: switch this on and this one reads the channel's mail scope instead.";
+                    }
+
+                    if (root.show-mail) : VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Which messages"; }
+                        Segmented {
+                            options: ["Auto", "Matched only", "Recent only"];
+                            selected: root.mail-filter-index;
+                            changed(i) => { root.mail-filter-picked(i); }
+                        }
+                        Note {
+                            text: "Auto: its mailbox, else only mail matched to this login. Matched only: mail to this login and nothing else. Recent only: everything recent, unmatched.";
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Mailbox"; }
+                        Note {
+                            text: "Mailboxes are shared across the vault — connecting one makes it available everywhere, and only the logins whose address matches read it. None can be connected in this build yet.";
+                        }
+                    }
+                }
+
                 // ---- Flags ----------------------------------------------
-                if (root.section-index == 4) : VerticalLayout {
+                if (root.section-index == 8) : VerticalLayout {
                     spacing: 14px;
                     vertical-stretch: 0;
 

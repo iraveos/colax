@@ -16,13 +16,14 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, QuestionRow, QrCell } from "models.slint";
 import { Editor } from "screens/editor.slint";
-// Re-exported so Rust can reach it: applyAppearance pushes every token into
-// this global (ADR-2), and items.rs builds the models, which needs all of
-// these types in the generated module.
+// Re-exported so Rust can reach them: applyAppearance pushes every token into
+// this global (ADR-2), items.rs and main.rs build the models (LoginCard,
+// QuestionRow, QrCell, ...), and both need those types in the generated
+// module.
 export { Theme }
-export { Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition }
+export { Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, QuestionRow, QrCell }
 
 export component MainWindow inherits Window {
     title: "Colax Lite";
@@ -109,6 +110,68 @@ export component MainWindow inherits Window {
     in property <bool> gen-reveal-editor: false;
     in-out property <string> editor-section: "identity";
 
+    // ---- The Appearance half of the draft ------------------------------
+    // The hue is -1 for "auto"; `edit-hue-slider` is what the slider shows,
+    // which is the chosen hue or the derived one, because a slider cannot
+    // sit at -1. Everything numeric that has to reach the screen as *text*
+    // arrives pre-formatted — Slint cannot turn a number into a string.
+    in-out property <float> edit-accent-hue: -1;
+    in-out property <float> edit-hue-slider: 212;
+    in property <string> edit-hue-readout;
+    in property <string> edit-blur-readout;
+    in property <color> edit-preview-from;
+    in property <color> edit-preview-to;
+    in property <string> edit-preview-initial: "?";
+    in property <[HueSwatch]> edit-hue-swatches;
+    in-out property <string> edit-bg-image;
+    in-out property <float> edit-bg-blur: 0;
+    in-out property <string> edit-avatar-image;
+
+    // ---- The Inbox half of the draft -----------------------------------
+    in-out property <bool> edit-show-mail: false;
+    // Value and label are pushed together, like the reminder pair: Rust owns
+    // the mapping and the screen only counts in indices.
+    in property <string> edit-mail-filter: "auto";
+    in property <string> edit-mail-filter-label: "Auto";
+
+    // ---- The Security half of the draft ---------------------------------
+    // The hashes and salts never cross this boundary. The draft itself lives
+    // in Rust (`editor_security` in main.rs) because a PBKDF2 hash is not
+    // something a screen should hold, and what arrives here is only what a
+    // screen can read or type: the level, the two flags, the question
+    // prompts, the QR symbol, and the four boxes the user types into.
+    in property <string> edit-sec-level: "none";
+    // "Not set" / "1 question" / "2 questions" -- composed in Rust, because
+    // Slint cannot turn a number into part of a string.
+    in property <string> edit-sec-questions-note: "Not set";
+    in property <bool> edit-sec-totp: false;
+    // Staged by Generate/Attach, not yet confirmed by a code: kept apart
+    // from `edit-sec-totp` so nothing can be saved by accident.
+    in property <bool> edit-sec-totp-staged: false;
+    // The inline error under the code box (and under the paste row).
+    in property <string> edit-sec-totp-note;
+    // The `otpauth://` URI and the QR symbol it produced, pushed together
+    // whenever the seed *or the login's name* changes -- the URI carries the
+    // name, so renaming a login regenerates the code.
+    in property <string> edit-sec-otpauth;
+    in property <int> edit-qr-size: 0;
+    in property <[QrCell]> edit-qr-cells;
+    in property <bool> edit-sec-passcode: false;
+    in property <string> edit-sec-passcode-error;
+    // Prompts only: `SecurityQuestion`'s hash and salt stay in Rust.
+    in property <[QuestionRow]> edit-sec-questions;
+    in property <string> edit-sec-answer-error;
+    in property <string> edit-sec-new-prompt;
+    // Two-way, because Rust reads them to verify and clears them after.
+    in-out property <string> edit-sec-totp-seed;
+    in-out property <string> edit-sec-totp-code;
+    in-out property <string> edit-sec-passcode-new;
+    in-out property <string> edit-sec-passcode-confirm;
+    in-out property <string> edit-sec-passcode-input;
+    in-out property <string> edit-sec-checking-id;
+    in-out property <string> edit-sec-check-input;
+    in-out property <string> edit-sec-new-answer;
+
     callback create-no-password();
     callback create-with-password();
     callback create-import();
@@ -145,6 +208,28 @@ export component MainWindow inherits Window {
     callback editor-use-generated();
     callback editor-copy-generated();
     callback editor-reminder-picked(index: int);
+    // Appearance and Inbox. The image fields need no callback of their own:
+    // they are two-way with the draft and nothing derives from them here.
+    callback editor-hue-picked(hue: float);
+    callback editor-title-edited();
+    callback editor-bg-blur-changed(value: float);
+    callback editor-mail-filter-picked(index: int);
+    // Security. Rust does the work behind each one -- a PBKDF2 hash, an RFC
+    // check, a QR matrix, a seeded draft -- and replies by pushing the
+    // properties above. These only say what the user pushed.
+    callback editor-sec-totp-attach();
+    callback editor-sec-totp-generate();
+    callback editor-sec-totp-check();
+    callback editor-sec-totp-discard();
+    callback editor-sec-totp-remove();
+    callback editor-sec-passcode-save();
+    callback editor-sec-passcode-check();
+    callback editor-sec-passcode-remove();
+    callback editor-sec-question-add();
+    // Two-stage: first press opens the answer box, second verifies it.
+    callback editor-sec-question-check(id: string);
+    callback editor-sec-question-remove(id: string);
+    callback editor-sec-prompt-step(delta: int);
 
     // Every transition resets the transient layer: messages always, the
     // typed-in text whenever it cannot still be needed (the create flow
@@ -662,6 +747,41 @@ export component MainWindow inherits Window {
             error-text: root.error-text;
             notice-text: root.notice-text;
             confirm-delete: root.editor-confirm-delete;
+            accent-hue <=> root.edit-accent-hue;
+            hue-slider <=> root.edit-hue-slider;
+            hue-readout: root.edit-hue-readout;
+            blur-readout: root.edit-blur-readout;
+            preview-from: root.edit-preview-from;
+            preview-to: root.edit-preview-to;
+            preview-initial: root.edit-preview-initial;
+            hue-swatches: root.edit-hue-swatches;
+            bg-image <=> root.edit-bg-image;
+            bg-blur <=> root.edit-bg-blur;
+            avatar-image <=> root.edit-avatar-image;
+            show-mail <=> root.edit-show-mail;
+            mail-filter: root.edit-mail-filter;
+            mail-filter-label: root.edit-mail-filter-label;
+            sec-level: root.edit-sec-level;
+            sec-questions-note: root.edit-sec-questions-note;
+            sec-totp: root.edit-sec-totp;
+            sec-totp-staged: root.edit-sec-totp-staged;
+            sec-totp-note: root.edit-sec-totp-note;
+            sec-otpauth: root.edit-sec-otpauth;
+            qr-size: root.edit-qr-size;
+            qr-cells: root.edit-qr-cells;
+            sec-passcode: root.edit-sec-passcode;
+            sec-passcode-error: root.edit-sec-passcode-error;
+            sec-questions: root.edit-sec-questions;
+            sec-answer-error: root.edit-sec-answer-error;
+            sec-new-prompt: root.edit-sec-new-prompt;
+            sec-totp-seed <=> root.edit-sec-totp-seed;
+            sec-totp-code <=> root.edit-sec-totp-code;
+            sec-passcode-new <=> root.edit-sec-passcode-new;
+            sec-passcode-confirm <=> root.edit-sec-passcode-confirm;
+            sec-passcode-input <=> root.edit-sec-passcode-input;
+            sec-checking-id <=> root.edit-sec-checking-id;
+            sec-check-input <=> root.edit-sec-check-input;
+            sec-new-answer <=> root.edit-sec-new-answer;
 
             cancel-clicked => { root.editor-cancel(); }
             save-clicked => { root.editor-save(); }
@@ -677,6 +797,22 @@ export component MainWindow inherits Window {
             use-generated => { root.editor-use-generated(); }
             copy-generated => { root.editor-copy-generated(); }
             reminder-picked(i) => { root.editor-reminder-picked(i); }
+            hue-picked(hue) => { root.editor-hue-picked(hue); }
+            title-edited => { root.editor-title-edited(); }
+            bg-blur-changed(value) => { root.editor-bg-blur-changed(value); }
+            mail-filter-picked(i) => { root.editor-mail-filter-picked(i); }
+            sec-totp-attach => { root.editor-sec-totp-attach(); }
+            sec-totp-generate => { root.editor-sec-totp-generate(); }
+            sec-totp-check => { root.editor-sec-totp-check(); }
+            sec-totp-discard => { root.editor-sec-totp-discard(); }
+            sec-totp-remove => { root.editor-sec-totp-remove(); }
+            sec-passcode-save => { root.editor-sec-passcode-save(); }
+            sec-passcode-check => { root.editor-sec-passcode-check(); }
+            sec-passcode-remove => { root.editor-sec-passcode-remove(); }
+            sec-question-add => { root.editor-sec-question-add(); }
+            sec-question-check(id) => { root.editor-sec-question-check(id); }
+            sec-question-remove(id) => { root.editor-sec-question-remove(id); }
+            sec-prompt-step(delta) => { root.editor-sec-prompt-step(delta); }
         }
 
         // -- Everything else: the centered card -------------------------------

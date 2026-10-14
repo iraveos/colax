@@ -55,6 +55,38 @@ export struct TagChip {
     compact: bool,
 }
 
+/// One colour preset in the editor's Appearance section, the `HUE_PRESETS`
+/// of `ItemEditor.tsx` L879. `hue` is -1 for "Auto" — not a hue but the
+/// choice to *derive* one from the title, so the Auto chip is a sweep of the
+/// calm set rather than a single colour, and the row can still say which
+/// entry the draft is on.
+export struct HueSwatch {
+    label: string,
+    hue: float,
+    from: color,
+    to: color,
+}
+
+// One recovery question in the editor's Security section. The *answer* is
+// never here: only its id, so a row can be removed or checked, and the
+// prompt, so the row can be read. This mirrors `SecurityQuestion` in
+// `colax-core::model`, minus the hash and salt, which the screen has no
+// business holding.
+export struct QuestionRow {
+    id: string,
+    prompt: string,
+}
+
+/// One *dark* module of the QR symbol in the editor's Security section, in
+/// module units measured from the symbol's top-left. Only the dark half is
+/// shipped -- a symbol is half light -- and row and column stay two fields
+/// rather than one flat index because Slint has no `%`, and no integer
+/// divide it will promise to truncate, to split an index back apart again.
+export struct QrCell {
+    col: int,
+    row: int,
+}
+
 /// One login, ready to render. Built in Rust from a `VaultItem`, so the
 /// plaintext password is *not* here: `masked-password` is dots, and reveal
 /// asks the engine by id (Task 3.6 / Phase 6's SecurityGate).
