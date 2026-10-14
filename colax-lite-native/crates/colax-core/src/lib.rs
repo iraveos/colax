@@ -18,8 +18,10 @@ pub mod engine;
 pub mod error;
 pub mod model;
 pub mod prefs;
+pub mod security;
 pub mod storage;
 pub mod strength;
+pub mod totp;
 pub mod util;
 
 pub use channels::{apply_channel, builtin_channels, find_reused_passwords, Channel, ChannelAccent, ChannelKind};
@@ -35,6 +37,10 @@ pub use model::{
     security_level, stale_days_for, LoginSecurity, StoredItem, VaultItem,
 };
 pub use prefs::{normalise_preferences, VaultPreferences};
+pub use security::{
+    answer_too_weak, hash_answer, hash_passcode, normalise_answer, passcode_too_weak,
+    verify_answer, verify_passcode,
+};
 pub use storage::{parse_backup, serialize_backup, BackupFile, VaultStorage, BACKUP_FORMAT};
 pub use strength::{
     estimate_strength, generate_passphrase, generate_password, passphrase_word_count,

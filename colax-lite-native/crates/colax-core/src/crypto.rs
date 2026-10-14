@@ -236,11 +236,25 @@ fn open(key: &[u8], blob: &SealedBlob, aad: &[u8]) -> Result<Vec<u8>, VaultError
         .map_err(|_| VaultError::Auth)
 }
 
-/// PBKDF2-HMAC-SHA256, the only place a password touches a KDF.
+/// PBKDF2-HMAC-SHA256 to 256 bits: the one KDF primitive in the crate.
+///
+/// Shared by the vault KEK (`derive_kek`) and by the recovery-answer and
+/// passcode hashes in `security.rs`, so the construction lives in exactly one
+/// place. `iterations` is a parameter because each caller pins its own count —
+/// the vault header carries its own, the second factors use TS's 210k.
+pub(crate) fn pbkdf2_sha256(
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+) -> Zeroizing<[u8; KEY_BYTES]> {
+    let mut derived = [0u8; KEY_BYTES];
+    pbkdf2_hmac::<Sha256>(password, salt, iterations, &mut derived);
+    Zeroizing::new(derived)
+}
+
+/// The vault master password's KEK — a thin alias over the shared primitive.
 fn derive_kek(master_password: &str, salt: &[u8], iterations: u32) -> Zeroizing<[u8; KEY_BYTES]> {
-    let mut kek = [0u8; KEY_BYTES];
-    pbkdf2_hmac::<Sha256>(master_password.as_bytes(), salt, iterations, &mut kek);
-    Zeroizing::new(kek)
+    pbkdf2_sha256(master_password.as_bytes(), salt, iterations)
 }
 
 /// Builds a password-protected header. The caller keeps `handle` and must

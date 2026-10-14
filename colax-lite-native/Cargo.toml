@@ -19,8 +19,17 @@ base64 = "0.22"
 hmac = "0.12"
 pbkdf2 = "0.12"
 rand = "0.8"
+# SHA-1 is only for TOTP (Task 1.2): every authenticator app implements
+# RFC 6238 over HMAC-SHA1, so the vault's SHA-256 is no substitute there.
+sha1 = "0.10"
 sha2 = "0.10"
+# Second factors (Task 1.3): hash verification compares base64url strings
+# without leaking where they first differ.
+subtle = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
+# NFKD decomposition for answer normalisation (Task 1.3) — the same form
+# `String.prototype.normalize('NFKD')` applies before stripping accents.
+unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1"
 
