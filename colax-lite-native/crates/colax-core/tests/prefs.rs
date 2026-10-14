@@ -16,13 +16,23 @@ fn cleanup(path: &PathBuf) {
     let _ = std::fs::remove_file(path);
 }
 
+/// The baseline every test here saves: the shape default, plus the three
+/// shipped tags that every load seeds (`ensureDefaultTags`). The seeds carry
+/// random ids, so they must be in the *saved* value too — otherwise the reload
+/// gains three entries the assertion never expected.
+fn baseline() -> VaultPreferences {
+    let mut prefs = VaultPreferences::default();
+    prefs.tags = colax_core::ensure_default_tags(Vec::new());
+    prefs
+}
+
 #[test]
 fn save_preferences_survives_a_reopen() {
     let (storage, path) = temp_storage("reopen");
     let mut engine = VaultEngine::open(storage.clone()).unwrap();
     engine.create(None).unwrap();
 
-    let mut prefs = VaultPreferences::default();
+    let mut prefs = baseline();
     prefs.theme = "light".into();
     prefs.accent = "sage".into();
     prefs.text_scale = 118.0;
@@ -51,7 +61,7 @@ fn preferences_written_without_a_vault_are_held_in_memory() {
     let mut engine = VaultEngine::open(storage.clone()).unwrap();
     assert!(!engine.exists());
 
-    let mut prefs = VaultPreferences::default();
+    let mut prefs = baseline();
     prefs.accent = "clay".into();
     engine
         .save_preferences(serde_json::to_value(&prefs).unwrap())

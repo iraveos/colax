@@ -11,6 +11,23 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// One entry of the global tag catalogue: logins reference these by id rather
+/// than by name, so renaming or recolouring one here changes every login that
+/// carries it -- and a tag a login no longer references can be spotted by
+/// comparing ids, without reading any of their text.
+///
+/// Port of `Tag` in `E:\acc2\src\vault\channels.ts:98`. The catalogue lives in
+/// preferences, not on the item, because it is shared by every login.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+    /// Hue in degrees, drives the chip colour. Kept inside 0..360 by
+    /// `normalise_tags`; the three shipped tags sit at 8, 36 and 268 so they
+    /// stay apart at a glance.
+    pub hue: f64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VaultPreferences {
@@ -44,6 +61,11 @@ pub struct VaultPreferences {
     pub password_age_days: i64,
     /// Ask before deleting, rather than deleting straight to undo.
     pub confirm_deletes: bool,
+    /// The global tag catalogue; logins carry ids from it (`Tag` above).
+    /// Seeded with the three shipped tags on every load — `ensureDefaultTags`
+    /// in storage.ts L1076 — so a vault opened here shows the same tags the
+    /// web build would, without the user having created any.
+    pub tags: Vec<Tag>,
     // Shell switches. They live in `shell.json` too so the tray (which exists
     // before unlock) can read them, and the two are written together — see
     // `mirror_shell_flags` in the app.
@@ -84,6 +106,7 @@ impl Default for VaultPreferences {
             manual_order: Vec::new(),
             password_age_days: 180,
             confirm_deletes: true,
+            tags: Vec::new(),
             sidebar_position: "left".into(),
             sidebar_labels: "both".into(),
             tray_enabled: true,
@@ -103,7 +126,13 @@ fn one_of(value: &Value, allowed: &[&str], dflt: &str) -> String {
 pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     let mut out = VaultPreferences::default();
     let obj = raw.as_object();
-    if obj.is_none() { return out; }
+    if obj.is_none() {
+        // TS spreads a non-object into `{}` and runs the whole normaliser on
+        // the result rather than short-circuiting, so even a corrupt document
+        // gains the three shipped tags (storage.ts L1076).
+        out.tags = ensure_default_tags(Vec::new());
+        return out;
+    }
     let o = obj.unwrap();
     macro_rules! get_f64 { ($k:literal, $d:literal) => {
         o.get($k).and_then(|v| v.as_f64()).unwrap_or($d)
@@ -172,13 +201,19 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.launch_at_login = truthy(o.get("launchAtLogin"), false);
     out.sounds_muted = truthy(o.get("soundsMuted"), false);
 
+    // The tag catalogue: clean what is stored, then make sure the three
+    // shipped tags exist — `ensureDefaultTags(normaliseTags(...))` in
+    // storage.ts L1076, in that order so a stored entry always wins over a
+    // seed of the same name.
+    out.tags = ensure_default_tags(normalise_tags(o.get("tags")));
+
     // absorb everything we didn't model
     let mut extra = serde_json::Map::new();
     let known = ["theme","accent","textScale","motion","motionSpeed","ambient","density","roundness",
         "cardDepth","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",
         "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
-        "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes"];
+        "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes","tags"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
@@ -209,6 +244,101 @@ fn truthy(v: Option<&Value>, dflt: bool) -> bool {
         Some(Value::Array(a)) => !a.is_empty(),
         _ => dflt,
     }
+}
+
+/// The three tags every vault starts with (`DEFAULT_TAG_SEEDS` in
+/// channels.ts L793). They are ordinary tags — rename, recolour or delete them
+/// like any other — but they exist so "weak", "needs attention" and "reused"
+/// are something you can put on a login instead of only badge text the app
+/// decides for you. Hues are spread around the wheel so the three stay
+/// distinguishable at a glance.
+pub const DEFAULT_TAG_SEEDS: [(&str, f64); 3] = [("weak", 8.0), ("needs attention", 36.0), ("reused", 268.0)];
+
+/// `newTagId` in channels.ts:522 — `tg_` plus the first eight characters of a
+/// fresh uuid. Eight is plenty for a catalogue of tens of tags, and the prefix
+/// keeps tag ids from reading as item ids in a shared log.
+pub fn new_tag_id() -> String {
+    let uuid = crate::engine::new_item_id().replace('-', "");
+    format!("tg_{}", &uuid[..8])
+}
+
+/// Creates a tag, nudging the hue away from the ones already in the catalogue
+/// (`createTag`, channels.ts L527). An empty or whitespace-only name becomes
+/// "Tag" rather than a chip nobody can tell apart from another blank one.
+pub fn create_tag(name: &str, existing: &[Tag]) -> Tag {
+    let trimmed = name.trim();
+    Tag {
+        id: new_tag_id(),
+        name: if trimmed.is_empty() { "Tag".to_string() } else { trimmed.to_string() },
+        hue: pick_free_hue(existing),
+    }
+}
+
+/// Evenly spreads hues around the wheel so adjacent tags stay distinguishable:
+/// buckets of 24° (a sixth of the wheel per candidate, giving 15 to try), each
+/// one claimed if any stored hue rounds into it. The final line mirrors TS's
+/// `(existing.length * 47) % 360` — a deterministic scatter for the degenerate
+/// case of a catalogue that has already occupied every bucket.
+fn pick_free_hue(existing: &[Tag]) -> f64 {
+    if existing.is_empty() {
+        return 210.0;
+    }
+    let used: std::collections::HashSet<i64> = existing
+        .iter()
+        .map(|tag| ((tag.hue / 24.0).round() as i64 * 24) % 360)
+        .collect();
+    for hue in (0i64..360).step_by(24) {
+        if !used.contains(&hue) {
+            return hue as f64;
+        }
+    }
+    ((existing.len() as f64 * 47.0) % 360.0).round()
+}
+
+/// Adds any missing default tag (matched case-insensitively on the trimmed
+/// name), preserving the user's order and never duplicating. Runs on load so
+/// older vaults gain the defaults without losing the tags they already have
+/// (`ensureDefaultTags`, channels.ts L804).
+pub fn ensure_default_tags(mut tags: Vec<Tag>) -> Vec<Tag> {
+    let mut have: std::collections::HashSet<String> =
+        tags.iter().map(|tag| tag.name.trim().to_lowercase()).collect();
+    for (name, hue) in DEFAULT_TAG_SEEDS {
+        let key = name.to_lowercase();
+        if have.contains(&key) {
+            continue;
+        }
+        tags.push(Tag { id: new_tag_id(), name: name.to_string(), hue });
+        have.insert(key);
+    }
+    tags
+}
+
+/// `normaliseTags` in channels.ts L816: one bad entry costs that entry, not
+/// the catalogue, so this reads the raw JSON rather than going through `serde`
+/// (which would fail the whole preferences document on a single junk row).
+/// Duplicates by id keep the first spelling; names trim to a non-empty string
+/// or fall back to "Tag"; hues wrap into 0..360 or fall back to 210.
+pub fn normalise_tags(stored: Option<&Value>) -> Vec<Tag> {
+    let Some(Value::Array(items)) = stored else { return Vec::new(); };
+    let mut seen = std::collections::HashSet::new();
+    let mut tags = Vec::new();
+    for raw in items {
+        let Some(obj) = raw.as_object() else { continue };
+        let Some(id) = obj.get("id").and_then(Value::as_str) else { continue };
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        let name = match obj.get("name").and_then(Value::as_str) {
+            Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+            _ => "Tag".to_string(),
+        };
+        let hue = match obj.get("hue").and_then(Value::as_f64) {
+            Some(hue) if hue.is_finite() => ((hue % 360.0) + 360.0) % 360.0,
+            _ => 210.0,
+        };
+        tags.push(Tag { id: id.to_string(), name, hue });
+    }
+    tags
 }
 
 #[cfg(test)]
@@ -315,9 +445,15 @@ mod tests {
 
     #[test]
     fn non_object_documents_read_as_defaults() {
-        assert_eq!(normalise_preferences(&json!(null)), VaultPreferences::default());
-        assert_eq!(normalise_preferences(&json!("dark")), VaultPreferences::default());
-        assert_eq!(normalise_preferences(&json!([1, 2])), VaultPreferences::default());
+        for raw in [json!(null), json!("dark"), json!([1, 2])] {
+            let mut p = normalise_preferences(&raw);
+            // The only difference from the shape default is the three shipped
+            // tags every load seeds (`ensureDefaultTags`, storage.ts L1076);
+            // they carry fresh ids each time, so they are compared away here.
+            assert_eq!(p.tags.len(), 3);
+            p.tags.clear();
+            assert_eq!(p, VaultPreferences::default());
+        }
     }
 
     #[test]
@@ -344,5 +480,95 @@ mod tests {
         // 0 is a legitimate value (never stale) and must survive.
         let never = normalise_preferences(&json!({"passwordAgeDays": 0}));
         assert_eq!(never.password_age_days, 0);
+    }
+
+    #[test]
+    fn the_three_shipped_tags_are_seeded_once_and_never_duplicated() {
+        let fresh = normalise_preferences(&json!({}));
+        let names: Vec<&str> = fresh.tags.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["weak", "needs attention", "reused"]);
+        assert_eq!(
+            fresh.tags.iter().map(|t| t.hue).collect::<Vec<f64>>(),
+            [8.0, 36.0, 268.0]
+        );
+
+        // A stored tag that is the seed by another spelling (case-insensitive
+        // on the trimmed name) blocks the seed and keeps its own everything.
+        let kept = normalise_preferences(&json!({
+            "tags": [{"id": "tg_mine", "name": "  Weak ", "hue": 100}],
+        }));
+        assert_eq!(kept.tags.len(), 3);
+        assert_eq!(kept.tags[0].id, "tg_mine");
+        assert_eq!(kept.tags[0].name, "Weak");
+        assert_eq!(kept.tags[0].hue, 100.0);
+        assert_eq!(kept.tags[1].name, "needs attention");
+    }
+
+    #[test]
+    fn a_stored_catalogue_is_cleaned_entry_by_entry() {
+        let p = normalise_preferences(&json!({
+            "tags": [
+                {"id": "a", "name": "  work  ", "hue": 400},
+                {"id": "a", "name": "a duplicate id loses"},
+                {"id": "b", "name": "", "hue": -20},
+                {"name": "no id at all"},
+                {"id": "c", "name": "ok", "hue": 12.5},
+                "junk",
+                {"id": "d", "name": "bad hue", "hue": "orange"},
+            ],
+        }));
+        let named: Vec<(&str, f64)> = p.tags.iter().map(|t| (t.name.as_str(), t.hue)).collect();
+        // Four usable entries — first spelling of a duplicate id wins, blank
+        // names become "Tag", hues wrap (400 -> 40, -20 -> 340) or fall back
+        // to 210 — then the two seeds neither of them shadows.
+        assert_eq!(
+            named,
+            [
+                ("work", 40.0),
+                ("Tag", 340.0),
+                ("ok", 12.5),
+                ("bad hue", 210.0),
+                ("weak", 8.0),
+                ("needs attention", 36.0),
+                ("reused", 268.0),
+            ]
+        );
+        // Typed field, not swallowed by `extra` — and cleaning is idempotent,
+        // so the same document read twice agrees with itself.
+        let back = serde_json::to_value(&p).unwrap();
+        assert_eq!(back["tags"].as_array().unwrap().len(), 7);
+        assert_eq!(normalise_preferences(&back).tags, p.tags);
+    }
+
+    #[test]
+    fn a_created_tag_has_a_name_an_id_and_a_free_hue() {
+        let blank = create_tag("   ", &[]);
+        assert_eq!(blank.name, "Tag");
+        assert_eq!(blank.hue, 210.0); // empty wheel: TS's fixed start
+        assert_eq!(&blank.id[..3], "tg_");
+        assert_eq!(blank.id.len(), 11); // "tg_" plus eight uuid characters
+
+        // The seeds occupy buckets 0 (hue 8), 48 (36) and 264 (268), so the
+        // first free bucket stepping the wheel by 24 is 24.
+        let seeded = ensure_default_tags(Vec::new());
+        let next = create_tag("  work ", &seeded);
+        assert_eq!(next.name, "work");
+        assert_eq!(next.hue, 24.0);
+        assert!(!seeded.iter().any(|tag| tag.id == next.id));
+
+        // Every bucket claimed: the deterministic scatter at the foot of
+        // `pickFreeHue` — TS's (length * 47) % 360 — rather than a collision.
+        let full: Vec<Tag> = (0..15)
+            .map(|i| Tag { id: format!("tg_{i}"), name: format!("t{i}"), hue: (i * 24) as f64 })
+            .collect();
+        assert_eq!(create_tag("one more", &full).hue, 345.0);
+    }
+
+    #[test]
+    fn default_tags_are_never_added_twice_by_repeated_loads() {
+        let once = ensure_default_tags(Vec::new());
+        let twice = ensure_default_tags(ensure_default_tags(once.clone()));
+        assert_eq!(twice, once);
+        assert_eq!(once.len(), 3);
     }
 }

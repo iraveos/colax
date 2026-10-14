@@ -87,6 +87,23 @@ export struct QrCell {
     row: int,
 }
 
+/// One tag as the editor's Organise picker draws it: what to call it, which
+/// colour it wears, whether this login carries it.
+///
+/// Deliberately no width. Slint has no wrapping layout, so Rust splits the
+/// catalogue into lines (`pack_tag_rows`) -- but only the *breaks* are Rust's:
+/// each pill hugs its own label here, exactly as `Chip` already does in the
+/// generator's row, and Rust packs against a per-character estimate that errs
+/// long. An estimate that is too long ends a line a pill early; one that is
+/// too short would run two pills together, which `clip` on the cloud turns
+/// into a cut label rather than a collision.
+export struct PickTag {
+    id: string,
+    name: string,
+    hue: color,
+    selected: bool,
+}
+
 /// One login, ready to render. Built in Rust from a `VaultItem`, so the
 /// plaintext password is *not* here: `masked-password` is dots, and reveal
 /// asks the engine by id (Task 3.6 / Phase 6's SecurityGate).

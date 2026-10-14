@@ -29,10 +29,10 @@ use colax_core::totp::{
     extract_totp_secret, generate_totp_seed, otpauth_url, qr_matrix, verify_totp,
 };
 use colax_core::{
-    answer_too_weak, estimate_strength, generate_passphrase, generate_password, hash_answer,
-    hash_passcode, passcode_too_weak, resolve_header, security_level, verify_answer,
-    verify_passcode, BackupFile, GeneratorOptions, LoginSecurity, VaultEngine, VaultError,
-    VaultItem, VaultProtection, VaultStorage,
+    answer_too_weak, create_tag, estimate_strength, from_date_input, generate_passphrase,
+    generate_password, hash_answer, hash_passcode, passcode_too_weak, relative_time, resolve_header,
+    security_level, to_date_input, verify_answer, verify_passcode, BackupFile, GeneratorOptions,
+    LoginSecurity, VaultEngine, VaultError, VaultItem, VaultProtection, VaultStorage,
 };
 use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
@@ -317,6 +317,19 @@ struct AppState {
     editor_staged_seed: Option<String>,
     /// Which of `QUESTION_PROMPTS` the add-question row is showing.
     editor_prompt_index: usize,
+    /// The Organise half of the draft: which of the catalogue's tags this
+    /// login carries. Kept here rather than in Slint because the catalogue it
+    /// is chosen from lives in preferences and only Rust sees both — and
+    /// because Save must hand back exactly the ids, not a drawing of them.
+    editor_tags: Vec<String>,
+    /// The two stamps of the "Last changed" grid, in milliseconds. Exact i64s
+    /// rather than the Slint floats a timestamp would be rounded through: a
+    /// date the user typed has to be written back unchanged.
+    editor_password_updated_at: i64,
+    editor_username_updated_at: i64,
+    /// The width the tag cloud last reported, so rows can be packed for it on
+    /// every push instead of only while the cloud happens to be on screen.
+    editor_panel_width: f64,
 }
 
 type Shared = Rc<RefCell<AppState>>;
@@ -508,17 +521,21 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// saved login), or `editor-<section>` for any of its tabs.
 #[cfg(debug_assertions)]
 fn dev_screen(ui: &MainWindow, state: &Shared) {
-    // `COLAX_DEV_SEC` implies the Security section: it exists so this panel
-    // can be verified without *looking* at it -- the desktop may be locked,
-    // when a screenshot comes back white -- and then one variable is enough.
+    // `COLAX_DEV_SEC` implies the Security section and `COLAX_DEV_ORG` the
+    // Organise one: each exists so its panel can be verified without *looking*
+    // at it -- the desktop may be locked, when a screenshot comes back white
+    // -- and then one variable is enough.
     let want = match std::env::var_os("COLAX_DEV_SEC") {
         Some(_) => "editor-security".to_string(),
-        None => {
-            let Ok(want) = std::env::var("COLAX_DEV_SCREEN") else {
-                return;
-            };
-            want.to_lowercase()
-        }
+        None => match std::env::var_os("COLAX_DEV_ORG") {
+            Some(_) => "editor-organise".to_string(),
+            None => {
+                let Ok(want) = std::env::var("COLAX_DEV_SCREEN") else {
+                    return;
+                };
+                want.to_lowercase()
+            }
+        },
     };
     if want.is_empty() || want == "vault" {
         return;
@@ -567,6 +584,24 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
             },
         );
         // Dropping the handle would cancel it before it fires.
+        std::mem::forget(timer);
+        return;
+    }
+
+    // The Organise run, for the same one-tick-late reason as Security's.
+    if std::env::var_os("COLAX_DEV_ORG").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_org(&ui, &st);
+                }
+            },
+        );
         std::mem::forget(timer);
         return;
     }
@@ -637,7 +672,7 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
 #[cfg(debug_assertions)]
 fn dev_dump(ui: &MainWindow, tag: &str) {
     let dump = format!(
-        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}]\n",
+        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={}\n",
         ui.get_screen() == Screen::Editor,
         ui.get_screen() == Screen::Vault,
         ui.get_editor_section(),
@@ -666,6 +701,18 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
         ui.get_edit_sec_passcode_error(),
         ui.get_edit_sec_answer_error(),
         ui.get_notice_text(),
+        // The Organise half: the cloud exactly as it will draw (a `*` on each
+        // pill this login carries, `|` between lines), both dates with the age
+        // under them, and the add box's verdict. Pills with no `*`, a date that
+        // did not move, or a blank hint are each a push that never landed --
+        // and none of them would show in a screenshot while the desktop is
+        // locked, which is the whole reason this line exists.
+        describe_tag_cloud(ui),
+        ui.get_edit_pw_date(),
+        ui.get_edit_pw_date_hint(),
+        ui.get_edit_email_date(),
+        ui.get_edit_email_date_hint(),
+        ui.get_edit_tag_can_add(),
     );
     let path = app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -784,6 +831,122 @@ fn dev_sec(ui: &MainWindow, state: &Shared) {
     ui.invoke_editor_sec_passcode_remove();
     ui.invoke_editor_sec_totp_remove();
     dev_dump(ui, "sec17.cleared");
+}
+
+/// The tag cloud as one line: pills joined by spaces, a `*` before each one
+/// this login carries, `|` between lines. Read off the model the screen will
+/// draw rather than off the selection list, so a line here proves the rows
+/// crossed the boundary *and* that the right pills got lit.
+#[cfg(debug_assertions)]
+fn describe_tag_cloud(ui: &MainWindow) -> String {
+    use slint::Model;
+    let rows = ui.get_edit_tag_rows();
+    let mut out = String::new();
+    for line in 0..rows.row_count() {
+        let Some(pills) = rows.row_data(line) else {
+            continue;
+        };
+        if line > 0 {
+            out.push('|');
+        }
+        for pill in 0..pills.row_count() {
+            let Some(tag) = pills.row_data(pill) else {
+                continue;
+            };
+            if pill > 0 {
+                out.push(' ');
+            }
+            if tag.selected {
+                out.push('*');
+            }
+            out.push_str(&tag.name);
+        }
+    }
+    out
+}
+
+/// Debug-only: drive the Organise section end to end, dumping one line after
+/// each step -- the same shape as `dev_sec`, for the same reason: a locked
+/// desktop gives white screenshots, so what has to be checked gets written
+/// down instead.
+///
+/// Run with `COLAX_DEV_ORG=1` (plus `COLAX_DEV_DIR`/`_SEED`), which implies
+/// `COLAX_DEV_SCREEN=editor-organise`. Each step's comment says what the line
+/// after it must show; the run ends by saving and reopening the login, so the
+/// last line is the cloud as it survives a round trip through the vault.
+#[cfg(debug_assertions)]
+fn dev_org(ui: &MainWindow, state: &Shared) {
+    use slint::Model;
+    // Start from an empty file: these lines only read as a sequence in order,
+    // and the tail of a previous run would otherwise look like this one's.
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    // 1. The cloud as it opens: the three shipped tags, none on this login.
+    dev_dump(ui, "org1.open");
+
+    // 2. Whitespace is not a tag: the box accepts the keystrokes, but the
+    //    button must stay refused (`canadd=false`).
+    ui.set_edit_tag_input("   ".into());
+    ui.invoke_editor_tag_input_edited();
+    dev_dump(ui, "org2.blank");
+
+    // 3. A real name is accepted (`canadd=true`).
+    ui.set_edit_tag_input("work".into());
+    ui.invoke_editor_tag_input_edited();
+    dev_dump(ui, "org3.named");
+
+    // 4. Adding writes the catalogue at once -- four pills now -- and ticks
+    //    the new one on (`*work`); the box clears with it, so `canadd` falls
+    //    back to false.
+    ui.invoke_editor_tag_add();
+    dev_dump(ui, "org4.added");
+
+    // 5/6. Toggling a pill that is already in the catalogue, off and back on.
+    //      The id has to be the *catalogue's*, so take it from the cloud the
+    //      last push drew: the first pill, "weak", starting unselected. An
+    //      empty id would be refused by the handler's catalogue check anyway,
+    //      so a cloud that somehow came back empty fails quiet, not loud.
+    let some_id = ui
+        .get_edit_tag_rows()
+        .row_data(0)
+        .and_then(|line| line.row_data(0))
+        .map(|tag| tag.id.to_string())
+        .unwrap_or_default();
+    ui.invoke_editor_tag_toggle(some_id.as_str().into());
+    dev_dump(ui, "org5.toggled-on");
+    ui.invoke_editor_tag_toggle(some_id.as_str().into());
+    dev_dump(ui, "org6.toggled-off");
+
+    // 7. A date that parses is taken, redrawn padded ("2026-01-02"), and its
+    //    hint becomes the age of *that* day rather than of the record's own.
+    ui.set_edit_pw_date("2026-1-2".into());
+    ui.invoke_editor_date_edited(0);
+    dev_dump(ui, "org7.pw-date");
+
+    // 8. Text that is not a date changes nothing: identical to the line above.
+    ui.set_edit_pw_date("not a date".into());
+    ui.invoke_editor_date_edited(0);
+    dev_dump(ui, "org8.pw-garbage");
+
+    // 9. The email column takes its own date without moving the password's.
+    ui.set_edit_email_date("2026-03-04".into());
+    ui.invoke_editor_date_edited(1);
+    dev_dump(ui, "org9.email-date");
+
+    // 10. A narrower cloud repacks: four pills sit on one line at the
+    //      fallback width and cannot at 320px, so the answer must be more
+    //      lines than before.
+    ui.invoke_editor_tag_relayout(320.0);
+    dev_dump(ui, "org10.narrow");
+
+    // 11. Save writes the tags and both dates onto the record; reopening it
+    //      must bring the same cloud back -- `*work` still lit, both dates
+    //      still the ones typed, both hints recomputed from them.
+    let id = ui.get_edit_id().to_string();
+    ui.invoke_editor_save();
+    open_editor(ui, state, &id);
+    ui.invoke_editor_section_selected("organise".into());
+    dev_dump(ui, "org11.reopened");
 }
 
 /// A spread of logins chosen to exercise the cards: a favorite, a stale one,
@@ -1459,8 +1622,18 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
         ui.set_edit_show_mail(false);
         ui.set_edit_mail_filter(MAIL_FILTERS[0].0.into());
         ui.set_edit_mail_filter_label(MAIL_FILTERS[0].1.into());
-        // A new login starts with no second factor, exactly `EMPTY_SECURITY`.
-        state.borrow_mut().editor_security = LoginSecurity::default();
+        // A new login starts with no second factor (`EMPTY_SECURITY`), no
+        // tags, and both dates at *now* — the TS draft reads
+        // `draft.passwordUpdatedAt ?? Date.now()` for exactly this case, since
+        // a blank draft has no stamps of its own.
+        {
+            let now = colax_core::util::now_ms();
+            let mut guard = state.borrow_mut();
+            guard.editor_security = LoginSecurity::default();
+            guard.editor_tags = Vec::new();
+            guard.editor_password_updated_at = now;
+            guard.editor_username_updated_at = now;
+        }
     } else {
         let found = {
             let guard = state.borrow();
@@ -1499,7 +1672,15 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
         ui.set_edit_mail_filter_label(mail_filter_label(&item.mail_filter).as_str().into());
         // The Security draft is Rust's, so it is seeded here rather than in
         // the panel: whatever this record carries is what Save will write back.
-        state.borrow_mut().editor_security = item.security.clone();
+        // The tag selection and the two dates are seeded here for the same
+        // reason — they are read back by `editor_save`, not by the screen.
+        {
+            let mut guard = state.borrow_mut();
+            guard.editor_security = item.security.clone();
+            guard.editor_tags = item.tags.clone();
+            guard.editor_password_updated_at = item.password_updated_at;
+            guard.editor_username_updated_at = item.username_updated_at;
+        }
     }
 
     // The transient layer `changed screen` cannot reach: this runs while the
@@ -1534,6 +1715,12 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
     ui.set_edit_sec_check_input("".into());
     ui.set_edit_sec_new_answer("".into());
 
+    // The Organise transient layer, same reason as the Security one above: the
+    // add box empties with the login, so a half-typed tag from the previous
+    // one cannot be added to the next.
+    ui.set_edit_tag_input("".into());
+    ui.set_edit_tag_can_add(false);
+
     let password = ui.get_edit_password().to_string();
     push_strength(ui, &password);
     // The Appearance read-outs depend on the name, so they are pushed last,
@@ -1542,6 +1729,9 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
     // ...and so does the QR code, because the `otpauth://` URI carries the
     // name -- same reason, same place.
     push_security(ui, state);
+    // The Organise cloud and dates last of all: both read the draft the two
+    // branches above just filled.
+    push_organise(ui, state);
 
     goto(ui, state, Screen::Editor);
 }
@@ -1566,8 +1756,18 @@ fn editor_save(ui: &MainWindow, state: &Shared) {
     let id = ui.get_edit_id().to_string();
     let hue = ui.get_edit_accent_hue();
     // The Security half of the draft lives in Rust, not in the screen, so it
-    // is read here -- hashes never crossed the boundary to be read back.
-    let security = state.borrow().editor_security.clone();
+    // is read here -- hashes never crossed the boundary to be read back. The
+    // same is true of the tag selection and the two dates, which `open_editor`
+    // seeded from the record and the Organise section may have moved.
+    let (security, tags, password_updated_at, username_updated_at) = {
+        let guard = state.borrow();
+        (
+            guard.editor_security.clone(),
+            guard.editor_tags.clone(),
+            guard.editor_password_updated_at,
+            guard.editor_username_updated_at,
+        )
+    };
     // -1 is the draft's "auto": saved as null so the card keeps deriving its
     // colour from the name, which is what `accentOf()` does with a null.
     let accent_hue: Option<f64> = if hue.is_finite() && hue >= 0.0 {
@@ -1590,6 +1790,14 @@ fn editor_save(ui: &MainWindow, state: &Shared) {
         "avatarImage": allowed_image(ui.get_edit_avatar_image().as_str()),
         "showMail": ui.get_edit_show_mail(),
         "mailFilter": mail_filter_value(ui.get_edit_mail_filter_label().as_str()),
+        // The Organise half. Both stamps always travel, because the engine's
+        // rule (`update_item`) needs them there to keep a manual date from
+        // being overwritten -- and a whole-draft patch is what the TS editor
+        // sends too (`onSave(draft)` in ItemEditor.tsx L399), so a changed
+        // password lands on the same side of `?? next.updatedAt` here as there.
+        "passwordUpdatedAt": password_updated_at,
+        "usernameUpdatedAt": username_updated_at,
+        "tags": serde_json::to_value(&tags).unwrap_or(serde_json::Value::Null),
         // A whole value rather than a serialisation inside the macro, so a
         // factor can never be written as `null` by a failed conversion.
         "security": serde_json::to_value(&security).unwrap_or(serde_json::Value::Null),
@@ -1855,6 +2063,263 @@ fn editor_mail_filter_picked(ui: &MainWindow, index: i32) {
         ui.set_edit_mail_filter((*value).into());
         ui.set_edit_mail_filter_label((*label).into());
     }
+}
+
+/* --------------------------------------------------------------------------
+Organise: the tag catalogue and the two dates
+
+The catalogue is a *preference* -- shared by every login, created on the spot
+from the add box -- while the selection belongs to the login being edited.
+That split is why the selection lives here rather than in Slint: only Rust can
+hold a chip's id and the catalogue it came from at the same time.
+
+The cloud also has to be drawn in lines, and Slint has no wrapping layout, so
+packing is Rust's too -- which costs little, because the pills are short text
+and a per-character estimate errs on the long side: a line packed too wide
+only ends early, while one packed too narrow runs two pills into each other.
+-------------------------------------------------------------------------- */
+
+/// The pill's own furniture, as `Chip` lays it out: 10px of padding either
+/// side, the 8px dot, its 4px gap, and a pixel of border each side.
+const CHIP_CHROME: f64 = 10.0 + 8.0 + 4.0 + 10.0 + 2.0;
+/// Pill-to-pill gap, mirroring the row's `spacing` -- packing with any other
+/// number would end lines a pill early or late against what is drawn.
+const TAG_ROW_GAP: f64 = 8.0;
+/// How wide the cloud packs for before anything has reported a width: its own
+/// width at the window's *minimum* (880, less the 176px the panel gives away
+/// to the rail, less 68px of its own padding), so a first paint at the
+/// narrowest the window can be never packs a line too wide. `init` and every
+/// resize replace it through `editor_tag_relayout`.
+const TAG_PACK_FALLBACK_WIDTH: f64 = 636.0;
+
+/// How wide a tag's name will draw, close enough to pack pills against.
+///
+/// Rust cannot ask Slint how wide its font makes a string, so this estimates
+/// per character class at the chip's 12px and errs long.
+fn label_width(name: &str) -> f64 {
+    name.chars()
+        .map(|c| match c {
+            ' ' => 3.6,
+            '.' | ',' | ':' | ';' | '\'' | 'i' | 'j' | 'l' | 't' | 'f' | 'r' | '1' => 4.2,
+            'm' | 'w' | 'M' | 'W' => 10.5,
+            'A'..='Z' | '0'..='9' => 8.8,
+            // CJK, kana, Hangul, full-width forms and most emoji take a whole
+            // em at this size -- the glyphs a flat per-character average
+            // under-counts most, and the ones that would collide first.
+            c if (c as u32) >= 0x2E80 => 13.0,
+            _ => 7.2,
+        })
+        .sum()
+}
+
+fn chip_width(name: &str) -> f64 {
+    CHIP_CHROME + label_width(name)
+}
+
+/// Splits the catalogue into lines that fit `width`, keeping catalogue order.
+fn pack_tag_rows(
+    tags: &[colax_core::Tag],
+    selected: &[String],
+    width: f64,
+) -> ModelRc<ModelRc<PickTag>> {
+    let avail = if (240.0..=20_000.0).contains(&width) {
+        width
+    } else {
+        TAG_PACK_FALLBACK_WIDTH
+    };
+    let mut lines: Vec<Vec<PickTag>> = Vec::new();
+    let mut line: Vec<PickTag> = Vec::new();
+    let mut used = 0.0;
+
+    for tag in tags {
+        let w = chip_width(&tag.name);
+        if !line.is_empty() && used + TAG_ROW_GAP + w > avail {
+            lines.push(std::mem::take(&mut line));
+            used = 0.0;
+        }
+        used = if line.is_empty() { w } else { used + TAG_ROW_GAP + w };
+        line.push(PickTag {
+            id: tag.id.clone().into(),
+            name: tag.name.clone().into(),
+            hue: items::hue_color(tag.hue.round() as i32),
+            selected: selected.iter().any(|id| id == &tag.id),
+        });
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+
+    let packed: Vec<ModelRc<PickTag>> = lines
+        .into_iter()
+        .map(|line| ModelRc::new(VecModel::from(line)))
+        .collect();
+    ModelRc::new(VecModel::from(packed))
+}
+
+/// Everything the Organise section draws: the cloud split into lines, the two
+/// dates with their hints, and the verdict on the add box.
+///
+/// Called from `open_editor` and after every action that moves the selection,
+/// a date, or the width the cloud packs for.
+fn push_organise(ui: &MainWindow, state: &Shared) {
+    let (selected, width, pw_at, email_at) = {
+        let guard = state.borrow();
+        (
+            guard.editor_tags.clone(),
+            guard.editor_panel_width,
+            guard.editor_password_updated_at,
+            guard.editor_username_updated_at,
+        )
+    };
+    let prefs = items::prefs_from(state.borrow().engine.preferences());
+
+    ui.set_edit_tag_rows(pack_tag_rows(&prefs.tags, &selected, width));
+    // `name.trim() != ""`, the add button's `disabled` in TS -- evaluated here
+    // because Slint has no trim, and a button that would accept a box of
+    // spaces as a tag is worse than one that waits.
+    ui.set_edit_tag_can_add(!ui.get_edit_tag_input().to_string().trim().is_empty());
+
+    // Both dates and both hints together: the hint is the age of the *same*
+    // stamp the box shows, so they can never drift apart across two pushes.
+    let now = colax_core::util::now_ms();
+    ui.set_edit_pw_date(to_date_input(pw_at).as_str().into());
+    ui.set_edit_pw_date_hint(relative_time(pw_at, now).as_str().into());
+    ui.set_edit_email_date(to_date_input(email_at).as_str().into());
+    ui.set_edit_email_date_hint(relative_time(email_at, now).as_str().into());
+}
+
+/// Add the typed name to the catalogue and tick it on this login.
+///
+/// The catalogue write is immediate, as `onCommitTags` is in TS: a tag that
+/// only lands if the login is then saved is a tag a cancelled edit takes with
+/// it. A name already in the catalogue is selected rather than duplicated --
+/// compared case-insensitively on the trimmed text, as TS does.
+fn editor_tag_add(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor || ui.get_busy() {
+        return;
+    }
+    let trimmed = ui.get_edit_tag_input().to_string().trim().to_string();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let mut prefs = items::prefs_from(state.borrow().engine.preferences());
+    let existing = prefs
+        .tags
+        .iter()
+        .find(|tag| tag.name.to_lowercase() == trimmed.to_lowercase())
+        .cloned();
+
+    let id = match existing {
+        Some(tag) => tag.id,
+        None => {
+            let tag = create_tag(&trimmed, &prefs.tags);
+            prefs.tags.push(tag.clone());
+            if !save_prefs(ui, state, &prefs) {
+                ui.set_error_text("That tag could not be saved.".into());
+                return;
+            }
+            tag.id
+        }
+    };
+
+    {
+        let mut guard = state.borrow_mut();
+        if !guard.editor_tags.contains(&id) {
+            guard.editor_tags.push(id);
+        }
+    }
+    ui.set_edit_tag_input("".into());
+    push_organise(ui, state);
+}
+
+/// Flip one tag on this login. Nothing is written: the id joins or leaves the
+/// draft's selection and Save carries it, exactly as `onChange` in TS.
+fn editor_tag_toggle(ui: &MainWindow, state: &Shared, id: &str) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    // Only a tag that is actually in the catalogue can be toggled. The screen
+    // can only ever offer chips it was given, so anything else is a stale id
+    // from an earlier push rather than a choice the user made -- and letting
+    // it in would save a tag nobody can see.
+    let known = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+            .tags
+            .iter()
+            .any(|tag| tag.id == id)
+    };
+    if !known {
+        return;
+    }
+    {
+        let mut guard = state.borrow_mut();
+        match guard.editor_tags.iter().position(|tag| tag == id) {
+            Some(at) => {
+                guard.editor_tags.remove(at);
+            }
+            None => guard.editor_tags.push(id.to_string()),
+        }
+    }
+    push_organise(ui, state);
+}
+
+/// The cloud reports the width it was laid out at; the reply comes back as
+/// rows packed for it. Widths that have not been measured yet are ignored --
+/// `init` runs before the layout pass has given the element a size, and
+/// packing for 0 would split every pill onto a line of its own.
+fn editor_tag_relayout(ui: &MainWindow, state: &Shared, width: f32) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let width = f64::from(width);
+    if !(240.0..=20_000.0).contains(&width) {
+        return;
+    }
+    state.borrow_mut().editor_panel_width = width;
+    push_organise(ui, state);
+}
+
+/// The add box changed. Only the *verdict* travels back: the text is already
+/// `<=>`-bound, and reading it again here would give the two a way to disagree.
+fn editor_tag_input_edited(ui: &MainWindow) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let can = !ui.get_edit_tag_input().to_string().trim().is_empty();
+    ui.set_edit_tag_can_add(can);
+}
+
+/// One of the two date boxes changed: 0 = password, 1 = email.
+///
+/// Text that is not a calendar date changes nothing and leaves the hint where
+/// it was, which is what the TS handler does when its own parse fails -- and
+/// what the native date field behind their `type="date"` does with the same
+/// text, before the handler ever runs.
+fn editor_date_edited(ui: &MainWindow, state: &Shared, which: i32) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let text = if which == 0 {
+        ui.get_edit_pw_date().to_string()
+    } else {
+        ui.get_edit_email_date().to_string()
+    };
+    let Some(at) = from_date_input(&text) else {
+        return;
+    };
+    {
+        let mut guard = state.borrow_mut();
+        if which == 0 {
+            guard.editor_password_updated_at = at;
+        } else {
+            guard.editor_username_updated_at = at;
+        }
+    }
+    // Pushing redraws the box from the stamp: "2026-6-5" becomes
+    // "2026-06-05", the way the TS app's controlled input rounds its own text.
+    push_organise(ui, state);
 }
 
 /* --------------------------------------------------------------------------
@@ -2252,6 +2717,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 editor_security: LoginSecurity::default(),
                 editor_staged_seed: None,
                 editor_prompt_index: 0,
+                editor_tags: Vec::new(),
+                editor_password_updated_at: 0,
+                editor_username_updated_at: 0,
+                editor_panel_width: 0.0,
             }));
             // Debug scratch profiles open straight into the vault with demo
             // content; everything else starts on the real startup screen.
@@ -2694,6 +3163,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_editor_mail_filter_picked(move |index| {
                 if let Some(ui) = weak.upgrade() {
                     editor_mail_filter_picked(&ui, index);
+                }
+            });
+
+            // ---- Organise -------------------------------------------------
+            // Adding and toggling read the catalogue and the draft out of
+            // `AppState`; relayout only reports a width in, but it answers by
+            // pushing rows out, so it takes a handle on the state too.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_tag_add(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_tag_add(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_tag_toggle(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_tag_toggle(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_tag_relayout(move |width| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_tag_relayout(&ui, &st, width);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_tag_input_edited(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_tag_input_edited(&ui);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_date_edited(move |which| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_date_edited(&ui, &st, which);
                 }
             });
 

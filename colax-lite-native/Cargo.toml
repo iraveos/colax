@@ -26,7 +26,10 @@ sha2 = "0.10"
 # Second factors (Task 1.3): hash verification compares base64url strings
 # without leaking where they first differ.
 subtle = "2"
-time = { version = "0.3", features = ["formatting", "parsing"] }
+# `local-offset` is for the editor's date fields: `<input type="date">` shows
+# and parses a *local* calendar day, and a UTC port of it puts the day wrong
+# for anyone east or west of Greenwich.
+time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
 # NFKD decomposition for answer normalisation (Task 1.3) — the same form
 # `String.prototype.normalize('NFKD')` applies before stripping accents.
 unicode-normalization = "0.1"

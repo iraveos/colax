@@ -16,14 +16,14 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, QuestionRow, QrCell } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell } from "models.slint";
 import { Editor } from "screens/editor.slint";
 // Re-exported so Rust can reach them: applyAppearance pushes every token into
 // this global (ADR-2), items.rs and main.rs build the models (LoginCard,
 // QuestionRow, QrCell, ...), and both need those types in the generated
 // module.
 export { Theme }
-export { Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, QuestionRow, QrCell }
+export { Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell }
 
 export component MainWindow inherits Window {
     title: "Colax Lite";
@@ -134,6 +134,19 @@ export component MainWindow inherits Window {
     in property <string> edit-mail-filter: "auto";
     in property <string> edit-mail-filter-label: "Auto";
 
+    // ---- The Organise half of the draft --------------------------------
+    // The tag *selection* lives in Rust (`editor_tags`), because the catalogue
+    // it is chosen from is read from preferences on every push and only Rust
+    // can see both at once. What crosses is a cloud already split into lines,
+    // the box a new tag is typed into, and the two dates with their hints.
+    in property <[[PickTag]]> edit-tag-rows;
+    in property <bool> edit-tag-can-add: false;
+    in-out property <string> edit-tag-input;
+    in-out property <string> edit-pw-date;
+    in-out property <string> edit-email-date;
+    in property <string> edit-pw-date-hint;
+    in property <string> edit-email-date-hint;
+
     // ---- The Security half of the draft ---------------------------------
     // The hashes and salts never cross this boundary. The draft itself lives
     // in Rust (`editor_security` in main.rs) because a PBKDF2 hash is not
@@ -214,6 +227,14 @@ export component MainWindow inherits Window {
     callback editor-title-edited();
     callback editor-bg-blur-changed(value: float);
     callback editor-mail-filter-picked(index: int);
+    // Organise. Adding a tag writes the catalogue straight away (so it
+    // survives a cancelled edit); toggling one only edits the draft's
+    // selection, which Save hands over with the rest.
+    callback editor-tag-add();
+    callback editor-tag-toggle(id: string);
+    callback editor-tag-relayout(width: float);
+    callback editor-tag-input-edited();
+    callback editor-date-edited(which: int);
     // Security. Rust does the work behind each one -- a PBKDF2 hash, an RFC
     // check, a QR matrix, a seeded draft -- and replies by pushing the
     // properties above. These only say what the user pushed.
@@ -761,6 +782,13 @@ export component MainWindow inherits Window {
             show-mail <=> root.edit-show-mail;
             mail-filter: root.edit-mail-filter;
             mail-filter-label: root.edit-mail-filter-label;
+            tag-rows: root.edit-tag-rows;
+            tag-can-add: root.edit-tag-can-add;
+            tag-input <=> root.edit-tag-input;
+            pw-date <=> root.edit-pw-date;
+            email-date <=> root.edit-email-date;
+            pw-date-hint: root.edit-pw-date-hint;
+            email-date-hint: root.edit-email-date-hint;
             sec-level: root.edit-sec-level;
             sec-questions-note: root.edit-sec-questions-note;
             sec-totp: root.edit-sec-totp;
@@ -801,6 +829,11 @@ export component MainWindow inherits Window {
             title-edited => { root.editor-title-edited(); }
             bg-blur-changed(value) => { root.editor-bg-blur-changed(value); }
             mail-filter-picked(i) => { root.editor-mail-filter-picked(i); }
+            tag-add => { root.editor-tag-add(); }
+            tag-toggle(id) => { root.editor-tag-toggle(id); }
+            tag-relayout(width) => { root.editor-tag-relayout(width); }
+            tag-input-edited => { root.editor-tag-input-edited(); }
+            date-edited(which) => { root.editor-date-edited(which); }
             sec-totp-attach => { root.editor-sec-totp-attach(); }
             sec-totp-generate => { root.editor-sec-totp-generate(); }
             sec-totp-check => { root.editor-sec-totp-check(); }

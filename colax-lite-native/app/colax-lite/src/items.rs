@@ -133,7 +133,7 @@ fn title_key(item: &VaultItem) -> String {
 }
 
 /// `hue -> a solid colour`, the same derivation the CSS uses for a tile.
-fn hue_color(hue: i32) -> Color {
+pub(crate) fn hue_color(hue: i32) -> Color {
     let h = ((hue % 360) + 360) % 360;
     let h = h as f64 / 60.0;
     let s: f64 = 0.55;

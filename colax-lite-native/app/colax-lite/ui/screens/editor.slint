@@ -1,17 +1,19 @@
 // The item editor: one login, edited in place.
 //
 // Port of `src/ui/ItemEditor.tsx` (1,096 lines). The TS version has nine
-// sections down its rail; this ships eight -- Identity, Credentials,
-// Security, Reminders, Appearance, Notes, Inbox, Flags. Organise arrives
-// with its own subsystem (the tag catalogue) and is still left off the rail:
-// a tab that does nothing yet is worse than a tab that is not there yet,
-// and adding one later is a one-line change. The *indices* below already
-// reserve every slot in the TS order, so landing it does not renumber
-// anything.
+// sections down its rail; this ships nine too -- Identity, Credentials,
+// Security, Reminders, Organise, Appearance, Notes, Inbox, Flags. Organise is
+// the last of them to land, because its tag catalogue lives in the vault's
+// preferences rather than on the login, so it could not be drawn until the
+// engine carried one.
 //
 // The draft lives here, not in Rust. Every field is `in-out`, so the user
-// can visit all seven tabs without anything being written, and `save` hands
-// the whole object over once (`onSave(draft)` in the TS app).
+// can visit all the tabs without anything being written, and `save` hands
+// the whole object over once (`onSave(draft)` in the TS app). Two things are
+// deliberately *not* here: the Security section's hashes (Rust owns them, so
+// a PBKDF2 hash never crosses this boundary) and the Organise section's tag
+// selection (Rust owns that too, because the catalogue it is selected from is
+// read from preferences on every push).
 //
 // Everything with a *choice* in it is an index, not a label: `Segmented`
 // counts in ints, so the label<->days table lives in exactly one place
@@ -23,7 +25,7 @@ import {
     Btn, Field, Alert, Toggle, Checkbox, Chip, Slider, Segmented,
     Label, Note, Area, StrengthMeter
 } from "../widgets.slint";
-import { HueSwatch, QuestionRow, QrCell } from "../models.slint";
+import { HueSwatch, PickTag, QuestionRow, QrCell } from "../models.slint";
 
 export component Editor inherits VerticalLayout {
     // The login being edited, or "" for a new one. Decides the heading and
@@ -190,6 +192,27 @@ export component Editor inherits VerticalLayout {
     in property <bool> confirm-delete: false;
     in property <bool> can-delete: false;
 
+    // ---- Organise ------------------------------------------------------
+    // The tag cloud, pre-split into lines. Slint has no wrapping layout, so
+    // Rust packs the rows to a width the cloud reports (`tag-relayout`) and
+    // the screen draws each line where it says -- an empty model therefore
+    // means "no tags", which is exactly the empty state TS shows.
+    in property <[[PickTag]]> tag-rows;
+    // Whether the Add button may be pressed: `name.trim() != ""`, evaluated in
+    // Rust because Slint cannot trim and would rather have a button that
+    // refuses a blank tag than one that quietly adds "   " as a new tag.
+    in property <bool> tag-can-add: false;
+    in-out property <string> tag-input;
+    // `YYYY-MM-DD`, as a native date field would hand it over. Rust parses on
+    // every edit and only moves the draft when the text is a real calendar
+    // date -- which is what `type="date"` does for free in the TS app.
+    in-out property <string> pw-date;
+    in-out property <string> email-date;
+    // "3 days ago" / "just now" under each input, composed in Rust: it is a
+    // sentence, and Slint has no way to put a number into one.
+    in property <string> pw-date-hint;
+    in property <string> email-date-hint;
+
     callback cancel-clicked();
     callback save-clicked();
     callback delete-asked();
@@ -219,6 +242,23 @@ export component Editor inherits VerticalLayout {
     callback title-edited();
     callback bg-blur-changed(value: float);
     callback mail-filter-picked(index: int);
+    // Organise. The catalogue is read from preferences inside each handler --
+    // it is shared by every login, so there is no per-draft copy to hand back.
+    // Adding persists the new tag immediately, as TS does, so it survives a
+    // cancelled edit.
+    callback tag-add();
+    // One callback for both directions: Rust flips the id in its selection
+    // list and pushes the cloud back, so the pills can only ever report a
+    // state Rust has agreed to.
+    callback tag-toggle(id: string);
+    // Sent on layout and on every window resize, with the width the cloud was
+    // given; the answer comes back as `tag-rows`.
+    callback tag-relayout(width: float);
+    // The add box changed; `tag-input` is already `<=>`-bound, so only the
+    // verdict on it (`tag-can-add`) travels back.
+    callback tag-input-edited();
+    // 0 = password, 1 = email -- the two dates of the "Last changed" grid.
+    callback date-edited(which: int);
     // Security. The heavy lifting is Rust's: hashing a passcode or an answer
     // is PBKDF2, which must not be written twice, and checking a TOTP code is
     // a whole RFC. These callbacks say what the user did; the results come
@@ -251,8 +291,8 @@ export component Editor inherits VerticalLayout {
     // still missing from the list -- see the note at the top -- which is why
     // the rail highlights by *id* below rather than by position: the two
     // lists are deliberately not parallel while one slot is unimplemented.
-    property <[string]> section-ids: ["identity", "credentials", "security", "reminders", "appearance", "notes", "inbox", "flags"];
-    property <[string]> section-labels: ["Identity", "Credentials", "Security", "Reminders", "Appearance", "Notes", "Inbox", "Flags"];
+    property <[string]> section-ids: ["identity", "credentials", "security", "reminders", "organise", "appearance", "notes", "inbox", "flags"];
+    property <[string]> section-labels: ["Identity", "Credentials", "Security", "Reminders", "Organise", "Appearance", "Notes", "Inbox", "Flags"];
 
     // Keyed by *id*, not by position in the two lists above: the TS order is
     // identity, credentials, security, reminders, organise, appearance,
@@ -1291,6 +1331,152 @@ export component Editor inherits VerticalLayout {
                     }
                     Note {
                         text: "Overrides the global stale-password setting for this login only. The stale badge, the Weak channel and the dashboard all follow it.";
+                    }
+                }
+
+                // ---- Organise ------------------------------------------
+                // Port of `TagPicker` and the "Last changed" grid
+                // (ItemEditor.tsx L569-637): the cloud you click, the row
+                // that adds to it, then the two dates the health warnings
+                // compare against. Saving is still the only way either half
+                // lands on the login -- the one exception being a newly
+                // created tag, which the catalogue takes as soon as it exists
+                // so a cancelled edit does not take it with it (as TS's
+                // `onCommitTags` does).
+                if (root.section-index == 4) : VerticalLayout {
+                    spacing: 16px;
+                    vertical-stretch: 0;
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+
+                        Label { text: "Tags"; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            Field {
+                                value <=> root.tag-input;
+                                placeholder: "Add a tag and press Enter";
+                                autofocus: false;
+                                edited => { root.tag-input-edited(); }
+                                accepted => { root.tag-add(); }
+                            }
+                            Btn {
+                                label: "Add";
+                                kind: 1;
+                                h: 44px;
+                                width: 76px;
+                                enabled: !root.busy && root.tag-can-add;
+                                clicked => { root.tag-add(); }
+                            }
+                        }
+
+                        // The cloud, packed by Rust (Slint has no wrapping
+                        // layout). `init` asks for the first packing and
+                        // `changed width` for every one after it, so the
+                        // lines follow the window rather than the width the
+                        // editor happened to open at. The handler reports this
+                        // rectangle's own width -- `root.width` would be the
+                        // whole editor, rail and margins included, and packing
+                        // to that would run every pill off the right edge.
+                        if (root.tag-rows.length > 0) : cloud := Rectangle {
+                            height: root.tag-rows.length * 34px - 8px;
+                            vertical-stretch: 0;
+                            clip: true;
+
+                            init => { root.tag-relayout(cloud.width / 1px); }
+                            changed width => { root.tag-relayout(cloud.width / 1px); }
+
+                            for row[i] in root.tag-rows : HorizontalLayout {
+                                x: 0px;
+                                y: i * 34px;
+                                width: parent.width;
+                                height: 26px;
+                                spacing: 8px;
+                                vertical-stretch: 0;
+                                alignment: start;
+
+                                for tag in row : Chip {
+                                    label: tag.name;
+                                    hue: tag.hue;
+                                    selected: tag.selected;
+                                    // If Rust's estimate ever runs long for
+                                    // some glyph mix, the label is cut at the
+                                    // pill instead of spilling into its
+                                    // neighbour -- a tight pill reads as a
+                                    // style, overlapping pills read as a bug.
+                                    clip: true;
+                                    toggled => { root.tag-toggle(tag.id); }
+                                }
+                            }
+                        }
+                        if (root.tag-rows.length == 0) : Note {
+                            text: "No tags yet. Add one above to group and filter logins.";
+                        }
+                    }
+
+                    // ---- Last changed ---------------------------------
+                    // Both columns are text boxes rather than a widget
+                    // platform gives us: Slint has no date field, so Rust
+                    // parses `YYYY-MM-DD` on every edit and answers with the
+                    // hint underneath. An unparseable box leaves the draft
+                    // alone -- exactly what the TS handler does when its own
+                    // parse fails.
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+
+                        Label { text: "Last changed"; }
+
+                        HorizontalLayout {
+                            spacing: 16px;
+                            vertical-stretch: 0;
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                vertical-stretch: 0;
+
+                                Label { text: "Password"; }
+                                Field {
+                                    value <=> root.pw-date;
+                                    placeholder: "YYYY-MM-DD";
+                                    autofocus: false;
+                                    edited => { root.date-edited(0); }
+                                    accepted => { root.date-edited(0); }
+                                }
+                                // `Note` rather than a bare `Text`: a text
+                                // pinned to `parent.width` *inside a layout*
+                                // makes the layout's preferred width depend on
+                                // the width the layout itself is about to
+                                // hand out -- a binding loop. `Note` puts that
+                                // binding one level down, inside a Rectangle,
+                                // which is why it and `Label` have always been
+                                // safe here.
+                                Note { text: root.pw-date-hint; }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+                                vertical-stretch: 0;
+
+                                Label { text: "Email"; }
+                                Field {
+                                    value <=> root.email-date;
+                                    placeholder: "YYYY-MM-DD";
+                                    autofocus: false;
+                                    edited => { root.date-edited(1); }
+                                    accepted => { root.date-edited(1); }
+                                }
+                                Note { text: root.email-date-hint; }
+                            }
+                        }
+
+                        Note {
+                            text: "These update on their own when the password or email changes. Set them by hand if you rotated or updated something elsewhere.";
+                        }
                     }
                 }
 

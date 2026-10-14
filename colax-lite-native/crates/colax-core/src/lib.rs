@@ -21,6 +21,7 @@ pub mod prefs;
 pub mod security;
 pub mod storage;
 pub mod strength;
+pub mod text;
 pub mod totp;
 pub mod util;
 
@@ -36,7 +37,10 @@ pub use model::{
     empty_item, is_secured, is_weak_password, normalise_item, normalise_security, normalize_url,
     security_level, stale_days_for, LoginSecurity, StoredItem, VaultItem,
 };
-pub use prefs::{normalise_preferences, VaultPreferences};
+pub use prefs::{
+    create_tag, ensure_default_tags, new_tag_id, normalise_preferences, normalise_tags, Tag,
+    VaultPreferences,
+};
 pub use security::{
     answer_too_weak, hash_answer, hash_passcode, normalise_answer, passcode_too_weak,
     verify_answer, verify_passcode,
@@ -46,3 +50,4 @@ pub use strength::{
     estimate_strength, generate_passphrase, generate_password, passphrase_word_count,
     suggest_master_password, GeneratorOptions, Strength,
 };
+pub use text::{from_date_input, relative_time, to_date_input};
