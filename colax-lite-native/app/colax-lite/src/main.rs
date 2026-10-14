@@ -439,7 +439,15 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     ui.set_vault_view(prefs.view.as_str().into());
     ui.set_vault_sort(prefs.sort.as_str().into());
     ui.set_vault_sort_label(items::sort_label(&prefs.sort).into());
-    ui.set_view_labels(prefs.sidebar_labels.as_str().into());
+    ui.set_labels_mode(prefs.sidebar_labels.as_str().into());
+    // Where the rail docks and how it reads: three dials straight from the
+    // prefs, plus the two the shell derives its chrome from. The compact
+    // flag is TS's own expression -- `compactSidebar || labels === 'icon'`
+    // (App.tsx L2897) -- because an icon-only rail is a dot column either
+    // way Settings looks at it.
+    ui.set_rail_position(prefs.sidebar_position.as_str().into());
+    ui.set_rail_hidden(!prefs.show_sidebar);
+    ui.set_rail_compact(prefs.compact_sidebar || prefs.sidebar_labels == "icon");
     ui.set_motion(prefs.motion as f32);
     let vault_width = state.borrow().vault_width;
     ui.set_grid_cols(grid_cols_for(vault_width));
@@ -504,6 +512,46 @@ fn vault_relayout(ui: &MainWindow, state: &Shared, width: f32) {
     }
     state.borrow_mut().vault_width = width as f64;
     ui.set_grid_cols(grid_cols_for(width as f64));
+}
+
+/// Where the rail docks. Same contract as the other dials: the id is checked
+/// against the pref's whitelist, the write goes through `save_prefs`, and the
+/// refresh carries it to the shell -- the geometry lives in Slint and reads
+/// the pref through this push and nothing else.
+fn rail_picked(ui: &MainWindow, state: &Shared, position: &str) {
+    if !matches!(position, "left" | "right" | "top" | "bottom") {
+        return;
+    }
+    let mut prefs = items::prefs_from(state.borrow().engine.preferences());
+    if prefs.sidebar_position == position {
+        return;
+    }
+    prefs.sidebar_position = position.to_string();
+    if !save_prefs(ui, state, &prefs) {
+        ui.set_error_text("That rail position could not be saved.".into());
+        return;
+    }
+    refresh_items(ui, state);
+}
+
+/// What the rail's rows spell out (`sidebarLabels`). The same contract, and
+/// the compact flag follows it out again: icon labels are the other half of
+/// `compactSidebar || labels === 'icon'`, and a rail that just changed to
+/// icons is a dot column.
+fn labels_picked(ui: &MainWindow, state: &Shared, labels: &str) {
+    if !matches!(labels, "icon" | "name" | "both") {
+        return;
+    }
+    let mut prefs = items::prefs_from(state.borrow().engine.preferences());
+    if prefs.sidebar_labels == labels {
+        return;
+    }
+    prefs.sidebar_labels = labels.to_string();
+    if !save_prefs(ui, state, &prefs) {
+        ui.set_error_text("Those labels could not be saved.".into());
+        return;
+    }
+    refresh_items(ui, state);
 }
 
 /// Switches screens. Setting `screen` runs `changed screen` in the Slint
@@ -599,7 +647,7 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
     // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
     // the four presentations live on the vault screen itself, so the run
     // stays exactly where the app opened it and drives the switcher from
-    // there.
+    // there. `COLAX_DEV_RAIL` is the same deal for the rail's dials.
     if std::env::var_os("COLAX_DEV_VIEW").is_some() {
         let weak = ui.as_weak();
         let timer = slint::Timer::default();
@@ -613,6 +661,23 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
             },
         );
         // Dropping the handle would cancel it before it fires.
+        std::mem::forget(timer);
+        return;
+    }
+
+    if std::env::var_os("COLAX_DEV_RAIL").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_rail(&ui, &st);
+                }
+            },
+        );
         std::mem::forget(timer);
         return;
     }
@@ -768,7 +833,7 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
 #[cfg(debug_assertions)]
 fn dev_dump(ui: &MainWindow, tag: &str) {
     let dump = format!(
-        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} {}\n",
+        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} rail=[{}/{}] compact={} hidden={} {}\n",
         ui.get_screen() == Screen::Editor,
         ui.get_screen() == Screen::Vault,
         ui.get_editor_section(),
@@ -817,6 +882,12 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
         ui.get_vault_view(),
         ui.get_vault_sort_label(),
         ui.get_grid_cols(),
+        // ...and the rail's three dials as the window holds them: docked
+        // where, spelled how, narrowed or gone at all.
+        ui.get_rail_position(),
+        ui.get_labels_mode(),
+        ui.get_rail_compact(),
+        ui.get_rail_hidden(),
         describe_cards(ui),
     );
     let path = app_dir().join("dev-dump.txt");
@@ -1125,6 +1196,71 @@ fn dev_view(ui: &MainWindow) {
     dev_dump(ui, "view10.narrow");
     ui.invoke_vault_relayout(1400.0);
     dev_dump(ui, "view11.wide");
+}
+
+/// Debug-only: dock the rail four ways, label it three, and take it off the
+/// window -- one dump per step, same shape as the other runs. `showSidebar`
+/// and `compactSidebar` are written as prefs the way Settings will write
+/// them (no Settings screen exists yet, and a stored vault from the web
+/// build arrives with its own), so every step covers the path a real change
+/// takes: pref, save, push. What a line can show is what reached the window;
+/// the geometry those props drive is read off by hand when the desktop is
+/// unlocked.
+#[cfg(debug_assertions)]
+fn dev_rail(ui: &MainWindow, state: &Shared) {
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    // 1. Whatever the vault opened as -- left/both unless a stored vault
+    //    said otherwise.
+    dev_dump(ui, "rail1.open");
+
+    // 2-5. The four docks, then an id outside them: the refused line must
+    //      be identical to the one before it.
+    ui.invoke_rail_picked("right".into());
+    dev_dump(ui, "rail2.right");
+    ui.invoke_rail_picked("top".into());
+    dev_dump(ui, "rail3.top");
+    ui.invoke_rail_picked("bottom".into());
+    dev_dump(ui, "rail4.bottom");
+    ui.invoke_rail_picked("middle".into());
+    dev_dump(ui, "rail5.refused");
+
+    // 6-9. Back to the left dock, then the three label modes. Icon labels
+    //      narrow the rail too (the compact flag rides the push), and a bad
+    //      mode is refused the same way a bad dock is.
+    ui.invoke_rail_picked("left".into());
+    ui.invoke_labels_picked("icon".into());
+    dev_dump(ui, "rail6.icons");
+    ui.invoke_labels_picked("name".into());
+    dev_dump(ui, "rail7.names");
+    ui.invoke_labels_picked("both".into());
+    dev_dump(ui, "rail8.both");
+    ui.invoke_labels_picked("names".into());
+    dev_dump(ui, "rail9.labels-refused");
+
+    // 10-12. The two dials only Settings writes: hidden, then compact on top
+    //       of it, then everything back to where it started.
+    write_sidebar_prefs(ui, state, false, false);
+    dev_dump(ui, "rail10.hidden");
+    write_sidebar_prefs(ui, state, true, true);
+    dev_dump(ui, "rail11.compact");
+    // Back to the defaults, not to the hidden state above: shown and full
+    // width, the way the seed writes them.
+    write_sidebar_prefs(ui, state, true, false);
+    dev_dump(ui, "rail12.restored");
+}
+
+/// The bulk write `rail10`-`rail12` need: one prefs round trip for the two
+/// sidebar switches the screen has no control for yet, the way Settings
+/// will do it when Settings exists.
+#[cfg(debug_assertions)]
+fn write_sidebar_prefs(ui: &MainWindow, state: &Shared, show: bool, compact: bool) {
+    let mut prefs = items::prefs_from(state.borrow().engine.preferences());
+    prefs.show_sidebar = show;
+    prefs.compact_sidebar = compact;
+    if save_prefs(ui, state, &prefs) {
+        refresh_items(ui, state);
+    }
 }
 
 /// A spread of logins chosen to exercise the cards: a favorite, a stale one,
@@ -3223,6 +3359,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_vault_relayout(move |width| {
                 if let Some(ui) = weak.upgrade() {
                     vault_relayout(&ui, &st, width);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_rail_picked(move |position| {
+                if let Some(ui) = weak.upgrade() {
+                    rail_picked(&ui, &st, &position);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_labels_picked(move |labels| {
+                if let Some(ui) = weak.upgrade() {
+                    labels_picked(&ui, &st, &labels);
                 }
             });
 

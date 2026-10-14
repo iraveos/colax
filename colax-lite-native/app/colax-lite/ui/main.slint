@@ -403,6 +403,62 @@ component view-chip inherits Rectangle {
     }
 }
 
+// One rail row, both dockings. As a column line it fills the rail's width
+// and lays out dot / label / count left to right; as a strip pill it hugs
+// its own content (a rectangle in a layout keeps its preferred width when
+// that is what the layout asks for -- the same thing `Btn` does in the
+// topbar). `labels-mode` is `sidebarLabels` and `compact` the narrowed rail:
+// between them they are TS's `showIcon`/`showLabel` (Sidebar.tsx L177-189),
+// with the count kept only while there is room for it. In a compact dock the
+// padding *is* the centring: 8 of rail, 14 of row, puts the 16px dot at 22
+// in a 60px column.
+component rail-row inherits Rectangle {
+    in property <SidebarRow> entry;
+    in property <string> labels-mode: "both";
+    in property <bool> compact: false;
+    callback picked(id: string);
+
+    border-radius: Theme.radius-sm;
+    background: root.entry.selected ? Theme.accent-soft
+        : (rail-touch.has-hover ? Theme.row-hover : #00000000);
+
+    rail-touch := TouchArea {
+        clicked => { root.picked(root.entry.id); }
+    }
+
+    HorizontalLayout {
+        padding-left: root.compact ? 14px : 10px;
+        padding-right: root.compact ? 14px : 10px;
+        spacing: root.compact ? 0px : 10px;
+
+        if (root.labels-mode != "name") : Rectangle {
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            background: root.entry.hue;
+            opacity: root.entry.selected ? 1.0 : 0.65;
+        }
+
+        if (root.labels-mode != "icon" && !root.compact) : Text {
+            text: root.entry.label;
+            color: root.entry.selected ? Theme.text : Theme.muted;
+            font-size: 13px;
+            font-weight: root.entry.selected ? 600 : 500;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+
+        if (!root.compact) : Rectangle { horizontal-stretch: 1; width: 1px; }
+
+        if (root.entry.count > 0 && !root.compact) : Text {
+            text: root.entry.count;
+            color: root.entry.selected ? Theme.accent-text : Theme.faint;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
 // Re-exported so Rust can reach them: applyAppearance pushes every token into
 // this global (ADR-2), items.rs and main.rs build the models (LoginCard,
 // QuestionRow, QrCell, ...), and both need those types in the generated
@@ -454,8 +510,26 @@ export component MainWindow inherits Window {
     in-out property <string> vault-sort: "title";
     // The label the current sort wears in the button ("Recently updated").
     in property <string> vault-sort-label: "Name";
-    // `sidebarLabels`: icon / name / both, one value for the switcher.
-    in property <string> view-labels: "both";
+    // `sidebarLabels`: icon / name / both. One value for the switcher *and*
+    // for the rail alike -- TS reads the same pref at Sidebar.tsx L177-189
+    // and again wherever the views are labelled.
+    in property <string> labels-mode: "both";
+    // ---- The rail's dials --------------------------------------------
+    // `sidebarPosition` decides where it docks: left and right keep the
+    // column and swap ends, top and bottom turn it into a strip across the
+    // window (the four `data-rail` grids, app.css L32-44). `showSidebar`
+    // takes it off the window entirely; `compactSidebar` -- or icon-only
+    // labels -- narrows it to the dot column (60px, app.css L1310-1312).
+    in-out property <string> rail-position: "left";
+    in property <bool> rail-hidden: false;
+    in property <bool> rail-compact: false;
+    // Derived from the three above so the shell's geometry reads as facts
+    // rather than as the same test written four times.
+    in property <bool> rail-strip: !root.rail-hidden
+        && (root.rail-position == "top" || root.rail-position == "bottom");
+    in property <bool> rail-side: !root.rail-hidden && !root.rail-strip;
+    in property <length> rail-w: root.rail-compact ? 60px : 244px;
+    in property <length> rail-h: 56px;
     // The `motion` pref, 0..1: 0 is "reduce animation", and it is what Flow's
     // stagger and Orbit's drift both check.
     in property <float> motion: 1.0;
@@ -615,6 +689,10 @@ export component MainWindow inherits Window {
     // Sent by the grid with its width, so Rust can answer with a column
     // count (Slint has no wrapping grid and no integer maths worth having).
     callback vault-relayout(width: float);
+    // The rail's two dials. Ids, not labels: Rust checks each against the
+    // pref's own whitelist before it writes.
+    callback rail-picked(position: string);
+    callback labels-picked(labels: string);
     callback undo-clicked();
     callback undo-dismissed();
     callback quit-app();
@@ -711,26 +789,38 @@ export component MainWindow inherits Window {
         if (root.screen == Screen.Vault) : Rectangle {
             vertical-stretch: 1;
 
-            HorizontalLayout {
-                width: parent.width;
-                height: parent.height;
-
-
             // ---- The rail -------------------------------------------------
-            Rectangle {
-                width: 244px;
+            // Docked by `sidebarPosition`: a column on one side, or a strip
+            // across the window. Both boxes are placed by hand because a
+            // layout orders its children by declaration, and the right-hand
+            // dock is the same markup in the other order -- which no layout
+            // can express.
+            rail := Rectangle {
                 background: Theme.bg-deep;
+                width: root.rail-strip ? parent.width
+                    : (root.rail-side ? root.rail-w : 0px);
+                height: root.rail-strip ? root.rail-h
+                    : (root.rail-side ? parent.height : 0px);
+                x: root.rail-strip ? 0px
+                    : (root.rail-position == "right" ? parent.width - root.rail-w : 0px);
+                y: root.rail-strip
+                    ? (root.rail-position == "top" ? 0px : parent.height - root.rail-h)
+                    : 0px;
+                clip: true;
 
-                VerticalLayout {
+                // Side: the column, top to bottom. The padding narrows with
+                // the rail; the name and the count are simply not built when
+                // there is no room left for them.
+                if (!root.rail-strip) : VerticalLayout {
                     padding-top: 26px;
                     padding-bottom: 20px;
-                    padding-left: 14px;
-                    padding-right: 14px;
+                    padding-left: root.rail-compact ? 8px : 14px;
+                    padding-right: root.rail-compact ? 8px : 14px;
                     spacing: 4px;
 
                     HorizontalLayout {
-                        padding-left: 8px;
-                        padding-bottom: 18px;
+                        padding-left: root.rail-compact ? 7px : 8px;
+                        padding-bottom: root.rail-compact ? 8px : 18px;
                         spacing: 10px;
 
                         Rectangle {
@@ -751,7 +841,7 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        Text {
+                        if (!root.rail-compact) : Text {
                             text: "Colax Lite";
                             color: Theme.text;
                             font-size: 16px;
@@ -774,65 +864,107 @@ export component MainWindow inherits Window {
                             background: Theme.hairline;
                         }
 
-                        if (row.kind != 2) : rail-row := Rectangle {
-                            border-radius: Theme.radius-sm;
-                            background: row.selected ? Theme.accent-soft
-                                : (rail-touch.has-hover ? Theme.row-hover : #00000000);
-
-                            rail-touch := TouchArea {
-                                clicked => {
-                                    root.active-channel = row.id;
-                                    root.channel-selected(row.id);
-                                }
-                            }
-
-                            HorizontalLayout {
-                                padding-left: 10px;
-                                padding-right: 10px;
-                                spacing: 10px;
-
-                                Rectangle {
-                                    width: 16px;
-                                    height: 16px;
-                                    border-radius: 8px;
-                                    background: row.hue;
-                                    opacity: row.selected ? 1.0 : 0.65;
-                                }
-
-                                Text {
-                                    text: row.label;
-                                    color: row.selected ? Theme.text : Theme.muted;
-                                    font-size: 13px;
-                                    font-weight: row.selected ? 600 : 500;
-                                    overflow: elide;
-                                    vertical-alignment: center;
-                                }
-
-                                Rectangle { horizontal-stretch: 1; width: 1px; }
-
-                                if (row.count > 0) : Text {
-                                    text: row.count;
-                                    color: row.selected ? Theme.accent-text : Theme.faint;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                }
+                        if (row.kind != 2) : rail-row {
+                            entry: row;
+                            labels-mode: root.labels-mode;
+                            compact: root.rail-compact;
+                            picked => {
+                                root.active-channel = row.id;
+                                root.channel-selected(row.id);
                             }
                         }
                     }
 
                     Rectangle { vertical-stretch: 1; height: 1px; }
 
-                    Text {
+                    if (!root.rail-compact) : Text {
                         text: root.count-label;
                         color: Theme.faint;
                         font-size: 12px;
                     }
                 }
+
+                // Strip: the same rows as pills across the window -- TS flips
+                // the list to a row (app.css L40-70) rather than re-rendering
+                // it, and these two layouts are that flip. Rows keep their
+                // 34px and hug whatever they need; the count rides the far end.
+                if (root.rail-strip) : HorizontalLayout {
+                    padding-top: 11px;
+                    padding-bottom: 11px;
+                    padding-left: 14px;
+                    padding-right: 18px;
+                    spacing: 6px;
+
+                    Rectangle {
+                        width: 30px;
+                        height: 30px;
+                        border-radius: 8px;
+                        background: @linear-gradient(120deg, Theme.grad-from, Theme.grad-to);
+
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: "C";
+                            color: #ffffff;
+                            font-size: 15px;
+                            font-weight: 800;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if (!root.rail-compact) : Text {
+                        text: "Colax Lite";
+                        color: Theme.text;
+                        font-size: 16px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+
+                    for row in root.sidebar : Rectangle {
+                        height: row.kind == 2 ? 22px : 34px;
+
+                        // The rule turns with the rail: a hairline standing up
+                        // instead of lying down (app.css L68).
+                        if (row.kind == 2) : Rectangle {
+                            x: 0px;
+                            y: (parent.height - 22px) / 2;
+                            width: 1px;
+                            height: 22px;
+                            background: Theme.hairline;
+                        }
+
+                        if (row.kind != 2) : rail-row {
+                            entry: row;
+                            labels-mode: root.labels-mode;
+                            compact: root.rail-compact;
+                            picked => {
+                                root.active-channel = row.id;
+                                root.channel-selected(row.id);
+                            }
+                        }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                    Text {
+                        text: root.count-label;
+                        color: Theme.faint;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
             }
 
             // ---- The content ----------------------------------------------
+            // Placed in the rail's wake: the side column leaves its width
+            // beside it, the strip leaves its height above or below, and a
+            // hidden rail leaves nothing at all.
             Rectangle {
-                horizontal-stretch: 1;
+                x: root.rail-side && root.rail-position == "left" ? root.rail-w : 0px;
+                y: root.rail-strip && root.rail-position == "top" ? root.rail-h : 0px;
+                width: root.rail-side ? parent.width - root.rail-w : parent.width;
+                height: root.rail-strip ? parent.height - root.rail-h : parent.height;
 
                 VerticalLayout {
                     padding-top: 26px;
@@ -912,7 +1044,7 @@ export component MainWindow inherits Window {
                             glyph: "≈";
                             hue: #3b82f6;
                             selected: root.vault-view == "animated";
-                            labels-mode: root.view-labels;
+                            labels-mode: root.labels-mode;
                             picked => { root.view-picked("animated"); }
                         }
 
@@ -922,7 +1054,7 @@ export component MainWindow inherits Window {
                             glyph: "●";
                             hue: #8b5cf6;
                             selected: root.vault-view == "carousel";
-                            labels-mode: root.view-labels;
+                            labels-mode: root.labels-mode;
                             picked => { root.view-picked("carousel"); }
                         }
 
@@ -932,7 +1064,7 @@ export component MainWindow inherits Window {
                             glyph: "☰";
                             hue: #10b981;
                             selected: root.vault-view == "basic";
-                            labels-mode: root.view-labels;
+                            labels-mode: root.labels-mode;
                             picked => { root.view-picked("basic"); }
                         }
 
@@ -942,7 +1074,7 @@ export component MainWindow inherits Window {
                             glyph: "▦";
                             hue: #f59e0b;
                             selected: root.vault-view == "grid";
-                            labels-mode: root.view-labels;
+                            labels-mode: root.labels-mode;
                             picked => { root.view-picked("grid"); }
                         }
 
@@ -1185,7 +1317,6 @@ export component MainWindow inherits Window {
                     }
                 }
             }
-                }
 
             // ---- The sort menu -------------------------------------------
             // Drops under its button and floats over the columns, so the

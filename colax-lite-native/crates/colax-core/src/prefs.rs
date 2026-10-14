@@ -51,6 +51,15 @@ pub struct VaultPreferences {
     pub show_urls: bool,
     pub sidebar_position: String,
     pub sidebar_labels: String,
+    /// `data-compact-sidebar` in the TS shell (App.tsx L2897): the rail
+    /// narrows to its dot column. Set by Settings there; here it also
+    /// answers to icon-only labels, which is the other half of the same
+    /// expression.
+    pub compact_sidebar: bool,
+    /// `showSidebar`: the rail is off the window entirely (the pref is read
+    /// before unlock too, so the tray can show it -- but the geometry is the
+    /// shell's job).
+    pub show_sidebar: bool,
     // Sort and delete behaviour (Task 3.5 / 3.6).
     /// Favourites float to the top of every sort mode.
     pub pin_favorites: bool,
@@ -109,6 +118,8 @@ impl Default for VaultPreferences {
             tags: Vec::new(),
             sidebar_position: "left".into(),
             sidebar_labels: "both".into(),
+            compact_sidebar: false,
+            show_sidebar: true,
             tray_enabled: true,
             close_to_tray: true,
             launch_at_login: false,
@@ -194,6 +205,11 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     };
     out.sidebar_position = one_of(o.get("sidebarPosition").unwrap_or(&Value::Null), &["left","right","top","bottom"], "left");
     out.sidebar_labels = one_of(o.get("sidebarLabels").unwrap_or(&Value::Null), &["icon","name","both"], "both");
+    // `Boolean(...)` over the defaults, the way normalisePreferences treats
+    // every switch: absent keeps the default the struct starts with, and a
+    // stored vault from the web build brings its own.
+    out.compact_sidebar = truthy(o.get("compactSidebar"), false);
+    out.show_sidebar = truthy(o.get("showSidebar"), true);
     // Boolean(...) in JS: anything truthy reads as true, so a legacy string
     // here is still honoured rather than reset.
     out.tray_enabled = truthy(o.get("trayEnabled"), true);
@@ -212,6 +228,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     let known = ["theme","accent","textScale","motion","motionSpeed","ambient","density","roundness",
         "cardDepth","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",
         "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
+        "compactSidebar","showSidebar",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
         "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes","tags"];
     for (k,v) in o.iter() {
@@ -394,6 +411,8 @@ mod tests {
         assert_eq!(p.sort, "title");
         assert_eq!(p.sidebar_position, "left");
         assert_eq!(p.sidebar_labels, "both");
+        assert!(!p.compact_sidebar);
+        assert!(p.show_sidebar);
     }
 
     #[test]
@@ -401,7 +420,7 @@ mod tests {
         let p = normalise_preferences(&json!({
             "theme": "dark", "accent": "sage", "density": "spacious",
             "view": "grid", "sort": "recent", "sidebarPosition": "right",
-            "sidebarLabels": "icon",
+            "sidebarLabels": "icon", "compactSidebar": true, "showSidebar": false,
         }));
         assert_eq!(p.theme, "dark");
         assert_eq!(p.accent, "sage");
@@ -410,6 +429,12 @@ mod tests {
         assert_eq!(p.sort, "recent");
         assert_eq!(p.sidebar_position, "right");
         assert_eq!(p.sidebar_labels, "icon");
+        assert!(p.compact_sidebar);
+        assert!(!p.show_sidebar);
+        // Both are *known* now: they must not linger in `extra` and get
+        // written a second time alongside their typed fields.
+        assert!(p.extra.get("compactSidebar").is_none());
+        assert!(p.extra.get("showSidebar").is_none());
     }
 
     #[test]
