@@ -109,6 +109,27 @@ fn state_path() -> PathBuf {
     app_dir().join(STATE_FILE)
 }
 
+/// Whether the app's own data folder took a write just now. The TS build
+/// asks the browser the same question (`persistent` in LockScreen.tsx
+/// L297-301) and warns that the vault will not outlive the session when
+/// the answer is no; this app's equivalent of blocked storage is a data
+/// folder that refuses a write. Probed once at boot -- storage does not
+/// change its mind while the process runs.
+fn storage_is_persistent() -> bool {
+    let dir = app_dir();
+    if fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".write-probe");
+    match fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn read_state() -> ShellState {
     fs::read_to_string(state_path())
         .ok()
@@ -595,7 +616,38 @@ fn labels_picked(ui: &MainWindow, state: &Shared, labels: &str) {
 /// afterwards re-reads the now-empty query.
 ///
 /// Must be called with no borrow of `AppState` held -- it takes its own.
+/// The one path between screens, and therefore the one place the transient
+/// layer is reset: the messages, the typed-in text that cannot still be
+/// needed, the meter that was describing it, and the search box when the
+/// list is left behind.
+///
+/// This used to be a `changed screen` handler in Slint. A `changed` callback
+/// fires after the frame in which the property changed, so anything set on
+/// the far side of the switch was wiped a frame later, before it was ever
+/// drawn -- "Vault created." and the suggested password each survived one
+/// synchronous dump and were gone by the next, half a second later. Doing it
+/// here runs it in the same tick as the switch and *before* the caller sets
+/// its own values, so a notice or a filled field lands after the reset and
+/// stays.
 fn goto(ui: &MainWindow, state: &Shared, screen: Screen) {
+    ui.set_error_text("".into());
+    ui.set_notice_text("".into());
+    if screen != Screen::Vault {
+        // The create flow stashes its password in Rust before leaving its
+        // stage, so the fields cannot be needed on the far side.
+        ui.set_password_value("".into());
+        ui.set_confirm_value("".into());
+        // ...and the meter that was describing them: a fresh password screen
+        // starts with an empty field, so it must not open with the last
+        // attempt's verdict still lit.
+        ui.set_lock_strength_score(-1);
+        ui.set_lock_strength_label("".into());
+        ui.set_lock_strength_bits("".into());
+        ui.set_lock_strength_crack("".into());
+    }
+    if screen == Screen::Vault {
+        ui.set_search_text("".into());
+    }
     ui.set_screen(screen);
     refresh_items(ui, state);
     // A second factor on the vault gates the *shell*, so every landing on it
@@ -690,8 +742,10 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
     // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
     // the four presentations live on the vault screen itself, so the run
     // stays exactly where the app opened it and drives the switcher from
-    // there. `COLAX_DEV_RAIL` is the same deal for the rail's dials, and
-    // `COLAX_DEV_GATE` walks the SecurityGate across every factor it knows.
+    // there. `COLAX_DEV_RAIL` is the same deal for the rail's dials,
+    // `COLAX_DEV_GATE` walks the SecurityGate across every factor it knows,
+    // and `COLAX_DEV_LOCK` walks the lock card's meter, floor, suggestion
+    // and theme dial.
     if std::env::var_os("COLAX_DEV_VIEW").is_some() {
         let weak = ui.as_weak();
         let timer = slint::Timer::default();
@@ -736,6 +790,23 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
             move || {
                 if let Some(ui) = weak.upgrade() {
                     dev_gate(&ui, &st);
+                }
+            },
+        );
+        std::mem::forget(timer);
+        return;
+    }
+
+    if std::env::var_os("COLAX_DEV_LOCK").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_lock(&ui, &st);
                 }
             },
         );
@@ -894,9 +965,27 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
 #[cfg(debug_assertions)]
 fn dev_dump(ui: &MainWindow, tag: &str) {
     let dump = format!(
-        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} rail=[{}/{}] compact={} hidden={} gate={} gf=[{}/{}/{}] gerr=[{}] {}\n",
+        "{tag}: editor={} vault={} scr=[{}] werr=[{}] section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} rail=[{}/{}] compact={} hidden={} gate={} gf=[{}/{}/{}] gerr=[{}] thr=[{}] pers={} ls=[{}/{}] lp={} lpair={} {}\n",
         ui.get_screen() == Screen::Editor,
         ui.get_screen() == Screen::Vault,
+        // Which screen, by name: a refusal that left the screen, or a
+        // suggestion that never reached confirm, reads here. `editor` and
+        // `vault` above are booleans and cannot say which of the eight
+        // other screens the window is on.
+        match ui.get_screen() {
+            Screen::Vault => "vault",
+            Screen::Editor => "editor",
+            Screen::CreateChoose => "create-choose",
+            Screen::CreatePassword => "create-password",
+            Screen::CreateConfirm => "create-confirm",
+            Screen::UnlockPassword => "unlock-password",
+            Screen::UnlockDevice => "unlock-device",
+            Screen::ImportPassword => "import-password",
+            Screen::Error => "error",
+        },
+        // The lock card's own error strip, which the editor's trio below
+        // does not carry: the refusals land here.
+        ui.get_error_text(),
         ui.get_editor_section(),
         ui.get_edit_id(),
         ui.get_edit_title(),
@@ -956,6 +1045,17 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
         ui.get_gate_has_totp(),
         ui.get_gate_has_questions(),
         ui.get_gate_error(),
+        // ...and the lock card's: which palette is up, whether the data
+        // folder took a write, what the create-password meter says, and
+        // whether the two create fields hold the same thing (a suggestion
+        // that filled only one of them would still look filled).
+        ui.global::<Theme>().get_resolved_theme(),
+        ui.get_storage_persistent(),
+        ui.get_lock_strength_score(),
+        ui.get_lock_strength_label(),
+        !ui.get_password_value().is_empty(),
+        ui.get_password_value() == ui.get_confirm_value()
+            && !ui.get_password_value().is_empty(),
         describe_cards(ui),
     );
     let path = app_dir().join("dev-dump.txt");
@@ -1477,6 +1577,95 @@ fn dev_gate(ui: &MainWindow, state: &Shared) {
     dev_dump(ui, "gate16.reasked");
     ui.invoke_gate_cancel();
     dev_dump(ui, "gate17.cancel-locks");
+}
+
+/// Debug-only: walk the lock card's dials -- the create-password meter
+/// and the estimator's floor under it, the suggestion that fills both
+/// fields and jumps a stage, and the Sun/Moon writing the palette back.
+/// `COLAX_DEV_LOCK=1`.
+#[cfg(debug_assertions)]
+fn dev_lock(ui: &MainWindow, state: &Shared) {
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    // 1. The protection chooser, as a first run would open it.
+    goto(ui, state, Screen::CreateChoose);
+    dev_dump(ui, "lock1.choose");
+
+    // 2-3. A short password: the meter says so per keystroke, and the
+    //      floor refuses it with the TS sentence (L76-79) that points at
+    //      the suggestion under the button.
+    goto(ui, state, Screen::CreatePassword);
+    ui.set_password_value("abc".into());
+    ui.invoke_password_edited();
+    dev_dump(ui, "lock2.weak-meter");
+    ui.invoke_password_next();
+    dev_dump(ui, "lock3.refused");
+
+    // 4-5. A strong one: the meter climbs, the floor lets it through,
+    //      and the confirm stage holds the password stashed in Rust.
+    ui.set_password_value("H7$mQx2vB9nR4wZ".into());
+    ui.invoke_password_edited();
+    dev_dump(ui, "lock4.strong-meter");
+    ui.invoke_password_next();
+    dev_dump(ui, "lock5.confirm");
+
+    // 6. A confirm that does not match: the TS sentence, stage unchanged.
+    ui.set_confirm_value("something else".into());
+    ui.invoke_create_submit();
+    dev_dump(ui, "lock6.mismatch");
+
+    // 7. The suggestion: both fields the same phrase, one stage skipped
+    //    ahead, and the notice that says to write it down.
+    goto(ui, state, Screen::CreatePassword);
+    ui.invoke_suggest_password();
+    dev_dump(ui, "lock7.suggested");
+
+    // 8-9. The Sun/Moon: the resolved palette flips twice and the
+    //      preference is written back each time, dark -> light -> dark.
+    ui.invoke_toggle_theme();
+    dev_dump(ui, "lock8.light");
+    ui.invoke_toggle_theme();
+    dev_dump(ui, "lock9.dark");
+
+    // 10-13. `changed screen` clears the error, the two fields and the
+    //        meter on every switch -- but a synchronous dump cannot tell a
+    //        clear that is coming on the next frame from one that never
+    //        comes, and lock5/lock7 above look like the latter. Two probes
+    //        settle it: Back to the chooser and look again half a second
+    //        later; then a suggestion, whose notice must survive its own
+    //        screen switch, because a strip the user never gets to read is
+    //        the same as no strip at all.
+    ui.invoke_create_back();
+    dev_dump(ui, "lock10.back-now");
+    {
+        let weak = ui.as_weak();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(500),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_dump(&ui, "lock11.back-frame");
+                    ui.invoke_create_with_password();
+                    ui.invoke_suggest_password();
+                    dev_dump(&ui, "lock12.suggest-now");
+                }
+            },
+        );
+        std::mem::forget(timer);
+        let weak = ui.as_weak();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(1000),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_dump(&ui, "lock13.suggest-frame");
+                }
+            },
+        );
+        std::mem::forget(timer);
+    }
 }
 
 /// A spread of logins chosen to exercise the cards: a favorite, a stale one,
@@ -2061,6 +2250,63 @@ fn push_strength(ui: &MainWindow, password: &str) {
     ui.set_edit_strength_label(strength.label.as_str().into());
     ui.set_edit_strength_bits(strength.bits.to_string().into());
     ui.set_edit_strength_crack(strength.crack_time.as_str().into());
+}
+
+/// The lock card's meter: the same estimator the editor's meter reads,
+/// pushed to its own props because the lock screens and the editor never
+/// share a screen but do share a window. -1 means "nothing typed yet",
+/// which the widget renders as no meter at all.
+fn push_lock_strength(ui: &MainWindow, password: &str) {
+    if password.is_empty() {
+        ui.set_lock_strength_score(-1);
+        ui.set_lock_strength_label("".into());
+        ui.set_lock_strength_bits("".into());
+        ui.set_lock_strength_crack("".into());
+        return;
+    }
+    let strength = estimate_strength(password);
+    ui.set_lock_strength_score(strength.score as i32);
+    ui.set_lock_strength_label(strength.label.as_str().into());
+    ui.set_lock_strength_bits(strength.bits.to_string().into());
+    ui.set_lock_strength_crack(strength.crack_time.as_str().into());
+}
+
+/// "Suggest a strong vault password" (LockScreen.tsx L96-103): a seven-
+/// word passphrase plus four digits, dropped into both fields and taken
+/// straight to confirm -- a password the user never had to type cannot be
+/// mistyped. The values land *after* the screen change, whose handler
+/// clears the fields the switch wiped.
+fn suggest_password(ui: &MainWindow, state: &Shared) {
+    if ui.get_busy() || ui.get_screen() != Screen::CreatePassword {
+        return;
+    }
+    let suggestion = colax_core::suggest_master_password(7);
+    state.borrow_mut().pending_password = suggestion.clone();
+    goto(ui, state, Screen::CreateConfirm);
+    ui.set_password_value(suggestion.clone().into());
+    ui.set_confirm_value(suggestion.as_str().into());
+    push_lock_strength(ui, &suggestion);
+    notice(
+        ui,
+        "Suggested vault password set \u{2014} save it somewhere safe now",
+    );
+}
+
+/// The lock card's Sun/Moon: flips the *resolved* theme dark <-> light
+/// and writes that as the preference, exactly as the TS toggle reads
+/// `dataset.theme` and writes the opposite (App.tsx L2750-2753). A
+/// `system` vault therefore lands on an explicit dark or light on the
+/// user's word. Preferences are readable and writable at every lock
+/// state, so this works before the first vault exists too.
+fn toggle_theme(ui: &MainWindow, state: &Shared) {
+    let resolved = ui.global::<Theme>().get_resolved_theme().to_string();
+    let next = if resolved == "dark" { "light" } else { "dark" };
+    let mut prefs = {
+        let guard = state.borrow();
+        colax_core::normalise_preferences(guard.engine.preferences())
+    };
+    prefs.theme = next.to_string();
+    save_prefs(ui, state, &prefs);
 }
 
 /// Re-rolls the generator from the options currently in the UI and pushes
@@ -3440,6 +3686,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = MainWindow::new()?;
 
+    // The lock card's storage warning is decided here, once: the folder
+    // either takes a write or it does not.
+    ui.set_storage_persistent(storage_is_persistent());
+
     let tray = AppTray::new()?;
 
     // ---- Open the vault ---------------------------------------------------
@@ -3624,12 +3874,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 st.borrow_mut().pending_password.clear();
                 goto(&ui, &st, Screen::CreateChoose);
             });
+
+            // The lock card's three dials: the meter under the password
+            // field, the suggestion, and the Sun/Moon in the corner.
+            let weak = ui.as_weak();
+            ui.on_password_edited(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                if ui.get_screen() != Screen::CreatePassword {
+                    return;
+                }
+                let password = ui.get_password_value().to_string();
+                push_lock_strength(&ui, &password);
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_suggest_password(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                suggest_password(&ui, &st);
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_toggle_theme(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                toggle_theme(&ui, &st);
+            });
         }
 
         {
-            // Create: password -> confirm -> create. The length floor here
-            // stands in for the lite app's strength meter; the meter and the
-            // suggestion button come with the passwords module.
+            // Create: password -> confirm -> create. The floor is the
+            // estimator's, not a ruler's (LockScreen.tsx L76-79): below
+            // "fair" the password is refused with the sentence that points
+            // at the button under it. The meter is what makes the refusal
+            // legible -- it was already saying the same thing per keystroke.
             let weak = ui.as_weak();
             let st = state.clone();
             ui.on_password_next(move || {
@@ -3637,14 +3915,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if ui.get_busy() || ui.get_screen() != Screen::CreatePassword {
                     return;
                 }
-                let password = ui.get_password_value();
-                if password.chars().count() < 8 {
+                let password = ui.get_password_value().to_string();
+                if estimate_strength(&password).score < 2 {
                     ui.set_error_text(
-                        "Choose a longer vault password (at least 8 characters).".into(),
+                        "Choose a longer vault password, or use the suggestion.".into(),
                     );
                     return;
                 }
-                st.borrow_mut().pending_password = password.into();
+                st.borrow_mut().pending_password = password;
                 goto(&ui, &st, Screen::CreateConfirm);
             });
 

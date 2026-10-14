@@ -15,7 +15,7 @@ import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
-import { Btn, Field, Alert, Badge as BadgeBox, EmptyState } from "widgets.slint";
+import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
 import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow } from "models.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
@@ -713,6 +713,21 @@ export component MainWindow inherits Window {
     // question the answer was typed against.
     callback gate-unlock(mode: string, value: string, question-id: string);
     callback gate-cancel();
+
+    // ---- The lock card -----------------------------------------------------
+    // What the TS LockScreen's Frame carried and the first lock screens
+    // shipped without (Task 6.2). `storage-persistent` is the startup probe
+    // of the app data folder -- the native reading of the browser's storage
+    // availability check; the lock-strength props are the create-password
+    // meter, pushed on every edit the way the editor's own are.
+    in property <bool> storage-persistent: true;
+    in-out property <int> lock-strength-score: -1;
+    in-out property <string> lock-strength-label: "";
+    in-out property <string> lock-strength-bits: "";
+    in-out property <string> lock-strength-crack: "";
+    callback password-edited();
+    callback suggest-password();
+    callback toggle-theme();
     callback undo-clicked();
     callback undo-dismissed();
     callback quit-app();
@@ -764,21 +779,17 @@ export component MainWindow inherits Window {
     callback editor-sec-question-remove(id: string);
     callback editor-sec-prompt-step(delta: int);
 
-    // Every transition resets the transient layer: messages always, the
-    // typed-in text whenever it cannot still be needed (the create flow
-    // stashes the password in Rust before leaving its stage), and the
-    // search box whenever the list is left behind.
-    changed screen => {
-        root.error-text = "";
-        root.notice-text = "";
-        if (root.screen != Screen.Vault) {
-            root.password-value = "";
-            root.confirm-value = "";
-        }
-        if (root.screen == Screen.Vault) {
-            root.search-text = "";
-        }
-    }
+    // The transient layer -- the messages, the typed-in text that cannot
+    // still be needed (the create flow stashes the password in Rust before
+    // leaving its stage), the meter, the search box -- is reset by `goto` in
+    // Rust, once, in the same tick as the switch. That is where it lives
+    // because of when this handler runs: a `changed` callback fires *after*
+    // the frame that changed, so a message set on the far side of a screen
+    // switch was wiped before it was ever drawn. The dev walk caught it:
+    // "Vault created." and the suggested password each survived one
+    // synchronous dump and were gone by the next, half a second later. A
+    // reset in Rust runs before the caller sets its own values, so what is
+    // set after a switch now stays set.
 
     // -- The screens -------------------------------------------------------
     // Exactly one of the three branches below exists at any moment, and all
@@ -1568,7 +1579,6 @@ export component MainWindow inherits Window {
                     padding-left: 34px;
                     padding-right: 34px;
                     spacing: 14px;
-
                     property <string> title: root.screen == Screen.CreateChoose
                         ? "Set up your vault"
                         : root.screen == Screen.CreatePassword
@@ -1645,6 +1655,15 @@ export component MainWindow inherits Window {
                         }
                     }
 
+                    // `persistent` in the TS frame: the browser warning, in
+                    // this app's own terms. Storage is a file on disk rather
+                    // than a quota, so the failure that ends the same way is
+                    // a data folder that refuses a write.
+                    if (!root.storage-persistent) : Alert {
+                        warn: true;
+                        message: "This device's storage is not writable, so anything saved here will be lost when Colax closes. Private or restricted sessions sometimes cause this.";
+                    }
+
                     // On the error screen the message *is* the hint, so the
                     // strip would only repeat it.
                     if (root.error-text != "" && root.screen != Screen.Error) : Alert {
@@ -1703,20 +1722,40 @@ export component MainWindow inherits Window {
                             password: true;
                             enabled: !root.busy;
                             value <=> root.password-value;
+                            edited => { root.password-edited(); }
                             accepted => { root.password-next(); }
                         }
 
-                        Text {
-                            text: "At least 8 characters.";
-                            color: Theme.faint;
-                            font-size: 12.5px;
+                        // The meter the lite app shows while typing (L218-222):
+                        // create only, never on unlock, where there is nothing
+                        // left to judge. It replaces the old count floor --
+                        // the refusal below is the estimate's, not a
+                        // character's, and this is what explains it.
+                        StrengthMeter {
+                            score: root.lock-strength-score;
+                            label: root.lock-strength-label;
+                            bits: root.lock-strength-bits;
+                            crack-time: root.lock-strength-crack;
                         }
 
                         Btn {
                             label: root.busy ? "Working..." : "Continue";
                             kind: 0;
-                            enabled: !root.busy;
+                            // TS disables submit until the field has
+                            // something in it (L227); Enter is not so
+                            // polite, and gets the refusal instead.
+                            enabled: !root.busy && root.password-value != "";
                             clicked => { root.password-next(); }
+                        }
+
+                        // L234-239: the suggestion fills both fields and lands
+                        // on confirm. Offered only while the password is being
+                        // chosen -- confirming it is not the time to change it.
+                        Btn {
+                            label: "Suggest a strong vault password";
+                            kind: 2;
+                            enabled: !root.busy;
+                            clicked => { root.suggest-password(); }
                         }
 
                         Btn {
@@ -1748,7 +1787,9 @@ export component MainWindow inherits Window {
                         Btn {
                             label: root.busy ? "Working..." : "Create vault";
                             kind: 0;
-                            enabled: !root.busy;
+                            // As the Continue button above: no password typed,
+                            // no button to press.
+                            enabled: !root.busy && root.confirm-value != "";
                             clicked => { root.create-submit(); }
                         }
 
@@ -1845,6 +1886,34 @@ export component MainWindow inherits Window {
                             kind: 1;
                             clicked => { root.quit-app(); }
                         }
+                    }
+                }
+
+                // The Sun/Moon in the frame's corner (LockScreen.tsx L286-294):
+                // absolute in the TS original, so a sibling of the layout here
+                // that takes its place by hand -- a layout child would be
+                // placed, and this has to float over the brand block's corner.
+                // Sun is offered when dark is showing, exactly as in TS.
+                Rectangle {
+                    x: parent.width - 48px;
+                    y: 14px;
+                    width: 34px;
+                    height: 34px;
+                    border-radius: 9px;
+                    background: theme-touch.has-hover ? #ffffff14 : #00000000;
+
+                    Text {
+                        text: Theme.resolved-theme == "dark" ? "☀" : "☾";
+                        color: Theme.muted;
+                        font-size: 15px;
+                        width: parent.width;
+                        height: parent.height;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    theme-touch := TouchArea {
+                        clicked => { root.toggle-theme(); }
                     }
                 }
             }

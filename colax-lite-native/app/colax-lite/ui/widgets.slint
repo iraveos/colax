@@ -140,11 +140,15 @@ export component Field inherits Rectangle {
 export component Alert inherits Rectangle {
     in property <string> message;
     in property <bool> good: false;
+    // The amber one: worth reading, not a failure -- storage that will not
+    // outlive the process, a clipboard the OS refused (LockScreen.tsx's
+    // `tone="warn"`).
+    in property <bool> warn: false;
 
     border-radius: 9px;
     border-width: 1px;
-    background: root.good ? Theme.good-soft : Theme.danger-soft;
-    border-color: root.good ? #7dd3a055 : #e07b8055;
+    background: root.good ? Theme.good-soft : root.warn ? Theme.warn-soft : Theme.danger-soft;
+    border-color: root.good ? #7dd3a055 : root.warn ? #e6b87855 : #e07b8055;
 
     VerticalLayout {
         padding-top: 9px;
@@ -154,7 +158,7 @@ export component Alert inherits Rectangle {
 
         Text {
             text: root.message;
-            color: root.good ? #9fe3bd : #f0a5a8;
+            color: root.good ? #9fe3bd : root.warn ? #f2dcac : #f0a5a8;
             font-size: 13px;
             wrap: word-wrap;
         }
