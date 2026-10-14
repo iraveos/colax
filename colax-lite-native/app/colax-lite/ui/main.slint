@@ -16,14 +16,399 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow } from "models.slint";
 import { Editor } from "screens/editor.slint";
+
+// ---- The vault's four presentations -------------------------------------
+// `VIEW_OPTIONS` in ViewMenu.tsx: Flow, Orbit, List, Grid -- four cards with
+// the same data and four different shapes. They share two components: the
+// compact face Grid and Orbit both draw, and the list row Flow and List both
+// draw. Everything here follows the one sizing rule this app has proven
+// works for a component outside a layout: the root fills its parent (the
+// `Label` arrangement), and whoever places it owns the geometry.
+
+// The compact card: tile, name, username, badges, modified note. Small
+// enough to survive a grid cell and deep enough to still be a card.
+component card-face inherits Rectangle {
+    in property <LoginCard> card;
+    callback open(id: string);
+
+    face-touch := TouchArea {
+        clicked => { root.open(root.card.id); }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: Theme.radius-md;
+        background: root.card.selected ? Theme.accent-soft
+            : (face-touch.has-hover ? Theme.row-hover : Theme.field);
+        border-width: 1px;
+        border-color: root.card.selected ? Theme.border-focus : Theme.border;
+
+        VerticalLayout {
+            padding-top: 12px;
+            padding-bottom: 10px;
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 5px;
+
+            HorizontalLayout {
+                spacing: 9px;
+
+                Rectangle {
+                    width: 34px;
+                    height: 34px;
+                    vertical-stretch: 0;
+                    border-radius: 9px;
+                    background: root.card.tile;
+
+                    if (!root.card.has-image) : Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.card.initial;
+                        color: #ffffff;
+                        font-size: 14px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    if (root.card.has-image) : Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.card.image;
+                        image-fit: contain;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 2px;
+
+                    Text {
+                        text: root.card.label;
+                        color: Theme.text;
+                        font-size: 13.5px;
+                        font-weight: 600;
+                        overflow: elide;
+                        vertical-alignment: bottom;
+                    }
+
+                    Text {
+                        text: root.card.username == ""
+                            ? (root.card.hostname == "" ? "(no username)" : root.card.hostname)
+                            : root.card.username;
+                        color: Theme.muted;
+                        font-size: 11.5px;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            if (root.card.badges.length > 0) : HorizontalLayout {
+                spacing: 5px;
+                alignment: start;
+
+                for badge in root.card.badges : BadgeBox {
+                    label: badge.label;
+                    tone: badge.tone;
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; height: 1px; }
+
+            if (root.card.modified-note != "") : Text {
+                text: root.card.modified-note;
+                color: Theme.faint;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// One card on Orbit's ring. The angle decides everything geometric: where it
+// sits, how big it is, how faded. `cos` is the depth axis -- the card at the
+// front of the ring is the big sharp one -- and `sin` walks the ring left to
+// right. Slint has no 3-D transforms, so this is the carousel drawn as the
+// ellipse it would project onto, which is what the TS preset draws too.
+component orbit-card inherits Rectangle {
+    in property <LoginCard> card;
+    in property <float> angle;
+    in property <bool> show: true;
+    // The ring's box, handed in: a component's root has no `parent` to ask.
+    in property <length> ring-w;
+    in property <length> ring-h;
+    callback open(id: string);
+
+    // Depth as size rather than as a transform. `cos` is the depth axis, so
+    // the card at the front of the ring is the big one and the ones behind
+    // it shrink away; growing the rectangle instead of scaling the element
+    // keeps the face's own text at its own size and lands in the same
+    // picture. The trig wants an *angle*, hence `* 1deg` on the float.
+    property <float> depth: (Math.cos(root.angle * 1deg) + 1.0) / 2.0;
+    property <length> card-w: 190px + 62px * root.depth;
+    property <length> card-h: 118px + 36px * root.depth;
+
+    visible: root.show;
+    width: root.card-w;
+    height: root.card-h;
+    x: root.ring-w / 2 - root.card-w / 2 + Math.sin(root.angle * 1deg) * Math.min(root.ring-w * 0.42, 470px);
+    y: root.ring-h / 2 - root.card-h / 2 + Math.cos(root.angle * 1deg) * 26px;
+    opacity: 0.28 + 0.72 * root.depth;
+
+    card-face {
+        card: root.card;
+        open => { root.open(root.card.id); }
+    }
+}
+
+// One row of the list-shaped views: the line the vault has always drawn,
+// lifted out so Flow and List can share it. Flow's only difference is the
+// arrival -- rows fade in staggered, which is the whole of
+// "spring-animated cards" with the tools Slint has (animate the properties
+// that read as arrival, not a physics engine).
+component list-row inherits Rectangle {
+    in property <LoginCard> card;
+    in property <bool> busy: false;
+    in property <bool> show-urls: true;
+    in property <bool> animated: false;
+    in property <int> index: 0;
+    callback open(id: string);
+    callback copy(id: string);
+    callback star(id: string);
+
+    property <bool> entered: false;
+
+    height: 86px;
+    border-radius: Theme.radius-md;
+    background: root.card.selected ? Theme.accent-soft
+        : (card-touch.has-hover ? Theme.row-hover : #00000000);
+    border-width: root.card.selected ? 1px : 0px;
+    border-color: root.card.selected ? Theme.border-focus : #00000000;
+    opacity: root.animated && !root.entered ? 0.0 : 1.0;
+    animate opacity {
+        duration: 280ms;
+        easing: ease-out;
+        delay: root.animated ? root.index * 22ms : 0ms;
+    }
+    init => { root.entered = true; }
+
+    card-touch := TouchArea {
+        // One click opens the editor. The TS app needs a double-click here
+        // (single-click only selects), but a native list has no context
+        // menu and no selection state doing anything yet -- making the
+        // user discover a second click to edit is a web habit, not a
+        // feature.
+        clicked => { root.open(root.card.id); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 14px;
+
+        Rectangle {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: root.card.tile;
+
+            if (!root.card.has-image) : Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.card.initial;
+                color: #ffffff;
+                font-size: 17px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            if (root.card.has-image) : Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.card.image;
+                image-fit: contain;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 3px;
+            vertical-stretch: 1;
+
+            // Badges sit above the title, not beside the username: a login
+            // with three of them would otherwise push the name out of the
+            // card (the reason `HealthBadges` got its own row in views.tsx).
+            if (root.card.badges.length > 0) : HorizontalLayout {
+                spacing: 6px;
+                // Left-aligned at the badges' own widths: the default
+                // stretch would spread three chips evenly across the card.
+                alignment: start;
+
+                for badge in root.card.badges : BadgeBox {
+                    label: badge.label;
+                    tone: badge.tone;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    text: root.card.label;
+                    color: Theme.text;
+                    font-size: 14.5px;
+                    font-weight: 600;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+
+                if (root.card.favorite) : Text {
+                    text: "★";
+                    color: Theme.warn;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+
+                if (root.card.needs-attention) : Text {
+                    text: "!";
+                    color: Theme.danger;
+                    font-size: 12px;
+                    font-weight: 800;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: root.card.username == ""
+                    ? (root.card.hostname == "" ? "(no username)" : root.card.hostname)
+                    : root.card.username;
+                color: Theme.muted;
+                font-size: 12.5px;
+                overflow: elide;
+            }
+
+            if (root.card.modified-note != "") : Text {
+                text: root.card.modified-note;
+                color: Theme.faint;
+                font-size: 11.5px;
+                overflow: elide;
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; width: 1px; }
+
+        VerticalLayout {
+            spacing: 2px;
+            alignment: center;
+
+            if (root.show-urls && root.card.hostname != "") : Text {
+                width: 200px;
+                text: root.card.hostname;
+                color: Theme.faint;
+                font-size: 12.5px;
+                horizontal-alignment: right;
+                overflow: elide;
+            }
+
+            Text {
+                width: 200px;
+                text: root.card.masked-password;
+                color: Theme.muted;
+                font-size: 13px;
+                horizontal-alignment: right;
+                letter-spacing: 1px;
+            }
+        }
+
+        Btn {
+            label: "Copy";
+            kind: 1;
+            h: 32px;
+            enabled: !root.busy;
+            clicked => { root.copy(root.card.id); }
+        }
+
+        // Favourite, on its own so it can be hit without opening the
+        // editor. The star next to the title only *reports* the state;
+        // this is what changes it.
+        Rectangle {
+            width: 30px;
+            height: 30px;
+            vertical-stretch: 0;
+            border-radius: 8px;
+            background: star-touch.has-hover ? #ffffff14 : #00000000;
+
+            star-touch := TouchArea {
+                clicked => { root.star(root.card.id); }
+            }
+
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.card.favorite ? "★" : "☆";
+                color: root.card.favorite ? Theme.warn : Theme.muted;
+                font-size: 15px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// One button of the view switcher. `labels-mode` is the `sidebarLabels`
+// pref (icon / name / both) that Settings offers in TS: one value decides
+// whether the four buttons spell themselves out.
+component view-chip inherits Rectangle {
+    in property <string> view-id;
+    in property <string> label;
+    in property <string> glyph;
+    in property <color> hue;
+    in property <bool> selected: false;
+    in property <string> labels-mode: "both";
+    callback picked();
+
+    height: 32px;
+    border-radius: 8px;
+    background: root.selected ? root.hue.with-alpha(0.16)
+        : (chip-touch.has-hover ? Theme.row-hover : #00000000);
+    border-width: root.selected ? 1px : 0px;
+    border-color: root.selected ? root.hue.with-alpha(0.45) : #00000000;
+
+    chip-touch := TouchArea {
+        clicked => { root.picked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: center;
+
+        if (root.labels-mode != "name") : Text {
+            text: root.glyph;
+            color: root.selected ? root.hue : Theme.muted;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        if (root.labels-mode != "icon") : Text {
+            text: root.label;
+            color: root.selected ? Theme.text : Theme.muted;
+            font-size: 12.5px;
+            font-weight: root.selected ? 600 : 500;
+            vertical-alignment: center;
+        }
+    }
+}
+
 // Re-exported so Rust can reach them: applyAppearance pushes every token into
 // this global (ADR-2), items.rs and main.rs build the models (LoginCard,
 // QuestionRow, QrCell, ...), and both need those types in the generated
 // module.
 export { Theme }
-export { Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell }
+export { Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow }
 
 export component MainWindow inherits Window {
     title: "Colax Lite";
@@ -61,6 +446,28 @@ export component MainWindow inherits Window {
     // format function in the UI layer.
     in property <string> count-label;
     in-out property <string> search-text;
+    // ---- View and sort ------------------------------------------------
+    // The two knobs the TS topbar offers. Both are prefs and both write back
+    // through Rust; the ids are storage.ts's own (`VaultView`, `SortMode`),
+    // so a stored vault means the same thing here as there.
+    in-out property <string> vault-view: "animated";
+    in-out property <string> vault-sort: "title";
+    // The label the current sort wears in the button ("Recently updated").
+    in property <string> vault-sort-label: "Name";
+    // `sidebarLabels`: icon / name / both, one value for the switcher.
+    in property <string> view-labels: "both";
+    // The `motion` pref, 0..1: 0 is "reduce animation", and it is what Flow's
+    // stagger and Orbit's drift both check.
+    in property <float> motion: 1.0;
+    // Grid: how many cells fit across, answered by Rust when the grid
+    // reports its width (the tag cloud's arrangement, reused).
+    in property <int> grid-cols: 3;
+    // Orbit: the ring's angle in degrees, advanced by Rust's timer.
+    in property <float> orbit-angle: 0.0;
+    // The sort dropdown, and the six rows it lists (built in Rust, from the
+    // same table the handler validates against).
+    in-out property <bool> sort-menu-open: false;
+    in property <[OptRow]> sort-options;
     in-out property <string> password-value;
     in-out property <string> confirm-value;
     // The undo strip for the last deletion. Empty means "nothing to undo",
@@ -201,6 +608,13 @@ export component MainWindow inherits Window {
     callback search-changed(query: string);
     callback channel-selected(id: string);
     callback toggle-favorite(id: string);
+    // The switcher and the sort menu. Both take the id, not the label: Rust
+    // validates it against the pref's own whitelist before it writes.
+    callback view-picked(view: string);
+    callback sort-picked(sort: string);
+    // Sent by the grid with its width, so Rust can answer with a column
+    // count (Slint has no wrapping grid and no integer maths worth having).
+    callback vault-relayout(width: float);
     callback undo-clicked();
     callback undo-dismissed();
     callback quit-app();
@@ -291,8 +705,15 @@ export component MainWindow inherits Window {
         // -- Vault: rail + content ------------------------------------------
         // A child of a layout defaults to `stretch: 0`, which leaves it as tall
         // as its content and parks the spare space at the bottom of the window.
-        if (root.screen == Screen.Vault) : HorizontalLayout {
+        // The plain Rectangle around the two columns is the sort menu's shell:
+        // a layout child is placed by the layout, and a floating panel needs
+        // somewhere to be placed *at*.
+        if (root.screen == Screen.Vault) : Rectangle {
             vertical-stretch: 1;
+
+            HorizontalLayout {
+                width: parent.width;
+                height: parent.height;
 
 
             // ---- The rail -------------------------------------------------
@@ -475,6 +896,106 @@ export component MainWindow inherits Window {
                         edited => { root.search-changed(root.search-text); }
                     }
 
+                    // ---- The view switcher --------------------------------
+                    // Four presentations of the same cards (VIEW_OPTIONS,
+                    // ViewMenu.tsx), each with the hue TS paints it. The
+                    // button set is static -- the ids are pref values, not
+                    // data -- so what changes with `sidebarLabels` is only
+                    // whether the names are spelled out.
+                    HorizontalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 0;
+
+                        view-chip {
+                            view-id: "animated";
+                            label: "Flow";
+                            glyph: "≈";
+                            hue: #3b82f6;
+                            selected: root.vault-view == "animated";
+                            labels-mode: root.view-labels;
+                            picked => { root.view-picked("animated"); }
+                        }
+
+                        view-chip {
+                            view-id: "carousel";
+                            label: "Orbit";
+                            glyph: "●";
+                            hue: #8b5cf6;
+                            selected: root.vault-view == "carousel";
+                            labels-mode: root.view-labels;
+                            picked => { root.view-picked("carousel"); }
+                        }
+
+                        view-chip {
+                            view-id: "basic";
+                            label: "List";
+                            glyph: "☰";
+                            hue: #10b981;
+                            selected: root.vault-view == "basic";
+                            labels-mode: root.view-labels;
+                            picked => { root.view-picked("basic"); }
+                        }
+
+                        view-chip {
+                            view-id: "grid";
+                            label: "Grid";
+                            glyph: "▦";
+                            hue: #f59e0b;
+                            selected: root.vault-view == "grid";
+                            labels-mode: root.view-labels;
+                            picked => { root.view-picked("grid"); }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                        // The sort menu's anchor: same chrome as a chip, so
+                        // the two rows read as one control strip.
+                        Rectangle {
+                            height: 32px;
+                            vertical-stretch: 0;
+                            border-radius: 8px;
+                            background: root.sort-menu-open ? Theme.accent-soft
+                                : (sort-touch.has-hover ? Theme.row-hover : #00000000);
+                            border-width: 1px;
+                            border-color: root.sort-menu-open ? Theme.border-focus : Theme.border;
+
+                            sort-touch := TouchArea {
+                                clicked => { root.sort-menu-open = !root.sort-menu-open; }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 10px;
+                                spacing: 7px;
+                                alignment: center;
+
+                                Text {
+                                    text: "Sort";
+                                    color: Theme.faint;
+                                    font-size: 11.5px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: root.vault-sort-label;
+                                    color: Theme.text;
+                                    font-size: 12.5px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: "▾";
+                                    color: Theme.muted;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
                     if (root.cards.length == 0) : VerticalLayout {
                         vertical-stretch: 1;
                         alignment: center;
@@ -495,184 +1016,126 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    if (root.cards.length > 0) : ListView {
+                    // ---- The four views ----------------------------------
+                    // One cards model, four presentations (VIEW_OPTIONS in
+                    // ViewMenu.tsx). The switch is here rather than in Rust
+                    // because everything needed to draw is already on the
+                    // card; what Rust owns is which one is showing, the
+                    // column count the grid asks it for, and the angle the
+                    // ring drifts by.
+
+                    // List: the plain grouped list. `group` is the letter
+                    // header, filled by Rust only where the sort and the
+                    // grouping agree (see group_by_letter in items.rs).
+                    if (root.vault-view == "basic" && root.cards.length > 0) : ListView {
                         vertical-stretch: 1;
 
-                        for card in root.cards : Rectangle {
-                            // Four lines now: badges, title, username, dates.
-                            height: 86px;
-                            border-radius: Theme.radius-md;
-                            background: card.selected ? Theme.accent-soft
-                                : (card-touch.has-hover ? Theme.row-hover : #00000000);
-                            border-width: card.selected ? 1px : 0px;
-                            border-color: card.selected ? Theme.border-focus : #00000000;
+                        for card in root.cards : VerticalLayout {
+                            spacing: 2px;
 
-                            card-touch := TouchArea {
-                                // One click opens the editor. The TS app needs a
-                                // double-click here (single-click only selects),
-                                // but a native list has no context menu and no
-                                // selection state doing anything yet -- making the
-                                // user discover a second click to edit is a web
-                                // habit, not a feature.
-                                clicked => { root.open-editor(card.id); }
-                            }
+                            if (card.group != "") : Rectangle {
+                                height: 28px;
+                                vertical-stretch: 0;
 
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                spacing: 14px;
-
-                                Rectangle {
-                                    width: 44px;
-                                    height: 44px;
-                                    border-radius: 12px;
-                                    background: card.tile;
-
-                                    if (!card.has-image) : Text {
-                                        width: parent.width;
-                                        height: parent.height;
-                                        text: card.initial;
-                                        color: #ffffff;
-                                        font-size: 17px;
-                                        font-weight: 700;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-
-                                    if (card.has-image) : Image {
-                                        width: parent.width;
-                                        height: parent.height;
-                                        source: card.image;
-                                        image-fit: contain;
-                                    }
-                                }
-
-                                VerticalLayout {
-                                    spacing: 3px;
-                                    vertical-stretch: 1;
-
-                                    // Badges sit above the title, not beside the
-                                    // username: a login with three of them would
-                                    // otherwise push the name out of the card
-                                    // (the reason `HealthBadges` got its own row
-                                    // in views.tsx).
-                                    if (card.badges.length > 0) : HorizontalLayout {
-                                        spacing: 6px;
-                                        // Left-aligned at the badges' own widths:
-                                        // the default stretch would spread three
-                                        // chips evenly across the whole card.
-                                        alignment: start;
-
-                                        for badge in card.badges : BadgeBox {
-                                            label: badge.label;
-                                            tone: badge.tone;
-                                        }
-                                    }
-
-                                    HorizontalLayout {
-                                        spacing: 8px;
-
-                                        Text {
-                                            text: card.label;
-                                            color: Theme.text;
-                                            font-size: 14.5px;
-                                            font-weight: 600;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-
-                                        if (card.favorite) : Text {
-                                            text: "★";
-                                            color: Theme.warn;
-                                            font-size: 12px;
-                                            vertical-alignment: center;
-                                        }
-
-                                        if (card.needs-attention) : Text {
-                                            text: "!";
-                                            color: Theme.danger;
-                                            font-size: 12px;
-                                            font-weight: 800;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-
-                                    Text {
-                                        text: card.username == ""
-                                            ? (card.hostname == "" ? "(no username)" : card.hostname)
-                                            : card.username;
-                                        color: Theme.muted;
-                                        font-size: 12.5px;
-                                        overflow: elide;
-                                    }
-
-                                    if (card.modified-note != "") : Text {
-                                        text: card.modified-note;
-                                        color: Theme.faint;
-                                        font-size: 11.5px;
-                                        overflow: elide;
-                                    }
-                                }
-
-                                Rectangle { horizontal-stretch: 1; width: 1px; }
-
-                                VerticalLayout {
-                                    spacing: 2px;
-                                    alignment: center;
-
-                                    if (root.show-urls && card.hostname != "") : Text {
-                                        width: 200px;
-                                        text: card.hostname;
-                                        color: Theme.faint;
-                                        font-size: 12.5px;
-                                        horizontal-alignment: right;
-                                        overflow: elide;
-                                    }
-
-                                    Text {
-                                        width: 200px;
-                                        text: card.masked-password;
-                                        color: Theme.muted;
-                                        font-size: 13px;
-                                        horizontal-alignment: right;
-                                        letter-spacing: 1px;
-                                    }
-                                }
-
-                                Btn {
-                                    label: "Copy";
-                                    kind: 1;
-                                    h: 32px;
-                                    enabled: !root.busy;
-                                    clicked => { root.copy-password(card.id); }
-                                }
-
-                                // Favourite, on its own so it can be hit without
-                                // opening the editor. The star next to the title
-                                // only *reports* the state; this is what changes
-                                // it.
-                                Rectangle {
-                                    width: 30px;
-                                    height: 30px;
-                                    vertical-stretch: 0;
-                                    border-radius: 8px;
-                                    background: star-touch.has-hover ? #ffffff14 : #00000000;
-
-                                    star-touch := TouchArea {
-                                        clicked => { root.toggle-favorite(card.id); }
-                                    }
-
-                                    Text {
-                                        width: parent.width;
-                                        height: parent.height;
-                                        text: card.favorite ? "★" : "☆";
-                                        color: card.favorite ? Theme.warn : Theme.muted;
-                                        font-size: 15px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
+                                Text {
+                                    x: 12px;
+                                    width: parent.width - 24px;
+                                    height: parent.height;
+                                    text: card.group;
+                                    color: Theme.faint;
+                                    font-size: 11.5px;
+                                    font-weight: 700;
+                                    letter-spacing: 1.5px;
+                                    vertical-alignment: bottom;
                                 }
                             }
+
+                            list-row {
+                                card: card;
+                                busy: root.busy;
+                                show-urls: root.show-urls;
+                                open => { root.open-editor(card.id); }
+                                copy => { root.copy-password(card.id); }
+                                star => { root.toggle-favorite(card.id); }
+                            }
+                        }
+                    }
+
+                    // Flow: the same rows arriving staggered. The delay
+                    // rides on each row's own animation (`index * 22ms`), so
+                    // the tenth card lands after the first with no timer in
+                    // either language. `motion == 0` shows them at once.
+                    if (root.vault-view == "animated" && root.cards.length > 0) : ListView {
+                        vertical-stretch: 1;
+
+                        for card[i] in root.cards : list-row {
+                            card: card;
+                            index: i;
+                            animated: root.motion > 0.0;
+                            busy: root.busy;
+                            show-urls: root.show-urls;
+                            open => { root.open-editor(card.id); }
+                            copy => { root.copy-password(card.id); }
+                            star => { root.toggle-favorite(card.id); }
+                        }
+                    }
+
+                    // Grid: cells sized by Rust's answer to the width this
+                    // block reports (`vault-relayout`), the tag cloud's
+                    // arrangement reused because Slint still has no wrapping
+                    // grid and its integer maths is still not worth having.
+                    if (root.vault-view == "grid" && root.cards.length > 0) : Flickable {
+                        vertical-stretch: 1;
+
+                        grid-body := Rectangle {
+                            width: parent.width;
+                            height: Math.ceil((root.cards.length * 1.0) / root.grid-cols) * 134px;
+
+                            init => { root.vault-relayout(grid-body.width / 1px); }
+                            changed width => { root.vault-relayout(grid-body.width / 1px); }
+
+                            for card[i] in root.cards : Rectangle {
+                                property <length> cw: (parent.width - (root.grid-cols - 1) * 10px) / root.grid-cols;
+                                width: cw;
+                                height: 124px;
+                                // Column: how many whole rows this cell sits past.
+                                x: (i - Math.floor(i / root.grid-cols) * root.grid-cols) * (cw + 10px);
+                                y: Math.floor(i / root.grid-cols) * 134px;
+
+                                card-face {
+                                    card: card;
+                                    open => { root.open-editor(card.id); }
+                                }
+                            }
+                        }
+                    }
+
+                    // Orbit: the ring. Painted as two passes over the same
+                    // cards -- the far half first, the near half over it --
+                    // because a repeater paints in model order and the ring's
+                    // back would otherwise sit on top of its front. The angle
+                    // comes from Rust's timer, which is also what makes the
+                    // ring drift while the mouse is anywhere else.
+                    if (root.vault-view == "carousel" && root.cards.length > 0) : Rectangle {
+                        vertical-stretch: 1;
+                        clip: true;
+
+                        for card[i] in root.cards : orbit-card {
+                            card: card;
+                            angle: root.orbit-angle + i * (360.0 / Math.max(root.cards.length, 1));
+                            show: Math.cos((root.orbit-angle + i * (360.0 / Math.max(root.cards.length, 1))) * 1deg) < 0.0;
+                            ring-w: parent.width;
+                            ring-h: parent.height;
+                            open => { root.open-editor(card.id); }
+                        }
+
+                        for card[i] in root.cards : orbit-card {
+                            card: card;
+                            angle: root.orbit-angle + i * (360.0 / Math.max(root.cards.length, 1));
+                            show: Math.cos((root.orbit-angle + i * (360.0 / Math.max(root.cards.length, 1))) * 1deg) >= 0.0;
+                            ring-w: parent.width;
+                            ring-h: parent.height;
+                            open => { root.open-editor(card.id); }
                         }
                     }
 
@@ -717,6 +1180,86 @@ export component MainWindow inherits Window {
                                 h: 32px;
                                 width: 84px;
                                 clicked => { root.undo-dismissed(); }
+                            }
+                        }
+                    }
+                }
+            }
+                }
+
+            // ---- The sort menu -------------------------------------------
+            // Drops under its button and floats over the columns, so the
+            // backdrop arrives first: a second press on the button -- or a
+            // click anywhere else -- closes the menu again. The panel's rows
+            // come from Rust (`sort-options`), the tick from the same
+            // comparison the handler validates with. Both hang off the
+            // *window* rather than off the shell: a child asking its parent
+            // rectangle for the width the layout is about to hand that
+            // rectangle is a preferred-size loop, which this app has already
+            // been warned about once.
+            if (root.sort-menu-open) : TouchArea {
+                width: root.width;
+                height: root.height;
+                z: 30;
+                clicked => { root.sort-menu-open = false; }
+            }
+
+            if (root.sort-menu-open) : Rectangle {
+                // The button sits at the far right of the content column:
+                // window minus a hand's width of margin for the panel.
+                x: root.width - 252px;
+                // Padding + title row + search + the switcher row, with the
+                // column's 14px between each -- the menu hangs off the row
+                // that owns it.
+                y: 180px;
+                z: 31;
+                width: 228px;
+                height: root.sort-options.length * 36px + 16px;
+                border-radius: Theme.radius-md;
+                background: Theme.bg;
+                border-width: 1px;
+                border-color: Theme.border;
+                clip: true;
+
+                VerticalLayout {
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    spacing: 2px;
+
+                    for opt in root.sort-options : Rectangle {
+                        height: 36px;
+                        border-radius: 6px;
+                        background: opt.id == root.vault-sort
+                            ? Theme.accent-soft
+                            : (opt-touch.has-hover ? Theme.row-hover : #00000000);
+
+                        opt-touch := TouchArea {
+                            clicked => {
+                                root.sort-menu-open = false;
+                                root.sort-picked(opt.id);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 8px;
+
+                            Text {
+                                text: opt.id == root.vault-sort ? "✓" : "";
+                                color: Theme.accent;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: opt.label;
+                                color: Theme.text;
+                                font-size: 13px;
+                                overflow: elide;
+                                vertical-alignment: center;
                             }
                         }
                     }

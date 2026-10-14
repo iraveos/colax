@@ -135,6 +135,10 @@ export struct LoginCard {
     secured: bool,
     selected: bool,
     duplicate: bool,
+    // Letter-group header for the list view: the letter to print above this
+    // card, or empty when it starts no group. Rust fills it only where the
+    // sort and the grouping agree (`group_by_letter` in items.rs).
+    group: string,
     // Per-card accent hue, for the card's own gradient.
     hue: int,
     has-image: bool,
@@ -157,4 +161,13 @@ export struct SidebarRow {
     locked: bool,
     selected: bool,
     is-builtin: bool,
+}
+
+/// One row of a Rust-built menu. The sort dropdown is the only one so far;
+/// `id` is the pref value the row writes and `label` is what the TS menu
+/// called it (`SORT_LABELS`, App.tsx L110-117), so the checkmark and the
+/// validation in the handler read the same list.
+export struct OptRow {
+    id: string,
+    label: string,
 }

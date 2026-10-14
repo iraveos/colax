@@ -18,7 +18,7 @@ use colax_core::{
 };
 use slint::{Color, ModelRc, VecModel};
 
-use crate::{Badge, LoginCard, SidebarRow, TagChip};
+use crate::{Badge, LoginCard, OptRow, SidebarRow, TagChip};
 
 /// Shared label so every view agrees on what a login is called:
 /// `title || username || hostname || "Untitled"` (views.tsx L40).
@@ -303,6 +303,9 @@ pub fn card_for(
         secured: false,
         selected,
         duplicate: reused.contains(&item.password),
+        // The list view's letter header; `group_by_letter` fills it in when
+        // the view and the sort call for one.
+        group: String::new().into(),
         hue,
         has_image,
         image: slint::Image::default(),
@@ -328,10 +331,79 @@ pub fn build_cards(
     sort_items(&mut list, prefs);
     let reused = find_reused_passwords(items);
     let needle = needle.trim().to_lowercase();
-    search(&list, &needle)
+    let mut cards: Vec<LoginCard> = search(&list, &needle)
         .into_iter()
         .map(|item| card_for(item, &reused, stale_days, false))
+        .collect();
+    // Letter headers belong to the List view and to no other, and only where
+    // they agree with the sort (see `group_by_letter`).
+    if prefs.view == "basic" && prefs.sort == "title" {
+        group_by_letter(&mut cards);
+    }
+    cards
+}
+
+/// The six sort modes, in the order the TS menu lists them, and the label
+/// each wears there (`SORT_LABELS`, App.tsx L110-117). One table: the button
+/// label, the dropdown rows and the handler's whitelist all read it.
+pub fn sort_label(sort: &str) -> &'static str {
+    match sort {
+        "recent" => "Recently updated",
+        "oldest" => "Least recently updated",
+        "strength" => "Weakest first",
+        "username" => "Username",
+        "manual" => "Custom order",
+        _ => "Name",
+    }
+}
+
+/// The sort menu itself, as the dropdown's model. Built from the same table
+/// the labels come from, so a new sort mode is one match arm and cannot be
+/// offered under a name the handler then refuses.
+pub fn sort_options() -> Vec<OptRow> {
+    ["title", "recent", "oldest", "strength", "username", "manual"]
+        .into_iter()
+        .map(|id| OptRow {
+            id: id.into(),
+            label: sort_label(id).into(),
+        })
         .collect()
+}
+
+/// The List view's letter headers: the letter above the first card of each
+/// run (`groupByLetter`, views.tsx L1605), bucketed by the same `labelOf`
+/// every view names its cards with.
+///
+/// Only called where the sort and the grouping agree. TS buckets by letter
+/// whatever the sort is, which quietly throws the chosen order away for the
+/// List view; here the sort stays authoritative -- headers appear when it is
+/// by name, where the two orders are the same order -- and the stable sort by
+/// letter keeps that order inside each bucket even when the labels disagree
+/// with it in the margins (a title starting with a digit, say).
+fn group_by_letter(cards: &mut [LoginCard]) {
+    cards.sort_by_key(letter_of);
+    let mut last = None;
+    for card in cards.iter_mut() {
+        let letter = letter_of(card);
+        card.group = if Some(letter) != last && letter != '#' {
+            letter.to_string()
+        } else {
+            String::new()
+        }
+        .into();
+        last = Some(letter);
+    }
+}
+
+/// Which bucket a card belongs to: the label's first letter, upper-cased.
+/// Anything that is not a letter sorts together at the end under `#`, which
+/// is where a "1Password" would go in TS too.
+fn letter_of(card: &LoginCard) -> char {
+    card.label
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .and_then(|c| c.to_uppercase().next())
+        .unwrap_or('#')
 }
 
 /// The rail: channels with their counts, plus a separator before the
@@ -514,6 +586,44 @@ mod tests {
         prefs.pin_favorites = true;
         sort_items(&mut items, &prefs);
         assert_eq!(items[0].id, "a");
+    }
+
+    #[test]
+    fn letter_headers_belong_to_the_list_view_and_the_by_name_sort() {
+        let all = channel_by_id("all");
+        let items = vec![
+            item("1", "Mango"),
+            item("2", "apple"),
+            item("3", "Zebra"),
+            item("4", "Avocado"),
+        ];
+
+        // List + by name: one header per letter, on the first card of the
+        // run, case-insensitively sorted ("apple" before "Avocado").
+        let mut prefs = VaultPreferences::default();
+        prefs.view = "basic".into();
+        prefs.sort = "title".into();
+        prefs.pin_favorites = false;
+        let cards = build_cards(&items, &all, &prefs, "");
+        let labels: Vec<&str> = cards.iter().map(|c| c.label.as_str()).collect();
+        let groups: Vec<&str> = cards.iter().map(|c| c.group.as_str()).collect();
+        assert_eq!(labels, vec!["apple", "Avocado", "Mango", "Zebra"]);
+        assert_eq!(groups, vec!["A", "", "M", "Z"]);
+
+        // Sort by recency: the sort stays authoritative and no headers
+        // appear -- TS buckets by letter whatever the sort is, which throws
+        // the chosen order away; here it is the order that wins.
+        prefs.sort = "recent".into();
+        let cards = build_cards(&items, &all, &prefs, "");
+        assert!(cards.iter().all(|c| c.group.is_empty()));
+
+        // The other three views never group, whatever the sort says.
+        prefs.sort = "title".into();
+        for view in ["animated", "carousel", "grid"] {
+            prefs.view = view.into();
+            let cards = build_cards(&items, &all, &prefs, "");
+            assert!(cards.iter().all(|c| c.group.is_empty()), "{view}");
+        }
     }
 
     #[test]

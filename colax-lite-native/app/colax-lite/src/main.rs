@@ -330,6 +330,10 @@ struct AppState {
     /// The width the tag cloud last reported, so rows can be packed for it on
     /// every push instead of only while the cloud happens to be on screen.
     editor_panel_width: f64,
+    /// The width the vault's grid last reported. Same arrangement as the
+    /// cloud's: Slint reports the geometry, Rust answers with the count of
+    /// things that fit in it.
+    vault_width: f64,
 }
 
 type Shared = Rc<RefCell<AppState>>;
@@ -429,6 +433,77 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     ui.set_show_urls(prefs.show_urls);
     ui.set_cards_empty_title(empty_title.into());
     ui.set_cards_empty_hint(empty_hint.into());
+    // Which of the four presentations is showing, in what order, and how the
+    // switcher labels itself -- all prefs, all pushed with the cards they
+    // describe so the two cannot disagree mid-switch.
+    ui.set_vault_view(prefs.view.as_str().into());
+    ui.set_vault_sort(prefs.sort.as_str().into());
+    ui.set_vault_sort_label(items::sort_label(&prefs.sort).into());
+    ui.set_view_labels(prefs.sidebar_labels.as_str().into());
+    ui.set_motion(prefs.motion as f32);
+    let vault_width = state.borrow().vault_width;
+    ui.set_grid_cols(grid_cols_for(vault_width));
+    ui.set_sort_options(ModelRc::new(VecModel::from(items::sort_options())));
+}
+
+/// How many grid cells fit across a given content width. Below ~220px a cell
+/// stops reading as a card, which is the floor the tag cloud packs its pills
+/// against too -- one number for "smaller than this is not a thing any more".
+fn grid_cols_for(width: f64) -> i32 {
+    ((width / 230.0) as i32).clamp(2, 8)
+}
+
+/// The view switcher. `view` is a preference like any other, so it leaves
+/// through the same path -- and the refresh that follows is what applies the
+/// List view's letter grouping, which depends on the view.
+fn view_picked(ui: &MainWindow, state: &Shared, view: &str) {
+    // The screen can only offer the four ids, but a callback is an
+    // interface: anything else is refused the way the normaliser would.
+    if !matches!(view, "animated" | "carousel" | "basic" | "grid") {
+        return;
+    }
+    let mut prefs = items::prefs_from(state.borrow().engine.preferences());
+    if prefs.view == view {
+        return;
+    }
+    prefs.view = view.to_string();
+    if !save_prefs(ui, state, &prefs) {
+        ui.set_error_text("That view could not be saved.".into());
+        return;
+    }
+    ui.set_vault_view(view.into());
+    refresh_items(ui, state);
+}
+
+/// The sort menu. Same deal: the id is validated against the pref's own
+/// whitelist, the label comes from the shared table, the refresh re-sorts.
+fn sort_picked(ui: &MainWindow, state: &Shared, sort: &str) {
+    if !matches!(sort, "title" | "recent" | "oldest" | "strength" | "username" | "manual") {
+        return;
+    }
+    let mut prefs = items::prefs_from(state.borrow().engine.preferences());
+    if prefs.sort == sort {
+        return;
+    }
+    prefs.sort = sort.to_string();
+    if !save_prefs(ui, state, &prefs) {
+        ui.set_error_text("That sort order could not be saved.".into());
+        return;
+    }
+    ui.set_vault_sort(sort.into());
+    ui.set_vault_sort_label(items::sort_label(sort).into());
+    refresh_items(ui, state);
+}
+
+/// The grid reports its width and the column count is the answer. A width
+/// outside anything a window can hold is a stale value from an earlier
+/// layout pass, not a choice, and is ignored.
+fn vault_relayout(ui: &MainWindow, state: &Shared, width: f32) {
+    if !(240.0..=20000.0).contains(&width) {
+        return;
+    }
+    state.borrow_mut().vault_width = width as f64;
+    ui.set_grid_cols(grid_cols_for(width as f64));
 }
 
 /// Switches screens. Setting `screen` runs `changed screen` in the Slint
@@ -521,6 +596,27 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// saved login), or `editor-<section>` for any of its tabs.
 #[cfg(debug_assertions)]
 fn dev_screen(ui: &MainWindow, state: &Shared) {
+    // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
+    // the four presentations live on the vault screen itself, so the run
+    // stays exactly where the app opened it and drives the switcher from
+    // there.
+    if std::env::var_os("COLAX_DEV_VIEW").is_some() {
+        let weak = ui.as_weak();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_view(&ui);
+                }
+            },
+        );
+        // Dropping the handle would cancel it before it fires.
+        std::mem::forget(timer);
+        return;
+    }
+
     // `COLAX_DEV_SEC` implies the Security section and `COLAX_DEV_ORG` the
     // Organise one: each exists so its panel can be verified without *looking*
     // at it -- the desktop may be locked, when a screenshot comes back white
@@ -672,7 +768,7 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
 #[cfg(debug_assertions)]
 fn dev_dump(ui: &MainWindow, tag: &str) {
     let dump = format!(
-        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={}\n",
+        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} {}\n",
         ui.get_screen() == Screen::Editor,
         ui.get_screen() == Screen::Vault,
         ui.get_editor_section(),
@@ -713,11 +809,37 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
         ui.get_edit_email_date(),
         ui.get_edit_email_date_hint(),
         ui.get_edit_tag_can_add(),
+        // The vault half: which presentation is up, what the sort button
+        // says, how many columns the grid settled on, and the first two
+        // cards with the letter headers they start. A switch that did not
+        // land moves none of these -- and none of them would show in a
+        // screenshot while the desktop is locked.
+        ui.get_vault_view(),
+        ui.get_vault_sort_label(),
+        ui.get_grid_cols(),
+        describe_cards(ui),
     );
     let path = app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&dump);
     let _ = std::fs::write(path, existing);
+}
+
+/// The vault half of a dump: how many cards, and the first two of them --
+/// each with the letter header it starts (`group`), which is the only thing
+/// the List view adds over the model Rust already knows about.
+#[cfg(debug_assertions)]
+fn describe_cards(ui: &MainWindow) -> String {
+    use slint::Model;
+    let cards = ui.get_cards();
+    let mut out = format!("n={}", cards.row_count());
+    for index in 0..2 {
+        match cards.row_data(index) {
+            Some(card) => out.push_str(&format!(" [{}/{}]", card.group, card.label)),
+            None => out.push_str(" [-]"),
+        }
+    }
+    out
 }
 
 /// Debug-only: drive the Security panel end to end, dumping one line after
@@ -947,6 +1069,62 @@ fn dev_org(ui: &MainWindow, state: &Shared) {
     open_editor(ui, state, &id);
     ui.invoke_editor_section_selected("organise".into());
     dev_dump(ui, "org11.reopened");
+}
+
+/// Debug-only: drive the view switcher and the sort menu, dumping one line
+/// after each step -- same shape as the other two sequences, same reason.
+/// `COLAX_DEV_VIEW=1` keeps the window on the vault screen, which is the
+/// point: the four presentations live there and the sequence checks what a
+/// click on each leaves behind. The ring's drift is a timer and cannot be
+/// caught in a single line; what a line can show is that picking Orbit left
+/// the view where the timer looks for it.
+#[cfg(debug_assertions)]
+fn dev_view(ui: &MainWindow) {
+    // Start from a known place: the last run left its picks behind in the
+    // vault, and prefs now say whatever it chose.
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    // 1. As it opens: whatever the prefs last said, cards included.
+    dev_dump(ui, "view1.open");
+
+    // 2-5. Each view in turn. The first two cards keep their names in every
+    //      one of them -- same model, four shapes -- and the letter headers
+    //      appear only where the List view and the by-name sort agree.
+    ui.invoke_view_picked("grid".into());
+    dev_dump(ui, "view2.grid");
+    ui.invoke_view_picked("basic".into());
+    dev_dump(ui, "view3.basic");
+    ui.invoke_view_picked("carousel".into());
+    dev_dump(ui, "view4.carousel");
+    ui.invoke_view_picked("animated".into());
+    dev_dump(ui, "view5.animated");
+
+    // 6. An id outside the four is refused: the line must match view5's.
+    ui.invoke_view_picked("not-a-view".into());
+    dev_dump(ui, "view6.view-refused");
+
+    // 7. Sort by recency: the same cards in a different order at the head,
+    //    and the button's label changes with it.
+    ui.invoke_sort_picked("recent".into());
+    dev_dump(ui, "view7.sort-recent");
+
+    // 8. Refused the same way.
+    ui.invoke_sort_picked("not-a-sort".into());
+    dev_dump(ui, "view8.sort-refused");
+
+    // 9. Back to the by-name sort on the List view -- the one pairing that
+    //    puts letter headers over the cards.
+    ui.invoke_view_picked("basic".into());
+    ui.invoke_sort_picked("title".into());
+    dev_dump(ui, "view9.grouped");
+
+    // 10. The grid's answer to a width: two columns at the floor, more when
+    //     there is room for them (the width is Slint's, the count Rust's).
+    ui.invoke_view_picked("grid".into());
+    ui.invoke_vault_relayout(520.0);
+    dev_dump(ui, "view10.narrow");
+    ui.invoke_vault_relayout(1400.0);
+    dev_dump(ui, "view11.wide");
 }
 
 /// A spread of logins chosen to exercise the cards: a favorite, a stale one,
@@ -2721,6 +2899,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 editor_password_updated_at: 0,
                 editor_username_updated_at: 0,
                 editor_panel_width: 0.0,
+                // Wide enough for three grid columns before anything has
+                // reported a width (the content area at the default window).
+                vault_width: 800.0,
             }));
             // Debug scratch profiles open straight into the vault with demo
             // content; everything else starts on the real startup screen.
@@ -2738,7 +2919,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             tray.set_lock_enabled(exists);
             match screen {
-                Ok(screen) => ui.set_screen(screen),
+                Ok(screen) => {
+                    ui.set_screen(screen);
+                    // The cards only ever come from a refresh, and the way in
+                    // to the vault normally goes through `goto`, which does
+                    // one. A seeded debug profile lands here directly, so the
+                    // first frame of the vault would otherwise be empty.
+                    if screen == Screen::Vault {
+                        refresh_items(&ui, &state);
+                    }
+                }
                 Err(err) => {
                     ui.set_screen(Screen::Error);
                     startup_error = Some(err.to_string());
@@ -3009,6 +3199,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // one, so the box empties with the switch (App.tsx L167).
                     ui.set_search_text("".into());
                     refresh_items(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_view_picked(move |view| {
+                if let Some(ui) = weak.upgrade() {
+                    view_picked(&ui, &st, &view);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_sort_picked(move |sort| {
+                if let Some(ui) = weak.upgrade() {
+                    sort_picked(&ui, &st, &sort);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_vault_relayout(move |width| {
+                if let Some(ui) = weak.upgrade() {
+                    vault_relayout(&ui, &st, width);
                 }
             });
 
@@ -3348,6 +3562,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         slint::CloseRequestResponse::HideWindow
     });
+
+    // ---- Orbit's drift ----------------------------------------------------
+    // One timer for the whole app, started before the window shows. While the
+    // ring is not on screen the callback changes no property, and a property
+    // that does not change does not paint a frame, so standing by costs a
+    // comparison every 40ms -- and only while the ring *is* on screen does it
+    // cost anything more. `motion == 0` stops the angle where it is, which is
+    // what "reduce animation" means for a carousel that would otherwise never
+    // hold still.
+    {
+        let weak = ui.as_weak();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(40),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    let motion = ui.get_motion();
+                    if ui.get_vault_view() == "carousel" && motion > 0.0 {
+                        let step = 3.0 * motion;
+                        let angle = ui.get_orbit_angle();
+                        ui.set_orbit_angle(if angle >= 360.0 {
+                            angle - 360.0 + step
+                        } else {
+                            angle + step
+                        });
+                    }
+                }
+            },
+        );
+        // Dropping the handle would cancel the drift before it starts.
+        std::mem::forget(timer);
+    }
 
     ui.show()?;
 
