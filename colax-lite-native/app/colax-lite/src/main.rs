@@ -25,7 +25,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use colax_core::{
-    resolve_header, BackupFile, VaultEngine, VaultError, VaultProtection, VaultStorage,
+    estimate_strength, generate_passphrase, generate_password, resolve_header, BackupFile,
+    GeneratorOptions, VaultEngine, VaultError, VaultItem, VaultProtection, VaultStorage,
 };
 use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
@@ -111,7 +112,7 @@ fn read_state() -> ShellState {
 /// Best-effort write: a read-only config directory must not stop the app.
 ///
 /// Written alongside the preferences copy of the same four switches, so the
-/// tray (alive before unlock) and the vault agree — see `mirror_shell_flags`.
+/// tray (alive before unlock) and the vault agree â€” see `mirror_shell_flags`.
 fn write_state(state: ShellState) {
     let path = state_path();
     if let Some(dir) = path.parent() {
@@ -293,6 +294,10 @@ struct AppState {
     engine: VaultEngine,
     pending_password: String,
     pending_backup: Option<BackupFile>,
+    /// The row the strip at the bottom of the list offers to put back. Kept
+    /// whole rather than as an id, because `delete_item` has already dropped
+    /// the record by the time Undo is pressed.
+    last_deleted: Option<VaultItem>,
 }
 
 type Shared = Rc<RefCell<AppState>>;
@@ -327,7 +332,7 @@ fn lock_screen_for(engine: &VaultEngine) -> Screen {
 /// each keystroke. Reads the query from the UI rather than from a handler
 /// argument so both paths stay identical.
 ///
-/// Three models go out together — the rail, the cards and the count — because
+/// Three models go out together â€” the rail, the cards and the count â€” because
 /// they are one derivation: channel filter, then sort, then text query. Pushing
 /// them separately would let them disagree mid-keystroke.
 fn refresh_items(ui: &MainWindow, state: &Shared) {
@@ -470,6 +475,135 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
             false
         }
     }
+}
+
+/// Debug-only: the scratch profile can also be dropped straight onto a screen
+/// that is normally several clicks away.
+///
+/// The clicks this would otherwise need do not reach the window when another
+/// process holds the foreground, and "click the thing and look at it" is the
+/// only honest way to check a layout -- so the harness drives the screen
+/// instead of the mouse.
+///
+/// `COLAX_DEV_SCREEN` takes `vault`, `new` (a blank editor), `editor` (a
+/// saved login), or `editor-<section>` for any of its tabs.
+#[cfg(debug_assertions)]
+fn dev_screen(ui: &MainWindow, state: &Shared) {
+    let Ok(want) = std::env::var("COLAX_DEV_SCREEN") else {
+        return;
+    };
+    let want = want.to_lowercase();
+    if want.is_empty() || want == "vault" {
+        return;
+    }
+    if want == "new" {
+        open_editor(ui, state, "");
+        return;
+    }
+
+    let id = state
+        .borrow()
+        .engine
+        .items()
+        .and_then(|items| items.first().map(|item| item.id.clone()));
+    let Some(id) = id else { return };
+    open_editor(ui, state, &id);
+
+    if let Some(section) = want.strip_prefix("editor-") {
+        ui.set_editor_section(section.into());
+        if section == "credentials" {
+            // The generator is the tallest thing the panel has to fit, so it
+            // is the one worth opening when measuring.
+            ui.set_gen_show(true);
+            regenerate(ui);
+        }
+    }
+
+    // Temporary: what the UI actually holds, so a blank field can be told
+    // apart from a blank draft -- and so a screen that changes on its own
+    // cannot be blamed on whatever was clicked last.
+    if std::env::var_os("COLAX_DEV_DUMP").is_some() {
+        let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+        dev_dump(ui, "before-first-frame");
+
+        // The tab round trip: visit another section and come back, which
+        // destroys and rebuilds every field here. A `<=>` re-established
+        // that late is the one thing that could quietly blank the draft, and
+        // a screenshot cannot show it -- the fields look the same whether
+        // they hold the old value or "".
+        //
+        // Driven by one repeating timer rather than nested one-shots so the
+        // samples bracket the moment the harness captures: if the window
+        // looks wrong in the picture, the line beside it says what the app
+        // thought it was showing.
+        let start = ui.get_editor_section().to_string();
+        let other = if start == "notes" { "flags" } else { "notes" }.to_string();
+        let weak = ui.as_weak();
+        let counter = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let tick = counter.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(400),
+            move || {
+                let n = tick.get();
+                tick.set(n + 1);
+                if n > 20 {
+                    return;
+                }
+                let Some(ui) = weak.upgrade() else { return };
+                match n {
+                    3 => {
+                        dev_dump(&ui, "t1.2");
+                        ui.invoke_editor_section_selected(other.clone().into());
+                    }
+                    5 => {
+                        dev_dump(&ui, "t2.0");
+                        ui.invoke_editor_section_selected(start.clone().into());
+                    }
+                    8 => dev_dump(&ui, "t3.2"),
+                    13 => dev_dump(&ui, "t5.2"),
+                    17 => dev_dump(&ui, "t6.8"),
+                    20 => dev_dump(&ui, "t8.0"),
+                    _ => {}
+                }
+            },
+        );
+        // Dropping the handle would stop it before the timeline is finished.
+        std::mem::forget(timer);
+        let _ = counter;
+    }
+}
+
+/// Debug-only: write what the UI actually holds, so a blank field can be
+/// told apart from a blank draft.
+///
+/// Runs twice when `COLAX_DEV_DUMP` is set: once before the first frame and
+/// again a beat later. Only the second one is trustworthy -- the `Editor`'s
+/// elements come into existence during the first render, and whatever they
+/// write into the draft when they do is invisible to a dump taken earlier.
+#[cfg(debug_assertions)]
+fn dev_dump(ui: &MainWindow, tag: &str) {
+    let dump = format!(
+        "{tag}: editor={} vault={} section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}]\n",
+        ui.get_screen() == Screen::Editor,
+        ui.get_screen() == Screen::Vault,
+        ui.get_editor_section(),
+        ui.get_edit_id(),
+        ui.get_edit_title(),
+        ui.get_edit_url(),
+        ui.get_edit_username(),
+        ui.get_edit_password(),
+        ui.get_edit_notes(),
+        ui.get_edit_favorite(),
+        ui.get_edit_needs_attention(),
+        ui.get_edit_reminder_days(),
+        ui.get_edit_reminder_label(),
+    );
+    let path = app_dir().join("dev-dump.txt");
+    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+    existing.push_str(&dump);
+    let _ = std::fs::write(path, existing);
 }
 
 /// A spread of logins chosen to exercise the cards: a favorite, a stale one,
@@ -629,7 +763,7 @@ fn save_prefs(ui: &MainWindow, state: &Shared, prefs: &colax_core::VaultPreferen
     saved
 }
 
-/// The four shell switches exist twice — in `shell.json` (read by the tray,
+/// The four shell switches exist twice â€” in `shell.json` (read by the tray,
 /// which is alive before any vault is unlocked) and in the vault's
 /// preferences (so they follow a backup to another machine). Any change must
 /// land in both, and the shell file is written first: it is the one the next
@@ -750,6 +884,455 @@ fn copy_item_password(ui: &MainWindow, state: &Shared, id: &str) {
     }
 }
 
+/* ==========================================================================
+The item editor
+========================================================================== */
+
+/// The rotation-reminder presets, in `Segmented` order.
+///
+/// The table lives here rather than in the `.slint` file because the same
+/// numbers are what the stale check reads: one table, one meaning. TS keeps
+/// the list in `ItemEditor.tsx` and separately reads `reminderDays`, and the
+/// two agree only by being written down in two places.
+const REMINDER_PRESETS: [(&str, f64); 8] = [
+    ("Follow global", 0.0),
+    ("15 min", 15.0 / 1440.0),
+    ("1 hour", 1.0 / 24.0),
+    ("12 hours", 0.5),
+    ("1 day", 1.0),
+    ("7 days", 7.0),
+    ("30 days", 30.0),
+    ("90 days", 90.0),
+];
+
+/// The preset label for `days`, or "" when the stored value is not one.
+///
+/// Empty means "no option is lit". Claiming "Follow global" for a 45-day
+/// reminder imported from the web build would be a lie the user could only
+/// catch by picking something else and back.
+fn reminder_label(days: f64) -> String {
+    REMINDER_PRESETS
+        .iter()
+        .find(|(_, d)| (days - *d).abs() < 1e-6)
+        .map(|(label, _)| (*label).to_string())
+        .unwrap_or_default()
+}
+
+/// Pushes the strength read-out for `password` into the editor's meter.
+///
+/// An empty password pushes -1, which `StrengthMeter` draws as five dead
+/// segments and no words at all: a field nobody has typed into is untyped,
+/// not weak.
+fn push_strength(ui: &MainWindow, password: &str) {
+    if password.is_empty() {
+        ui.set_edit_strength_score(-1);
+        ui.set_edit_strength_label("".into());
+        ui.set_edit_strength_bits("".into());
+        ui.set_edit_strength_crack("".into());
+        return;
+    }
+    let strength = estimate_strength(password);
+    ui.set_edit_strength_score(strength.score as i32);
+    ui.set_edit_strength_label(strength.label.as_str().into());
+    ui.set_edit_strength_bits(strength.bits.to_string().into());
+    ui.set_edit_strength_crack(strength.crack_time.as_str().into());
+}
+
+/// Re-rolls the generator from the options currently in the UI and pushes
+/// the value, its mask and its strength together.
+///
+/// Everything the generator shows is written here, in one place, so the
+/// preview can never be one password while the meter describes another.
+fn regenerate(ui: &MainWindow) {
+    ui.set_gen_length_label(
+        format!("{} characters", ui.get_gen_length().round().max(0.0) as i64).as_str().into(),
+    );
+    ui.set_gen_words_label(
+        format!("{} words", ui.get_gen_words().round().max(0.0) as i64).as_str().into(),
+    );
+
+    // Every character set off: TS raises "turn on at least one" and generates
+    // nothing. Generating anyway would need `generate_password`'s coercion
+    // (which switches lower+digits back on behind the user's back) to
+    // contradict the alert sitting right below it.
+    let no_sets = !ui.get_gen_lower()
+        && !ui.get_gen_upper()
+        && !ui.get_gen_digits()
+        && !ui.get_gen_symbols();
+    if ui.get_gen_mode().as_str() == "Random" && no_sets {
+        ui.set_gen_value("".into());
+        ui.set_gen_mask("".into());
+        ui.set_gen_strength_score(-1);
+        ui.set_gen_strength_label("".into());
+        ui.set_gen_strength_bits("".into());
+        ui.set_gen_strength_crack("".into());
+        return;
+    }
+
+    let value = if ui.get_gen_mode().as_str() == "Words" {
+        generate_passphrase(ui.get_gen_words().round().clamp(3.0, 10.0) as usize, "-")
+    } else {
+        generate_password(&GeneratorOptions {
+            length: ui.get_gen_length().round().clamp(8.0, 64.0) as usize,
+            lower: ui.get_gen_lower(),
+            upper: ui.get_gen_upper(),
+            digits: ui.get_gen_digits(),
+            symbols: ui.get_gen_symbols(),
+            avoid_ambiguous: ui.get_gen_avoid(),
+        })
+    };
+
+    // The dots are a *fixed* count, not the password's length: a mask that
+    // grows with the value advertises how long the secret is to anyone
+    // looking over a shoulder.
+    let mask = "\u{2022}".repeat(32);
+    let strength = estimate_strength(&value);
+    ui.set_gen_value(value.as_str().into());
+    ui.set_gen_mask(mask.as_str().into());
+    ui.set_gen_strength_score(strength.score as i32);
+    ui.set_gen_strength_label(strength.label.as_str().into());
+    ui.set_gen_strength_bits(strength.bits.to_string().into());
+    ui.set_gen_strength_crack(strength.crack_time.as_str().into());
+}
+
+/// Fills the editor with a login, or with a blank draft for a new one.
+///
+/// `id` empty means "new". The generator is not rolled here: TS opens it
+/// closed and generates on demand, and a fresh secret nobody asked for is a
+/// secret that now has to be kept.
+fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
+    if ui.get_screen() != Screen::Vault && ui.get_screen() != Screen::Editor {
+        return;
+    }
+
+    if id.is_empty() {
+        ui.set_edit_id("".into());
+        ui.set_edit_title("".into());
+        ui.set_edit_url("".into());
+        ui.set_edit_username("".into());
+        ui.set_edit_password("".into());
+        ui.set_edit_notes("".into());
+        ui.set_edit_favorite(false);
+        ui.set_edit_needs_attention(false);
+        ui.set_edit_reminder_days(0.0);
+        ui.set_edit_reminder_label(REMINDER_PRESETS[0].0.into());
+        ui.set_edit_can_delete(false);
+    } else {
+        let found = {
+            let guard = state.borrow();
+            guard
+                .engine
+                .items()
+                .and_then(|items| items.iter().find(|item| item.id == id))
+                .cloned()
+        };
+        let Some(item) = found else {
+            ui.set_error_text("That login no longer exists.".into());
+            return;
+        };
+        ui.set_edit_id(item.id.as_str().into());
+        ui.set_edit_title(item.title.as_str().into());
+        ui.set_edit_url(item.url.as_str().into());
+        ui.set_edit_username(item.username.as_str().into());
+        ui.set_edit_password(item.password.as_str().into());
+        ui.set_edit_notes(item.notes.as_str().into());
+        ui.set_edit_favorite(item.favorite);
+        ui.set_edit_needs_attention(item.needs_attention);
+        ui.set_edit_reminder_days(item.reminder_days as f32);
+        ui.set_edit_reminder_label(reminder_label(item.reminder_days).as_str().into());
+        ui.set_edit_can_delete(true);
+    }
+
+    // The transient layer `changed screen` cannot reach: this runs while the
+    // editor may already be open, and a stale error or a left-open delete
+    // confirmation would then belong to the *previous* login.
+    ui.set_editor_confirm_delete(false);
+    ui.set_editor_section("identity".into());
+    ui.set_gen_show(false);
+    ui.set_gen_revealed(false);
+    ui.set_gen_reveal_editor(false);
+    ui.set_error_text("".into());
+    ui.set_notice_text("".into());
+    let password = ui.get_edit_password().to_string();
+    push_strength(ui, &password);
+
+    goto(ui, state, Screen::Editor);
+}
+
+/// Save. A new login goes in as a fresh record; an existing one is patched,
+/// which is what lets `passwordUpdatedAt` stay put when the password itself
+/// did not change.
+fn editor_save(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor || ui.get_busy() {
+        return;
+    }
+
+    let title = ui.get_edit_title().to_string();
+    let username = ui.get_edit_username().to_string();
+    let password = ui.get_edit_password().to_string();
+    let url = ui.get_edit_url().to_string();
+    if title.trim().is_empty() && username.trim().is_empty() && password.is_empty() {
+        ui.set_error_text("Give this login a name, or something to remember it by.".into());
+        return;
+    }
+
+    let id = ui.get_edit_id().to_string();
+    let patch = serde_json::json!({
+        "title": title,
+        "url": url,
+        "username": username,
+        "password": password,
+        "notes": ui.get_edit_notes().to_string(),
+        "favorite": ui.get_edit_favorite(),
+        "needsAttention": ui.get_edit_needs_attention(),
+        "reminderDays": f64::from(ui.get_edit_reminder_days()),
+    });
+
+    ui.set_busy(true);
+    let result = {
+        let mut guard = state.borrow_mut();
+        if id.is_empty() {
+            guard.engine.add_item(&patch).map(|_| ())
+        } else {
+            guard.engine.update_item(&id, &patch).map(|_| ())
+        }
+    };
+    ui.set_busy(false);
+
+    match result {
+        Ok(()) => {
+            let message = if id.is_empty() {
+                "Login added."
+            } else {
+                "Changes saved."
+            };
+            goto(ui, state, Screen::Vault);
+            notice(ui, message);
+        }
+        Err(err) => ui.set_error_text(err.to_string().as_str().into()),
+    }
+}
+
+fn editor_cancel(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    goto(ui, state, Screen::Vault);
+}
+
+fn editor_confirm_cancelled(ui: &MainWindow) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    ui.set_editor_confirm_delete(false);
+}
+
+/// Delete, first half. `confirmDeletes` decides whether this asks; either
+/// way the editor ends up at `editor_delete_confirmed`, so there is exactly
+/// one code path that actually removes anything.
+fn editor_delete_asked(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor || ui.get_busy() {
+        return;
+    }
+    // A login that has never been saved has nothing to delete.
+    if ui.get_edit_id().is_empty() {
+        return;
+    }
+    let confirm = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences()).confirm_deletes
+    };
+    if confirm {
+        ui.set_editor_confirm_delete(true);
+    } else {
+        editor_delete_confirmed(ui, state);
+    }
+}
+
+/// Delete, second half. The row is kept so the strip at the bottom of the
+/// list can put it back -- and put back the *whole* row, not a re-typed
+/// approximation of it.
+fn editor_delete_confirmed(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Editor || ui.get_busy() {
+        return;
+    }
+    let id = ui.get_edit_id().to_string();
+    if id.is_empty() {
+        return;
+    }
+
+    ui.set_busy(true);
+    let (deleted, result) = {
+        let mut guard = state.borrow_mut();
+        let deleted = guard
+            .engine
+            .items()
+            .and_then(|items| items.iter().find(|item| item.id == id))
+            .cloned();
+        let result = guard.engine.delete_item(&id);
+        (deleted, result)
+    };
+    ui.set_busy(false);
+
+    match result {
+        Ok(()) => {
+            let title = deleted
+                .as_ref()
+                .map(|item| item.title.clone())
+                .unwrap_or_default();
+            state.borrow_mut().last_deleted = deleted;
+            goto(ui, state, Screen::Vault);
+            ui.set_undo_text(format!("Deleted \u{201c}{title}\u{201d}.").as_str().into());
+        }
+        Err(err) => ui.set_error_text(err.to_string().as_str().into()),
+    }
+}
+
+/// Puts back exactly what was deleted. `restore_item` takes the whole row,
+/// id included, so a restored login lands in its old place with its dates
+/// intact rather than being born a second time.
+fn undo_delete(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Vault || ui.get_busy() {
+        return;
+    }
+    let deleted = state.borrow_mut().last_deleted.take();
+    let Some(item) = deleted else {
+        ui.set_undo_text("".into());
+        return;
+    };
+    let title = item.title.clone();
+
+    ui.set_busy(true);
+    let result = {
+        let mut guard = state.borrow_mut();
+        guard.engine.restore_item(&item).map(|_| ())
+    };
+    ui.set_busy(false);
+    ui.set_undo_text("".into());
+
+    match result {
+        Ok(()) => {
+            refresh_items(ui, state);
+            notice(ui, format!("Restored \u{201c}{title}\u{201d}.").as_str());
+        }
+        Err(err) => ui.set_error_text(err.to_string().as_str().into()),
+    }
+}
+
+fn undo_dismiss(ui: &MainWindow, state: &Shared) {
+    if ui.get_busy() {
+        return;
+    }
+    ui.set_undo_text("".into());
+    state.borrow_mut().last_deleted = None;
+}
+
+fn toggle_favorite(ui: &MainWindow, state: &Shared, id: &str) {
+    if ui.get_screen() != Screen::Vault || ui.get_busy() {
+        return;
+    }
+    // Read, then write: the engine has no "flip" (and a blind toggle would
+    // race a double-click into two writes in the opposite direction).
+    let next = {
+        let guard = state.borrow();
+        guard
+            .engine
+            .items()
+            .and_then(|items| items.iter().find(|item| item.id == id))
+            .map(|item| !item.favorite)
+    };
+    let Some(next) = next else { return };
+    let result = {
+        let mut guard = state.borrow_mut();
+        guard
+            .engine
+            .update_item(id, &serde_json::json!({ "favorite": next }))
+            .map(|_| ())
+    };
+    match result {
+        Ok(()) => refresh_items(ui, state),
+        Err(err) => ui.set_error_text(err.to_string().as_str().into()),
+    }
+}
+
+fn editor_reveal(ui: &MainWindow) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    ui.set_gen_reveal_editor(!ui.get_gen_reveal_editor());
+}
+
+fn editor_section_selected(ui: &MainWindow, id: &str) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    ui.set_editor_section(id.into());
+}
+
+fn editor_password_edited(ui: &MainWindow) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let password = ui.get_edit_password().to_string();
+    push_strength(ui, &password);
+}
+
+fn editor_generator_toggled(ui: &MainWindow) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let show = !ui.get_gen_show();
+    ui.set_gen_show(show);
+    if show {
+        regenerate(ui);
+    }
+}
+
+fn editor_gen_mode_picked(ui: &MainWindow, index: i32) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    ui.set_gen_mode(if index == 1 { "Words" } else { "Random" }.into());
+    regenerate(ui);
+}
+
+fn editor_reminder_picked(ui: &MainWindow, index: i32) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    if let Some((label, days)) = REMINDER_PRESETS.get(index.max(0) as usize) {
+        ui.set_edit_reminder_days(*days as f32);
+        ui.set_edit_reminder_label((*label).into());
+    }
+}
+
+fn editor_use_generated(ui: &MainWindow) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let value = ui.get_gen_value().to_string();
+    if value.is_empty() {
+        return;
+    }
+    ui.set_edit_password(value.as_str().into());
+    push_strength(ui, &value);
+}
+
+fn editor_copy_generated(ui: &MainWindow) {
+    if ui.get_screen() != Screen::Editor {
+        return;
+    }
+    let value = ui.get_gen_value().to_string();
+    if value.is_empty() {
+        return;
+    }
+    if platform::copy_text(&value) {
+        notice(ui, "Password copied.");
+    } else {
+        ui.set_error_text("Could not access the clipboard.".into());
+    }
+}
+
 /// Lock: drop the key handle in the engine, then present the right unlock
 /// screen. Only meaningful from the vault screen, which is the only screen
 /// that exists while unlocked.
@@ -760,8 +1343,12 @@ fn lock_vault(ui: &MainWindow, state: &Shared) {
     let screen = {
         let mut guard = state.borrow_mut();
         guard.engine.lock();
+        // An undo offering to restore a row cannot outlive the lock: the
+        // offer would still be on screen while the vault is sealed.
+        guard.last_deleted = None;
         lock_screen_for(&guard.engine)
     };
+    ui.set_undo_text("".into());
     goto(ui, state, screen);
 }
 
@@ -790,6 +1377,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let ui = MainWindow::new()?;
+
     let tray = AppTray::new()?;
 
     // ---- Open the vault ---------------------------------------------------
@@ -800,6 +1388,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 engine,
                 pending_password: String::new(),
                 pending_backup: None,
+                last_deleted: None,
             }));
             // Debug scratch profiles open straight into the vault with demo
             // content; everything else starts on the real startup screen.
@@ -823,6 +1412,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     startup_error = Some(err.to_string());
                 }
             }
+            // After the real startup screen, not before: this opens its own
+            // screen and would otherwise be overwritten by the one above.
+            #[cfg(debug_assertions)]
+            if seeded {
+                dev_screen(&ui, &state);
+            }
             Some(state)
         }
         Err(err) => {
@@ -836,12 +1431,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- Appearance ------------------------------------------------------
     // Preferences ride in the vault document, so they are known the moment it
-    // is open — including before the first unlock, which is why this runs
+    // is open â€” including before the first unlock, which is why this runs
     // here and not after a screen change.
     if let Some(state) = &app_state {
         // shell.json is where the Tauri/Electron builds kept these four
         // switches. Adopt them into the vault preferences only when the
-        // preferences document has never recorded them — once it has, the
+        // preferences document has never recorded them â€” once it has, the
         // preferences are the newer copy (a restore can bring them from
         // another machine) and shell.json follows them instead.
         let mut shell = state_file;
@@ -1084,6 +1679,145 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     refresh_items(&ui, &st);
                 }
             });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_toggle_favorite(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    toggle_favorite(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_undo_clicked(move || {
+                if let Some(ui) = weak.upgrade() {
+                    undo_delete(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_undo_dismissed(move || {
+                if let Some(ui) = weak.upgrade() {
+                    undo_dismiss(&ui, &st);
+                }
+            });
+        }
+
+        // ---- The item editor -----------------------------------------------
+        {
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_open_editor(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    open_editor(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_save(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_save(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_cancel(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_cancel(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_delete_asked(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_delete_asked(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_delete_confirmed(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_delete_confirmed(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_confirm_cancelled(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_confirm_cancelled(&ui);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_reveal(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_reveal(&ui);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_password_edited(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_password_edited(&ui);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_section_selected(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_section_selected(&ui, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_generator_toggled(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_generator_toggled(&ui);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_regenerate(move || {
+                if let Some(ui) = weak.upgrade() {
+                    if ui.get_screen() == Screen::Editor {
+                        regenerate(&ui);
+                    }
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_gen_mode_picked(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_gen_mode_picked(&ui, index);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_reminder_picked(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    editor_reminder_picked(&ui, index);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_use_generated(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_use_generated(&ui);
+                }
+            });
+
+            let weak = ui.as_weak();
+            ui.on_editor_copy_generated(move || {
+                if let Some(ui) = weak.upgrade() {
+                    editor_copy_generated(&ui);
+                }
+            });
         }
     }
 
@@ -1133,6 +1867,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tray.hide()?;
     }
     eprintln!("shell up: window and tray shown");
+
     ui.run()?;
     Ok(())
 }

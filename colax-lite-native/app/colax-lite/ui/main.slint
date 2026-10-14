@@ -17,6 +17,7 @@ import { Theme } from "theme.slint";
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState } from "widgets.slint";
 import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition } from "models.slint";
+import { Editor } from "screens/editor.slint";
 // Re-exported so Rust can reach it: applyAppearance pushes every token into
 // this global (ADR-2), and items.rs builds the models, which needs all of
 // these types in the generated module.
@@ -61,6 +62,52 @@ export component MainWindow inherits Window {
     in-out property <string> search-text;
     in-out property <string> password-value;
     in-out property <string> confirm-value;
+    // The undo strip for the last deletion. Empty means "nothing to undo",
+    // which is the same test the Rust side uses.
+    in-out property <string> undo-text;
+
+    // ---- The item editor's draft -------------------------------------
+    // Handed to `Editor` as `in-out`, so the screen owns the values while it
+    // is open and `save-item` reads the lot back in one go.
+    in-out property <string> edit-id;
+    in-out property <string> edit-title;
+    in-out property <string> edit-url;
+    in-out property <string> edit-username;
+    in-out property <string> edit-password;
+    in-out property <string> edit-notes;
+    in-out property <bool> edit-favorite;
+    in-out property <bool> edit-needs-attention;
+    in-out property <float> edit-reminder-days;
+    in property <string> edit-reminder-label;
+    in property <bool> edit-can-delete;
+    // Strength of whatever is in the editor's password box, recomputed by
+    // Rust on every keystroke.
+    in property <int> edit-strength-score: -1;
+    in property <string> edit-strength-label;
+    in property <string> edit-strength-bits;
+    in property <string> edit-strength-crack;
+    // The generator, same idea.
+    in-out property <bool> gen-show: false;
+    in-out property <bool> gen-revealed: false;
+    in-out property <string> gen-mode: "Random";
+    in-out property <float> gen-length: 20;
+    in-out property <float> gen-words: 5;
+    in property <string> gen-length-label;
+    in property <string> gen-words-label;
+    in-out property <bool> gen-lower: true;
+    in-out property <bool> gen-upper: true;
+    in-out property <bool> gen-digits: true;
+    in-out property <bool> gen-symbols: true;
+    in-out property <bool> gen-avoid: true;
+    in property <string> gen-value;
+    in property <string> gen-mask;
+    in property <int> gen-strength-score: -1;
+    in property <string> gen-strength-label;
+    in property <string> gen-strength-bits;
+    in property <string> gen-strength-crack;
+    in property <bool> editor-confirm-delete: false;
+    in property <bool> gen-reveal-editor: false;
+    in-out property <string> editor-section: "identity";
 
     callback create-no-password();
     callback create-with-password();
@@ -77,7 +124,27 @@ export component MainWindow inherits Window {
     callback copy-password(id: string);
     callback search-changed(query: string);
     callback channel-selected(id: string);
+    callback toggle-favorite(id: string);
+    callback undo-clicked();
+    callback undo-dismissed();
     callback quit-app();
+
+    // ---- The item editor ---------------------------------------------
+    callback open-editor(id: string);       // "" opens a new login
+    callback editor-cancel();
+    callback editor-save();
+    callback editor-delete-asked();
+    callback editor-delete-confirmed();
+    callback editor-confirm-cancelled();
+    callback editor-reveal();
+    callback editor-section-selected(id: string);
+    callback editor-password-edited();
+    callback editor-generator-toggled();
+    callback editor-regenerate();
+    callback editor-gen-mode-picked(index: int);
+    callback editor-use-generated();
+    callback editor-copy-generated();
+    callback editor-reminder-picked(index: int);
 
     // Every transition resets the transient layer: messages always, the
     // typed-in text whenever it cannot still be needed (the create flow
@@ -95,657 +162,826 @@ export component MainWindow inherits Window {
         }
     }
 
-    // -- Vault: rail + content ------------------------------------------
-    if (root.screen == Screen.Vault) : HorizontalLayout {
-        width: root.width;
-        height: root.height;
+    // -- The screens -------------------------------------------------------
+    // Exactly one of the three branches below exists at any moment, and all
+    // three are children of the window's single root layout. That is what
+    // makes a screen as tall as the window: a screen cannot ask for it
+    // itself. Geometry written on a component at the call site is not
+    // applied to its root -- the root keeps the height of its own content,
+    // which parked the editor's footer in the middle of the window, one
+    // section deep. A layout, by contrast, sizes its children directly.
+    VerticalLayout {
+        spacing: 0px;
+        // What the window opens at is decided by the `Window` above:
+        // `preferred-height` is the height, and `min-height` the floor. Two
+        // things can still hold it below that -- a screen whose maximum is
+        // smaller than the preferred size (measured: the editor capped the
+        // window at 414 tall on Identity), which each screen disarms with a
+        // sizeless cell of its own; and nothing else. Constraints written
+        // here, on the root layout, are dropped: the component's root is the
+        // `Window`, and only its `min-*`/`preferred-*` reach the window's
+        // first sizing.
 
-        // ---- The rail -------------------------------------------------
-        Rectangle {
-            width: 244px;
-            background: Theme.bg-deep;
+        // -- Vault: rail + content ------------------------------------------
+        // A child of a layout defaults to `stretch: 0`, which leaves it as tall
+        // as its content and parks the spare space at the bottom of the window.
+        if (root.screen == Screen.Vault) : HorizontalLayout {
+            vertical-stretch: 1;
 
-            VerticalLayout {
-                padding-top: 26px;
-                padding-bottom: 20px;
-                padding-left: 14px;
-                padding-right: 14px;
-                spacing: 4px;
 
-                HorizontalLayout {
-                    padding-left: 8px;
-                    padding-bottom: 18px;
-                    spacing: 10px;
+            // ---- The rail -------------------------------------------------
+            Rectangle {
+                width: 244px;
+                background: Theme.bg-deep;
 
-                    Rectangle {
-                        width: 30px;
-                        height: 30px;
-                        border-radius: 8px;
-                        background: @linear-gradient(120deg, Theme.grad-from, Theme.grad-to);
+                VerticalLayout {
+                    padding-top: 26px;
+                    padding-bottom: 20px;
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 4px;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-bottom: 18px;
+                        spacing: 10px;
+
+                        Rectangle {
+                            width: 30px;
+                            height: 30px;
+                            border-radius: 8px;
+                            background: @linear-gradient(120deg, Theme.grad-from, Theme.grad-to);
+
+                            Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: "C";
+                                color: #ffffff;
+                                font-size: 15px;
+                                font-weight: 800;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
 
                         Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: "C";
-                            color: #ffffff;
-                            font-size: 15px;
-                            font-weight: 800;
-                            horizontal-alignment: center;
+                            text: "Colax Lite";
+                            color: Theme.text;
+                            font-size: 16px;
+                            font-weight: 700;
                             vertical-alignment: center;
                         }
                     }
 
-                    Text {
-                        text: "Colax Lite";
-                        color: Theme.text;
-                        font-size: 16px;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                    }
-                }
+                    // The rail itself: channels and one hairline before the
+                    // summary screens. A separator is `kind: 2` and has no id —
+                    // nothing can select it.
+                    for row in root.sidebar : Rectangle {
+                        height: row.kind == 2 ? 20px : 34px;
 
-                // The rail itself: channels and one hairline before the
-                // summary screens. A separator is `kind: 2` and has no id —
-                // nothing can select it.
-                for row in root.sidebar : Rectangle {
-                    height: row.kind == 2 ? 20px : 34px;
-
-                    if (row.kind == 2) : Rectangle {
-                        x: 8px;
-                        y: (parent.height - 1px) / 2;
-                        width: parent.width - 16px;
-                        height: 1px;
-                        background: Theme.hairline;
-                    }
-
-                    if (row.kind != 2) : rail-row := Rectangle {
-                        border-radius: Theme.radius-sm;
-                        background: row.selected ? Theme.accent-soft
-                            : (rail-touch.has-hover ? Theme.row-hover : #00000000);
-
-                        rail-touch := TouchArea {
-                            clicked => {
-                                root.active-channel = row.id;
-                                root.channel-selected(row.id);
-                            }
+                        if (row.kind == 2) : Rectangle {
+                            x: 8px;
+                            y: (parent.height - 1px) / 2;
+                            width: parent.width - 16px;
+                            height: 1px;
+                            background: Theme.hairline;
                         }
 
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: 10px;
+                        if (row.kind != 2) : rail-row := Rectangle {
+                            border-radius: Theme.radius-sm;
+                            background: row.selected ? Theme.accent-soft
+                                : (rail-touch.has-hover ? Theme.row-hover : #00000000);
 
-                            Rectangle {
-                                width: 16px;
-                                height: 16px;
-                                border-radius: 8px;
-                                background: row.hue;
-                                opacity: row.selected ? 1.0 : 0.65;
+                            rail-touch := TouchArea {
+                                clicked => {
+                                    root.active-channel = row.id;
+                                    root.channel-selected(row.id);
+                                }
                             }
 
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 10px;
+
+                                Rectangle {
+                                    width: 16px;
+                                    height: 16px;
+                                    border-radius: 8px;
+                                    background: row.hue;
+                                    opacity: row.selected ? 1.0 : 0.65;
+                                }
+
+                                Text {
+                                    text: row.label;
+                                    color: row.selected ? Theme.text : Theme.muted;
+                                    font-size: 13px;
+                                    font-weight: row.selected ? 600 : 500;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                                if (row.count > 0) : Text {
+                                    text: row.count;
+                                    color: row.selected ? Theme.accent-text : Theme.faint;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; height: 1px; }
+
+                    Text {
+                        text: root.count-label;
+                        color: Theme.faint;
+                        font-size: 12px;
+                    }
+                }
+            }
+
+            // ---- The content ----------------------------------------------
+            Rectangle {
+                horizontal-stretch: 1;
+
+                VerticalLayout {
+                    padding-top: 26px;
+                    padding-bottom: 16px;
+                    padding-left: 30px;
+                    padding-right: 34px;
+                    spacing: 14px;
+
+                    HorizontalLayout {
+                        spacing: 10px;
+
+                        Text {
+                            text: root.active-channel == "all"
+                                ? "All logins"
+                                : root.channel-name;
+                            color: Theme.text;
+                            font-size: 20px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                        Btn {
+                            label: "New login";
+                            kind: 1;
+                            h: 36px;
+                            enabled: !root.busy;
+                            clicked => { root.open-editor(""); }
+                        }
+
+                        Btn {
+                            label: "Import";
+                            kind: 1;
+                            h: 36px;
+                            enabled: !root.busy;
+                            clicked => { root.import-from-vault(); }
+                        }
+
+                        Btn {
+                            label: root.busy ? "Working..." : "Lock";
+                            kind: 0;
+                            h: 36px;
+                            enabled: !root.busy;
+                            clicked => { root.lock-vault(); }
+                        }
+                    }
+
+                    if (root.error-text != "") : Alert {
+                        message: root.error-text;
+                    }
+
+                    if (root.notice-text != "") : Alert {
+                        message: root.notice-text;
+                        good: true;
+                    }
+
+                    search-input := Field {
+                        placeholder: "Search logins...";
+                        value <=> root.search-text;
+                        edited => { root.search-changed(root.search-text); }
+                    }
+
+                    if (root.cards.length == 0) : VerticalLayout {
+                        vertical-stretch: 1;
+                        alignment: center;
+                        spacing: 6px;
+
+                        if (root.search-text != "") : EmptyState {
+                            title: "No matches";
+                            hint: "Nothing in this vault matches \"" + root.search-text + "\".";
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                        }
+
+                        if (root.search-text == "") : EmptyState {
+                            title: root.cards-empty-title;
+                            hint: root.cards-empty-hint;
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                        }
+                    }
+
+                    if (root.cards.length > 0) : ListView {
+                        vertical-stretch: 1;
+
+                        for card in root.cards : Rectangle {
+                            // Four lines now: badges, title, username, dates.
+                            height: 86px;
+                            border-radius: Theme.radius-md;
+                            background: card.selected ? Theme.accent-soft
+                                : (card-touch.has-hover ? Theme.row-hover : #00000000);
+                            border-width: card.selected ? 1px : 0px;
+                            border-color: card.selected ? Theme.border-focus : #00000000;
+
+                            card-touch := TouchArea {
+                                // One click opens the editor. The TS app needs a
+                                // double-click here (single-click only selects),
+                                // but a native list has no context menu and no
+                                // selection state doing anything yet -- making the
+                                // user discover a second click to edit is a web
+                                // habit, not a feature.
+                                clicked => { root.open-editor(card.id); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 14px;
+
+                                Rectangle {
+                                    width: 44px;
+                                    height: 44px;
+                                    border-radius: 12px;
+                                    background: card.tile;
+
+                                    if (!card.has-image) : Text {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        text: card.initial;
+                                        color: #ffffff;
+                                        font-size: 17px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    if (card.has-image) : Image {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        source: card.image;
+                                        image-fit: contain;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    vertical-stretch: 1;
+
+                                    // Badges sit above the title, not beside the
+                                    // username: a login with three of them would
+                                    // otherwise push the name out of the card
+                                    // (the reason `HealthBadges` got its own row
+                                    // in views.tsx).
+                                    if (card.badges.length > 0) : HorizontalLayout {
+                                        spacing: 6px;
+                                        // Left-aligned at the badges' own widths:
+                                        // the default stretch would spread three
+                                        // chips evenly across the whole card.
+                                        alignment: start;
+
+                                        for badge in card.badges : BadgeBox {
+                                            label: badge.label;
+                                            tone: badge.tone;
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: card.label;
+                                            color: Theme.text;
+                                            font-size: 14.5px;
+                                            font-weight: 600;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if (card.favorite) : Text {
+                                            text: "★";
+                                            color: Theme.warn;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if (card.needs-attention) : Text {
+                                            text: "!";
+                                            color: Theme.danger;
+                                            font-size: 12px;
+                                            font-weight: 800;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: card.username == ""
+                                            ? (card.hostname == "" ? "(no username)" : card.hostname)
+                                            : card.username;
+                                        color: Theme.muted;
+                                        font-size: 12.5px;
+                                        overflow: elide;
+                                    }
+
+                                    if (card.modified-note != "") : Text {
+                                        text: card.modified-note;
+                                        color: Theme.faint;
+                                        font-size: 11.5px;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    alignment: center;
+
+                                    if (root.show-urls && card.hostname != "") : Text {
+                                        width: 200px;
+                                        text: card.hostname;
+                                        color: Theme.faint;
+                                        font-size: 12.5px;
+                                        horizontal-alignment: right;
+                                        overflow: elide;
+                                    }
+
+                                    Text {
+                                        width: 200px;
+                                        text: card.masked-password;
+                                        color: Theme.muted;
+                                        font-size: 13px;
+                                        horizontal-alignment: right;
+                                        letter-spacing: 1px;
+                                    }
+                                }
+
+                                Btn {
+                                    label: "Copy";
+                                    kind: 1;
+                                    h: 32px;
+                                    enabled: !root.busy;
+                                    clicked => { root.copy-password(card.id); }
+                                }
+
+                                // Favourite, on its own so it can be hit without
+                                // opening the editor. The star next to the title
+                                // only *reports* the state; this is what changes
+                                // it.
+                                Rectangle {
+                                    width: 30px;
+                                    height: 30px;
+                                    vertical-stretch: 0;
+                                    border-radius: 8px;
+                                    background: star-touch.has-hover ? #ffffff14 : #00000000;
+
+                                    star-touch := TouchArea {
+                                        clicked => { root.toggle-favorite(card.id); }
+                                    }
+
+                                    Text {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        text: card.favorite ? "★" : "☆";
+                                        color: card.favorite ? Theme.warn : Theme.muted;
+                                        font-size: 15px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Undo for the last deletion. Sits in the content column
+                    // rather than floating over it, so it cannot cover the card
+                    // the user is deciding about -- and it is a row with a
+                    // button, not a toast, because the whole point of undo is
+                    // that it can still be pressed a second later.
+                    if (root.undo-text != "") : Rectangle {
+                        height: 48px;
+                        vertical-stretch: 0;
+                        border-radius: 9px;
+                        background: Theme.field;
+                        border-width: 1px;
+                        border-color: Theme.border;
+
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 8px;
+                            spacing: 10px;
+
                             Text {
-                                text: row.label;
-                                color: row.selected ? Theme.text : Theme.muted;
+                                text: root.undo-text;
+                                color: Theme.text;
                                 font-size: 13px;
-                                font-weight: row.selected ? 600 : 500;
                                 overflow: elide;
                                 vertical-alignment: center;
                             }
 
-                            Rectangle { horizontal-stretch: 1; width: 1px; }
-
-                            if (row.count > 0) : Text {
-                                text: row.count;
-                                color: row.selected ? Theme.accent-text : Theme.faint;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-
-                Rectangle { vertical-stretch: 1; height: 1px; }
-
-                Text {
-                    text: root.count-label;
-                    color: Theme.faint;
-                    font-size: 12px;
-                }
-            }
-        }
-
-        // ---- The content ----------------------------------------------
-        Rectangle {
-            horizontal-stretch: 1;
-
-            VerticalLayout {
-                padding-top: 26px;
-                padding-bottom: 16px;
-                padding-left: 30px;
-                padding-right: 34px;
-                spacing: 14px;
-
-                HorizontalLayout {
-                    spacing: 10px;
-
-                    Text {
-                        text: root.active-channel == "all"
-                            ? "All logins"
-                            : root.channel-name;
-                        color: Theme.text;
-                        font-size: 20px;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                    }
-
-                    Rectangle { horizontal-stretch: 1; width: 1px; }
-
-                    Btn {
-                        label: "Import";
-                        kind: 1;
-                        h: 36px;
-                        enabled: !root.busy;
-                        clicked => { root.import-from-vault(); }
-                    }
-
-                    Btn {
-                        label: root.busy ? "Working..." : "Lock";
-                        kind: 0;
-                        h: 36px;
-                        enabled: !root.busy;
-                        clicked => { root.lock-vault(); }
-                    }
-                }
-
-                if (root.error-text != "") : Alert {
-                    message: root.error-text;
-                }
-
-                if (root.notice-text != "") : Alert {
-                    message: root.notice-text;
-                    good: true;
-                }
-
-                search-input := Field {
-                    placeholder: "Search logins...";
-                    value <=> root.search-text;
-                    edited => { root.search-changed(root.search-text); }
-                }
-
-                if (root.cards.length == 0) : VerticalLayout {
-                    vertical-stretch: 1;
-                    alignment: center;
-                    spacing: 6px;
-
-                    if (root.search-text != "") : EmptyState {
-                        title: "No matches";
-                        hint: "Nothing in this vault matches \"" + root.search-text + "\".";
-                        horizontal-stretch: 1;
-                        vertical-stretch: 1;
-                    }
-
-                    if (root.search-text == "") : EmptyState {
-                        title: root.cards-empty-title;
-                        hint: root.cards-empty-hint;
-                        horizontal-stretch: 1;
-                        vertical-stretch: 1;
-                    }
-                }
-
-                if (root.cards.length > 0) : ListView {
-                    vertical-stretch: 1;
-
-                    for card in root.cards : Rectangle {
-                        // Four lines now: badges, title, username, dates.
-                        height: 86px;
-                        border-radius: Theme.radius-md;
-                        background: card.selected ? Theme.accent-soft
-                            : (card-touch.has-hover ? Theme.row-hover : #00000000);
-                        border-width: card.selected ? 1px : 0px;
-                        border-color: card.selected ? Theme.border-focus : #00000000;
-
-                        card-touch := TouchArea {
-                            clicked => { root.copy-password(card.id); }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 14px;
-
-                            Rectangle {
-                                width: 44px;
-                                height: 44px;
-                                border-radius: 12px;
-                                background: card.tile;
-
-                                if (!card.has-image) : Text {
-                                    width: parent.width;
-                                    height: parent.height;
-                                    text: card.initial;
-                                    color: #ffffff;
-                                    font-size: 17px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                if (card.has-image) : Image {
-                                    width: parent.width;
-                                    height: parent.height;
-                                    source: card.image;
-                                    image-fit: contain;
-                                }
-                            }
-
-                            VerticalLayout {
-                                spacing: 3px;
-                                vertical-stretch: 1;
-
-                                // Badges sit above the title, not beside the
-                                // username: a login with three of them would
-                                // otherwise push the name out of the card
-                                // (the reason `HealthBadges` got its own row
-                                // in views.tsx).
-                                if (card.badges.length > 0) : HorizontalLayout {
-                                    spacing: 6px;
-                                    // Left-aligned at the badges' own widths:
-                                    // the default stretch would spread three
-                                    // chips evenly across the whole card.
-                                    alignment: start;
-
-                                    for badge in card.badges : BadgeBox {
-                                        label: badge.label;
-                                        tone: badge.tone;
-                                    }
-                                }
-
-                                HorizontalLayout {
-                                    spacing: 8px;
-
-                                    Text {
-                                        text: card.label;
-                                        color: Theme.text;
-                                        font-size: 14.5px;
-                                        font-weight: 600;
-                                        overflow: elide;
-                                        vertical-alignment: center;
-                                    }
-
-                                    if (card.favorite) : Text {
-                                        text: "★";
-                                        color: Theme.warn;
-                                        font-size: 12px;
-                                        vertical-alignment: center;
-                                    }
-
-                                    if (card.needs-attention) : Text {
-                                        text: "!";
-                                        color: Theme.danger;
-                                        font-size: 12px;
-                                        font-weight: 800;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                Text {
-                                    text: card.username == ""
-                                        ? (card.hostname == "" ? "(no username)" : card.hostname)
-                                        : card.username;
-                                    color: Theme.muted;
-                                    font-size: 12.5px;
-                                    overflow: elide;
-                                }
-
-                                if (card.modified-note != "") : Text {
-                                    text: card.modified-note;
-                                    color: Theme.faint;
-                                    font-size: 11.5px;
-                                    overflow: elide;
-                                }
-                            }
-
-                            Rectangle { horizontal-stretch: 1; width: 1px; }
-
-                            VerticalLayout {
-                                spacing: 2px;
-                                alignment: center;
-
-                                if (root.show-urls && card.hostname != "") : Text {
-                                    width: 200px;
-                                    text: card.hostname;
-                                    color: Theme.faint;
-                                    font-size: 12.5px;
-                                    horizontal-alignment: right;
-                                    overflow: elide;
-                                }
-
-                                Text {
-                                    width: 200px;
-                                    text: card.masked-password;
-                                    color: Theme.muted;
-                                    font-size: 13px;
-                                    horizontal-alignment: right;
-                                    letter-spacing: 1px;
-                                }
+                            Btn {
+                                label: "Undo";
+                                kind: 1;
+                                h: 32px;
+                                width: 78px;
+                                enabled: !root.busy;
+                                clicked => { root.undo-clicked(); }
                             }
 
                             Btn {
-                                label: "Copy";
-                                kind: 1;
+                                label: "Dismiss";
+                                kind: 2;
                                 h: 32px;
-                                enabled: !root.busy;
-                                clicked => { root.copy-password(card.id); }
+                                width: 84px;
+                                clicked => { root.undo-dismissed(); }
                             }
                         }
                     }
                 }
             }
         }
-    }
 
-    // -- Everything else: the centered card -------------------------------
-    if (root.screen != Screen.Vault) : Rectangle {
-        width: root.width;
-        height: root.height;
+        // -- The item editor: a full-height screen, not the centered card -----
+        // It gets its own branch rather than joining the unlock-style card
+        // because it has its own rail, top bar and footer.
+        if (root.screen == Screen.Editor) : Editor {
+            vertical-stretch: 1;
+            edit-id: root.edit-id;
+            title <=> root.edit-title;
+            url <=> root.edit-url;
+            username <=> root.edit-username;
+            password <=> root.edit-password;
+            notes <=> root.edit-notes;
+            favorite <=> root.edit-favorite;
+            needs-attention <=> root.edit-needs-attention;
+            reminder-days <=> root.edit-reminder-days;
+            reminder-label: root.edit-reminder-label;
+            can-delete: root.edit-can-delete;
+            reveal-password: root.gen-reveal-editor;
+            section: root.editor-section;
+            strength-score: root.edit-strength-score;
+            strength-label: root.edit-strength-label;
+            strength-bits: root.edit-strength-bits;
+            strength-crack: root.edit-strength-crack;
+            show-generator: root.gen-show;
+            gen-revealed <=> root.gen-revealed;
+            gen-mode: root.gen-mode;
+            gen-length <=> root.gen-length;
+            gen-words <=> root.gen-words;
+            gen-length-label: root.gen-length-label;
+            gen-words-label: root.gen-words-label;
+            gen-lower <=> root.gen-lower;
+            gen-upper <=> root.gen-upper;
+            gen-digits <=> root.gen-digits;
+            gen-symbols <=> root.gen-symbols;
+            gen-avoid <=> root.gen-avoid;
+            generated: root.gen-value;
+            gen-mask: root.gen-mask;
+            generated-score: root.gen-strength-score;
+            generated-label: root.gen-strength-label;
+            generated-bits: root.gen-strength-bits;
+            generated-crack: root.gen-strength-crack;
+            busy: root.busy;
+            error-text: root.error-text;
+            notice-text: root.notice-text;
+            confirm-delete: root.editor-confirm-delete;
 
-        card := Rectangle {
-            x: (root.width - self.width) / 2;
-            y: (root.height - self.height) / 2;
-            width: 440px;
-            height: inner.preferred-height;
-            border-radius: Theme.radius-lg;
-            border-width: 1px;
-            border-color: Theme.border;
-            background: Theme.card;
+            cancel-clicked => { root.editor-cancel(); }
+            save-clicked => { root.editor-save(); }
+            delete-asked => { root.editor-delete-asked(); }
+            delete-confirmed => { root.editor-delete-confirmed(); }
+            confirm-cancelled => { root.editor-confirm-cancelled(); }
+            reveal-clicked => { root.editor-reveal(); }
+            password-edited => { root.editor-password-edited(); }
+            section-selected(id) => { root.editor-section-selected(id); }
+            generator-toggled => { root.editor-generator-toggled(); }
+            regenerate => { root.editor-regenerate(); }
+            gen-mode-picked(i) => { root.editor-gen-mode-picked(i); }
+            use-generated => { root.editor-use-generated(); }
+            copy-generated => { root.editor-copy-generated(); }
+            reminder-picked(i) => { root.editor-reminder-picked(i); }
+        }
 
-            inner := VerticalLayout {
-                padding-top: 34px;
-                padding-bottom: 30px;
-                padding-left: 34px;
-                padding-right: 34px;
-                spacing: 14px;
+        // -- Everything else: the centered card -------------------------------
+        if (root.screen != Screen.Vault && root.screen != Screen.Editor) : Rectangle {
+            vertical-stretch: 1;
 
-                property <string> title: root.screen == Screen.CreateChoose
-                    ? "Set up your vault"
-                    : root.screen == Screen.CreatePassword
-                        ? "Add a vault password"
-                        : root.screen == Screen.CreateConfirm
-                            ? "Confirm your vault password"
-                            : root.screen == Screen.ImportPassword
-                                ? "This backup is protected"
-                                : root.screen == Screen.Error
-                                    ? "Something went wrong"
-                                    : "Welcome back";
+            card := Rectangle {
+                x: (root.width - self.width) / 2;
+                y: (root.height - self.height) / 2;
+                width: 440px;
+                height: inner.preferred-height;
+                border-radius: Theme.radius-lg;
+                border-width: 1px;
+                border-color: Theme.border;
+                background: Theme.card;
 
-                property <string> hint: root.screen == Screen.Error
-                    ? root.error-text
-                    : root.screen == Screen.CreateChoose
-                        ? "Colax encrypts your logins on this device. Choose how this vault is protected - you can change it later in Settings."
+                inner := VerticalLayout {
+                    padding-top: 34px;
+                    padding-bottom: 30px;
+                    padding-left: 34px;
+                    padding-right: 34px;
+                    spacing: 14px;
+
+                    property <string> title: root.screen == Screen.CreateChoose
+                        ? "Set up your vault"
                         : root.screen == Screen.CreatePassword
-                            ? "This password encrypts your vault. It is never stored and cannot be recovered if you forget it."
+                            ? "Add a vault password"
                             : root.screen == Screen.CreateConfirm
-                                ? "Type the same password once more to confirm it."
+                                ? "Confirm your vault password"
                                 : root.screen == Screen.ImportPassword
-                                    ? "Enter the password this backup was exported with to unlock and import it."
-                                    : root.screen == Screen.UnlockDevice
-                                        ? "This vault has no password, so it opens straight away."
-                                        : "Enter your vault password to decrypt it.";
+                                    ? "This backup is protected"
+                                    : root.screen == Screen.Error
+                                        ? "Something went wrong"
+                                        : "Welcome back";
 
-                // Brand block: the same lock mark the lite lock screen wears.
-                HorizontalLayout {
-                    spacing: 16px;
+                    property <string> hint: root.screen == Screen.Error
+                        ? root.error-text
+                        : root.screen == Screen.CreateChoose
+                            ? "Colax encrypts your logins on this device. Choose how this vault is protected - you can change it later in Settings."
+                            : root.screen == Screen.CreatePassword
+                                ? "This password encrypts your vault. It is never stored and cannot be recovered if you forget it."
+                                : root.screen == Screen.CreateConfirm
+                                    ? "Type the same password once more to confirm it."
+                                    : root.screen == Screen.ImportPassword
+                                        ? "Enter the password this backup was exported with to unlock and import it."
+                                        : root.screen == Screen.UnlockDevice
+                                            ? "This vault has no password, so it opens straight away."
+                                            : "Enter your vault password to decrypt it.";
 
-                    Rectangle {
-                        width: 54px;
-                        height: 54px;
-                        border-radius: 14px;
-                        background: @linear-gradient(120deg, Theme.grad-from, Theme.grad-to);
+                    // Brand block: the same lock mark the lite lock screen wears.
+                    HorizontalLayout {
+                        spacing: 16px;
 
                         Rectangle {
-                            x: (parent.width - 20px) / 2;
-                            y: 11px;
-                            width: 20px;
-                            height: 20px;
-                            border-radius: 10px;
-                            border-width: 3.5px;
-                            border-color: #ffffff;
-                            background: #00000000;
+                            width: 54px;
+                            height: 54px;
+                            border-radius: 14px;
+                            background: @linear-gradient(120deg, Theme.grad-from, Theme.grad-to);
+
+                            Rectangle {
+                                x: (parent.width - 20px) / 2;
+                                y: 11px;
+                                width: 20px;
+                                height: 20px;
+                                border-radius: 10px;
+                                border-width: 3.5px;
+                                border-color: #ffffff;
+                                background: #00000000;
+                            }
+
+                            Rectangle {
+                                x: (parent.width - 26px) / 2;
+                                y: 23px;
+                                width: 26px;
+                                height: 17px;
+                                border-radius: 5px;
+                                background: #ffffff;
+                            }
                         }
 
-                        Rectangle {
-                            x: (parent.width - 26px) / 2;
-                            y: 23px;
-                            width: 26px;
-                            height: 17px;
-                            border-radius: 5px;
-                            background: #ffffff;
+                        VerticalLayout {
+                            spacing: 5px;
+
+                            Text {
+                                text: inner.title;
+                                color: Theme.text;
+                                font-size: 21px;
+                                font-weight: 700;
+                            }
+
+                            Text {
+                                text: inner.hint;
+                                color: Theme.muted;
+                                font-size: 13.5px;
+                                wrap: word-wrap;
+                            }
                         }
                     }
 
-                    VerticalLayout {
-                        spacing: 5px;
+                    // On the error screen the message *is* the hint, so the
+                    // strip would only repeat it.
+                    if (root.error-text != "" && root.screen != Screen.Error) : Alert {
+                        message: root.error-text;
+                    }
 
-                        Text {
-                            text: inner.title;
-                            color: Theme.text;
-                            font-size: 21px;
-                            font-weight: 700;
+                    if (root.notice-text != "") : Alert {
+                        message: root.notice-text;
+                        good: true;
+                    }
+
+                    if (root.screen == Screen.CreateChoose) : VerticalLayout {
+                        spacing: 10px;
+
+                        Btn {
+                            label: root.busy ? "Working..." : "Continue without a password";
+                            kind: 0;
+                            enabled: !root.busy;
+                            clicked => { root.create-no-password(); }
+                        }
+
+                        Btn {
+                            label: "Add a vault password";
+                            kind: 1;
+                            enabled: !root.busy;
+                            clicked => { root.create-with-password(); }
+                        }
+
+                        Btn {
+                            label: "Import a backup";
+                            kind: 1;
+                            enabled: !root.busy;
+                            clicked => { root.create-import(); }
                         }
 
                         Text {
-                            text: inner.hint;
-                            color: Theme.muted;
-                            font-size: 13.5px;
+                            text: "A device vault opens for anyone who can use this computer.";
+                            color: Theme.faint;
+                            font-size: 12.5px;
                             wrap: word-wrap;
                         }
                     }
-                }
 
-                // On the error screen the message *is* the hint, so the
-                // strip would only repeat it.
-                if (root.error-text != "" && root.screen != Screen.Error) : Alert {
-                    message: root.error-text;
-                }
+                    if (root.screen == Screen.CreatePassword) : VerticalLayout {
+                        spacing: 10px;
 
-                if (root.notice-text != "") : Alert {
-                    message: root.notice-text;
-                    good: true;
-                }
+                        Text {
+                            text: "Vault password";
+                            color: Theme.muted;
+                            font-size: 13px;
+                            font-weight: 600;
+                        }
 
-                if (root.screen == Screen.CreateChoose) : VerticalLayout {
-                    spacing: 10px;
+                        Field {
+                            placeholder: "Enter a new vault password";
+                            password: true;
+                            enabled: !root.busy;
+                            value <=> root.password-value;
+                            accepted => { root.password-next(); }
+                        }
 
-                    Btn {
-                        label: root.busy ? "Working..." : "Continue without a password";
-                        kind: 0;
-                        enabled: !root.busy;
-                        clicked => { root.create-no-password(); }
+                        Text {
+                            text: "At least 8 characters.";
+                            color: Theme.faint;
+                            font-size: 12.5px;
+                        }
+
+                        Btn {
+                            label: root.busy ? "Working..." : "Continue";
+                            kind: 0;
+                            enabled: !root.busy;
+                            clicked => { root.password-next(); }
+                        }
+
+                        Btn {
+                            label: "Back";
+                            kind: 2;
+                            enabled: !root.busy;
+                            clicked => { root.create-back(); }
+                        }
                     }
 
-                    Btn {
-                        label: "Add a vault password";
-                        kind: 1;
-                        enabled: !root.busy;
-                        clicked => { root.create-with-password(); }
+                    if (root.screen == Screen.CreateConfirm) : VerticalLayout {
+                        spacing: 10px;
+
+                        Text {
+                            text: "Confirm password";
+                            color: Theme.muted;
+                            font-size: 13px;
+                            font-weight: 600;
+                        }
+
+                        Field {
+                            placeholder: "Type the same password again";
+                            password: true;
+                            enabled: !root.busy;
+                            value <=> root.confirm-value;
+                            accepted => { root.create-submit(); }
+                        }
+
+                        Btn {
+                            label: root.busy ? "Working..." : "Create vault";
+                            kind: 0;
+                            enabled: !root.busy;
+                            clicked => { root.create-submit(); }
+                        }
+
+                        Btn {
+                            label: "Back";
+                            kind: 2;
+                            enabled: !root.busy;
+                            clicked => { root.create-back(); }
+                        }
                     }
 
-                    Btn {
-                        label: "Import a backup";
-                        kind: 1;
-                        enabled: !root.busy;
-                        clicked => { root.create-import(); }
+                    if (root.screen == Screen.UnlockPassword) : VerticalLayout {
+                        spacing: 10px;
+
+                        Text {
+                            text: "Vault password";
+                            color: Theme.muted;
+                            font-size: 13px;
+                            font-weight: 600;
+                        }
+
+                        Field {
+                            placeholder: "Vault password";
+                            password: true;
+                            enabled: !root.busy;
+                            value <=> root.password-value;
+                            accepted => { root.unlock-submit(); }
+                        }
+
+                        Btn {
+                            label: root.busy ? "Decrypting..." : "Unlock";
+                            kind: 0;
+                            enabled: !root.busy;
+                            clicked => { root.unlock-submit(); }
+                        }
                     }
 
-                    Text {
-                        text: "A device vault opens for anyone who can use this computer.";
-                        color: Theme.faint;
-                        font-size: 12.5px;
-                        wrap: word-wrap;
-                    }
-                }
+                    if (root.screen == Screen.UnlockDevice) : VerticalLayout {
+                        spacing: 10px;
 
-                if (root.screen == Screen.CreatePassword) : VerticalLayout {
-                    spacing: 10px;
+                        Btn {
+                            label: root.busy ? "Opening..." : "Open vault";
+                            kind: 0;
+                            enabled: !root.busy;
+                            clicked => { root.open-device(); }
+                        }
 
-                    Text {
-                        text: "Vault password";
-                        color: Theme.muted;
-                        font-size: 13px;
-                        font-weight: 600;
-                    }
-
-                    Field {
-                        placeholder: "Enter a new vault password";
-                        password: true;
-                        enabled: !root.busy;
-                        value <=> root.password-value;
-                        accepted => { root.password-next(); }
+                        Text {
+                            text: "Anyone with access to this device can open the vault. You can add a password later in Settings.";
+                            color: Theme.faint;
+                            font-size: 12.5px;
+                            wrap: word-wrap;
+                        }
                     }
 
-                    Text {
-                        text: "At least 8 characters.";
-                        color: Theme.faint;
-                        font-size: 12.5px;
+                    if (root.screen == Screen.ImportPassword) : VerticalLayout {
+                        spacing: 10px;
+
+                        Text {
+                            text: "Backup password";
+                            color: Theme.muted;
+                            font-size: 13px;
+                            font-weight: 600;
+                        }
+
+                        Field {
+                            placeholder: "Password this backup was exported with";
+                            password: true;
+                            enabled: !root.busy;
+                            value <=> root.password-value;
+                            accepted => { root.import-submit(); }
+                        }
+
+                        Btn {
+                            label: root.busy ? "Importing..." : "Import";
+                            kind: 0;
+                            enabled: !root.busy;
+                            clicked => { root.import-submit(); }
+                        }
+
+                        Btn {
+                            label: "Back";
+                            kind: 2;
+                            enabled: !root.busy;
+                            clicked => { root.import-back(); }
+                        }
                     }
 
-                    Btn {
-                        label: root.busy ? "Working..." : "Continue";
-                        kind: 0;
-                        enabled: !root.busy;
-                        clicked => { root.password-next(); }
-                    }
+                    if (root.screen == Screen.Error) : VerticalLayout {
+                        spacing: 10px;
 
-                    Btn {
-                        label: "Back";
-                        kind: 2;
-                        enabled: !root.busy;
-                        clicked => { root.create-back(); }
-                    }
-                }
-
-                if (root.screen == Screen.CreateConfirm) : VerticalLayout {
-                    spacing: 10px;
-
-                    Text {
-                        text: "Confirm password";
-                        color: Theme.muted;
-                        font-size: 13px;
-                        font-weight: 600;
-                    }
-
-                    Field {
-                        placeholder: "Type the same password again";
-                        password: true;
-                        enabled: !root.busy;
-                        value <=> root.confirm-value;
-                        accepted => { root.create-submit(); }
-                    }
-
-                    Btn {
-                        label: root.busy ? "Working..." : "Create vault";
-                        kind: 0;
-                        enabled: !root.busy;
-                        clicked => { root.create-submit(); }
-                    }
-
-                    Btn {
-                        label: "Back";
-                        kind: 2;
-                        enabled: !root.busy;
-                        clicked => { root.create-back(); }
-                    }
-                }
-
-                if (root.screen == Screen.UnlockPassword) : VerticalLayout {
-                    spacing: 10px;
-
-                    Text {
-                        text: "Vault password";
-                        color: Theme.muted;
-                        font-size: 13px;
-                        font-weight: 600;
-                    }
-
-                    Field {
-                        placeholder: "Vault password";
-                        password: true;
-                        enabled: !root.busy;
-                        value <=> root.password-value;
-                        accepted => { root.unlock-submit(); }
-                    }
-
-                    Btn {
-                        label: root.busy ? "Decrypting..." : "Unlock";
-                        kind: 0;
-                        enabled: !root.busy;
-                        clicked => { root.unlock-submit(); }
-                    }
-                }
-
-                if (root.screen == Screen.UnlockDevice) : VerticalLayout {
-                    spacing: 10px;
-
-                    Btn {
-                        label: root.busy ? "Opening..." : "Open vault";
-                        kind: 0;
-                        enabled: !root.busy;
-                        clicked => { root.open-device(); }
-                    }
-
-                    Text {
-                        text: "Anyone with access to this device can open the vault. You can add a password later in Settings.";
-                        color: Theme.faint;
-                        font-size: 12.5px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                if (root.screen == Screen.ImportPassword) : VerticalLayout {
-                    spacing: 10px;
-
-                    Text {
-                        text: "Backup password";
-                        color: Theme.muted;
-                        font-size: 13px;
-                        font-weight: 600;
-                    }
-
-                    Field {
-                        placeholder: "Password this backup was exported with";
-                        password: true;
-                        enabled: !root.busy;
-                        value <=> root.password-value;
-                        accepted => { root.import-submit(); }
-                    }
-
-                    Btn {
-                        label: root.busy ? "Importing..." : "Import";
-                        kind: 0;
-                        enabled: !root.busy;
-                        clicked => { root.import-submit(); }
-                    }
-
-                    Btn {
-                        label: "Back";
-                        kind: 2;
-                        enabled: !root.busy;
-                        clicked => { root.import-back(); }
-                    }
-                }
-
-                if (root.screen == Screen.Error) : VerticalLayout {
-                    spacing: 10px;
-
-                    Btn {
-                        label: "Quit";
-                        kind: 1;
-                        clicked => { root.quit-app(); }
+                        Btn {
+                            label: "Quit";
+                            kind: 1;
+                            clicked => { root.quit-app(); }
+                        }
                     }
                 }
             }
         }
-    }
+
+    } // VerticalLayout
 }
 
 // The tray is its own top-level component: Slint's SystemTrayIcon has no

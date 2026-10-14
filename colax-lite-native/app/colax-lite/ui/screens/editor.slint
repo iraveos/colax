@@ -1,0 +1,694 @@
+// The item editor: one login, edited in place.
+//
+// Port of `src/ui/ItemEditor.tsx` (1,096 lines). The TS version has nine
+// sections down its rail; this ships the five that need no extra subsystem
+// -- Identity, Credentials, Reminders, Notes, Flags. Security, Organise,
+// Appearance and Inbox arrive with their own phases (7 and 9) and are left
+// off the rail until then: a tab that does nothing yet is worse than a tab
+// that is not there yet, and adding one later is a one-line change.
+//
+// The draft lives here, not in Rust. Every field is `in-out`, so the user
+// can visit all five tabs without anything being written, and `save` hands
+// the whole object over once (`onSave(draft)` in the TS app).
+//
+// Everything with a *choice* in it is an index, not a label: `Segmented`
+// counts in ints, so the label<->days table lives in exactly one place
+// (Rust, beside the preference it feeds) rather than being duplicated in a
+// `.slint` comparison chain that would drift.
+
+import { Theme } from "../theme.slint";
+import {
+    Btn, Field, Alert, Toggle, Checkbox, Chip, Slider, Segmented,
+    Label, Note, Area, StrengthMeter
+} from "../widgets.slint";
+
+export component Editor inherits VerticalLayout {
+    // The login being edited, or "" for a new one. Decides the heading and
+    // whether Delete exists at all.
+    in property <string> edit-id;
+
+    // The draft. `in-out` so Rust can fill it when the screen opens and read
+    // all of it back on save. Nothing here is written until Save.
+    in-out property <string> title;
+    in-out property <string> url;
+    in-out property <string> username;
+    in-out property <string> password;
+    in-out property <string> notes;
+    in-out property <bool> favorite;
+    in-out property <bool> needs-attention;
+    // Fractional days, as `reminderDays` in storage.ts: 15 minutes is
+    // 15/1440, so every stale check in the app follows it with no conversion.
+    in-out property <float> reminder-days;
+    // The label for `reminder-days`, pushed from Rust alongside it. Having
+    // Rust derive the label means the preset table cannot disagree with the
+    // normaliser that consumes the number.
+    in property <string> reminder-label: "Follow global";
+
+    in property <string> section: "identity";
+    in property <bool> reveal-password: false;
+
+    // Strength of `password`, pushed by Rust on every edit. `-1` means
+    // "nothing typed": a meter that rates an empty field is judging a form.
+    in property <int> strength-score: -1;
+    in property <string> strength-label;
+    in property <string> strength-bits;
+    in property <string> strength-crack;
+
+    // The generator. The options are `in-out` so a chip can be toggled here
+    // and Rust asked to regenerate within the same event, which is what the
+    // TS `useEffect` on `[options, mode, words]` does.
+    in property <bool> show-generator: false;
+    in-out property <bool> gen-revealed: false;
+    in property <string> gen-mode: "Random";
+    in-out property <float> gen-length: 20;
+    in-out property <float> gen-words: 5;
+    // The two read-outs beside the sliders. Slint 1.18 has no way to turn a
+    // number into part of a string at all (no interpolation, no `str`), so
+    // the wording is composed in Rust, beside the number it describes.
+    in property <string> gen-length-label;
+    in property <string> gen-words-label;
+    in-out property <bool> gen-lower: true;
+    in-out property <bool> gen-upper: true;
+    in-out property <bool> gen-digits: true;
+    in-out property <bool> gen-symbols: true;
+    in-out property <bool> gen-avoid: true;
+    in property <string> generated;
+    // The dots come from Rust: Slint's strings have no `repeat`, and a mask
+    // whose length tracks the password leaks the password's length.
+    in property <string> gen-mask;
+    in property <int> generated-score: -1;
+    in property <string> generated-label;
+    in property <string> generated-bits;
+    in property <string> generated-crack;
+
+    in property <bool> busy: false;
+    in property <string> error-text;
+    in property <string> notice-text;
+    // Delete asks first when `confirmDeletes` is on. `can-delete` is false
+    // for a login that has never been saved, so a half-typed new login
+    // cannot offer to delete itself.
+    in property <bool> confirm-delete: false;
+    in property <bool> can-delete: false;
+
+    callback cancel-clicked();
+    callback save-clicked();
+    callback delete-asked();
+    callback delete-confirmed();
+    // "Keep it": back out of the delete confirmation without closing the
+    // editor. Separate from `delete-asked`, which *enters* it -- one button
+    // opening a state and another closing it cannot share a callback.
+    callback confirm-cancelled();
+    callback reveal-clicked();
+    // Fires on every keystroke in the password box so Rust can re-estimate the
+    // strength. The value is not passed: it is already `<=>`-bound, and
+    // shipping a copy would give the two a way to disagree.
+    callback password-edited();
+    callback section-selected(id: string);
+    callback generator-toggled();
+    callback regenerate();
+    // Indices, not labels: see the note at the top of the file.
+    callback gen-mode-picked(index: int);
+    callback use-generated();
+    callback copy-generated();
+    callback reminder-picked(index: int);
+
+    // The section rail. The hint repeats here so the panel header and the
+    // rail cannot spell the same sentence two different ways.
+    property <[string]> section-ids: ["identity", "credentials", "reminders", "notes", "flags"];
+    property <[string]> section-labels: ["Identity", "Credentials", "Reminders", "Notes", "Flags"];
+
+    property <int> section-index: root.section == "credentials" ? 1
+        : root.section == "reminders" ? 2
+        : root.section == "notes" ? 3
+        : root.section == "flags" ? 4
+        : 0;
+
+    property <string> active-title: root.section-index == 1 ? "Credentials"
+        : root.section-index == 2 ? "Reminders"
+        : root.section-index == 3 ? "Notes"
+        : root.section-index == 4 ? "Flags"
+        : "Identity";
+    property <string> active-hint: root.section-index == 1
+            ? "The secrets. Nothing here leaves this device."
+        : root.section-index == 2
+            ? "When this login asks for a fresh password."
+        : root.section-index == 3
+            ? "Anything else worth remembering."
+        : root.section-index == 4
+            ? "Favourites and warnings."
+        : "What this login is called and where it lives.";
+
+    // `Segmented` counts in indices; these turn Rust's strings back into one.
+    property <int> reminder-index: root.reminder-label == "15 min" ? 1
+        : root.reminder-label == "1 hour" ? 2
+        : root.reminder-label == "12 hours" ? 3
+        : root.reminder-label == "1 day" ? 4
+        : root.reminder-label == "7 days" ? 5
+        : root.reminder-label == "30 days" ? 6
+        : root.reminder-label == "90 days" ? 7
+        : 0;
+
+    property <string> heading: root.edit-id == "" ? "New login" : "Edit login";
+
+    // This screen is sized by the window's root layout -- see the note in
+    // main.slint. No width/height here on purpose: geometry written on a
+    // component's root is not what decides its size.
+    //
+    // No gaps between the three bands: each one draws its own edge, and the
+    // gaps would show the window's gradient through them.
+    spacing: 0px;
+
+    // ---- Top bar -----------------------------------------------------
+    Rectangle {
+        height: 58px;
+        vertical-stretch: 0;
+        background: Theme.bg-deep;
+
+        HorizontalLayout {
+            padding-left: 18px;
+            padding-right: 18px;
+            spacing: 12px;
+
+            Btn {
+                label: "← Back";
+                kind: 2;
+                h: 34px;
+                enabled: !root.busy;
+                clicked => { root.cancel-clicked(); }
+            }
+
+            Rectangle { horizontal-stretch: 1; width: 1px; }
+
+            Text {
+                text: root.heading + (root.title == "" ? "" : " · " + root.title);
+                color: Theme.text;
+                font-size: 15px;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+
+            Rectangle { horizontal-stretch: 1; width: 1px; }
+
+            if (root.can-delete && !root.confirm-delete) : Btn {
+                label: "Delete";
+                kind: 2;
+                h: 34px;
+                enabled: !root.busy;
+                clicked => { root.delete-asked(); }
+            }
+        }
+    }
+
+    // ---- Body: section rail + panel ----------------------------------
+    HorizontalLayout {
+        vertical-stretch: 1;
+        spacing: 0px;
+
+        // The rail. Same treatment as the vault's sidebar: a label and
+        // nothing else, so nothing here looks like a control that hides
+        // a login.
+        Rectangle {
+            width: 176px;
+            vertical-stretch: 0;
+            background: Theme.bg-deep;
+
+            VerticalLayout {
+                padding-top: 22px;
+                padding-bottom: 18px;
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 3px;
+
+                for label[i] in root.section-labels : Rectangle {
+                    height: 34px;
+                    vertical-stretch: 0;
+                    border-radius: 9px;
+                    background: i == root.section-index
+                        ? (row-touch.pressed ? #ffffff1f : #ffffff12)
+                        : #00000000;
+
+                    row-touch := TouchArea {
+                        clicked => { root.section-selected(root.section-ids[i]); }
+                    }
+
+                    Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height;
+                        text: label;
+                        color: i == root.section-index ? Theme.text : Theme.muted;
+                        font-size: 13.5px;
+                        font-weight: i == root.section-index ? 600 : 500;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // The panel. Pinned rather than left to the layout to settle:
+        // its content includes wrapped text and multi-line notes, whose
+        // *preferred* size is the unwrapped one, and letting that feed
+        // back into the row's width closes a loop.
+        Rectangle {
+            width: parent.width - 176px;
+            vertical-stretch: 1;
+            clip: true;
+
+            VerticalLayout {
+                padding-top: 24px;
+                padding-bottom: 24px;
+                padding-left: 34px;
+                padding-right: 34px;
+                spacing: 14px;
+
+                VerticalLayout {
+                    spacing: 4px;
+                    vertical-stretch: 0;
+
+                    Text {
+                        text: root.active-title;
+                        color: Theme.text;
+                        font-size: 19px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: root.active-hint;
+                        color: Theme.muted;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if (root.error-text != "") : Alert {
+                    message: root.error-text;
+                }
+
+                if (root.notice-text != "") : Alert {
+                    message: root.notice-text;
+                    good: true;
+                }
+
+                // ---- Identity ------------------------------------------
+                //
+                // One section at a time, with `if` rather than `visible`.
+                // `visible: false` still takes up layout space (the Slint
+                // docs say so explicitly), so a hidden section would sit
+                // between the header and the visible one, pushing every
+                // later section out through the panel's clip and dragging
+                // the footer off the bottom of the window. `if` removes
+                // the element from the layout entirely -- which is also
+                // why the generator's own controls are `if`-ed on the
+                // mode instead of being stacked and hidden.
+                if (root.section-index == 0) : VerticalLayout {
+                    spacing: 16px;
+                    vertical-stretch: 0;
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Name"; }
+                        Field {
+                            value <=> root.title;
+                            placeholder: "GitHub";
+                            autofocus: root.section-index == 0;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Website"; }
+                        Field {
+                            value <=> root.url;
+                            placeholder: "github.com";
+                            autofocus: false;
+                        }
+                        Note {
+                            text: "The domain is what Open site uses, and it drives the icon and accent when those are left on automatic.";
+                        }
+                    }
+                }
+
+                // ---- Credentials ---------------------------------------
+                if (root.section-index == 1) : VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 0;
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Email or username"; }
+                        Field {
+                            value <=> root.username;
+                            placeholder: "you@example.com";
+                            autofocus: false;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Password"; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            Field {
+                                value <=> root.password;
+                                password: !root.reveal-password;
+                                autofocus: false;
+                                edited => { root.password-edited(); }
+                            }
+
+                            Btn {
+                                label: root.reveal-password ? "Hide" : "Show";
+                                kind: 1;
+                                h: 44px;
+                                width: 68px;
+                                clicked => { root.reveal-clicked(); }
+                            }
+
+                            Btn {
+                                label: root.show-generator ? "Hide" : "Generate";
+                                kind: 1;
+                                h: 44px;
+                                width: 92px;
+                                clicked => { root.generator-toggled(); }
+                            }
+                        }
+                    }
+
+                    // Only once something is typed: `StrengthMeter` hides
+                    // its readout at -1, and five empty segments beside an
+                    // empty field are noise.
+                    if (root.password != "") : StrengthMeter {
+                        score: root.strength-score;
+                        label: root.strength-label;
+                        bits: root.strength-bits;
+                        crack-time: root.strength-crack;
+                    }
+
+                    // Built only while the panel is open: a hidden block
+                    // would still take the height of a visible one.
+                    if (root.show-generator) : VerticalLayout {
+                        spacing: 10px;
+                        vertical-stretch: 0;
+                        padding-top: 4px;
+
+                        Segmented {
+                            options: ["Random", "Words"];
+                            selected: root.gen-mode == "Words" ? 1 : 0;
+                            changed(i) => { root.gen-mode-picked(i); }
+                        }
+
+                        // The preview. Masked by default, like the field
+                        // above it: a generated secret should not be on
+                        // screen until it is asked for.
+                        Rectangle {
+                            height: 44px;
+                            vertical-stretch: 0;
+                            border-radius: 10px;
+                            background: #ffffff0a;
+                            border-width: 1px;
+                            border-color: #ffffff14;
+
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 6px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: root.generated == ""
+                                        ? "—"
+                                        : (root.gen-revealed ? root.generated : root.gen-mask);
+                                    color: root.generated == "" ? Theme.faint : Theme.text;
+                                    font-size: 13px;
+                                    font-family: "Consolas";
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                Btn {
+                                    label: root.gen-revealed ? "Hide" : "Show";
+                                    kind: 2;
+                                    h: 32px;
+                                    width: 62px;
+                                    enabled: root.generated != "";
+                                    clicked => { root.gen-revealed = !root.gen-revealed; }
+                                }
+
+                                Btn {
+                                    label: "Roll";
+                                    kind: 1;
+                                    h: 32px;
+                                    width: 58px;
+                                    clicked => { root.regenerate(); }
+                                }
+
+                                Btn {
+                                    label: "Copy";
+                                    kind: 1;
+                                    h: 32px;
+                                    width: 68px;
+                                    enabled: root.generated != "";
+                                    clicked => { root.copy-generated(); }
+                                }
+                            }
+                        }
+
+                        if (root.gen-mode == "Random") : Slider {
+                            label: "Length";
+                            formatted: root.gen-length-label;
+                            minimum: 8;
+                            maximum: 64;
+                            value <=> root.gen-length;
+                            changed(value) => { root.gen-length = round(value); root.regenerate(); }
+                        }
+
+                        if (root.gen-mode == "Words") : Slider {
+                            label: "Words";
+                            formatted: root.gen-words-label;
+                            minimum: 3;
+                            maximum: 10;
+                            value <=> root.gen-words;
+                            changed(value) => { root.gen-words = round(value); root.regenerate(); }
+                        }
+
+                        if (root.gen-mode == "Random") : VerticalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                vertical-stretch: 0;
+                                alignment: start;
+
+                                Chip {
+                                    label: "a-z";
+                                    selected: root.gen-lower;
+                                    toggled => { root.gen-lower = !root.gen-lower; root.regenerate(); }
+                                }
+                                Chip {
+                                    label: "A-Z";
+                                    selected: root.gen-upper;
+                                    toggled => { root.gen-upper = !root.gen-upper; root.regenerate(); }
+                                }
+                                Chip {
+                                    label: "0-9";
+                                    selected: root.gen-digits;
+                                    toggled => { root.gen-digits = !root.gen-digits; root.regenerate(); }
+                                }
+                                Chip {
+                                    label: "!@#";
+                                    selected: root.gen-symbols;
+                                    toggled => { root.gen-symbols = !root.gen-symbols; root.regenerate(); }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; width: 1px; }
+
+                                Checkbox {
+                                    label: "Avoid look-alikes (l, 1, I, O, 0, o)";
+                                    checked <=> root.gen-avoid;
+                                    toggled => { root.regenerate(); }
+                                }
+                            }
+                        }
+
+                        if (root.gen-mode == "Words") : Note {
+                            text: "A passphrase from this list carries far more entropy than a short random string, and is easier to type.";
+                        }
+
+                        StrengthMeter {
+                            score: root.generated-score;
+                            label: root.generated-label;
+                            bits: root.generated-bits;
+                            crack-time: root.generated-crack;
+                        }
+
+                        // Turning off every character set leaves nothing
+                        // to draw from. TS says so rather than silently
+                        // generating from an empty pool.
+                        if (root.gen-mode == "Random"
+                            && !root.gen-lower && !root.gen-upper
+                            && !root.gen-digits && !root.gen-symbols) : Alert {
+                            message: "Turn on at least one character set.";
+                        }
+
+                        Btn {
+                            label: "Use this password";
+                            kind: 0;
+                            h: 40px;
+                            enabled: root.generated != "";
+                            clicked => { root.use-generated(); }
+                        }
+                    }
+                }
+
+                // ---- Reminders -----------------------------------------
+                if (root.section-index == 2) : VerticalLayout {
+                    spacing: 6px;
+                    vertical-stretch: 0;
+
+                    Label { text: "Rotation reminder"; }
+                    Segmented {
+                        options: ["Follow global", "15 min", "1 hour", "12 hours", "1 day", "7 days", "30 days", "90 days"];
+                        selected: root.reminder-index;
+                        changed(i) => { root.reminder-picked(i); }
+                    }
+                    Note {
+                        text: "Overrides the global stale-password setting for this login only. The stale badge, the Weak channel and the dashboard all follow it.";
+                    }
+                }
+
+                // ---- Notes ---------------------------------------------
+                if (root.section-index == 3) : VerticalLayout {
+                    spacing: 6px;
+                    vertical-stretch: 1;
+
+                    Label { text: "Notes"; }
+                    Area {
+                        value <=> root.notes;
+                        placeholder: "Recovery codes, security questions, anything else";
+                        lines: 10;
+                    }
+                }
+
+                // ---- Flags ----------------------------------------------
+                if (root.section-index == 4) : VerticalLayout {
+                    spacing: 14px;
+                    vertical-stretch: 0;
+
+                    Toggle {
+                        label: "Add to favourites";
+                        hint: "Floats to the top of every sort mode.";
+                        checked <=> root.favorite;
+                    }
+
+                    Toggle {
+                        label: "Needs attention";
+                        hint: "Your own flag, not a health guess. Counts towards the Needs attention channel.";
+                        checked <=> root.needs-attention;
+                    }
+                }
+
+                // ---- The cell that keeps the footer at the foot ---------
+                // The body's height is the *smallest* of its three children's
+                // maximums, and this panel's maximum is the sum of the section
+                // it holds, so the body cannot always claim the spare height
+                // of the window. The footer takes what the body could not
+                // (see below); this cell only has to leave it room.
+            }
+        }
+
+        // ---- The cell that lets the window open at its own size -------
+        // A window opens at its `preferred` size, but clamped into
+        // `[min, max]`, and for a stretch layout that maximum is the sum of
+        // its children's maximums. Every child of this body has a declared
+        // width, so the body's maximum is just the width of its content --
+        // and `preferred_size()` then measured the editor at 880 wide, which
+        // is what the window was created at. A cell with nothing declared on
+        // it has an unbounded maximum (the sum overflows to infinity) and,
+        // with `horizontal-stretch: 0` and a preferred size of zero, takes
+        // no space in the row.
+        Rectangle {
+            horizontal-stretch: 0;
+        }
+    }
+
+    // ---- Footer ------------------------------------------------------
+    // The cell claims whatever height the body above could not, and the
+    // band sits at the *bottom* of that cell, so Cancel / Save stay flush
+    // with the foot of the window however the space above it is split.
+    Rectangle {
+        vertical-stretch: 1;
+
+        Rectangle {
+            y: parent.height - 72px;
+            height: 72px;
+            background: Theme.bg-deep;
+
+            HorizontalLayout {
+                padding-left: 26px;
+                padding-right: 26px;
+                spacing: 10px;
+                alignment: end;
+
+                if (root.confirm-delete) : Text {
+                    text: "Delete this login? It goes to undo.";
+                    color: Theme.danger;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+
+                if (root.confirm-delete) : Btn {
+                    label: "Keep it";
+                    kind: 1;
+                    h: 40px;
+                    clicked => { root.confirm-cancelled(); }
+                }
+
+                if (root.confirm-delete) : Btn {
+                    label: "Delete";
+                    kind: 0;
+                    h: 40px;
+                    enabled: !root.busy;
+                    clicked => { root.delete-confirmed(); }
+                }
+
+                if (!root.confirm-delete) : Btn {
+                    label: "Cancel";
+                    kind: 1;
+                    h: 40px;
+                    enabled: !root.busy;
+                    clicked => { root.cancel-clicked(); }
+                }
+
+                if (!root.confirm-delete) : Btn {
+                    label: root.busy ? "Working..." : (root.edit-id == "" ? "Add to vault" : "Save changes");
+                    kind: 0;
+                    h: 40px;
+                    width: 148px;
+                    enabled: !root.busy;
+                    clicked => { root.save-clicked(); }
+                }
+            }
+        }
+    }
+
+    // ---- The same cell, down the other axis --------------------------
+    // The window's height is clamped the same way its width is: the root
+    // layout's maximum is `58 + body + 72`, so the editor asked for a window
+    // 414 tall on Identity and 400 on the shortest section -- which is what
+    // it opened at, whatever `preferred-height` said. Same remedy: one cell
+    // that declares no size, so the maximum is unbounded, and `stretch: 0`
+    // so it leaves all of the spare height to the body.
+    Rectangle {
+        vertical-stretch: 0;
+    }
+}

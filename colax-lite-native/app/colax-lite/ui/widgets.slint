@@ -63,6 +63,12 @@ export component Field inherits Rectangle {
     in property <string> placeholder;
     in property <bool> password: false;
     in property <bool> enabled: true;
+    // Take focus the moment this field is built. On by default because every
+    // one of these screens has exactly one field and should land on it. A
+    // screen with *several* fields switches it off everywhere but the first:
+    // `init` fires per element, so all of them would fight and the last one
+    // in the layout order would win.
+    in property <bool> autofocus: true;
     callback accepted();
     callback edited();
 
@@ -81,7 +87,7 @@ export component Field inherits Rectangle {
             : Theme.field;
     clip: true;
 
-    init => { input.focus(); }
+    init => { if (root.autofocus) { input.focus(); } }
 
     Text {
         visible: root.value == "" && !input.has-focus;
@@ -111,11 +117,19 @@ export component Field inherits Rectangle {
         edited => { root.edited(); }
         // Keep the caret inside the field: the TextInput does not scroll
         // itself, so nudge x when the cursor walks past either edge.
+        //
+        // The width guard is load-bearing. This fires while the field is
+        // still being laid out, and with a zero width the right-edge branch
+        // computes a large negative x, hides every character behind the clip,
+        // and -- because writing x destroys its `14px` binding -- never
+        // recovers.
         cursor-position-changed(position) => {
-            if (position.x + self.x < 14px) {
-                self.x = 14px - position.x;
-            } else if (position.x + self.x > root.width - 14px - self.text-cursor-width) {
-                self.x = root.width - 14px - self.text-cursor-width - position.x;
+            if (root.width > 40px) {
+                if (position.x + self.x < 14px) {
+                    self.x = 14px - position.x;
+                } else if (position.x + self.x > root.width - 14px - self.text-cursor-width) {
+                    self.x = root.width - 14px - self.text-cursor-width - position.x;
+                }
             }
         }
     }
@@ -174,6 +188,10 @@ export component Toggle inherits Rectangle {
             alignment: start;
             Rectangle { horizontal-stretch: 1;
                 Text {
+                    // Full size, or the same rule as `Label` applies and the
+                    // caption is centred in whatever room the row left it.
+                    width: parent.width;
+                    height: parent.height;
                     text: root.label; color: root.enabled ? Theme.text : Theme.faint; font-size: 14px;
                     vertical-alignment: center;
                 }
@@ -279,6 +297,13 @@ export component Slider inherits Rectangle {
             }
             Rectangle {
                 // fill
+                //
+                // `x` looks redundant -- it is the origin already -- but it is
+                // not: an element inside a `Rectangle` that sets its *width*
+                // and leaves `x` alone is centred rather than pinned to the
+                // left, so the fill used to render at (track - width) / 2
+                // while the thumb above it was drawn from the same fraction.
+                x: 0px;
                 y: 7px; height: 4px;
                 width: (root.value - root.minimum) / (root.maximum - root.minimum) * parent.width;
                 border-radius: 2px;
@@ -395,6 +420,56 @@ export component Badge inherits Rectangle {
     }
 }
 
+export component StrengthMeter inherits Rectangle {
+    // The score is computed in Rust, not here: `estimateStrength` reads a
+    // word list and a common-password list that have no business living in
+    // a .slint file, and every call site must get the same answer.
+    in property <int> score: -1;   // -1 = no password typed yet
+    in property <string> label;
+    in property <string> bits;
+    in property <string> crack-time;
+
+    vertical-stretch: 0;
+    VerticalLayout {
+        spacing: 5px;
+
+        HorizontalLayout {
+            spacing: 3px;
+            for i in 5 : Rectangle {
+                horizontal-stretch: 1;
+                height: 4px;
+                border-radius: 2px;
+                background: root.score >= 0 && i <= root.score
+                    ? (root.score <= 1 ? Theme.danger :
+                       root.score == 2 ? Theme.warn : Theme.accent)
+                    : Theme.hairline;
+            }
+        }
+
+        // Nothing to read out until something is typed: a meter that says
+        // "very weak" about an empty field is judging a form, not a password.
+        if (root.score >= 0) : HorizontalLayout {
+            spacing: 8px;
+
+            Text {
+                text: root.label;
+                color: root.score <= 1 ? Theme.danger :
+                       root.score == 2 ? Theme.warn : Theme.accent;
+                font-size: 12px;
+                font-weight: 600;
+            }
+
+            Text {
+                text: "~" + root.bits + " bits · cracked in " + root.crack-time;
+                color: Theme.faint;
+                font-size: 11.5px;
+                overflow: elide;
+                horizontal-alignment: right;
+            }
+        }
+    }
+}
+
 export component EmptyState inherits Rectangle {
     in property <string> title;
     in property <string> hint;
@@ -436,3 +511,82 @@ export component Divider inherits Rectangle {
     height: 1px;
     background: Theme.border;
 }
+
+// The small caption above a field, as `.field__label` in the TS app.
+export component Label inherits Rectangle {
+    in property <string> text;
+    height: 18px;
+    vertical-stretch: 0;
+    Text {
+        // Pinned to the left on purpose. Without a width the Text is sized to
+        // its own text, and an element that sets a size inside a `Rectangle`
+        // is *centred* -- which is how a field label ended up in the middle
+        // of the panel above its own input.
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        color: Theme.muted;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        vertical-alignment: bottom;
+    }
+}
+
+// The quiet line under a field, as `.field__note`.
+export component Note inherits Rectangle {
+    in property <string> text;
+    vertical-stretch: 0;
+    height: note-text.preferred-height;
+    note-text := Text {
+        width: parent.width;
+        text: root.text;
+        color: Theme.faint;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+}
+
+// A multi-line field. `single-line: false` is what makes the TextInput hold
+// newlines at all -- by default it renders every one of them as a space.
+export component Area inherits Rectangle {
+    in-out property <string> value;
+    in property <string> placeholder;
+    in property <int> lines: 5;
+    callback edited();
+
+    // `lines` lines at the field's own line height, plus the padding.
+    height: 22px * root.lines + 20px;
+    vertical-stretch: 0;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+    background: input.has-focus ? Theme.field-focus : Theme.field;
+    clip: true;
+
+    Text {
+        visible: root.value == "" && !input.has-focus;
+        x: 14px; y: 10px;
+        width: parent.width - 28px;
+        text: root.placeholder;
+        color: Theme.faint;
+        font-size: 14px;
+        wrap: word-wrap;
+    }
+
+    input := TextInput {
+        x: 14px; y: 10px;
+        width: parent.width - 28px;
+        height: parent.height - 20px;
+        single-line: false;
+        wrap: word-wrap;
+        text <=> root.value;
+        color: Theme.text;
+        font-size: 14px;
+        line-height-factor: 1.45;
+        selection-background-color: Theme.accent-soft;
+        selection-foreground-color: #0d1420;
+        edited => { root.edited(); }
+    }
+}
+
