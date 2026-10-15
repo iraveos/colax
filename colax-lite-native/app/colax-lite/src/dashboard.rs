@@ -24,14 +24,46 @@ use colax_core::{
 };
 
 use crate::items::{hostname_of, label_of};
+use slint::{Model, ModelRc, VecModel};
+
 use crate::{
-    DashBar, DashDay, DashIssue, DashKey, DashRing, DashRow, DashReuse, DashStat, DashUse,
-    MainWindow,
+    DashBar, DashDay, DashIssue, DashKey, DashPop, DashPopGroup, DashRing, DashRow, DashReuse,
+    DashStat, DashUse, MainWindow,
 };
 
 const DAY: i64 = 86_400_000;
 /// The TS strength key, worst first (Dashboard.tsx L697).
 const STRENGTH_LABELS: [&str; 5] = ["Very weak", "Weak", "Fair", "Strong", "Excellent"];
+
+// ---- The four hover popovers -------------------------------------------
+// Copy verbatim from Dashboard.tsx L705-899 (`dash-pop__about`), empties
+// from the `dash-pop__muted` spans.
+const POP_ABOUT_STRENGTH: &str = "What this is: how guessable each saved password is, from very weak to excellent. Weak logins also appear in the “Weak or reused” channel — open one to fix it.";
+const POP_ABOUT_DOMAINS: &str = "What this is: where your logins cluster. The site with the most logins is where one breach hurts most — hover to see every site, click a login to open it.";
+const POP_ABOUT_REUSE: &str = "What this is: every password used more than once, and the logins sharing it. Fix one group at a time — each row below opens its login. These logins also sit in the “Weak or reused” channel.";
+const POP_ABOUT_USES: &str = "What this is: the logins you copy or edit most. Count first, recency second — hovering shows the top 5 above, this menu scrolls to 20. Click one to open it.";
+const POP_EMPTY_DOMAINS: &str = "No websites saved yet.";
+const POP_EMPTY_REUSE: &str = "Nothing is reused. Good.";
+const POP_EMPTY_USES: &str = "Nothing used yet. Copy a password and it appears here.";
+
+// Panel geometry, in px — the CSS variables of `.dash-pop` turned into
+// arithmetic, because nothing in .slint can measure text or fold over a
+// model: Rust hands the screen exact heights instead. The window is fixed
+// at 1180px, so the card widths below are fixed too.
+const POP_LINE: f32 = 16.5; // a wrapped 12px line, a touch generous
+const POP_CHAR: f32 = 6.3; // average glyph advance at 12px
+const POP_SPACE: f32 = 3.2; // the space between wrapped words
+const POP_PAD: f32 = 12.0; // .dash-pop padding (--space-3)
+const POP_GAP: f32 = 8.0; // .dash-pop gap (--space-2)
+const POP_ROW: f32 = 27.0; // .dash-pop__row: 5+5px pad, ~17px line
+const POP_TITLE: f32 = 16.0; // .dash-pop__group-title
+const POP_CAP: f32 = 320.0; // .dash-pop max-height
+const POP_CAP_WIDE: f32 = 380.0; // .dash-pop--wide max-height
+/// Content 1180 − 30 − 34 = 1116px wide; row one has two stretch cards
+/// with a 14px gap, row two has three. The panel is inset 12px each side
+/// and padded 12px each side, so the about text wraps at card − 48.
+const POP_CARD_ROW1: f32 = (1116.0 - 14.0) / 2.0;
+const POP_CARD_ROW2: f32 = (1116.0 - 28.0) / 3.0;
 
 /// Everything the dashboard draws, in one snapshot.
 pub struct DashboardData {
@@ -62,6 +94,10 @@ pub struct DashboardData {
     pub channels_more: i32,
     pub tag_count: i32,
     pub channel_count: i32,
+    pub pop_strength: DashPop,
+    pub pop_domains: DashPop,
+    pub pop_reuse: DashPop,
+    pub pop_uses: DashPop,
 }
 
 /// The dashboard's snapshot for these items, at this instant.
@@ -322,6 +358,7 @@ pub fn build(
 
     // ---- Strength bands (L187-210) ----------------------------------------
     let mut band_counts = [0i32; 5];
+    let mut band_items: Vec<Vec<&VaultItem>> = vec![Vec::new(); 5];
     let mut with_password = 0i32;
     for item in items {
         if item.password.is_empty() {
@@ -332,6 +369,7 @@ pub fn build(
         // be able to walk off the end of the list (TS L193-195).
         let band = estimate_strength(&item.password).score.clamp(0, 4) as usize;
         band_counts[band] += 1;
+        band_items[band].push(item);
     }
     let segments: Vec<DashKey> = band_counts
         .iter()
@@ -394,6 +432,8 @@ pub fn build(
     // ---- Per-site counts (L145-165): subdomains collapsed -----------------
     let mut hosts: Vec<(String, i32)> = Vec::new();
     let mut host_index: HashMap<String, usize> = HashMap::new();
+    // The popovers need the logins behind each host, not just the count.
+    let mut host_items: Vec<Vec<&VaultItem>> = Vec::new();
     for item in items {
         let Some(host) = hostname_of(&item.url) else {
             continue;
@@ -409,10 +449,14 @@ pub fn build(
             }
         };
         match host_index.get(&registrable) {
-            Some(&slot) => hosts[slot].1 += 1,
+            Some(&slot) => {
+                hosts[slot].1 += 1;
+                host_items[slot].push(item);
+            }
             None => {
                 host_index.insert(registrable.clone(), hosts.len());
                 hosts.push((registrable, 1));
+                host_items.push(vec![item]);
             }
         }
     }
@@ -482,6 +526,157 @@ pub fn build(
         .collect();
     let uses_total = survivors.len().min(20) as i32;
     let uses: Vec<DashUse> = survivors.into_iter().take(20).collect();
+
+    // ---- The four hover popovers (Dashboard.tsx L705-899) ----------------
+    // Strength: the same five bands as the key, each holding its logins;
+    // empty bands keep their title and hand an empty row list to the screen,
+    // which renders the TS's muted "None" line for them.
+    let strength_groups: Vec<DashPopGroup> = band_items
+        .iter()
+        .enumerate()
+        .map(|(band, group)| {
+            let rows: Vec<DashRow> =
+                group.iter().copied().map(|item| pop_row(item, pop_meta(item))).collect();
+            DashPopGroup {
+                title: format!("{} · {}", STRENGTH_LABELS[band], band_counts[band]).into(),
+                danger: false,
+                rows: ModelRc::new(VecModel::from(rows)),
+            }
+        })
+        .collect();
+    let (strength_about_h, strength_scroll_h, strength_height) = pop_sizes(
+        POP_ABOUT_STRENGTH,
+        pop_groups_height(&strength_groups),
+        POP_CARD_ROW1,
+        POP_CAP,
+    );
+
+    // Every site, not the eight the card shows (the card's `topDomains` is
+    // a separate list). Title `host · count`; rows carry the raw username,
+    // exactly as TS L790 writes it — no mask pref in the popover.
+    let domain_groups: Vec<DashPopGroup> = hosts
+        .iter()
+        .zip(host_items.iter())
+        .map(|((host, count), group)| {
+            let rows: Vec<DashRow> = group
+                .iter()
+                .copied()
+                .map(|item| pop_row(item, item.username.clone()))
+                .collect();
+            DashPopGroup {
+                title: format!("{host} · {count}").into(),
+                danger: false,
+                rows: ModelRc::new(VecModel::from(rows)),
+            }
+        })
+        .collect();
+    let (domains_about_h, domains_scroll_h, domains_height) = pop_sizes(
+        POP_ABOUT_DOMAINS,
+        if domain_groups.is_empty() {
+            wrapped_lines(POP_EMPTY_DOMAINS, POP_CARD_ROW2 - 48.0) * POP_LINE
+        } else {
+            pop_groups_height(&domain_groups)
+        },
+        POP_CARD_ROW2,
+        POP_CAP,
+    );
+
+    // Every cluster, not the five the card shows — "Shared by N", tinted
+    // danger (the only red group title the TS has).
+    let reuse_groups: Vec<DashPopGroup> = clusters
+        .iter()
+        .map(|group| {
+            let rows: Vec<DashRow> =
+                group.iter().copied().map(|item| pop_row(item, pop_meta(item))).collect();
+            DashPopGroup {
+                title: format!("Shared by {}", group.len()).into(),
+                danger: true,
+                rows: ModelRc::new(VecModel::from(rows)),
+            }
+        })
+        .collect();
+    let (reuse_about_h, reuse_scroll_h, reuse_height) = pop_sizes(
+        POP_ABOUT_REUSE,
+        if reuse_groups.is_empty() {
+            wrapped_lines(POP_EMPTY_REUSE, POP_CARD_ROW2 - 48.0) * POP_LINE
+        } else {
+            pop_groups_height(&reuse_groups)
+        },
+        POP_CARD_ROW2,
+        POP_CAP,
+    );
+
+    // Most used: the card's top-5 list extended to the same 20 the sort
+    // allows, flat with a rank circle in `right`, meta `N uses · user`
+    // (TS L884-893). Deleted logins already dropped out with `survivors`.
+    let uses_rows: Vec<DashRow> = uses
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let user = by_id
+                .get(entry.item.as_str())
+                .map(|item| item.username.clone())
+                .unwrap_or_default();
+            let count = format!("{} use{}", entry.count, if entry.count == 1 { "" } else { "s" });
+            DashRow {
+                name: entry.name.clone(),
+                meta: if user.is_empty() {
+                    count.into()
+                } else {
+                    format!("{count} · {user}").into()
+                },
+                right: (index + 1).to_string().into(),
+                item: entry.item.clone(),
+            }
+        })
+        .collect();
+    let (uses_about_h, uses_scroll_h, uses_height) = pop_sizes(
+        POP_ABOUT_USES,
+        if uses_rows.is_empty() {
+            wrapped_lines(POP_EMPTY_USES, POP_CARD_ROW2 - 48.0) * POP_LINE
+        } else {
+            pop_rows_height(&uses_rows)
+        },
+        POP_CARD_ROW2,
+        POP_CAP_WIDE,
+    );
+
+    let pop_strength = DashPop {
+        groups: ModelRc::new(VecModel::from(strength_groups)),
+        rows: ModelRc::default(),
+        about: POP_ABOUT_STRENGTH.into(),
+        empty: "".into(),
+        about_h: strength_about_h,
+        scroll_h: strength_scroll_h,
+        height: strength_height,
+    };
+    let pop_domains = DashPop {
+        groups: ModelRc::new(VecModel::from(domain_groups)),
+        rows: ModelRc::default(),
+        about: POP_ABOUT_DOMAINS.into(),
+        empty: POP_EMPTY_DOMAINS.into(),
+        about_h: domains_about_h,
+        scroll_h: domains_scroll_h,
+        height: domains_height,
+    };
+    let pop_reuse = DashPop {
+        groups: ModelRc::new(VecModel::from(reuse_groups)),
+        rows: ModelRc::default(),
+        about: POP_ABOUT_REUSE.into(),
+        empty: POP_EMPTY_REUSE.into(),
+        about_h: reuse_about_h,
+        scroll_h: reuse_scroll_h,
+        height: reuse_height,
+    };
+    let pop_uses = DashPop {
+        groups: ModelRc::default(),
+        rows: ModelRc::new(VecModel::from(uses_rows)),
+        about: POP_ABOUT_USES.into(),
+        empty: POP_EMPTY_USES.into(),
+        about_h: uses_about_h,
+        scroll_h: uses_scroll_h,
+        height: uses_height,
+    };
 
     // ---- The review lists (L906-955): top 8 each, "+N more" --------------
     let emails_more = (email_check.len() as i32 - 8).max(0);
@@ -557,6 +752,92 @@ pub fn build(
         channels_more,
         tag_count: prefs.tags.len() as i32,
         channel_count: builtin_channels().len() as i32,
+        pop_strength,
+        pop_domains,
+        pop_reuse,
+        pop_uses,
+    }
+}
+
+/// Greedy word-wrap line count for `text` laid out `line_w` px wide — an
+/// estimate in the average glyph advance, since nothing here can measure a
+/// real font: rounded up so the about block is never *shorter* than what
+/// the screen will draw.
+fn wrapped_lines(text: &str, line_w: f32) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let mut lines = 1.0f32;
+    let mut width = 0.0f32;
+    for word in text.split_whitespace() {
+        let word_w = word.chars().count() as f32 * POP_CHAR;
+        let add = if width == 0.0 { word_w } else { POP_SPACE + word_w };
+        if width + add > line_w {
+            lines += 1.0;
+            width = word_w;
+        } else {
+            width += add;
+        }
+    }
+    lines
+}
+
+/// The three heights one popover needs, as the CSS works them out:
+/// the about block (padding + wrapped lines), the scroll content already
+/// measured by the caller, and the panel = padding + about + gap + scroll,
+/// capped at `.dash-pop`'s max-height.
+fn pop_sizes(about: &str, scroll_h: f32, card_w: f32, cap: f32) -> (f32, f32, f32) {
+    let about_h = wrapped_lines(about, card_w - 48.0) * POP_LINE;
+    let panel = (2.0 * POP_PAD + about_h + POP_GAP + scroll_h).min(cap);
+    (about_h, scroll_h, panel)
+}
+
+/// One `.dash-pop__group` box: the title line, 2px gaps between the group's
+/// children (title, rows, or the muted "None"), 4px bottom pad and the 1px
+/// hairline — plus the 8px gap the scroll column puts between groups.
+fn pop_groups_height(groups: &[DashPopGroup]) -> f32 {
+    let mut total = 0.0f32;
+    for (index, group) in groups.iter().enumerate() {
+        let row_count = group.rows.row_count();
+        let (rows_h, kids) = if row_count == 0 {
+            (POP_LINE, 2.0f32)
+        } else {
+            (row_count as f32 * POP_ROW, 1.0 + row_count as f32)
+        };
+        total += POP_TITLE + (kids - 1.0) * 2.0 + rows_h + 5.0;
+        if index + 1 < groups.len() {
+            total += POP_GAP;
+        }
+    }
+    total
+}
+
+/// The flat (most-used) scroll content: rows in the 8px scroll gap.
+fn pop_rows_height(rows: &[DashRow]) -> f32 {
+    if rows.is_empty() {
+        return 0.0;
+    }
+    rows.len() as f32 * POP_ROW + (rows.len() as f32 - 1.0) * POP_GAP
+}
+
+/// A popover row's meta (Dashboard.tsx L722, L842): the username, the
+/// hostname when there is none — raw, the way the TS shows it in popovers.
+fn pop_meta(item: &VaultItem) -> String {
+    if item.username.is_empty() {
+        hostname_of(&item.url).unwrap_or_default()
+    } else {
+        item.username.clone()
+    }
+}
+
+/// One popover row: the label, the meta handed in, and an empty `right` —
+/// only most-used sets it, to the rank its panel draws as a circle.
+fn pop_row(item: &VaultItem, meta: String) -> DashRow {
+    DashRow {
+        name: label_of(item).into(),
+        meta: meta.into(),
+        right: "".into(),
+        item: item.id.clone().into(),
     }
 }
 
@@ -678,6 +959,10 @@ pub fn fill(ui: &MainWindow, data: &DashboardData) {
     ui.set_dash_channels_more(data.channels_more);
     ui.set_dash_tag_count(data.tag_count);
     ui.set_dash_channel_count(data.channel_count);
+    ui.set_dash_pop_strength(data.pop_strength.clone());
+    ui.set_dash_pop_domains(data.pop_domains.clone());
+    ui.set_dash_pop_reuse(data.pop_reuse.clone());
+    ui.set_dash_pop_uses(data.pop_uses.clone());
 }
 
 #[cfg(test)]
@@ -974,5 +1259,115 @@ mod tests {
         assert_eq!(short_date(1_759_977_600_000), "9 Oct 2025");
         // 2024-02-29 (leap day) → "29 Feb 2024".
         assert_eq!(short_date(1_709_164_800_000), "29 Feb 2024");
+    }
+
+    #[test]
+    fn popover_strength_groups_all_five_bands_with_their_logins() {
+        let built = data();
+        let pop = &built.pop_strength;
+        let groups: Vec<DashPopGroup> = pop.groups.iter().collect();
+        // All five bands always — empty ones keep their title and rows[].
+        assert_eq!(groups.len(), 5);
+        assert!(groups.iter().all(|group| !group.title.is_empty()));
+        assert_eq!(groups[0].title.as_str(), format!("Very weak · {}", built.keys[0].count));
+        assert_eq!(groups[4].title.as_str(), format!("Excellent · {}", built.keys[4].count));
+        // Every passworded login appears exactly once across the groups
+        // (the fixture's 20 all have one).
+        let rows: i32 = groups.iter().map(|group| group.rows.row_count() as i32).sum();
+        assert_eq!(rows, 20);
+        // Rows open their login and carry the username-or-host meta.
+        assert!(groups.iter().all(|group| {
+            group.rows.iter().all(|row| !row.item.is_empty() && !row.meta.is_empty())
+        }));
+        // Strength titles are never danger-tinted.
+        assert!(groups.iter().all(|group| !group.danger));
+    }
+
+    #[test]
+    fn popover_domains_lists_every_site_the_card_covers() {
+        let built = data();
+        let pop = &built.pop_domains;
+        let groups: Vec<DashPopGroup> = pop.groups.iter().collect();
+        // The card shows the top 8; the popover shows all five hosts.
+        assert_eq!(groups.len(), 5);
+        assert_eq!(groups[0].title, "site0.com · 4");
+        // Four logins per host, raw username meta (TS L790), no mask.
+        assert_eq!(groups[0].rows.row_count(), 4);
+        assert!(groups[0].rows.iter().all(|row| row.meta.contains("@example.com")));
+        assert!(!pop.empty.is_empty());
+    }
+
+    #[test]
+    fn popover_reuse_carries_every_cluster_and_flags_the_title() {
+        let built = data();
+        let pop = &built.pop_reuse;
+        let groups: Vec<DashPopGroup> = pop.groups.iter().collect();
+        // One shared password in the fixture: a single cluster of three.
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].title, "Shared by 3");
+        assert!(groups[0].danger);
+        let ids: Vec<slint::SharedString> = groups[0].rows.iter().map(|row| row.item).collect();
+        assert_eq!(ids, ["item-02", "item-03", "item-04"]);
+    }
+
+    #[test]
+    fn popover_most_used_is_ranked_flat_and_capped_at_twenty() {
+        let built = data();
+        let pop = &built.pop_uses;
+        let rows: Vec<DashRow> = pop.rows.iter().collect();
+        // Three surviving usage entries — the deleted item-99 dropped out.
+        assert_eq!(rows.len(), 3);
+        assert_eq!(pop.groups.row_count(), 0);
+        assert_eq!(rows[0].right, "1");
+        assert_eq!(rows[1].right, "2");
+        assert_eq!(rows[2].right, "3");
+        assert_eq!(rows[0].name, "Site 00");
+        assert_eq!(rows[0].meta, "9 uses · user0@example.com");
+        // The wide panel: capped at 380, not 320.
+        assert!(pop.height > 0.0 && pop.height <= POP_CAP_WIDE);
+    }
+
+    #[test]
+    fn popover_heights_are_the_css_arithmetic() {
+        let built = data();
+        for (pop, cap) in [
+            (&built.pop_strength, POP_CAP),
+            (&built.pop_domains, POP_CAP),
+            (&built.pop_reuse, POP_CAP),
+            (&built.pop_uses, POP_CAP_WIDE),
+        ] {
+            assert!(pop.about_h >= POP_LINE, "about block at least one line");
+            assert!(pop.scroll_h > 0.0, "scroll content measured");
+            let content = 2.0 * POP_PAD + pop.about_h + POP_GAP + pop.scroll_h;
+            assert!((pop.height - content.min(cap)).abs() < 1e-4, "panel = min(cap, content)");
+            assert!(pop.height <= cap);
+        }
+        // The reuse panel is short enough to show whole: one cluster of
+        // three rows plus its about paragraph never reaches the cap.
+        assert!(built.pop_reuse.height < POP_CAP);
+        assert!(built.pop_reuse.height > 100.0);
+    }
+
+    #[test]
+    fn popover_empty_copy_lands_and_wrapping_is_sane() {
+        // An empty vault: no sites, no clusters — the copy the panels show.
+        let built = build(&[], &normalise_preferences(&serde_json::json!({})), &Default::default(), 1_760_000_000_000);
+        assert_eq!(built.pop_domains.groups.row_count(), 0);
+        assert_eq!(built.pop_domains.empty, "No websites saved yet.");
+        assert_eq!(built.pop_reuse.empty, "Nothing is reused. Good.");
+        assert_eq!(built.pop_uses.empty, "Nothing used yet. Copy a password and it appears here.");
+        assert_eq!(built.pop_uses.rows.row_count(), 0);
+        // Even empty, the panel has its about paragraph and measures up.
+        assert!(built.pop_domains.height > 40.0);
+        assert!(built.pop_strength.groups.iter().all(|group| group.rows.row_count() == 0));
+
+        // Wrapping: one line when it fits, more when it does not, zero for
+        // nothing at all.
+        assert_eq!(wrapped_lines("", 300.0), 0.0);
+        assert_eq!(wrapped_lines("short line fits", 300.0), 1.0);
+        let long = "What this is: how guessable each saved password is, from very weak to excellent.";
+        assert!(wrapped_lines(long, 300.0) >= 2.0);
+        // Wider measure never needs more lines than a narrow one.
+        assert!(wrapped_lines(long, 500.0) <= wrapped_lines(long, 300.0));
     }
 }

@@ -1199,7 +1199,7 @@ fn dev_dashboard(ui: &MainWindow, state: &Shared) {
 fn dev_dump_dash(ui: &MainWindow, tag: &str) {
     use slint::Model;
     let dash = format!(
-        "{tag}: show={} score={} {} band={} headline=[{} x{}] has={} tiles=[{}] issues=[{}] recent=[{}] segs=[{}] days={}/{} domains={} reuse={} uses=[{}] emails={} factors={} channels={} org=[{}/{}] {}\n",
+        "{tag}: show={} score={} {} band={} headline=[{} x{}] has={} tiles=[{}] issues=[{}] recent=[{}] segs=[{}] days={}/{} domains={} reuse={} uses=[{}] emails={} factors={} channels={} org=[{}/{}] {} {}\n",
         ui.get_show_dashboard(),
         ui.get_dash_ring().score,
         ui.get_dash_ring().label,
@@ -1248,11 +1248,47 @@ fn dev_dump_dash(ui: &MainWindow, tag: &str) {
         ui.get_dash_tag_count(),
         ui.get_dash_channel_count(),
         describe_cards(ui),
+        pops(ui),
     );
     let path = app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&dash);
     let _ = std::fs::write(path, existing);
+}
+
+/// The popover half of a dump: every panel's group and row counts, the
+/// three heights Rust measured for it, and its first title — enough to
+/// prove the `DashPop` data reached the screen without a pixel to look at.
+#[cfg(debug_assertions)]
+fn pops(ui: &MainWindow) -> String {
+    use slint::Model;
+    let one = |pop: crate::DashPop| {
+        let grouped: usize = pop.groups.iter().map(|group| group.rows.row_count()).sum();
+        let rows = grouped + pop.rows.row_count();
+        let sample = pop
+            .groups
+            .iter()
+            .next()
+            .map(|group| group.title)
+            .or_else(|| pop.rows.iter().next().map(|row| row.name))
+            .unwrap_or_default();
+        format!(
+            "{}g/{}r/h={:.0}+{:.0}={:.0}/{}",
+            pop.groups.row_count(),
+            rows,
+            pop.about_h,
+            pop.scroll_h,
+            pop.height,
+            sample
+        )
+    };
+    format!(
+        " pops=[s:{} d:{} r:{} u:{}]",
+        one(ui.get_dash_pop_strength()),
+        one(ui.get_dash_pop_domains()),
+        one(ui.get_dash_pop_reuse()),
+        one(ui.get_dash_pop_uses()),
+    )
 }
 
 /// The vault half of a dump: how many cards, and the first two of them --

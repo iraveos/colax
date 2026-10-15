@@ -243,6 +243,32 @@ export struct DashKey {
     band: int,
 }
 
+/// One group inside a hover popover (`.dash-pop__group`): its title
+/// (`Very weak · 2`, `Shared by 3`), the danger tint on that title, and the
+/// logins it lists. An empty row list renders the TS's muted "None" line —
+/// strength's bands can come up empty in a small vault.
+export struct DashPopGroup {
+    title: string,
+    danger: bool,
+    rows: [DashRow],
+}
+
+/// One card's whole hover popover (`.dash-pop`): grouped rows for strength,
+/// sites and reuse, flat ranked rows for most-used (`right` holds the rank
+/// the panel draws as a circle), the static copy top and bottom, and the
+/// three heights Rust measured — the about block, the scroll content (the
+/// inner Flickable's viewport), and the panel itself, capped at 320px (380
+/// for the wide most-used one). `height` 0 means the card has no popover.
+export struct DashPop {
+    groups: [DashPopGroup],
+    rows: [DashRow],
+    about: string,
+    empty: string,
+    about-h: float,
+    scroll-h: float,
+    height: float,
+}
+
 /// The score ring's arc, as geometry Rust worked out for the 64-unit view
 /// the TS ring drew: start at 3 o'clock, sweep clockwise, outer/inner radii
 /// 29/23 around the 26 the track uses.

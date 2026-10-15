@@ -16,7 +16,7 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop } from "models.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
@@ -728,6 +728,10 @@ export component MainWindow inherits Window {
     in-out property <int> dash-channels-more;
     in-out property <int> dash-tag-count;
     in-out property <int> dash-channel-count;
+    in-out property <DashPop> dash-pop-strength;
+    in-out property <DashPop> dash-pop-domains;
+    in-out property <DashPop> dash-pop-reuse;
+    in-out property <DashPop> dash-pop-uses;
     // Bulk add and channel editing have no native panel yet; the buttons
     // report that rather than sitting dead (Settings follows in Phase 5).
     callback dash-bulk-add();
@@ -1074,6 +1078,10 @@ export component MainWindow inherits Window {
                     channels-more: root.dash-channels-more;
                     tag-count: root.dash-tag-count;
                     channel-count: root.dash-channel-count;
+                    pop-strength: root.dash-pop-strength;
+                    pop-domains: root.dash-pop-domains;
+                    pop-reuse: root.dash-pop-reuse;
+                    pop-uses: root.dash-pop-uses;
 
                     // Both routes exist on the root already: the rail handler
                     // clears the search and refreshes, the editor handler
