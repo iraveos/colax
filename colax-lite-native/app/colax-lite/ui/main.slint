@@ -541,6 +541,14 @@ export component MainWindow inherits Window {
     in property <string> cards-empty-hint;
     // `--showUrls`: the hostname column is a preference, not a constant.
     in property <bool> show-urls: true;
+    // Which chrome the Layout tab's switches keep (Task 5.2b). These three
+    // are the shortcuts the shell draws today; the rest of the flags gate
+    // chrome that has not landed yet (the rail's shortcut sheet, its compact
+    // and hide controls, the floating pills) and are listed in Settings ›
+    // Hidden all the same, so none of them is a switch that lies.
+    in property <bool> show-new-login: true;
+    in property <bool> show-lock: true;
+    in property <bool> show-settings-button: true;
     // "3 logins" / "1 login", assembled in Rust: pluralisation beats a
     // format function in the UI layer.
     in property <string> count-label;
@@ -1079,7 +1087,7 @@ export component MainWindow inherits Window {
 
                     Rectangle { vertical-stretch: 1; height: 1px; }
 
-                    settings-item {
+                    if (root.show-settings-button) : settings-item {
                         compact: root.rail-compact;
                         labels: root.labels-mode != "icon";
                         clicked => { root.open-settings(""); }
@@ -1162,7 +1170,7 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                     }
 
-                    settings-item {
+                    if (root.show-settings-button) : settings-item {
                         compact: root.rail-compact;
                         labels: root.labels-mode != "icon";
                         clicked => { root.open-settings(""); }
@@ -1249,7 +1257,15 @@ export component MainWindow inherits Window {
                     padding-right: 34px;
                     spacing: 14px;
 
+                    // Title left, actions right: `space-between` keeps both at
+                    // their own width and spends the slack between them, which
+                    // is what `justify-content: space-between` does for the
+                    // web's `.topbar`. The actions are one nested group, so the
+                    // slack lands after the title and not between every button
+                    // -- a stretch spacer instead would let them grow with the
+                    // window.
                     HorizontalLayout {
+                        alignment: space-between;
                         spacing: 10px;
 
                         Text {
@@ -1262,30 +1278,36 @@ export component MainWindow inherits Window {
                             vertical-alignment: center;
                         }
 
-                        Rectangle { horizontal-stretch: 1; width: 1px; }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 10px;
 
-                        Btn {
-                            label: "New login";
-                            kind: 1;
-                            h: 36px;
-                            enabled: !root.busy;
-                            clicked => { root.open-editor(""); }
-                        }
+                            if (root.show-new-login) : Btn {
+                                label: "New login";
+                                kind: 1;
+                                h: 36px;
+                                horizontal-stretch: 0;
+                                enabled: !root.busy;
+                                clicked => { root.open-editor(""); }
+                            }
 
-                        Btn {
-                            label: "Import";
-                            kind: 1;
-                            h: 36px;
-                            enabled: !root.busy;
-                            clicked => { root.import-from-vault(); }
-                        }
+                            Btn {
+                                label: "Import";
+                                kind: 1;
+                                h: 36px;
+                                horizontal-stretch: 0;
+                                enabled: !root.busy;
+                                clicked => { root.import-from-vault(); }
+                            }
 
-                        Btn {
-                            label: root.busy ? "Working..." : "Lock";
-                            kind: 0;
-                            h: 36px;
-                            enabled: !root.busy;
-                            clicked => { root.lock-vault(); }
+                            if (root.show-lock) : Btn {
+                                label: root.busy ? "Working..." : "Lock";
+                                kind: 0;
+                                h: 36px;
+                                horizontal-stretch: 0;
+                                enabled: !root.busy;
+                                clicked => { root.lock-vault(); }
+                            }
                         }
                     }
 

@@ -523,6 +523,12 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
         ui.set_history_data(history);
     }
     ui.set_show_urls(prefs.show_urls);
+    // The three shortcuts the Layout tab switches off (Task 5.2b). They are
+    // read on every refresh, so a switch thrown in Settings lands on the
+    // shell in the same tick the preference is written.
+    ui.set_show_new_login(prefs.show_new_login_button);
+    ui.set_show_lock(prefs.show_lock_button);
+    ui.set_show_settings_button(prefs.show_settings_button);
     ui.set_cards_empty_title(empty_title.into());
     ui.set_cards_empty_hint(empty_hint.into());
     // Which of the four presentations is showing, in what order, and how the
@@ -788,7 +794,8 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// saved login), `editor-<section>` for any of its tabs, `settings` (the
 /// Settings walk, which closes the modal when it is done), `settings-open`
 /// (the appearance panel), `settings-layout` or `settings-hidden` (each left
-/// open for a screenshot).
+/// open for a screenshot), or `chrome` (the three shortcuts the Layout tab
+/// takes off the shell, all left off).
 #[cfg(debug_assertions)]
 fn dev_screen(ui: &MainWindow, state: &Shared) {
     // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
@@ -962,6 +969,14 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
             state,
             if want == "settings-layout" { "layout" } else { "hidden" },
         );
+        return;
+    }
+    // The three shortcuts the Layout tab takes off the shell (Task 5.2b),
+    // left off so a screenshot shows the bare topbar and rail.
+    if want == "chrome" {
+        settings_ops::pref_bool(ui, state, "showNewLoginButton", false);
+        settings_ops::pref_bool(ui, state, "showLockButton", false);
+        settings_ops::pref_bool(ui, state, "showSettingsButton", false);
         return;
     }
 

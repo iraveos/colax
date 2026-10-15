@@ -549,7 +549,7 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         .map(|id| *id)
         .unwrap_or("?");
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -585,6 +585,9 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         ui.get_rail_position(),
         ui.get_labels_mode(),
         ui.get_vault_view(),
+        ui.get_show_new_login() as i32,
+        ui.get_show_lock() as i32,
+        ui.get_show_settings_button() as i32,
         prefs.theme,
         prefs.text_scale,
         prefs.accent,
