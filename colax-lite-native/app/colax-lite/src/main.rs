@@ -786,8 +786,9 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 ///
 /// `COLAX_DEV_SCREEN` takes `vault`, `new` (a blank editor), `editor` (a
 /// saved login), `editor-<section>` for any of its tabs, `settings` (the
-/// Settings walk, which closes the modal when it is done) or `settings-open`
-/// (the appearance panel, left open for a screenshot).
+/// Settings walk, which closes the modal when it is done), `settings-open`
+/// (the appearance panel), `settings-layout` or `settings-hidden` (each left
+/// open for a screenshot).
 #[cfg(debug_assertions)]
 fn dev_screen(ui: &MainWindow, state: &Shared) {
     // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
@@ -944,10 +945,23 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         settings_ops::dev(ui, state);
         return;
     }
-    // The appearance panel, opened and left open: the walk above closes the
-    // modal on its last step, so a screenshot needs its own target.
+    // The panels, opened and left open: the walk above closes the modal on
+    // its last step, so a screenshot needs its own target. `settings-hidden`
+    // switches a couple of buttons off first, so the panel has rows to show.
     if want == "settings-open" {
         settings_ops::open(ui, state, "");
+        return;
+    }
+    if want == "settings-layout" || want == "settings-hidden" {
+        if want == "settings-hidden" {
+            settings_ops::pref_bool(ui, state, "showNewLoginButton", false);
+            settings_ops::pref_bool(ui, state, "showSidebar", false);
+        }
+        settings_ops::open(
+            ui,
+            state,
+            if want == "settings-layout" { "layout" } else { "hidden" },
+        );
         return;
     }
 
@@ -5264,6 +5278,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_settings_pref_bool(move |key, value| {
                 if let Some(ui) = weak.upgrade() {
                     settings_ops::pref_bool(&ui, &st, &key, value);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_hidden_restore(move |key, id| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::restore(&ui, &st, &key, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_hidden_restore_all(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::restore_all(&ui, &st);
                 }
             });
 

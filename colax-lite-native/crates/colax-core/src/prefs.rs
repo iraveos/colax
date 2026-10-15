@@ -113,6 +113,51 @@ pub struct VaultPreferences {
     /// before unlock too, so the tray can show it -- but the geometry is the
     /// shell's job).
     pub show_sidebar: bool,
+    // Layout (Task 5.2): the switches Settings' Layout tab edits and its
+    // Hidden tab reads back by name. `show_*` ones are visibility, so a
+    // missing key must never hide a button out from under the user — the TS
+    // reads most of them `!== false` (storage.ts L1096-1105).
+    /// Rows under a letter heading in the List view (`showLetterGroups`).
+    pub show_letter_groups: bool,
+    /// Attach the site's tag to a new login as it is created
+    /// (`autoTagDomain`, on by default).
+    pub auto_tag_domain: bool,
+    /// A sidebar entry for logins with no tag yet (`showUnassignedChannel`).
+    pub show_unassigned_channel: bool,
+    /// A tag created in the editor also becomes a channel (`autoTagChannel`).
+    pub auto_tag_channel: bool,
+    /// Titles and addresses inside the Orbit ring's cards (`showOrbitLabels`).
+    pub show_orbit_labels: bool,
+    /// Reused and long-untouched password flags (`showHealthBadges`).
+    pub show_health_badges: bool,
+    /// The sidebar's shortcut sheet (`showShortcuts`; Settings keeps its own).
+    pub show_shortcuts: bool,
+    /// The lock control on the main screen (`showLockButton`).
+    pub show_lock_button: bool,
+    /// The rail's new-channel shortcut (`showNewChannelButton`).
+    pub show_new_channel_button: bool,
+    /// The rail footer's narrow-rail toggle (`showCompactButton`).
+    pub show_compact_button: bool,
+    /// The topbar's New login shortcut (`showNewLoginButton`).
+    pub show_new_login_button: bool,
+    /// The topbar shortcut beside it (`showBulkAddButton`).
+    pub show_bulk_add_button: bool,
+    /// The rail footer's Settings shortcut (`showSettingsButton`).
+    pub show_settings_button: bool,
+    /// The rail footer's Hide control (`showHideSidebarButton`).
+    pub show_hide_sidebar_button: bool,
+    /// Sidebar, view picker and New login detached into their own pills
+    /// (`floatingChrome`).
+    pub floating_chrome: bool,
+    /// No hairline rules inside the settings window (`hideDividers`).
+    pub hide_dividers: bool,
+    /// Channel ids taken off the rail by right-click (`hiddenChannels`). The
+    /// catalogue and the login's tag survive; only the rail row goes.
+    pub hidden_channels: Vec<String>,
+    /// Folder ids hidden the same way (`hiddenFolders`).
+    pub hidden_folders: Vec<String>,
+    /// Login-card button ids hidden on every card (`hiddenButtons`).
+    pub hidden_buttons: Vec<String>,
     /// `prefs.vaultSecurity`: a second factor over the whole vault. TS gates
     /// the shell itself on it (App.tsx L2830, "Vault verification"), and the
     /// native gate verifies against this same stored factor.
@@ -223,6 +268,25 @@ impl Default for VaultPreferences {
             sidebar_labels: "both".into(),
             compact_sidebar: false,
             show_sidebar: true,
+            show_letter_groups: true,
+            auto_tag_domain: true,
+            show_unassigned_channel: true,
+            auto_tag_channel: false,
+            show_orbit_labels: true,
+            show_health_badges: true,
+            show_shortcuts: false,
+            show_lock_button: true,
+            show_new_channel_button: true,
+            show_compact_button: true,
+            show_new_login_button: true,
+            show_bulk_add_button: true,
+            show_settings_button: true,
+            show_hide_sidebar_button: true,
+            floating_chrome: true,
+            hide_dividers: false,
+            hidden_channels: Vec::new(),
+            hidden_folders: Vec::new(),
+            hidden_buttons: Vec::new(),
             vault_security: LoginSecurity::default(),
             tray_enabled: true,
             close_to_tray: true,
@@ -288,19 +352,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.confirm_deletes = truthy(o.get("confirmDeletes"), true);
     // The list is deduplicated and emptied of anything that is not a non-empty
     // id, so a hand-edited record cannot put nulls in the drag order.
-    out.manual_order = match o.get("manualOrder") {
-        Some(Value::Array(ids)) => {
-            let mut seen = std::collections::HashSet::new();
-            let mut out: Vec<String> = Vec::new();
-            for id in ids.iter().filter_map(Value::as_str) {
-                if !id.is_empty() && seen.insert(id) {
-                    out.push(id.to_string());
-                }
-            }
-            out
-        }
-        _ => Vec::new(),
-    };
+    out.manual_order = id_list(o.get("manualOrder"));
     // The shipped set is 0/30/60/90/180/365/730; anything else falls back
     // rather than being kept (storage.ts L1408).
     out.password_age_days = match o.get("passwordAgeDays").and_then(Value::as_i64) {
@@ -376,6 +428,33 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // stored vault from the web build brings its own.
     out.compact_sidebar = truthy(o.get("compactSidebar"), false);
     out.show_sidebar = truthy(o.get("showSidebar"), true);
+    // Layout (Task 5.2), the rules `normalisePreferences` runs (storage.ts
+    // L1079-1105, L1278): the flags a missing key must never turn off read
+    // `!== false`, the plain switches read by JS `Boolean`, and the three
+    // hidden lists are cleaned exactly like `hiddenChannels` — non-empty
+    // strings, duplicates dropped, anything else an empty list.
+    out.show_letter_groups = o.get("showLetterGroups").and_then(Value::as_bool) != Some(false);
+    out.show_new_login_button = o.get("showNewLoginButton").and_then(Value::as_bool) != Some(false);
+    out.show_bulk_add_button = o.get("showBulkAddButton").and_then(Value::as_bool) != Some(false);
+    out.show_settings_button = o.get("showSettingsButton").and_then(Value::as_bool) != Some(false);
+    out.show_hide_sidebar_button = o.get("showHideSidebarButton").and_then(Value::as_bool) != Some(false);
+    out.auto_tag_domain = bool_or(o.get("autoTagDomain"), true);
+    out.show_unassigned_channel = bool_or(o.get("showUnassignedChannel"), true);
+    out.show_new_channel_button = bool_or(o.get("showNewChannelButton"), true);
+    out.show_compact_button = bool_or(o.get("showCompactButton"), true);
+    // These five are not in the TS normaliser at all: they pass through as
+    // stored, so the only rule is what the consuming expression makes of the
+    // value — the same truthiness `bool_or` reads here.
+    out.auto_tag_channel = bool_or(o.get("autoTagChannel"), false);
+    out.show_orbit_labels = bool_or(o.get("showOrbitLabels"), true);
+    out.show_health_badges = bool_or(o.get("showHealthBadges"), true);
+    out.show_shortcuts = bool_or(o.get("showShortcuts"), false);
+    out.show_lock_button = bool_or(o.get("showLockButton"), true);
+    out.floating_chrome = bool_or(o.get("floatingChrome"), true);
+    out.hide_dividers = bool_or(o.get("hideDividers"), false);
+    out.hidden_channels = id_list(o.get("hiddenChannels"));
+    out.hidden_folders = id_list(o.get("hiddenFolders"));
+    out.hidden_buttons = id_list(o.get("hiddenButtons"));
     // The vault's own second factor, through the same helper the items use:
     // a stored vault.json from the web build verifies exactly the same way.
     out.vault_security = normalise_security(o.get("vaultSecurity"));
@@ -398,6 +477,11 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "cardDepth","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",
         "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
         "compactSidebar","showSidebar","vaultSecurity",
+        "showLetterGroups","autoTagDomain","showUnassignedChannel","autoTagChannel",
+        "showOrbitLabels","showHealthBadges","showShortcuts","showLockButton",
+        "showNewChannelButton","showCompactButton","showNewLoginButton","showBulkAddButton",
+        "showSettingsButton","showHideSidebarButton","floatingChrome","hideDividers",
+        "hiddenChannels","hiddenFolders","hiddenButtons",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
         "pinFavorites","manualOrder","passwordAgeDays","emailCheckDays","confirmDeletes","tags","autoLockMinutes",
         "clearClipboardSeconds","clearClipboardOnLock","copyToasts","maskEmails","usage","history","alarms"];
@@ -431,6 +515,40 @@ fn truthy(v: Option<&Value>, dflt: bool) -> bool {
         Some(Value::Array(a)) => !a.is_empty(),
         _ => dflt,
     }
+}
+
+/// JS `Boolean(v)` for a key that *is* in the document: `null`, `false`, `0`,
+/// `""` are off and everything else is on — an explicit null is a stored
+/// choice, unlike `truthy`'s absent-key reading. `None` (no such key) keeps
+/// the shipped default, which is what the TS does by spreading `DEFAULTS`
+/// under the stored document before it converts (storage.ts L1070).
+fn bool_or(v: Option<&Value>, dflt: bool) -> bool {
+    match v {
+        None => dflt,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Number(n)) => n.as_f64().map(|f| f != 0.0).unwrap_or(dflt),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
+        Some(Value::Null) => false,
+    }
+}
+
+/// A list of ids out of a stored field: non-empty strings only, duplicates
+/// dropped, the order kept — `[...new Set(list.filter(id => typeof id ===
+/// 'string' && id.length > 0))]` (storage.ts L1080, once for each of
+/// `hiddenChannels`, `hiddenFolders`, `hiddenButtons` and `manualOrder`).
+/// Anything that is not an array is no list at all, not a list of one.
+fn id_list(v: Option<&Value>) -> Vec<String> {
+    let Some(Value::Array(ids)) = v else { return Vec::new() };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for id in ids.iter().filter_map(Value::as_str) {
+        if !id.is_empty() && seen.insert(id.to_string()) {
+            out.push(id.to_string());
+        }
+    }
+    out
 }
 
 /// The three tags every vault starts with (`DEFAULT_TAG_SEEDS` in
@@ -633,8 +751,80 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_values_clamp_to_the_documented_bounds() {
+    fn layout_switches_keep_their_shipped_defaults() {
+        let p = normalise_preferences(&json!({}));
+        // Shown unless a vault says otherwise: hiding a button from a missing
+        // key would be the load doing the user's hiding for them.
+        assert!(p.show_letter_groups);
+        assert!(p.auto_tag_domain);
+        assert!(p.show_unassigned_channel);
+        assert!(p.show_orbit_labels);
+        assert!(p.show_health_badges);
+        assert!(p.show_lock_button);
+        assert!(p.show_new_channel_button);
+        assert!(p.show_compact_button);
+        assert!(p.show_new_login_button);
+        assert!(p.show_bulk_add_button);
+        assert!(p.show_settings_button);
+        assert!(p.show_hide_sidebar_button);
+        assert!(p.floating_chrome);
+        assert!(!p.auto_tag_channel);
+        assert!(!p.show_shortcuts);
+        assert!(!p.hide_dividers);
+        assert!(p.hidden_channels.is_empty());
+        assert!(p.hidden_folders.is_empty());
+        assert!(p.hidden_buttons.is_empty());
+    }
+
+    #[test]
+    fn a_visibility_flag_needs_a_real_false_to_hide() {
+        // `!== false` in the TS: null, 0 and strings keep the button shown.
         let p = normalise_preferences(&json!({
+            "showNewLoginButton": null,
+            "showBulkAddButton": 0,
+            "showSettingsButton": "no",
+            "showHideSidebarButton": false,
+            "showLetterGroups": false,
+        }));
+        assert!(p.show_new_login_button);
+        assert!(p.show_bulk_add_button);
+        assert!(p.show_settings_button);
+        assert!(!p.show_hide_sidebar_button);
+        assert!(!p.show_letter_groups);
+        // A plain `Boolean(...)` switch does read null and "" as off.
+        let q = normalise_preferences(&json!({ "showCompactButton": null, "autoTagDomain": "" }));
+        assert!(!q.show_compact_button);
+        assert!(!q.auto_tag_domain);
+    }
+
+    #[test]
+    fn the_hidden_lists_keep_only_non_empty_unique_ids() {
+        let p = normalise_preferences(&json!({
+            "hiddenChannels": ["ch_a", "", "ch_a", 7, null, "ch_b"],
+            "hiddenFolders": "fd_a",
+            "hiddenButtons": ["copy"],
+        }));
+        assert_eq!(p.hidden_channels, vec!["ch_a", "ch_b"]);
+        // A bare string is not a list — the TS checks `Array.isArray` first.
+        assert!(p.hidden_folders.is_empty());
+        assert_eq!(p.hidden_buttons, vec!["copy"]);
+    }
+
+    #[test]
+    fn modelled_keys_do_not_leak_into_extra() {
+        // `extra` is the round-trip pocket for keys this build does not know;
+        // a key that now has a field must leave it, or the document would
+        // carry two copies of the same switch.
+        let p = normalise_preferences(&json!({
+            "hideDividers": true, "somedayKey": 1,
+        }));
+        let extra = p.extra.as_object().expect("extra is an object");
+        assert!(!extra.contains_key("hideDividers"));
+        assert_eq!(extra.get("somedayKey"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn out_of_range_values_clamp_to_the_documented_bounds() {        let p = normalise_preferences(&json!({
             "textScale": 999, "motion": -3, "motionSpeed": 12,
             "roundness": 0, "cardDepth": 7, "ambient": 4,
         }));

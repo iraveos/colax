@@ -21,7 +21,7 @@ import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
 import { History } from "screens/history.slint";
-import { Settings, AccentChip } from "screens/settings.slint";
+import { Settings, AccentChip, HiddenRow } from "screens/settings.slint";
 
 // ---- The vault's four presentations -------------------------------------
 // `VIEW_OPTIONS` in ViewMenu.tsx: Flow, Orbit, List, Grid -- four cards with
@@ -807,6 +807,8 @@ export component MainWindow inherits Window {
     callback settings-pref-string(key: string, value: string);
     callback settings-pref-float(key: string, value: float);
     callback settings-pref-bool(key: string, value: bool);
+    callback settings-hidden-restore(key: string, id: string);
+    callback settings-hidden-restore-all();
     in-out property <bool> settings-open: false;
     in-out property <int> settings-tab-index: 0;
     // The modal's frame, in logical pixels, kept in step with the window by
@@ -829,6 +831,34 @@ export component MainWindow inherits Window {
     in-out property <bool> settings-ap-reduce-transparency: false;
     in-out property <bool> settings-ap-high-contrast: false;
     in-out property <[AccentChip]> settings-accent-chips;
+    // ---- The Settings window's Layout tab (Task 5.2) ---------------------
+    // The four pickers are the same preferences the sidebar's own menus
+    // write; the switches are the chrome, which the Hidden tab reads back as
+    // rows pushed from Rust.
+    in-out property <string> settings-lay-view: "animated";
+    in-out property <string> settings-lay-sort: "title";
+    in-out property <string> settings-lay-sidebar-labels: "both";
+    in-out property <string> settings-lay-rail-position: "left";
+    in-out property <bool> settings-lay-letter-groups: true;
+    in-out property <bool> settings-lay-auto-tag-domain: true;
+    in-out property <bool> settings-lay-unassigned-channel: true;
+    in-out property <bool> settings-lay-auto-tag-channel: false;
+    in-out property <bool> settings-lay-orbit-labels: true;
+    in-out property <bool> settings-lay-health-badges: true;
+    in-out property <bool> settings-lay-shortcuts: false;
+    in-out property <bool> settings-lay-lock-button: true;
+    in-out property <bool> settings-lay-new-channel-button: true;
+    in-out property <bool> settings-lay-compact-button: true;
+    in-out property <bool> settings-lay-new-login-button: true;
+    in-out property <bool> settings-lay-bulk-add-button: true;
+    in-out property <bool> settings-lay-settings-button: true;
+    in-out property <bool> settings-lay-hide-sidebar-button: true;
+    in-out property <bool> settings-lay-show-sidebar: true;
+    in-out property <bool> settings-lay-show-urls: true;
+    in-out property <bool> settings-lay-pin-favorites: true;
+    in-out property <bool> settings-lay-floating-chrome: true;
+    in-out property <bool> settings-lay-hide-dividers: false;
+    in-out property <[HiddenRow]> settings-hidden-rows;
     // ---- SecurityGate ----------------------------------------------------
     // A blocking verification for a login or for the vault itself: any one
     // factor passes, and the open panel holds everything typed until Rust
@@ -2173,11 +2203,37 @@ export component MainWindow inherits Window {
             ap-density <=> root.settings-ap-density;
             ap-reduce-transparency <=> root.settings-ap-reduce-transparency;
             ap-high-contrast <=> root.settings-ap-high-contrast;
+            lay-view <=> root.settings-lay-view;
+            lay-sort <=> root.settings-lay-sort;
+            lay-sidebar-labels <=> root.settings-lay-sidebar-labels;
+            lay-rail-position <=> root.settings-lay-rail-position;
+            lay-letter-groups <=> root.settings-lay-letter-groups;
+            lay-auto-tag-domain <=> root.settings-lay-auto-tag-domain;
+            lay-unassigned-channel <=> root.settings-lay-unassigned-channel;
+            lay-auto-tag-channel <=> root.settings-lay-auto-tag-channel;
+            lay-orbit-labels <=> root.settings-lay-orbit-labels;
+            lay-health-badges <=> root.settings-lay-health-badges;
+            lay-shortcuts <=> root.settings-lay-shortcuts;
+            lay-lock-button <=> root.settings-lay-lock-button;
+            lay-new-channel-button <=> root.settings-lay-new-channel-button;
+            lay-compact-button <=> root.settings-lay-compact-button;
+            lay-new-login-button <=> root.settings-lay-new-login-button;
+            lay-bulk-add-button <=> root.settings-lay-bulk-add-button;
+            lay-settings-button <=> root.settings-lay-settings-button;
+            lay-hide-sidebar-button <=> root.settings-lay-hide-sidebar-button;
+            lay-show-sidebar <=> root.settings-lay-show-sidebar;
+            lay-show-urls <=> root.settings-lay-show-urls;
+            lay-pin-favorites <=> root.settings-lay-pin-favorites;
+            lay-floating-chrome <=> root.settings-lay-floating-chrome;
+            lay-hide-dividers <=> root.settings-lay-hide-dividers;
+            hidden-rows: root.settings-hidden-rows;
             closed => { root.settings-closed(); }
             tab-picked(index) => { root.settings-tab-picked(index); }
             pref-string(key, value) => { root.settings-pref-string(key, value); }
             pref-float(key, value) => { root.settings-pref-float(key, value); }
             pref-bool(key, value) => { root.settings-pref-bool(key, value); }
+            hidden-restore(key, id) => { root.settings-hidden-restore(key, id); }
+            hidden-restore-all => { root.settings-hidden-restore-all(); }
         }
     }
 }

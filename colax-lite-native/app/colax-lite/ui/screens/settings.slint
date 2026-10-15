@@ -15,7 +15,7 @@
 // dials are two-way with the window root: a drag reaches Rust through
 // `pref-*`, and Rust's saved answer flows back down the same chain.
 import { Theme } from "../theme.slint";
-import { Slider, Toggle, EmptyState, IconButton } from "../widgets.slint";
+import { Slider, Toggle, EmptyState, IconButton, Btn } from "../widgets.slint";
 
 /// One entry of the rail. The order is the TS's `tabs` array
 /// (Settings.tsx L500) and must match `SETTINGS_TABS` in main.rs; `num` is
@@ -37,6 +37,20 @@ export struct AccentChip {
     label: string,
     from: color,
     to: color,
+}
+
+/// One row of the Hidden tab. `heading` is set on the first row of each
+/// group and empty on its siblings — Slint cannot group a model after the
+/// fact, and the TS heading carries the group's own count
+/// (`{group} ({list.length})`). `key` is the pref key for a switch row, or
+/// the list ("button"/"channel"/"folder") for a hidden id, which then rides
+/// in `id`.
+export struct HiddenRow {
+    heading: string,
+    label: string,
+    detail: string,
+    key: string,
+    id: string,
 }
 
 // The 26x18 swatch behind each theme choice (`ThemePreview`, Settings.tsx
@@ -297,6 +311,266 @@ component seg-row inherits Rectangle {
     }
 }
 
+// A plain row whose control is a secondary button — the Hidden tab's "Show"
+// and "Show all N" (Settings.tsx L1116, L1147). `.btn--secondary` is `kind: 1`
+// on the shared Btn.
+component btn-row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    in property <string> button-text: "Show";
+    callback clicked();
+
+    // See `toggle-row` for why the width is a property from outside.
+    in property <length> panel-w: 704px;
+    width: root.panel-w;
+    height: shell.preferred-height;
+
+    shell := HorizontalLayout {
+        alignment: space-between;
+        spacing: 16px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+
+        VerticalLayout {
+            width: root.panel-w - 216px;
+            spacing: 3px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 13.5px;
+                font-weight: 600;
+            }
+            if (root.hint != "") : Text {
+                text: root.hint;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+
+        Btn {
+            horizontal-stretch: 0;
+            kind: 1;
+            h: 34px;
+            label: root.button-text;
+            clicked => { root.clicked(); }
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
+// One wrapped segmented pill. Its own component because a `for` body cannot
+// be shared between the two rows of `seg-stack-row` — and it has to be
+// declared before them, the way Slint resolves elements in order.
+component pill inherits Rectangle {
+    in property <int> option-index: 0;
+    in property <[string]> labels;
+    in property <[string]> ids;
+    in property <string> value;
+    callback picked(string);
+
+    horizontal-stretch: 1;
+    height: 34px;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: root.ids[root.option-index] == root.value ? Theme.border-strong : #00000000;
+    background: root.ids[root.option-index] == root.value
+        ? Theme.plate
+        : (pill-touch.has-hover ? #ffffff1a : #00000000);
+
+    pill-touch := TouchArea {
+        clicked => { root.picked(root.ids[root.option-index]); }
+    }
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.labels[root.option-index];
+        color: root.ids[root.option-index] == root.value ? Theme.text : Theme.muted;
+        font-size: 13px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A stacked row: label and hint above, then the control across the full
+// panel width — `.setting--stack` (app.css L776). The option-card groups and
+// the sort pills use it, because what they show is a set of choices rather
+// than a value on a line.
+component cards-row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    // One entry per card: the title, the faint note beside it and, for the
+    // view cards, a glyph. `notes` and `icons` may be shorter than `titles`;
+    // an empty entry draws nothing.
+    in property <[string]> titles;
+    in property <[string]> notes;
+    in property <[string]> icons;
+    in property <[string]> ids;
+    in property <string> value;
+    callback picked(string);
+
+    // See `toggle-row` for why the width is a property from outside.
+    in property <length> panel-w: 704px;
+    width: root.panel-w;
+    height: stack.preferred-height;
+
+    stack := VerticalLayout {
+        spacing: 12px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+
+        VerticalLayout {
+            spacing: 3px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 13.5px;
+                font-weight: 600;
+            }
+            if (root.hint != "") : Text {
+                text: root.hint;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: root.panel-w;
+            }
+        }
+
+        // `.option-cards`: equal thirds, each a centred line. Only the
+        // pressed card paints, which is why a group shows one plate.
+        HorizontalLayout {
+            spacing: 8px;
+
+            for title[i] in root.titles : Rectangle {
+                horizontal-stretch: 1;
+                height: 40px;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: root.ids[i] == root.value ? Theme.border-strong : #00000000;
+                background: root.ids[i] == root.value
+                    ? Theme.plate
+                    : (card-touch.has-hover ? #ffffff0d : #00000000);
+
+                card-touch := TouchArea {
+                    clicked => { root.picked(root.ids[i]); }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+
+                    if (i < root.icons.length && root.icons[i] != "") : Text {
+                        text: root.icons[i];
+                        color: root.ids[i] == root.value ? Theme.text : Theme.muted;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: title;
+                        color: root.ids[i] == root.value ? Theme.text : Theme.muted;
+                        font-size: 13px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    if (i < root.notes.length && root.notes[i] != "") : Text {
+                        text: root.notes[i];
+                        color: Theme.faint;
+                        font-size: 11.5px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
+// A segmented row that wraps: the six sort orders are longer than the four
+// density pills, so `.segmented--wrap` puts them on two rows of three
+// (app.css L752) — one flat row would either clip the labels or need them
+// elided. Same neutral pressed state as `seg-row`.
+component seg-stack-row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    in property <[string]> options;
+    in property <[string]> ids;
+    in property <string> value;
+    callback picked(string);
+
+    // See `toggle-row` for why the width is a property from outside.
+    in property <length> panel-w: 704px;
+    width: root.panel-w;
+    height: stack.preferred-height;
+
+    stack := VerticalLayout {
+        spacing: 12px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+
+        VerticalLayout {
+            spacing: 3px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 13.5px;
+                font-weight: 600;
+            }
+            if (root.hint != "") : Text {
+                text: root.hint;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: root.panel-w;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 6px;
+
+            for i in 3 : pill {
+                option-index: i;
+                labels: root.options;
+                ids: root.ids;
+                value: root.value;
+                picked(id) => { root.picked(id); }
+            }
+            for j in 3 : pill {
+                // The second half of the list: `for` walks from zero, so the
+                // offset is put back here rather than in the labels.
+                option-index: j + 3;
+                labels: root.options;
+                ids: root.ids;
+                value: root.value;
+                picked(id) => { root.picked(id); }
+            }
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
 export component Settings inherits Rectangle {
     // Which rail row is lit. Rust owns the id list and validates every jump
     // against it, so the index is all the window keeps — clamped before use
@@ -335,11 +609,45 @@ export component Settings inherits Rectangle {
     // opens (Rust owns the hue maths).
     in property <[AccentChip]> accent-chips: [];
 
+    // The Layout tab's dials. The four pickers are the same preferences the
+    // sidebar's own menus write, so both doors lead to one value; the
+    // switches are the chrome the Hidden tab reads back.
+    in-out property <string> lay-view: "animated";
+    in-out property <string> lay-sort: "title";
+    in-out property <string> lay-sidebar-labels: "both";
+    in-out property <string> lay-rail-position: "left";
+    in-out property <bool> lay-letter-groups: true;
+    in-out property <bool> lay-auto-tag-domain: true;
+    in-out property <bool> lay-unassigned-channel: true;
+    in-out property <bool> lay-auto-tag-channel: false;
+    in-out property <bool> lay-orbit-labels: true;
+    in-out property <bool> lay-health-badges: true;
+    in-out property <bool> lay-shortcuts: false;
+    in-out property <bool> lay-lock-button: true;
+    in-out property <bool> lay-new-channel-button: true;
+    in-out property <bool> lay-compact-button: true;
+    in-out property <bool> lay-new-login-button: true;
+    in-out property <bool> lay-bulk-add-button: true;
+    in-out property <bool> lay-settings-button: true;
+    in-out property <bool> lay-hide-sidebar-button: true;
+    in-out property <bool> lay-show-sidebar: true;
+    in-out property <bool> lay-show-urls: true;
+    in-out property <bool> lay-pin-favorites: true;
+    in-out property <bool> lay-floating-chrome: true;
+    in-out property <bool> lay-hide-dividers: false;
+
+    // The Hidden tab is derived in Rust — it is a reading of the switches
+    // above plus the three hidden lists — so it arrives as a model and is
+    // never written back as a whole.
+    in property <[HiddenRow]> hidden-rows: [];
+
     callback closed();
     callback tab-picked(index: int);
     callback pref-string(key: string, value: string);
     callback pref-float(key: string, value: float);
     callback pref-bool(key: string, value: bool);
+    callback hidden-restore(key: string, id: string);
+    callback hidden-restore-all();
 
     // The thirteen tabs of Settings.tsx L500, in order. Hints come from
     // `describe()` in SettingsWindow.tsx L180 — three tabs have none there
@@ -874,10 +1182,283 @@ export component Settings inherits Rectangle {
                                 }
                             }
 
+                            // ---- The layout panel ------------------------
+                            // How the logins are shown and where the chrome
+                            // sits (Settings.tsx L651-953). The four pickers
+                            // write the same preferences the sidebar's own
+                            // menus write, so the two doors stay one value.
+                            if (root.active.id == "layout") : VerticalLayout {
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Group list by first letter";
+                                    hint: "In the List view, rows sit under a letter heading. Off flattens it into one run.";
+                                    checked <=> root.lay-letter-groups;
+                                    toggled => { root.pref-bool("showLetterGroups", root.lay-letter-groups); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Auto-tag new logins";
+                                    hint: "Reads the site and email-provider domain and attaches the matching tag, creating it when needed.";
+                                    checked <=> root.lay-auto-tag-domain;
+                                    toggled => { root.pref-bool("autoTagDomain", root.lay-auto-tag-domain); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Show unassigned channel";
+                                    hint: "A sidebar entry for every login that has no tag yet.";
+                                    checked <=> root.lay-unassigned-channel;
+                                    toggled => { root.pref-bool("showUnassignedChannel", root.lay-unassigned-channel); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "New tags become channels";
+                                    hint: "Every tag you create also gets its own sidebar channel.";
+                                    checked <=> root.lay-auto-tag-channel;
+                                    toggled => { root.pref-bool("autoTagChannel", root.lay-auto-tag-channel); }
+                                }
+
+                                // Rail presentation. Both controls are in the
+                                // sidebar's right-click menu too, because the
+                                // rail is the thing being described and the
+                                // user is usually looking at it.
+                                cards-row {
+                                    panel-w: root.panel-w;
+                                    label: "Channel labels";
+                                    hint: "The sidebar rail — not the view picker below, which has its own setting. Icons only collapses the rail to a narrow strip you read by shape. Names only drops the glyphs but keeps the colour dot, which is what tells two similar names apart. (Compact mode in the sidebar footer also hides names.)";
+                                    titles: ["Icons and names", "Icons only", "Names only"];
+                                    notes: ["Both, as it is by default", "A narrow rail", "A plain list"];
+                                    ids: ["both", "icon", "name"];
+                                    value: root.lay-sidebar-labels;
+                                    picked(id) => { root.pref-string("sidebar-labels", id); }
+                                }
+
+                                cards-row {
+                                    panel-w: root.panel-w;
+                                    label: "Rail position";
+                                    hint: "Where the channel rail sits in the window. Docked top or bottom turns it into a horizontal strip, so folders open inline rather than nesting.";
+                                    titles: ["Left edge", "Right edge", "Top tabs", "Bottom dock"];
+                                    notes: ["A vertical rail", "A vertical rail", "A horizontal strip", "A horizontal strip"];
+                                    ids: ["left", "right", "top", "bottom"];
+                                    value: root.lay-rail-position;
+                                    picked(id) => { root.pref-string("sidebar-position", id); }
+                                }
+
+                                // Two rows of Settings.tsx are not here yet,
+                                // because the things they describe are not:
+                                // "Card size" opens a per-view tuner (a modal
+                                // of its own) and "Quick-launch docks" edits
+                                // a bar's slots. Both arrive with their
+                                // runtimes, as panels rather than as switches
+                                // that write a number nothing reads.
+
+                                cards-row {
+                                    panel-w: root.panel-w;
+                                    label: "Default view";
+                                    hint: "Remembered the next time you open the app.";
+                                    icons: ["≈", "●", "☰", "▦"];
+                                    titles: ["Flow", "Orbit", "List", "Grid"];
+                                    notes: ["Spring-animated cards", "3D carousel ring", "Plain grouped list", "Responsive card grid"];
+                                    ids: ["animated", "carousel", "basic", "grid"];
+                                    value: root.lay-view;
+                                    picked(id) => { root.pref-string("view", id); }
+                                }
+
+                                seg-stack-row {
+                                    panel-w: root.panel-w;
+                                    label: "Sort by";
+                                    hint: "Applies to the Flow and List views.";
+                                    options: ["Name (A–Z)", "Recently updated", "Least recently updated", "Weakest first", "Username", "Custom (drag order)"];
+                                    ids: ["title", "recent", "oldest", "strength", "username", "manual"];
+                                    value: root.lay-sort;
+                                    picked(id) => { root.pref-string("sort", id); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Show websites";
+                                    hint: "Display the site under each login.";
+                                    checked <=> root.lay-show-urls;
+                                    toggled => { root.pref-bool("showUrls", root.lay-show-urls); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Label orbit nodes";
+                                    hint: "Puts each login's title and email inside its own card in the Orbit ring.";
+                                    checked <=> root.lay-orbit-labels;
+                                    toggled => { root.pref-bool("showOrbitLabels", root.lay-orbit-labels); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Pin favorites";
+                                    hint: "Keep favorites in their own section at the top.";
+                                    checked <=> root.lay-pin-favorites;
+                                    toggled => { root.pref-bool("pinFavorites", root.lay-pin-favorites); }
+                                }
+
+                                // "Expand on select" used to sit here. It made
+                                // one click open the editor over the list you
+                                // were scanning, and the double-click already
+                                // opens it everywhere else — so the switch had
+                                // nothing left to say and is gone rather than
+                                // quietly doing nothing (Settings.tsx L861).
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Health badges";
+                                    hint: "Flag reused and long-untouched passwords.";
+                                    checked <=> root.lay-health-badges;
+                                    toggled => { root.pref-bool("showHealthBadges", root.lay-health-badges); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Shortcuts in sidebar";
+                                    hint: "Off leaves the shortcut sheet in Settings only.";
+                                    checked <=> root.lay-shortcuts;
+                                    toggled => { root.pref-bool("showShortcuts", root.lay-shortcuts); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Lock button";
+                                    hint: "The lock control on the main screen. Settings always keeps its own.";
+                                    checked <=> root.lay-lock-button;
+                                    toggled => { root.pref-bool("showLockButton", root.lay-lock-button); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "New channel button";
+                                    hint: "The shortcut at the end of the sidebar. Hiding it changes nothing — channels are still one right-click away.";
+                                    checked <=> root.lay-new-channel-button;
+                                    toggled => { root.pref-bool("showNewChannelButton", root.lay-new-channel-button); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Compact button";
+                                    hint: "The sidebar footer's narrow-rail toggle.";
+                                    checked <=> root.lay-compact-button;
+                                    toggled => { root.pref-bool("showCompactButton", root.lay-compact-button); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "New login button";
+                                    hint: "The topbar shortcut.";
+                                    checked <=> root.lay-new-login-button;
+                                    toggled => { root.pref-bool("showNewLoginButton", root.lay-new-login-button); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Bulk add button";
+                                    hint: "The topbar shortcut beside New login.";
+                                    checked <=> root.lay-bulk-add-button;
+                                    toggled => { root.pref-bool("showBulkAddButton", root.lay-bulk-add-button); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Settings button";
+                                    hint: "The sidebar footer's own shortcut here.";
+                                    checked <=> root.lay-settings-button;
+                                    toggled => { root.pref-bool("showSettingsButton", root.lay-settings-button); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Hide sidebar button";
+                                    hint: "The sidebar footer's Hide control.";
+                                    checked <=> root.lay-hide-sidebar-button;
+                                    toggled => { root.pref-bool("showHideSidebarButton", root.lay-hide-sidebar-button); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Show sidebar";
+                                    hint: "Hides the whole channel rail. A button appears in the topbar to bring it back, so Settings stays reachable.";
+                                    checked <=> root.lay-show-sidebar;
+                                    toggled => { root.pref-bool("showSidebar", root.lay-show-sidebar); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Floating controls";
+                                    hint: "Detaches the sidebar channels, the view menu and New login into their own pills.";
+                                    checked <=> root.lay-floating-chrome;
+                                    toggled => { root.pref-bool("floatingChrome", root.lay-floating-chrome); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Hide dividers";
+                                    hint: "Removes the hairline rules inside this settings window.";
+                                    checked <=> root.lay-hide-dividers;
+                                    toggled => { root.pref-bool("hideDividers", root.lay-hide-dividers); }
+                                }
+                            }
+
+                            // ---- The hidden panel ------------------------
+                            // Lost and found: everything hidden by right-click
+                            // or switched off in Layout, grouped by where it
+                            // lives, each with a way back (Settings.tsx
+                            // L958-1156). The rows are derived in Rust from
+                            // the switches themselves, so this panel is a
+                            // reading of the document, never a copy of it.
+                            if (root.active.id == "hidden") : VerticalLayout {
+                                if (root.hidden-rows.length == 0) : Text {
+                                    width: root.panel-w;
+                                    text: "Nothing is hidden. Right-click any topbar, sidebar, dock or login-card button to hide it straight from where it lives.";
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                if (root.hidden-rows.length > 1) : btn-row {
+                                    panel-w: root.panel-w;
+                                    label: "Show everything";
+                                    hint: "Brings back every hidden button, bar, channel and folder at once.";
+                                    button-text: "Show all " + root.hidden-rows.length;
+                                    clicked => { root.hidden-restore-all(); }
+                                }
+
+                                for row in root.hidden-rows : VerticalLayout {
+                                    if (row.heading != "") : Rectangle {
+                                        width: root.panel-w;
+                                        height: 34px;
+                                        // `.setting__label`: the group's name
+                                        // and how many rows it holds.
+                                        Text {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            text: row.heading;
+                                            color: Theme.muted;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            vertical-alignment: bottom;
+                                        }
+                                    }
+
+                                    btn-row {
+                                        panel-w: root.panel-w;
+                                        label: row.label;
+                                        hint: row.detail;
+                                        button-text: "Show";
+                                        clicked => { root.hidden-restore(row.key, row.id); }
+                                    }
+                                }
+                            }
+
                             // Every panel not landed yet. The header already
                             // names the section and says what it is for, so
                             // the body only has to be honest about the wait.
-                            if (root.active.id != "appearance") : Rectangle {
+                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden") : Rectangle {
                                 // A constant width for the same reason as the
                                 // rows: `EmptyState` wraps its title, and a
                                 // wrapped height built on the panel's width
