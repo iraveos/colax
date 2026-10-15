@@ -10,6 +10,7 @@
 // complete schema round-trips without data loss.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::model::{normalise_security, LoginSecurity};
 
@@ -28,6 +29,16 @@ pub struct Tag {
     /// `normalise_tags`; the three shipped tags sit at 8, 36 and 268 so they
     /// stay apart at a glance.
     pub hue: f64,
+}
+
+/// One login's use record: how often it was copied or edited, and when last
+/// (`{ count, at }`, storage.ts L613). The dashboard's "most used" and
+/// "recent account activity" read these; entries are pruned of deleted
+/// logins by the writer, and validated here.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UsageEntry {
+    pub count: i64,
+    pub at: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -74,8 +85,18 @@ pub struct VaultPreferences {
     pub manual_order: Vec<String>,
     /// Days before a password counts as stale. 0 disables the check.
     pub password_age_days: i64,
+    /// Days before a login's *username* counts as due for review
+    /// (`emailCheckDays`, storage.ts L645 — default 90, whitelist
+    /// [0, 30, 60, 90, 180, 365] at L1414). 0 disables that check too.
+    pub email_check_days: i64,
     /// Ask before deleting, rather than deleting straight to undo.
     pub confirm_deletes: bool,
+    // Activity (Task 7.1).
+    /// Copy/edit counts per login id (`usage`, storage.ts L613): the
+    /// dashboard's "most used" and "recent account activity" read this.
+    /// Pruning entries for deleted logins is the writer's job — a load only
+    /// sees shapes, the writer sees the items.
+    pub usage: BTreeMap<String, UsageEntry>,
     /// Minutes without activity before the vault seals itself. 0 disables
     /// the timer (`AUTO_LOCK_CHOICES` in Settings.tsx L1266).
     pub auto_lock_minutes: i64,
@@ -134,7 +155,9 @@ impl Default for VaultPreferences {
             pin_favorites: true,
             manual_order: Vec::new(),
             password_age_days: 180,
+            email_check_days: 90,
             confirm_deletes: true,
+            usage: BTreeMap::new(),
             auto_lock_minutes: 5,
             clear_clipboard_seconds: 30.0,
             clear_clipboard_on_lock: true,
@@ -235,6 +258,12 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         Some(m) if [0, 1, 5, 15, 30, 60].contains(&m) => m,
         _ => 5,
     };
+    // The address-review window is a whitelist the same way (L1414), and a
+    // stored string is not a choice — `includes` is strict in JS too.
+    out.email_check_days = match o.get("emailCheckDays").and_then(Value::as_i64) {
+        Some(d) if [0, 30, 60, 90, 180, 365].contains(&d) => d,
+        _ => 90,
+    };
     // `clampRange(..., 0, 300, 30)` in storage.ts L1433: a stored number is
     // clamped into the range -- 0 included, which is the real "never wipe"
     // choice -- and anything that is not a number falls back to the shipped
@@ -245,6 +274,37 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // normalisePreferences runs the on/off flags through).
     out.clear_clipboard_on_lock = truthy(o.get("clearClipboardOnLock"), true);
     out.copy_toasts = truthy(o.get("copyToasts"), true);
+    // Use counts (`storage.ts` L1341-1355): `{ count, at }` objects only —
+    // a malformed field falls back to 0, an entry with neither a count nor
+    // a date drops out, and the newest 200 survive the cap. Load validates
+    // shape; pruning by deleted id belongs to the writer.
+    {
+        let mut entries: Vec<(String, UsageEntry)> = Vec::new();
+        if let Some(map) = o.get("usage").and_then(Value::as_object) {
+            for (id, value) in map {
+                let Some(record) = value.as_object() else { continue };
+                let count = record
+                    .get("count")
+                    .and_then(Value::as_f64)
+                    .filter(|n| n.is_finite())
+                    .map(|n| n.floor().max(0.0) as i64)
+                    .unwrap_or(0);
+                let at = record
+                    .get("at")
+                    .and_then(Value::as_f64)
+                    .filter(|n| n.is_finite())
+                    .map(|n| n as i64)
+                    .unwrap_or(0);
+                if !id.is_empty() && (count > 0 || at > 0) {
+                    entries.push((id.clone(), UsageEntry { count, at }));
+                }
+            }
+        }
+        // Newest first, then the cap — and the id tiebreak keeps the order
+        // (and the saved document) deterministic between loads.
+        entries.sort_by(|a, b| b.1.at.cmp(&a.1.at).then(a.0.cmp(&b.0)));
+        out.usage = entries.into_iter().take(200).collect();
+    }
     out.sidebar_position = one_of(o.get("sidebarPosition").unwrap_or(&Value::Null), &["left","right","top","bottom"], "left");
     out.sidebar_labels = one_of(o.get("sidebarLabels").unwrap_or(&Value::Null), &["icon","name","both"], "both");
     // `Boolean(...)` over the defaults, the way normalisePreferences treats
@@ -275,8 +335,8 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
         "compactSidebar","showSidebar","vaultSecurity",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
-        "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes","tags","autoLockMinutes",
-        "clearClipboardSeconds","clearClipboardOnLock","copyToasts"];
+        "pinFavorites","manualOrder","passwordAgeDays","emailCheckDays","confirmDeletes","tags","autoLockMinutes",
+        "clearClipboardSeconds","clearClipboardOnLock","copyToasts","usage"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
@@ -624,6 +684,68 @@ mod tests {
         }));
         assert_eq!(modelled.clear_clipboard_seconds, 15.0);
         assert!(modelled.extra.as_object().is_some_and(|e| e.is_empty()));
+    }
+
+    #[test]
+    fn email_review_days_follow_the_shipped_whitelist() {
+        let fresh = normalise_preferences(&json!({}));
+        assert_eq!(fresh.email_check_days, 90);
+        for days in [0, 30, 60, 90, 180, 365] {
+            assert_eq!(
+                normalise_preferences(&json!({ "emailCheckDays": days })).email_check_days,
+                days
+            );
+        }
+        // Anything off the list — a stray number or a numeric string, which
+        // JS `includes` would also reject — falls back to ninety.
+        assert_eq!(
+            normalise_preferences(&json!({ "emailCheckDays": 45 })).email_check_days,
+            90
+        );
+        assert_eq!(
+            normalise_preferences(&json!({ "emailCheckDays": "90" })).email_check_days,
+            90
+        );
+    }
+
+    #[test]
+    fn usage_keeps_only_well_shaped_entries_capped_by_recency() {
+        // `health.test.ts` L17: malformed fields fall back to zero, an entry
+        // with neither a count nor a date drops out, and a negative count
+        // clamps to zero while its date keeps the entry alive.
+        let p = normalise_preferences(&json!({
+            "usage": {
+                "good": { "count": 3, "at": 3000 },
+                "zeroed": { "count": 0, "at": 0 },
+                "malformed": { "count": "many", "at": null },
+                "negative": { "count": -2, "at": 1000 },
+            }
+        }));
+        let ids: Vec<&str> = p.usage.keys().map(String::as_str).collect();
+        assert_eq!(ids, ["good", "negative"]);
+        assert_eq!(p.usage["good"], UsageEntry { count: 3, at: 3000 });
+        assert_eq!(p.usage["negative"], UsageEntry { count: 0, at: 1000 });
+        // A typed field, not a leftover in `extra`.
+        assert!(p
+            .extra
+            .as_object()
+            .is_some_and(|e| e.get("usage").is_none() && e.is_empty()));
+    }
+
+    #[test]
+    fn usage_caps_at_the_two_hundred_newest() {
+        // 250 ascending stamps: the oldest fifty fall off the cap, the rest
+        // keep theirs (storage.ts L1354).
+        let mut raw = serde_json::Map::new();
+        for i in 0..250 {
+            raw.insert(format!("item-{i:03}"), json!({ "count": 1, "at": i }));
+        }
+        let p = normalise_preferences(&json!({ "usage": Value::Object(raw) }));
+        assert_eq!(p.usage.len(), 200);
+        assert!(p.usage.get("item-000").is_none());
+        assert!(p.usage.get("item-049").is_none());
+        assert_eq!(p.usage.get("item-050"), Some(&UsageEntry { count: 1, at: 50 }));
+        assert_eq!(p.usage.get("item-249"), Some(&UsageEntry { count: 1, at: 249 }));
     }
 
     #[test]

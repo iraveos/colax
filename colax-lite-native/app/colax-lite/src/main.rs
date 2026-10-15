@@ -1887,6 +1887,45 @@ fn save_prefs(ui: &MainWindow, state: &Shared, prefs: &colax_core::VaultPreferen
     saved
 }
 
+/// One use of a login (copied or edited): the count behind the dashboard's
+/// "most used" and "recent account activity" (`recordUse`, hooks.ts L258).
+///
+/// Deliberately not part of any undo history — undoing "copy password"
+/// makes no sense — and it prunes entries for logins that no longer exist,
+/// which the normaliser cannot: a load only sees shapes, this is what sees
+/// the items.
+fn record_use(ui: &MainWindow, state: &Shared, id: &str) {
+    if id.is_empty() {
+        return;
+    }
+    let now = colax_core::util::now_ms();
+    let (mut prefs, known) = {
+        let guard = state.borrow();
+        let known: std::collections::HashSet<String> = guard
+            .engine
+            .items()
+            .map(|items| items.iter().map(|item| item.id.clone()).collect())
+            .unwrap_or_default();
+        (items::prefs_from(guard.engine.preferences()), known)
+    };
+    prefs.usage.retain(|key, _| known.contains(key));
+    let count = prefs.usage.get(id).map(|entry| entry.count).unwrap_or(0) + 1;
+    prefs.usage
+        .insert(id.to_string(), colax_core::UsageEntry { count, at: now });
+    // The cap is applied here too — by recency — so the stored document is
+    // already within bounds before the next read sees it.
+    if prefs.usage.len() > 200 {
+        let mut by_recency: Vec<(String, colax_core::UsageEntry)> = prefs
+            .usage
+            .iter()
+            .map(|(key, entry)| (key.clone(), *entry))
+            .collect();
+        by_recency.sort_by(|a, b| b.1.at.cmp(&a.1.at).then(a.0.cmp(&b.0)));
+        prefs.usage = by_recency.into_iter().take(200).collect();
+    }
+    save_prefs(ui, state, &prefs);
+}
+
 /// The four shell switches exist twice â€” in `shell.json` (read by the tray,
 /// which is alive before any vault is unlocked) and in the vault's
 /// preferences (so they follow a backup to another machine). Any change must
@@ -2077,6 +2116,10 @@ fn copy_item_password(ui: &MainWindow, state: &Shared, id: &str) {
         ui.set_error_text("That item no longer exists.".into());
         return;
     };
+
+    // Reaching for a login counts as a use — the clipboard's outcome is
+    // another matter (`touchLogin`, App.tsx L1759).
+    record_use(ui, state, id);
 
     if password.is_empty() {
         notice(ui, "This login has no password.");
@@ -2744,15 +2787,19 @@ fn editor_save(ui: &MainWindow, state: &Shared) {
     let result = {
         let mut guard = state.borrow_mut();
         if id.is_empty() {
-            guard.engine.add_item(&patch).map(|_| ())
+            guard.engine.add_item(&patch).map(|item| item.id)
         } else {
-            guard.engine.update_item(&id, &patch).map(|_| ())
+            guard.engine.update_item(&id, &patch).map(|item| item.id)
         }
     };
     ui.set_busy(false);
 
     match result {
-        Ok(()) => {
+        Ok(saved_id) => {
+            // Saving counts as a use — a create too (`touchLogin` on both,
+            // App.tsx L3612/L3630) — which is what "recent account
+            // activity" and "most used" read.
+            record_use(ui, state, &saved_id);
             let message = if id.is_empty() {
                 "Login added."
             } else {

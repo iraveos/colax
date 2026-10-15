@@ -41,7 +41,7 @@ pub use model::{
 };
 pub use prefs::{
     create_tag, ensure_default_tags, new_tag_id, normalise_preferences, normalise_tags, Tag,
-    VaultPreferences,
+    UsageEntry, VaultPreferences,
 };
 pub use security::{
     answer_too_weak, hash_answer, hash_passcode, normalise_answer, passcode_too_weak,
