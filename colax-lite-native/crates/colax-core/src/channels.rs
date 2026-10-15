@@ -7,8 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::health::find_weak_items;
 use crate::model::VaultItem;
-use crate::strength::estimate_strength;
 
 /// The base filter a channel applies. `'tags'` behaves like `'all'`; the
 /// channel's `tag_ids` then narrow it, so tags work on any channel rather
@@ -177,21 +177,6 @@ pub fn find_reused_passwords(items: &[VaultItem]) -> std::collections::HashSet<S
         .collect()
 }
 
-/// Lowercased digits-stripped stem, or empty when too short to mean anything.
-/// `summer2023` and `summer2024` share the stem `summer`.
-fn weak_pattern_stem(password: &str) -> String {
-    let stem: String = password
-        .to_lowercase()
-        .chars()
-        .filter(|c| !c.is_ascii_digit())
-        .collect();
-    if stem.len() >= 4 {
-        stem
-    } else {
-        String::new()
-    }
-}
-
 /// Applies a channel to the vault.
 ///
 /// The `kind` picks the base set; `tag_ids` then narrows it. `weak` is
@@ -219,52 +204,13 @@ pub fn apply_channel(
         // The three summary screens are treated as "everything" so any tag
         // narrowing still behaves predictably.
         ChannelKind::Dashboard | ChannelKind::Mail | ChannelKind::History => items.to_vec(),
-        ChannelKind::Weak => {
-            let reused = find_reused_passwords(items);
-            let now = now_ms();
-            let mut patterns: std::collections::HashMap<String, usize> =
-                std::collections::HashMap::new();
-            for item in items {
-                if item.password.is_empty() {
-                    continue;
-                }
-                let stem = weak_pattern_stem(&item.password);
-                if !stem.is_empty() {
-                    *patterns.entry(stem).or_insert(0) += 1;
-                }
-            }
-            items
-                .iter()
-                .filter(|item| {
-                    if item.password.is_empty() {
-                        return false;
-                    }
-                    if reused.contains(&item.password) {
-                        return true;
-                    }
-                    let threshold = if item.reminder_days > 0.0 {
-                        item.reminder_days
-                    } else {
-                        stale_after_days
-                    };
-                    if threshold > 0.0
-                        && (item.password_updated_at as f64)
-                            < now - threshold * 86_400_000.0
-                    {
-                        return true;
-                    }
-                    if estimate_strength(&item.password).score <= 1 {
-                        return true;
-                    }
-                    let stem = weak_pattern_stem(&item.password);
-                    if !stem.is_empty() && patterns.get(&stem).copied().unwrap_or(0) > 1 {
-                        return true;
-                    }
-                    false
-                })
-                .cloned()
-                .collect()
-        }
+        // One analysis, one place (Task 1.4): the dashboard's buckets and
+        // this channel must never disagree, so the rules live in `health`
+        // and both call in.
+        ChannelKind::Weak => find_weak_items(items, stale_after_days, now_ms() as i64)
+            .into_iter()
+            .cloned()
+            .collect(),
         // 'all' and 'tags' both start from everything; 'tags' narrows below.
         ChannelKind::All | ChannelKind::Tags => items.to_vec(),
     };
@@ -290,6 +236,7 @@ fn now_ms() -> f64 {
 mod tests {
     use super::*;
     use crate::model::empty_item;
+    use crate::strength::estimate_strength;
 
     fn item(id: &str, title: &str) -> VaultItem {
         let mut it = empty_item(id, 1_700_000_000_000);
