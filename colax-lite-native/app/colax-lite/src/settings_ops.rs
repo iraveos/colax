@@ -260,6 +260,15 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     ui.set_settings_hidden_rows(slint::ModelRc::new(slint::VecModel::from(hidden_rows(
         &prefs,
     ))));
+    // The Desktop tab. Its third row shows `closeToTray && trayEnabled`, the
+    // TS's own expression (Settings.tsx L1573) -- with the tray off the row
+    // reads off and a click still stores the flag, which is what the TS does
+    // and the reason the mask is computed here rather than in the panel: the
+    // switch has to stay a plain two-way binding to keep following the store.
+    ui.set_settings_desk_launch_at_login(prefs.launch_at_login);
+    ui.set_settings_desk_tray(prefs.tray_enabled);
+    ui.set_settings_desk_close_to_tray(prefs.close_to_tray && prefs.tray_enabled);
+    ui.set_settings_desk_mute(prefs.sounds_muted);
 }
 
 /// One settings write, whichever dial made it. The closure owns the
@@ -399,10 +408,26 @@ pub fn pref_float(ui: &MainWindow, state: &Shared, key: &str, value: f64) {
 
 /// A switch. Key names are the stored pref's camelCase, same as the TS's
 /// `set({ reduceTransparency })` — so the Layout tab's eighteen chrome
-/// switches and the Appearance panel's two share this one table, and the
-/// Hidden tab's Show button writes through the same door (`restore`).
-pub fn pref_bool(ui: &MainWindow, state: &Shared, key: &str, value: bool) {
-    write(ui, state, |prefs| bool_key(prefs, key, value));
+/// switches, the Appearance panel's two and the Desktop tab's four share
+/// this one table, and the Hidden tab's Show button writes through the same
+/// door (`restore`).
+///
+/// The return value says whether the key was known: the Desktop tab's four
+/// are also read out of `shell.json` by the tray, and main.rs mirrors a write
+/// to them only when one really happened.
+pub fn pref_bool(ui: &MainWindow, state: &Shared, key: &str, value: bool) -> bool {
+    write(ui, state, |prefs| bool_key(prefs, key, value))
+}
+
+/// The four switches the desktop shell reads before a vault is unlocked — the
+/// tray, the window's close button, the Run key and the mute flag. They are
+/// stored twice, in the vault's preferences and in `shell.json`, and only
+/// these four need the second write.
+pub fn is_shell_flag(key: &str) -> bool {
+    matches!(
+        key,
+        "launchAtLogin" | "trayEnabled" | "closeToTray" | "soundsMuted"
+    )
 }
 
 /// The whitelist behind `pref_bool`. Every key is a stored pref's camelCase
@@ -431,6 +456,13 @@ fn bool_key(prefs: &mut VaultPreferences, key: &str, value: bool) -> bool {
         "pinFavorites" => &mut prefs.pin_favorites,
         "floatingChrome" => &mut prefs.floating_chrome,
         "hideDividers" => &mut prefs.hide_dividers,
+        // The Desktop tab (Settings.tsx L1551-1585). These four are the shell
+        // flags; `bool_key` stays their single whitelist even though the write
+        // path around it is the mirroring one.
+        "launchAtLogin" => &mut prefs.launch_at_login,
+        "trayEnabled" => &mut prefs.tray_enabled,
+        "closeToTray" => &mut prefs.close_to_tray,
+        "soundsMuted" => &mut prefs.sounds_muted,
         _ => return false,
     };
     *slot = value;
@@ -526,8 +558,20 @@ pub fn dev(ui: &MainWindow, state: &Shared) {
     tab_picked(ui, 99);
     dump(ui, state, "settings8.refused");
 
+    // The Desktop tab: four switches that live in two places at once. The
+    // writes go through `crate::settings_bool`, which is the door the panel's
+    // own callback uses -- a walk that called `pref_bool` here would prove the
+    // vault's copy and skip `shell.json` entirely, which is the copy the tray
+    // reads before any vault is unlocked.
+    tab_picked(ui, 10); // Ctrl+11 -> desktop
+    crate::settings_bool(ui, state, "trayEnabled", false);
+    crate::settings_bool(ui, state, "closeToTray", true);
+    crate::settings_bool(ui, state, "soundsMuted", true);
+    dump(ui, state, "settings9.desktop");
+    dump_shell(state, "settings9.shell-file");
+
     close(ui);
-    dump(ui, state, "settings9.closed");
+    dump(ui, state, "settings10.closed");
 }
 
 /// The settings half of a dump: the mount, the lit tab and the dials *as the
@@ -549,7 +593,7 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         .map(|id| *id)
         .unwrap_or("?");
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -588,6 +632,10 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         ui.get_show_new_login() as i32,
         ui.get_show_lock() as i32,
         ui.get_show_settings_button() as i32,
+        ui.get_settings_desk_launch_at_login() as i32,
+        ui.get_settings_desk_tray() as i32,
+        ui.get_settings_desk_close_to_tray() as i32,
+        ui.get_settings_desk_mute() as i32,
         prefs.theme,
         prefs.text_scale,
         prefs.accent,
@@ -598,6 +646,39 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         prefs.sidebar_position,
         prefs.show_new_login_button as i32,
         prefs.show_sidebar as i32,
+    );
+    let path = crate::app_dir().join("dev-dump.txt");
+    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+    existing.push_str(&line);
+    let _ = std::fs::write(path, existing);
+}
+
+/// The other copy of the four shell flags: `shell.json` as it now stands on
+/// disk, beside the vault's own four and whether they agree. A dump of the
+/// vault's copy alone cannot show the mirror -- and the shell file is the one
+/// the next launch reads for tray behaviour, before any password is typed.
+#[cfg(debug_assertions)]
+fn dump_shell(state: &Shared, tag: &str) {
+    let shell = crate::read_state();
+    let prefs = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+    };
+    let agree = shell.tray_enabled == prefs.tray_enabled
+        && shell.close_to_tray == prefs.close_to_tray
+        && shell.launch_at_login == prefs.launch_at_login
+        && shell.sounds_muted == prefs.sounds_muted;
+    let line = format!(
+        "{tag}: file=[{}{}{}{}] prefs=[{}{}{}{}] agree={}\n",
+        shell.tray_enabled as i32,
+        shell.close_to_tray as i32,
+        shell.launch_at_login as i32,
+        shell.sounds_muted as i32,
+        prefs.tray_enabled as i32,
+        prefs.close_to_tray as i32,
+        prefs.launch_at_login as i32,
+        prefs.sounds_muted as i32,
+        agree,
     );
     let path = crate::app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -722,6 +803,36 @@ mod tests {
         assert!(string_key(&mut prefs, "sidebar-position", "top"));
         assert!(!string_key(&mut prefs, "sidebar-position", "middle"));
         assert_eq!(prefs.sidebar_position, "top");
+    }
+
+    #[test]
+    fn the_desktop_panel_keys_are_the_shell_flags() {
+        // The Desktop tab's four switches are the only preferences the tray
+        // reads before a vault is unlocked, which makes them the only four
+        // main.rs mirrors into shell.json after a write. A fifth key here, or
+        // one missing there, would be a switch that looks alive in Settings
+        // and a tray that disagrees with it on the next launch.
+        let mut prefs = VaultPreferences::default();
+        for key in [
+            "launchAtLogin",
+            "trayEnabled",
+            "closeToTray",
+            "soundsMuted",
+        ] {
+            assert!(is_shell_flag(key), "{key} is a shell flag");
+            assert!(bool_key(&mut prefs, key, true), "{key} is not a switch");
+        }
+        assert!(prefs.launch_at_login && prefs.tray_enabled);
+        assert!(prefs.close_to_tray && prefs.sounds_muted);
+
+        // A near miss is refused rather than guessed at, so nothing can be
+        // half-mirrored: the vault write and the shell file share this table.
+        assert!(!is_shell_flag("trayenabled"));
+        assert!(!bool_key(&mut prefs, "trayenabled", false));
+
+        // Every other switch is a vault matter only.
+        assert!(!is_shell_flag("showSidebar"));
+        assert!(!is_shell_flag("highContrast"));
     }
 
     #[test]

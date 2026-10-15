@@ -641,6 +641,16 @@ export component Settings inherits Rectangle {
     // never written back as a whole.
     in property <[HiddenRow]> hidden-rows: [];
 
+    // The Desktop tab. These four are the shell flags: they are stored in the
+    // vault *and* in shell.json, because the tray reads them before any vault
+    // is unlocked. `desk-close-to-tray` is the TS's masked reading
+    // (`closeToTray && trayEnabled`, Settings.tsx L1573): with the tray off the
+    // row shows off, and a click still stores the flag.
+    in-out property <bool> desk-launch-at-login: false;
+    in-out property <bool> desk-tray: true;
+    in-out property <bool> desk-close-to-tray: true;
+    in-out property <bool> desk-mute: false;
+
     callback closed();
     callback tab-picked(index: int);
     callback pref-string(key: string, value: string);
@@ -1455,10 +1465,58 @@ export component Settings inherits Rectangle {
                                 }
                             }
 
+                            // ---- The desktop panel ------------------------
+                            // The four switches of Settings.tsx L1551-1585. The
+                            // TS renders this tab only inside the desktop shell:
+                            // a browser page has no tray, no Run key and no
+                            // window to minimise to it, so on the web the four
+                            // would be dead controls. This *is* the desktop
+                            // shell, and all four already drive it — the tray
+                            // icon, the X button, the Run key, and the alarm
+                            // chime.
+                            if (root.active.id == "desktop") : VerticalLayout {
+                                spacing: 0px;
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Run at startup";
+                                    hint: "Launch Colax when you sign in to Windows.";
+                                    checked <=> root.desk-launch-at-login;
+                                    toggled => { root.pref-bool("launchAtLogin", root.desk-launch-at-login); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "System tray";
+                                    hint: "Keep an icon by the clock. Right-click it to show, lock, mute, restart or quit.";
+                                    checked <=> root.desk-tray;
+                                    toggled => { root.pref-bool("trayEnabled", root.desk-tray); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Minimise to tray on close";
+                                    hint: "The X button hides the window instead of quitting. Needs the tray above.";
+                                    // The masked reading goes back up: with the
+                                    // tray off the row reads off, so the new
+                                    // value the switch lands on *is* the flag.
+                                    checked <=> root.desk-close-to-tray;
+                                    toggled => { root.pref-bool("closeToTray", root.desk-close-to-tray); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Mute all sounds";
+                                    hint: "Silences alarms and chimes. Toasts still appear. Also in the tray menu.";
+                                    checked <=> root.desk-mute;
+                                    toggled => { root.pref-bool("soundsMuted", root.desk-mute); }
+                                }
+                            }
+
                             // Every panel not landed yet. The header already
                             // names the section and says what it is for, so
                             // the body only has to be honest about the wait.
-                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden") : Rectangle {
+                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop") : Rectangle {
                                 // A constant width for the same reason as the
                                 // rows: `EmptyState` wraps its title, and a
                                 // wrapped height built on the panel's width

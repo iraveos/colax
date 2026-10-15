@@ -793,9 +793,9 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// `COLAX_DEV_SCREEN` takes `vault`, `new` (a blank editor), `editor` (a
 /// saved login), `editor-<section>` for any of its tabs, `settings` (the
 /// Settings walk, which closes the modal when it is done), `settings-open`
-/// (the appearance panel), `settings-layout` or `settings-hidden` (each left
-/// open for a screenshot), or `chrome` (the three shortcuts the Layout tab
-/// takes off the shell, all left off).
+/// (the appearance panel), `settings-layout`, `settings-hidden` or
+/// `settings-desktop` (each left open for a screenshot), or `chrome` (the
+/// three shortcuts the Layout tab takes off the shell, all left off).
 #[cfg(debug_assertions)]
 fn dev_screen(ui: &MainWindow, state: &Shared) {
     // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
@@ -969,6 +969,14 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
             state,
             if want == "settings-layout" { "layout" } else { "hidden" },
         );
+        return;
+    }
+    // The Desktop tab. Its third row reads `closeToTray && trayEnabled`
+    // (the TS's own expression), so the tray goes off first: a screenshot of
+    // the panel in its default state could not tell the mask from the flag.
+    if want == "settings-desktop" {
+        settings_ops::pref_bool(ui, state, "trayEnabled", false);
+        settings_ops::open(ui, state, "desktop");
         return;
     }
     // The three shortcuts the Layout tab takes off the shell (Task 5.2b),
@@ -2501,6 +2509,48 @@ fn mirror_shell_flags(ui: &MainWindow, state: &Shared, shell: &mut ShellState, p
     save_prefs(ui, state, prefs);
 }
 
+/// The Desktop tab's write path: the ordinary boolean write, plus the shell
+/// mirror when the key is one of the four the tab owns. Those are the only
+/// preferences stored twice -- `mirror_shell_flags` writes `shell.json`, the
+/// Run key and the vault document -- and the mirror only runs when the write
+/// really happened, so a refused or near-miss key cannot leave the two copies
+/// disagreeing.
+fn settings_bool(ui: &MainWindow, state: &Shared, key: &str, value: bool) {
+    if !settings_ops::pref_bool(ui, state, key, value) {
+        return;
+    }
+    if !settings_ops::is_shell_flag(key) {
+        return;
+    }
+    let prefs = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+    };
+    let mut shell = read_state();
+    mirror_shell_flags(ui, state, &mut shell, &prefs);
+}
+
+/// The tray follows the two preferences that describe it the moment either
+/// moves. `trayEnabled` needs it most: a switch that only takes effect on the
+/// next launch is the dead control the TS's Desktop tab is careful about, and
+/// Slint's own `SystemTrayIcon` is what shows and hides it. `soundsMuted` is
+/// the menu item's own label, which has to read the same flag the switch does.
+fn sync_tray(tray: &Weak<AppTray>, state: &Shared) {
+    let Some(tray) = tray.upgrade() else { return };
+    let prefs = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+    };
+    // Errors here are the shell refusing the icon; there is nothing the app
+    // can do about it, and the preference is already stored either way.
+    if prefs.tray_enabled {
+        let _ = tray.show();
+    } else {
+        let _ = tray.hide();
+    }
+    tray.set_muted(prefs.sounds_muted);
+}
+
 /// Replace this device's vault with a parsed backup, keeping whatever
 /// protection the backup itself carried.
 fn restore_backup(
@@ -2525,6 +2575,9 @@ fn restore_backup(
             refresh_appearance(ui, state);
             goto(ui, state, Screen::Vault);
             tray_lock_enabled(tray, true);
+            // ...the four shell flags included, so a backup from a machine
+            // that kept its tray on lands on this one with the icon up.
+            sync_tray(tray, state);
             // ...including its auto-lock minutes, and the vault is open.
             sync_auto_lock(ui, state);
             notice(ui, "Backup imported.");
@@ -4934,10 +4987,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    tray.on_mute_requested(|| {
-        // The Tauri shell only forwarded the toggle to the renderer, which
-        // owned the sounds. Sounds arrive in a later phase.
-        eprintln!("mute -> no-op until sounds land");
+    let weak = ui.as_weak();
+    let tray_state = app_state.clone();
+    let tray_weak = tray.as_weak();
+    tray.on_mute_requested(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let Some(state) = &tray_state else { return };
+        let muted = {
+            let guard = state.borrow();
+            items::prefs_from(guard.engine.preferences()).sounds_muted
+        };
+        // The same write the Desktop tab's "Mute all sounds" makes, through the
+        // same whitelist: the menu item and the switch are two doors to one
+        // preference, which is what the panel's own hint promises.
+        settings_bool(&ui, state, "soundsMuted", !muted);
+        sync_tray(&tray_weak, state);
+    });
+
+    tray.on_restart_requested(|| {
+        // Electron's `app.relaunch()` in one line: start the same binary
+        // again and let this process quit. Nothing needs flushing first --
+        // shell state was written as it changed and the vault writes
+        // atomically -- and a spawn that fails still quits, because a
+        // Restart that leaves the old window up is worse than no restart.
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe).spawn();
+        } else {
+            eprintln!("restart -> could not resolve the executable path");
+        }
+        let _ = slint::quit_event_loop();
     });
 
     tray.on_quit_requested(|| {
@@ -5290,9 +5368,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             let weak = ui.as_weak();
             let st = state.clone();
+            let tw = tray.as_weak();
             ui.on_settings_pref_bool(move |key, value| {
                 if let Some(ui) = weak.upgrade() {
-                    settings_ops::pref_bool(&ui, &st, &key, value);
+                    settings_bool(&ui, &st, &key, value);
+                    // The Desktop tab's two tray preferences land on the icon
+                    // as they are written, not on the next launch.
+                    sync_tray(&tw, &st);
                 }
             });
             let weak = ui.as_weak();
@@ -5708,13 +5790,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // actually quit, because a hidden window alone releases the keepalive.)
     // A vault that failed to open is the exception: there is no shell to
     // hide behind, so closing it quits.
+    // The two flags are read off the live preferences, not the startup
+    // snapshot: the Desktop tab can move either one while the window is up,
+    // and a close that ignored the switch would be exactly the dead control
+    // that tab warns about. A vault that never opened has no preferences to
+    // read, so the snapshot is the fallback there.
     let close_state = state_file;
+    let close_engine = app_state.clone();
     let weak = ui.as_weak();
     ui.window().on_close_requested(move || {
         let on_error = weak
             .upgrade()
             .is_some_and(|ui| ui.get_screen() == Screen::Error);
-        if !on_error && close_state.close_to_tray && close_state.tray_enabled {
+        let (close_to_tray, tray_enabled) = match &close_engine {
+            Some(state) => {
+                let guard = state.borrow();
+                let prefs = items::prefs_from(guard.engine.preferences());
+                (prefs.close_to_tray, prefs.tray_enabled)
+            }
+            None => (close_state.close_to_tray, close_state.tray_enabled),
+        };
+        if !on_error && close_to_tray && tray_enabled {
             eprintln!("close -> hide to tray");
         } else {
             eprintln!("close -> quit");
@@ -5785,7 +5881,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_error_text(message.into());
     }
 
-    if state_file.tray_enabled {
+    // The tray's own reading, from the same two flags the Desktop tab writes.
+    // With a vault open the preferences are the newer copy (a restore brings
+    // them from another machine); before that there is nothing but the shell
+    // file to read.
+    if let Some(state) = &app_state {
+        sync_tray(&tray.as_weak(), state);
+    } else if state_file.tray_enabled {
         tray.show()?;
     } else {
         tray.hide()?;

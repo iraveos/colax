@@ -867,6 +867,13 @@ export component MainWindow inherits Window {
     in-out property <bool> settings-lay-floating-chrome: true;
     in-out property <bool> settings-lay-hide-dividers: false;
     in-out property <[HiddenRow]> settings-hidden-rows;
+    // The Desktop tab's four shell flags. `settings-desk-close-to-tray` is
+    // Rust's masked value (`closeToTray && trayEnabled`), so the row can keep
+    // a plain two-way binding and still read the way the web's does.
+    in-out property <bool> settings-desk-launch-at-login: false;
+    in-out property <bool> settings-desk-tray: true;
+    in-out property <bool> settings-desk-close-to-tray: true;
+    in-out property <bool> settings-desk-mute: false;
     // ---- SecurityGate ----------------------------------------------------
     // A blocking verification for a login or for the vault itself: any one
     // factor passes, and the open panel holds everything typed until Rust
@@ -2249,6 +2256,10 @@ export component MainWindow inherits Window {
             lay-floating-chrome <=> root.settings-lay-floating-chrome;
             lay-hide-dividers <=> root.settings-lay-hide-dividers;
             hidden-rows: root.settings-hidden-rows;
+            desk-launch-at-login <=> root.settings-desk-launch-at-login;
+            desk-tray <=> root.settings-desk-tray;
+            desk-close-to-tray <=> root.settings-desk-close-to-tray;
+            desk-mute <=> root.settings-desk-mute;
             closed => { root.settings-closed(); }
             tab-picked(index) => { root.settings-tab-picked(index); }
             pref-string(key, value) => { root.settings-pref-string(key, value); }
@@ -2267,15 +2278,21 @@ export component MainWindow inherits Window {
 // accessors instead of an IPC channel.
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("../assets/icon.png");
-    tooltip: "Colax Lite";
+    // The muted state is in the tooltip as well as the menu title
+    // (main.ts L454) -- the menu is a click away, the tooltip a hover.
+    tooltip: root.muted ? "Colax Lite (muted)" : "Colax Lite";
 
     // Locked until a vault exists: a "Lock now" that does nothing is worse
     // than a grey one, and there is nothing to lock before first run.
     in property <bool> lock-enabled: false;
+    // Sounds are Rust's (`alarms.rs` rings through rodio), so the item is live
+    // and its title is the current state, not a command (main.ts L433).
+    in property <bool> muted: false;
 
     callback show-requested();
     callback lock-requested();
     callback mute-requested();
+    callback restart-requested();
     callback quit-requested();
     // The builtin `clicked` callback has no generated Rust accessor on a
     // top-level component, so forward it through one of ours.
@@ -2288,18 +2305,21 @@ export component AppTray inherits SystemTrayIcon {
             activated => { show-requested(); }
         }
         MenuItem {
-            title: "Lock now";
+            title: "Lock vault now";
             enabled: root.lock-enabled;
             activated => { lock-requested(); }
         }
         MenuItem {
-            title: "Mute";
-            // Sounds arrive in a later phase.
-            enabled: false;
+            title: root.muted ? "Unmute sounds" : "Mute sounds";
             activated => { mute-requested(); }
         }
+        MenuSeparator { }
         MenuItem {
-            title: "Quit";
+            title: "Restart";
+            activated => { restart-requested(); }
+        }
+        MenuItem {
+            title: "Quit Colax";
             activated => { quit-requested(); }
         }
     }
