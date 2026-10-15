@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+use crate::history::{normalise_history, HistoryEvent};
 use crate::model::{normalise_security, LoginSecurity};
 
 /// One entry of the global tag catalogue: logins reference these by id rather
@@ -97,6 +98,10 @@ pub struct VaultPreferences {
     /// Pruning entries for deleted logins is the writer's job — a load only
     /// sees shapes, the writer sees the items.
     pub usage: BTreeMap<String, UsageEntry>,
+    /// The History channel's log (`HistoryEvent`, storage.ts L354 — Task 1.7),
+    /// newest block first and bounded by count *and* serialized size (L324 /
+    /// L331). Shape is validated on load; appending is the writer's job.
+    pub history: Vec<HistoryEvent>,
     /// Minutes without activity before the vault seals itself. 0 disables
     /// the timer (`AUTO_LOCK_CHOICES` in Settings.tsx L1266).
     pub auto_lock_minutes: i64,
@@ -164,6 +169,7 @@ impl Default for VaultPreferences {
             email_check_days: 90,
             confirm_deletes: true,
             usage: BTreeMap::new(),
+            history: Vec::new(),
             auto_lock_minutes: 5,
             clear_clipboard_seconds: 30.0,
             clear_clipboard_on_lock: true,
@@ -315,6 +321,10 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         entries.sort_by(|a, b| b.1.at.cmp(&a.1.at).then(a.0.cmp(&b.0)));
         out.usage = entries.into_iter().take(200).collect();
     }
+    // The History log (`normaliseHistory`, storage.ts L377): a malformed
+    // entry drops out, a half-written snapshot loses its restore, and a
+    // non-array field reads as an empty log rather than a load failure.
+    out.history = normalise_history(o.get("history"));
     out.sidebar_position = one_of(o.get("sidebarPosition").unwrap_or(&Value::Null), &["left","right","top","bottom"], "left");
     out.sidebar_labels = one_of(o.get("sidebarLabels").unwrap_or(&Value::Null), &["icon","name","both"], "both");
     // `Boolean(...)` over the defaults, the way normalisePreferences treats
@@ -346,7 +356,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "compactSidebar","showSidebar","vaultSecurity",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
         "pinFavorites","manualOrder","passwordAgeDays","emailCheckDays","confirmDeletes","tags","autoLockMinutes",
-        "clearClipboardSeconds","clearClipboardOnLock","copyToasts","maskEmails","usage"];
+        "clearClipboardSeconds","clearClipboardOnLock","copyToasts","maskEmails","usage","history"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
