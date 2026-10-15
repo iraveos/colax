@@ -79,6 +79,17 @@ pub struct VaultPreferences {
     /// Minutes without activity before the vault seals itself. 0 disables
     /// the timer (`AUTO_LOCK_CHOICES` in Settings.tsx L1266).
     pub auto_lock_minutes: i64,
+    /// Seconds after a copy before the clipboard is wiped; 0 keeps it
+    /// (`clearClipboardSeconds`, storage.ts L803, `clampRange` 0..=300 in
+    /// L1433). The same Security group as the lock above in Settings.
+    pub clear_clipboard_seconds: f64,
+    /// Also wipe the clipboard when the vault locks (`clearClipboardOnLock`,
+    /// storage.ts L805 — shipped on).
+    pub clear_clipboard_on_lock: bool,
+    /// Toast on a successful copy (`copyToasts`, storage.ts L836). The
+    /// *failure* notice is not a toast and shows either way — TS notifies
+    /// it before the toast flag is ever consulted (hooks.ts L580).
+    pub copy_toasts: bool,
     /// The global tag catalogue; logins carry ids from it (`Tag` above).
     /// Seeded with the three shipped tags on every load — `ensureDefaultTags`
     /// in storage.ts L1076 — so a vault opened here shows the same tags the
@@ -125,6 +136,9 @@ impl Default for VaultPreferences {
             password_age_days: 180,
             confirm_deletes: true,
             auto_lock_minutes: 5,
+            clear_clipboard_seconds: 30.0,
+            clear_clipboard_on_lock: true,
+            copy_toasts: true,
             tags: Vec::new(),
             sidebar_position: "left".into(),
             sidebar_labels: "both".into(),
@@ -221,6 +235,16 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         Some(m) if [0, 1, 5, 15, 30, 60].contains(&m) => m,
         _ => 5,
     };
+    // `clampRange(..., 0, 300, 30)` in storage.ts L1433: a stored number is
+    // clamped into the range -- 0 included, which is the real "never wipe"
+    // choice -- and anything that is not a number falls back to the shipped
+    // thirty rather than to the nearest bound.
+    out.clear_clipboard_seconds = clamp(num(o.get("clearClipboardSeconds"), 30.0), 0.0, 300.0);
+    // Switches over their defaults, as above: absent keeps the default, and
+    // a stored value reads by JS `Boolean` (the `Boolean(...)` family that
+    // normalisePreferences runs the on/off flags through).
+    out.clear_clipboard_on_lock = truthy(o.get("clearClipboardOnLock"), true);
+    out.copy_toasts = truthy(o.get("copyToasts"), true);
     out.sidebar_position = one_of(o.get("sidebarPosition").unwrap_or(&Value::Null), &["left","right","top","bottom"], "left");
     out.sidebar_labels = one_of(o.get("sidebarLabels").unwrap_or(&Value::Null), &["icon","name","both"], "both");
     // `Boolean(...)` over the defaults, the way normalisePreferences treats
@@ -251,7 +275,8 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
         "compactSidebar","showSidebar","vaultSecurity",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
-        "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes","tags","autoLockMinutes"];
+        "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes","tags","autoLockMinutes",
+        "clearClipboardSeconds","clearClipboardOnLock","copyToasts"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
@@ -489,7 +514,10 @@ mod tests {
         let p = normalise_preferences(&raw);
         let back = serde_json::to_value(&p).unwrap();
         assert_eq!(back["theme"], "dark");
-        assert_eq!(back["clearClipboardSeconds"], 30);
+        // Modelled since: the same number, now typed -- 30 reads back as
+        // 30.0 rather than as the raw pocket's integer, which is the whole
+        // point of the field being typed.
+        assert_eq!(back["clearClipboardSeconds"].as_f64(), Some(30.0));
         assert_eq!(back["mailAccount"], "primary");
         assert_eq!(back["passwordGenerator"]["length"], 20);
         // and the typed keys are present too
@@ -554,6 +582,47 @@ mod tests {
         // linger in `extra` where a later field would be shadowed by it.
         let modelled = normalise_preferences(&json!({ "autoLockMinutes": 15 }));
         assert!(modelled.extra.get("autoLockMinutes").is_none());
+        assert!(modelled.extra.as_object().is_some_and(|e| e.is_empty()));
+    }
+
+    #[test]
+    fn clipboard_prefs_follow_the_shipped_choices() {
+        // The shipped defaults (storage.ts L928, L929, L943).
+        let fresh = normalise_preferences(&json!({}));
+        assert_eq!(fresh.clear_clipboard_seconds, 30.0);
+        assert!(fresh.clear_clipboard_on_lock);
+        assert!(fresh.copy_toasts);
+
+        // `clampRange(0, 300, 30)` (L1433): kept in range -- 0 is the real
+        // "never wipe" -- clamped at the ends, and a non-number falls back
+        // to the default rather than to the nearest bound.
+        let cases = [
+            (json!(45), 45.0),
+            (json!(0), 0.0),
+            (json!(300), 300.0),
+            (json!(301), 300.0),
+            (json!(-5), 0.0),
+            (json!("5"), 30.0),
+            (json!(null), 30.0),
+        ];
+        for (stored, want) in cases {
+            let p = normalise_preferences(&json!({ "clearClipboardSeconds": stored }));
+            assert_eq!(p.clear_clipboard_seconds, want, "{stored} must read {want}");
+        }
+
+        // Switches by JS Boolean over the default: an explicit false wins,
+        // and a truthy string ("false" is not "no") still reads as on.
+        assert!(!normalise_preferences(&json!({ "clearClipboardOnLock": false })).clear_clipboard_on_lock);
+        assert!(!normalise_preferences(&json!({ "copyToasts": false })).copy_toasts);
+        assert!(normalise_preferences(&json!({ "copyToasts": "false" })).copy_toasts);
+
+        // Typed fields, not leftovers in `extra`.
+        let modelled = normalise_preferences(&json!({
+            "clearClipboardSeconds": 15,
+            "clearClipboardOnLock": false,
+            "copyToasts": false,
+        }));
+        assert_eq!(modelled.clear_clipboard_seconds, 15.0);
         assert!(modelled.extra.as_object().is_some_and(|e| e.is_empty()));
     }
 

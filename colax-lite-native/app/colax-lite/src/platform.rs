@@ -75,6 +75,61 @@ pub fn copy_text(text: &str) -> bool {
     false
 }
 
+/// Reads UTF-16 text off the system clipboard, or `None` when the
+/// clipboard holds no text at all (empty, a picture, or unopenable).
+///
+/// The auto-clear checks this before wiping: at the deadline the clipboard
+/// must still hold *our* text, so a password copied elsewhere in the
+/// meantime is left alone rather than destroyed (Task 6.4). `None` reads
+/// as "not ours" there, which is the safe direction.
+pub fn read_text() -> Option<String> {
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, OpenClipboard,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // SAFETY: the handle belongs to the system while the clipboard is
+        // open and is never freed here; the lock is taken only to read and
+        // released again below, and the bytes are copied out into an owned
+        // `String` before the clipboard closes.
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) == 0 {
+                continue; // another process has it: the common transient case
+            }
+            let mut text = None;
+            let handle = GetClipboardData(CF_UNICODETEXT as u32);
+            if !handle.is_null() {
+                let ptr = GlobalLock(handle);
+                if !ptr.is_null() {
+                    // The NUL walk is bounded by the block's real size, so
+                    // a clipboard written without its terminator must not
+                    // be read past its end.
+                    let capacity = GlobalSize(handle) / std::mem::size_of::<u16>();
+                    let wide = ptr as *const u16;
+                    let mut len = 0usize;
+                    while len < capacity && *wide.add(len) != 0 {
+                        len += 1;
+                    }
+                    text = Some(String::from_utf16_lossy(std::slice::from_raw_parts(
+                        wide, len,
+                    )));
+                    GlobalUnlock(handle);
+                }
+            }
+            CloseClipboard();
+            // Opened successfully means the answer is this one -- `None`
+            // for "no text on it", not "try again".
+            return text;
+        }
+    }
+    None
+}
+
 /// The Win32 `OPENFILENAMEW`, x64 layout (`comdlg.h`; stable since 2000).
 ///
 /// Field-for-field with the C struct: the padding after the leading `DWORD`

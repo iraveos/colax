@@ -834,6 +834,26 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         return;
     }
 
+    // ...and `COLAX_DEV_CLIP` copies once and then watches the clipboard
+    // be wiped -- by its own deadline with the flag's seconds, or by the
+    // lock when the flag reads `lock`.
+    if std::env::var_os("COLAX_DEV_CLIP").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_clip(&ui, &st);
+                }
+            },
+        );
+        std::mem::forget(timer);
+        return;
+    }
+
     // `COLAX_DEV_SEC` implies the Security section and `COLAX_DEV_ORG` the
     // Organise one: each exists so its panel can be verified without *looking*
     // at it -- the desktop may be locked, when a screenshot comes back white
@@ -985,7 +1005,7 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
 #[cfg(debug_assertions)]
 fn dev_dump(ui: &MainWindow, tag: &str) {
     let dump = format!(
-        "{tag}: editor={} vault={} scr=[{}] werr=[{}] section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} rail=[{}/{}] compact={} hidden={} gate={} gf=[{}/{}/{}] gerr=[{}] thr=[{}] pers={} ls=[{}/{}] lp={} lpair={} al=[{}] {}\n",
+        "{tag}: editor={} vault={} scr=[{}] werr=[{}] section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} rail=[{}/{}] compact={} hidden={} gate={} gf=[{}/{}/{}] gerr=[{}] thr=[{}] pers={} ls=[{}/{}] lp={} lpair={} al=[{}] clip=[{}] {}\n",
         ui.get_screen() == Screen::Editor,
         ui.get_screen() == Screen::Vault,
         // Which screen, by name: a refusal that left the screen, or a
@@ -1079,6 +1099,16 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
         // ...and the idle lock's: the minutes armed, where 0 is nothing
         // running at all (a sealed vault, or the "never" choice).
         AUTO_LOCK.with(|slot| slot.borrow().as_ref().map_or(0, |entry| entry.minutes)),
+        // ...and the clipboard's: `len=N` while it holds text (ours, or
+        // somebody else's -- either way something a wipe has not
+        // touched), `empty` once a wipe landed, `?` when it would not
+        // open. The auto-clear and the lock wipe each prove themselves
+        // by moving this segment from `len=` to `empty`.
+        match platform::read_text() {
+            None => "?".to_string(),
+            Some(text) if text.is_empty() => "empty".to_string(),
+            Some(text) => format!("len={}", text.chars().count()),
+        },
         describe_cards(ui),
     );
     let path = app_dir().join("dev-dump.txt");
@@ -1952,6 +1982,83 @@ fn pick_backup(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
     }
 }
 
+/* ==========================================================================
+Clipboard -- `useClipboard` (hooks.ts L570)
+========================================================================== */
+
+// The armed auto-clear: one timer for the whole app, restarted by every
+// copy so the *newest* copy is the one with a deadline (`clearTimeout` in
+// hooks.ts L585 -- `Timer::start` restarts in place, which is the same
+// thing). The text it armed with is remembered because the wipe is
+// conditional: at the deadline the clipboard is read back and only
+// cleared if it still holds what we put there (Task 6.4's "only if the
+// clipboard still holds our own write" -- a password copied out of
+// another app in the meantime is not ours to destroy; TS writes the
+// clear unconditionally, and would wipe it).
+thread_local! {
+    static CLIP_CLEAR: RefCell<ClipboardClear> = RefCell::new(ClipboardClear {
+        timer: slint::Timer::default(),
+        last: String::new(),
+    });
+}
+
+struct ClipboardClear {
+    timer: slint::Timer,
+    /// What the armed write put on the clipboard.
+    last: String,
+}
+
+/// The one place a value reaches the clipboard: the write, the toast
+/// (unless `copyToasts` is off), and the auto-clear deadline from
+/// `clearClipboardSeconds` (0 = keep it).
+fn copy_to_clipboard(ui: &MainWindow, state: &Shared, value: &str, label: &str) {
+    let prefs = {
+        let guard = state.borrow();
+        colax_core::normalise_preferences(guard.engine.preferences())
+    };
+    arm_clipboard_clear(ui, value, label, prefs.clear_clipboard_seconds, prefs.copy_toasts);
+}
+
+/// The write itself, with the deadline handed over: the dev walk passes
+/// its own seconds so it need not sit out the shipped thirty.
+fn arm_clipboard_clear(ui: &MainWindow, value: &str, label: &str, clear_seconds: f64, toasts: bool) {
+    if value.is_empty() {
+        return;
+    }
+    if !platform::copy_text(value) {
+        // Not a toast: TS notifies the failure before the toast flag is
+        // ever consulted (hooks.ts L580), and so do we.
+        ui.set_error_text("Could not access the clipboard.".into());
+        return;
+    }
+    if toasts {
+        notice(ui, &format!("{label} copied."));
+    }
+    CLIP_CLEAR.with(|slot| {
+        let mut entry = slot.borrow_mut();
+        entry.last = value.to_string();
+        // A new copy moves the deadline; 0 seconds is the "never" choice
+        // and stops the old deadline along with arming nothing new.
+        entry.timer.stop();
+        if clear_seconds > 0.0 {
+            let duration = std::time::Duration::from_secs_f64(clear_seconds);
+            entry
+                .timer
+                .start(slint::TimerMode::SingleShot, duration, || {
+                    CLIP_CLEAR.with(|slot| {
+                        let entry = slot.borrow();
+                        // Only still-our-text is wiped: the read-back is
+                        // what makes an unrelated copy in the meantime
+                        // safe (Task 6.4).
+                        if platform::read_text().as_deref() == Some(entry.last.as_str()) {
+                            let _ = platform::copy_text("");
+                        }
+                    });
+                });
+        }
+    });
+}
+
 /// Copy an item's password. Called from the row, the Copy button, and so
 /// both paths get the same message.
 fn copy_item_password(ui: &MainWindow, state: &Shared, id: &str) {
@@ -1973,10 +2080,8 @@ fn copy_item_password(ui: &MainWindow, state: &Shared, id: &str) {
 
     if password.is_empty() {
         notice(ui, "This login has no password.");
-    } else if platform::copy_text(&password) {
-        notice(ui, "Password copied.");
     } else {
-        ui.set_error_text("Could not access the clipboard.".into());
+        copy_to_clipboard(ui, state, &password, "Password");
     }
 }
 
@@ -3650,7 +3755,7 @@ fn editor_use_generated(ui: &MainWindow) {
     push_strength(ui, &value);
 }
 
-fn editor_copy_generated(ui: &MainWindow) {
+fn editor_copy_generated(ui: &MainWindow, state: &Shared) {
     if ui.get_screen() != Screen::Editor {
         return;
     }
@@ -3658,11 +3763,7 @@ fn editor_copy_generated(ui: &MainWindow) {
     if value.is_empty() {
         return;
     }
-    if platform::copy_text(&value) {
-        notice(ui, "Password copied.");
-    } else {
-        ui.set_error_text("Could not access the clipboard.".into());
-    }
+    copy_to_clipboard(ui, state, &value, "Password");
 }
 
 /// Lock: drop the key handle in the engine, then present the right unlock
@@ -3677,8 +3778,13 @@ fn lock_vault(ui: &MainWindow, state: &Shared) {
     if !state.borrow().engine.is_unlocked() {
         return;
     }
-    let screen = {
+    let (screen, wipe_clipboard) = {
         let mut guard = state.borrow_mut();
+        // Read before the key drops: the preference lives behind it, and
+        // the clipboard goes down with the lock when it says so
+        // (`clearClipboardOnLock` -- App.tsx L2972 wipes on lock too).
+        let wipe_clipboard =
+            colax_core::normalise_preferences(guard.engine.preferences()).clear_clipboard_on_lock;
         guard.engine.lock();
         // An undo offering to restore a row cannot outlive the lock: the
         // offer would still be on screen while the vault is sealed.
@@ -3691,8 +3797,14 @@ fn lock_vault(ui: &MainWindow, state: &Shared) {
         // is what stops a lock raised from the tray -- no backdrop sits in
         // front of that menu -- from parking the panel over the lock screen.
         guard.gate = None;
-        lock_screen_for(&guard.engine)
+        (lock_screen_for(&guard.engine), wipe_clipboard)
     };
+    // The wipe on the way down. An armed auto-clear keeps its own
+    // deadline -- TS never cancels it either -- so this only answers
+    // whether the lock takes what is on the clipboard *now*.
+    if wipe_clipboard {
+        let _ = platform::copy_text("");
+    }
     ui.set_undo_text("".into());
     ui.set_gate_open(false);
     ui.set_gate_error("".into());
@@ -3937,6 +4049,72 @@ fn dev_autolock(ui: &MainWindow, state: &Shared) {
                         },
                     );
                     std::mem::forget(timer);
+                },
+            );
+            std::mem::forget(timer);
+        },
+    );
+    // Dropping the handle would cancel it before it fires.
+    std::mem::forget(timer);
+}
+
+/// Debug-only: prove both clipboard wipes without a human watching a
+/// thirty-second clock. `COLAX_DEV_CLIP=<seconds>` copies and waits out
+/// that many of them; `COLAX_DEV_CLIP=lock` copies against a long
+/// deadline and locks a beat later instead -- so in that mode only the
+/// lock could have removed the text. The first dump must show it there,
+/// the last must show it gone.
+#[cfg(debug_assertions)]
+fn dev_clip(ui: &MainWindow, state: &Shared) {
+    use std::time::Duration;
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    // Same opening as the auto-lock walk: whatever state the seed left,
+    // start sealed and reopened, so the dumps read `vault` and the lock
+    // below has somewhere to go from. (The reopen's own lock wipe runs
+    // against whatever was on the clipboard before -- the lock's job.)
+    lock_vault(ui, state);
+    unlock_with(ui, state, "");
+
+    let mode = std::env::var("COLAX_DEV_CLIP").unwrap_or_default();
+    let lock_mode = mode.trim().eq_ignore_ascii_case("lock");
+    // The deadline the walk arms with: its own seconds, or a long one in
+    // `lock` mode so the timer can never be the thing that wiped it.
+    let seconds: f64 = if lock_mode {
+        60.0
+    } else {
+        mode.parse::<f64>().ok().filter(|s| *s > 0.0).unwrap_or(3.0)
+    };
+
+    arm_clipboard_clear(ui, "devclip", "Password", seconds, true);
+    dev_dump(ui, "clip1.copied");
+
+    let weak = ui.as_weak();
+    let st = state.clone();
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::SingleShot,
+        Duration::from_millis(if lock_mode { 1200 } else { 1500 }),
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if lock_mode {
+                // The wipe on the way down: the text went on with a
+                // minute's grace, so only the lock can have removed it.
+                lock_vault(&ui, &st);
+                dev_dump(&ui, "clip2.locked");
+                return;
+            }
+            // Halfway to the deadline: still ours.
+            dev_dump(&ui, "clip2.still-there");
+            let weak = ui.as_weak();
+            let timer = slint::Timer::default();
+            timer.start(
+                slint::TimerMode::SingleShot,
+                Duration::from_millis(3500),
+                move || {
+                    if let Some(ui) = weak.upgrade() {
+                        dev_dump(&ui, "clip3.cleared");
+                    }
                 },
             );
             std::mem::forget(timer);
@@ -4693,9 +4871,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let weak = ui.as_weak();
+            let st = state.clone();
             ui.on_editor_copy_generated(move || {
                 if let Some(ui) = weak.upgrade() {
-                    editor_copy_generated(&ui);
+                    editor_copy_generated(&ui, &st);
                 }
             });
         }
