@@ -45,8 +45,9 @@ pub use model::{
     security_level, stale_days_for, LoginSecurity, StoredItem, VaultItem,
 };
 pub use prefs::{
-    create_tag, ensure_default_tags, new_tag_id, normalise_preferences, normalise_tags, Tag,
-    UsageEntry, VaultPreferences,
+    create_tag, ensure_default_tags, new_alarm_id, new_tag_id, normalise_alarms,
+    normalise_preferences, normalise_tags, sounds_muted_from, Alarm, AlarmSound, Tag, UsageEntry,
+    VaultPreferences,
 };
 pub use security::{
     answer_too_weak, hash_answer, hash_passcode, normalise_answer, passcode_too_weak,

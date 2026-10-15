@@ -16,6 +16,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod appearance;
+mod alarms;
 mod dashboard;
 mod history;
 mod items;
@@ -932,6 +933,10 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         dev_history(ui, state);
         return;
     }
+    if want == "alarm" {
+        dev_alarm(ui, state);
+        return;
+    }
 
     let id = state
         .borrow()
@@ -1386,6 +1391,96 @@ fn dev_dump_history(ui: &MainWindow, tag: &str) {
         groups,
         data.empty_title,
         first_row,
+    );
+    let path = app_dir().join("dev-dump.txt");
+    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+    existing.push_str(&line);
+    let _ = std::fs::write(path, existing);
+}
+
+/// The alarms walk — the phase gate: *an alarm set one minute out fires*.
+/// Arms a real alarm through the same prefs write Settings will use, dumps
+/// the arming, then watches the ticker and dumps the moment it rings. The
+/// second line comes from the ring itself, never a later read of the toast
+/// strip: that clears after 2.5s and the wait is a minute.
+#[cfg(debug_assertions)]
+fn dev_alarm(ui: &MainWindow, state: &Shared) {
+    let armed_for = alarms::next_minute();
+    let mut prefs = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+    };
+    prefs.alarms = vec![colax_core::Alarm {
+        id: colax_core::new_alarm_id(),
+        label: "One minute out".into(),
+        time: armed_for,
+        days: vec![],
+        sound: None,
+        enabled: true,
+    }];
+    if !save_prefs(ui, state, &prefs) {
+        // A walk that could not arm the alarm must say so rather than wait
+        // a minute for a line that will never come.
+        let path = app_dir().join("dev-dump.txt");
+        let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+        existing.push_str("alarm1.set: FAILED to arm\n");
+        let _ = std::fs::write(path, existing);
+        return;
+    }
+    dev_dump_alarm(ui, state, "alarm1.set");
+
+    // Watch: dump as soon as the ticker rings (the toast is still on
+    // screen then), or at 75s — a missing second line is the failure, so
+    // it is written either way.
+    let weak = ui.as_weak();
+    let st = state.clone();
+    let ticks = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let dumped = std::rc::Rc::new(std::cell::Cell::new(false));
+    let tick_count = ticks.clone();
+    let already = dumped.clone();
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(1000),
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let n = tick_count.get() + 1;
+            tick_count.set(n);
+            if already.get() {
+                return;
+            }
+            if !alarms::fired_log().is_empty() || n >= 75 {
+                already.set(true);
+                dev_dump_alarm(&ui, &st, "alarm2.fired");
+            }
+        },
+    );
+    // Dropping the handle would stop watching before the minute arrived.
+    std::mem::forget(timer);
+}
+
+/// The alarms half of a dump: what is armed and whether it is on, the mute
+/// flag the ring reads, everything that has rung since launch, and the
+/// toast the window currently holds — enough to prove the match without a
+/// picture of the strip.
+#[cfg(debug_assertions)]
+fn dev_dump_alarm(ui: &MainWindow, state: &Shared, tag: &str) {
+    let prefs = {
+        let guard = state.borrow();
+        colax_core::normalise_preferences(guard.engine.preferences())
+    };
+    let armed = prefs
+        .alarms
+        .iter()
+        .map(|alarm| format!("{}{}", if alarm.enabled { "+" } else { "-" }, alarm.time))
+        .collect::<Vec<_>>()
+        .join(",");
+    let line = format!(
+        "{tag}: armed=[{armed}] count={} muted={} fired=[{}] notice=[{}]\n",
+        prefs.alarms.len(),
+        prefs.sounds_muted,
+        alarms::fired_log(),
+        ui.get_notice_text(),
     );
     let path = app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -5537,6 +5632,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         // Dropping the handle would cancel the drift before it starts.
         std::mem::forget(timer);
+    }
+
+    // ---- Alarms ------------------------------------------------------------
+    // The other whole-app timer: a match against the wall clock once a
+    // second, from before the window shows (useAlarms mounts for the life of
+    // the app — a reminder rings whether or not anyone is looking). Only the
+    // path that opened a vault: an error screen has nothing to ring for and
+    // quits on close anyway.
+    if let Some(state) = &app_state {
+        alarms::start(&ui, state);
     }
 
     ui.show()?;

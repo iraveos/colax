@@ -42,6 +42,45 @@ pub struct UsageEntry {
     pub at: i64,
 }
 
+/// A repeating reminder with its own sound (`Alarm`, storage.ts L304-314).
+/// Lives in preferences beside the tag catalogue, because both are managed
+/// from Settings; the app's ticker matches these against the wall clock once
+/// a second and rings the ones whose minute arrives.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Alarm {
+    pub id: String,
+    /// Shown in the toast; an empty label rings the time instead —
+    /// `Alarm: ${alarm.label || alarm.time}` (App.tsx L280).
+    pub label: String,
+    /// 'HH:MM', 24h, local time.
+    pub time: String,
+    /// 0 = Sunday .. 6 = Saturday, the `Date.getDay()` numbering. Empty
+    /// means every day.
+    pub days: Vec<u8>,
+    /// A name plus an imported data URL; `None` uses the built-in chime.
+    pub sound: Option<AlarmSound>,
+    pub enabled: bool,
+}
+
+/// The imported sound of an alarm: a name for the row that offers it, and
+/// the data URL the decoder reads. A missing `dataUrl` is the chime, the way
+/// `null` is in the TS (`useAlarms.ts` L60-71).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AlarmSound {
+    pub name: String,
+    pub data_url: Option<String>,
+}
+
+/// `al_` plus the first eight characters of a random UUID — `newAlarmId`
+/// (storage.ts L316). The hyphen sits at index 8, so `slice(0, 8)` in JS is
+/// exactly the first eight hex characters, which this mirrors.
+pub fn new_alarm_id() -> String {
+    let uuid = uuid::Uuid::new_v4().simple().to_string();
+    format!("al_{}", &uuid[..8])
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VaultPreferences {
@@ -102,6 +141,9 @@ pub struct VaultPreferences {
     /// newest block first and bounded by count *and* serialized size (L324 /
     /// L331). Shape is validated on load; appending is the writer's job.
     pub history: Vec<HistoryEvent>,
+    /// Reminders with their own sound (`alarms`, storage.ts L796): the
+    /// ticker in the app rings these, the Settings tab edits them.
+    pub alarms: Vec<Alarm>,
     /// Minutes without activity before the vault seals itself. 0 disables
     /// the timer (`AUTO_LOCK_CHOICES` in Settings.tsx L1266).
     pub auto_lock_minutes: i64,
@@ -170,6 +212,7 @@ impl Default for VaultPreferences {
             confirm_deletes: true,
             usage: BTreeMap::new(),
             history: Vec::new(),
+            alarms: Vec::new(),
             auto_lock_minutes: 5,
             clear_clipboard_seconds: 30.0,
             clear_clipboard_on_lock: true,
@@ -325,6 +368,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // entry drops out, a half-written snapshot loses its restore, and a
     // non-array field reads as an empty log rather than a load failure.
     out.history = normalise_history(o.get("history"));
+    out.alarms = normalise_alarms(o.get("alarms"));
     out.sidebar_position = one_of(o.get("sidebarPosition").unwrap_or(&Value::Null), &["left","right","top","bottom"], "left");
     out.sidebar_labels = one_of(o.get("sidebarLabels").unwrap_or(&Value::Null), &["icon","name","both"], "both");
     // `Boolean(...)` over the defaults, the way normalisePreferences treats
@@ -356,7 +400,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "compactSidebar","showSidebar","vaultSecurity",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
         "pinFavorites","manualOrder","passwordAgeDays","emailCheckDays","confirmDeletes","tags","autoLockMinutes",
-        "clearClipboardSeconds","clearClipboardOnLock","copyToasts","maskEmails","usage","history"];
+        "clearClipboardSeconds","clearClipboardOnLock","copyToasts","maskEmails","usage","history","alarms"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
@@ -461,6 +505,84 @@ pub fn ensure_default_tags(mut tags: Vec<Tag>) -> Vec<Tag> {
 /// (which would fail the whole preferences document on a single junk row).
 /// Duplicates by id keep the first spelling; names trim to a non-empty string
 /// or fall back to "Tag"; hues wrap into 0..360 or fall back to 210.
+/// `soundsMuted` for the once-a-second ticker: `truthy` without rebuilding
+/// every other preference just to reach the one flag.
+pub fn sounds_muted_from(raw: &Value) -> bool {
+    truthy(raw.get("soundsMuted"), false)
+}
+
+/// Field-by-field rebuild of the stored alarm list — storage.ts L1237-1250,
+/// quirks included: a row without an `id` *string* and a `time` *string* is
+/// dropped whole; any time that is not exactly two digits, a colon and two
+/// digits becomes `08:00` rather than being kept for a matcher that could
+/// never fire it (`\d{2}:\d{2}` does not range-check either, so `99:99`
+/// stays); `enabled` is `Boolean(...)` — an absent flag reads as off, the
+/// way `if (!alarm.enabled) continue` reads it.
+pub fn normalise_alarms(stored: Option<&Value>) -> Vec<Alarm> {
+    let Some(Value::Array(rows)) = stored else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let obj = row.as_object()?;
+            let id = obj.get("id")?.as_str()?.to_string();
+            let time = obj.get("time")?.as_str()?.to_string();
+            Some(Alarm {
+                id,
+                label: obj
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                time: if time.len() == 5
+                    && time.as_bytes()[..2].iter().all(u8::is_ascii_digit)
+                    && time.as_bytes()[2] == b':'
+                    && time[3..].bytes().all(|b| b.is_ascii_digit())
+                {
+                    time
+                } else {
+                    "08:00".into()
+                },
+                days: obj
+                    .get("days")
+                    .and_then(Value::as_array)
+                    .map(|days| {
+                        days.iter()
+                            .filter_map(|d| {
+                                // `Number.isInteger(d)` accepts a whole
+                                // float — 3.0 is 3 — and coerces nothing
+                                // else, so only JSON numbers survive.
+                                let n = d.as_f64()?;
+                                if n.fract() == 0.0 && (0.0..=6.0).contains(&n) {
+                                    Some(n as u8)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                sound: obj.get("sound").and_then(Value::as_object).map(|s| {
+                    AlarmSound {
+                        // `String(alarm.sound.name ?? 'Custom')`: missing or
+                        // null is the label, anything else is stringified.
+                        name: match s.get("name") {
+                            None | Some(Value::Null) => "Custom".to_string(),
+                            Some(Value::String(text)) => text.clone(),
+                            Some(other) => other.to_string(),
+                        },
+                        data_url: s
+                            .get("dataUrl")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    }
+                }),
+                enabled: truthy(obj.get("enabled"), false),
+            })
+        })
+        .collect()
+}
+
 pub fn normalise_tags(stored: Option<&Value>) -> Vec<Tag> {
     let Some(Value::Array(items)) = stored else { return Vec::new(); };
     let mut seen = std::collections::HashSet::new();
