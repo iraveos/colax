@@ -1155,12 +1155,15 @@ fn dev_dashboard(ui: &MainWindow, state: &Shared) {
 
     // 2. A copy bumps the usage record: Recent Logins must lead with the
     //    copied login and its use count, and Most used must rank it first.
-    if let Some(id) = state
+    //    The id is fetched in its own statement: an `if let` scrutinee's
+    //    temporary `Ref` would still be alive inside the body, and the copy
+    //    path saves preferences (`borrow_mut`) through it.
+    let first = state
         .borrow()
         .engine
         .items()
-        .and_then(|items| items.first().map(|item| item.id.clone()))
-    {
+        .and_then(|items| items.first().map(|item| item.id.clone()));
+    if let Some(id) = first {
         copy_item_password(ui, state, &id);
         refresh_items(ui, state);
     }
@@ -1168,12 +1171,12 @@ fn dev_dashboard(ui: &MainWindow, state: &Shared) {
 
     // 3. Flag one login and refresh: the attention list and the score both
     //    move -- one login fewer counts as clear.
-    if let Some(id) = state
+    let first = state
         .borrow()
         .engine
         .items()
-        .and_then(|items| items.first().map(|item| item.id.clone()))
-    {
+        .and_then(|items| items.first().map(|item| item.id.clone()));
+    if let Some(id) = first {
         let _ = state
             .borrow_mut()
             .engine
@@ -1196,7 +1199,7 @@ fn dev_dashboard(ui: &MainWindow, state: &Shared) {
 fn dev_dump_dash(ui: &MainWindow, tag: &str) {
     use slint::Model;
     let dash = format!(
-        "{tag}: show={} score={} {} band={} headline=[{} x{}] has={} tiles=[{}] issues={} recent=[{}] segs=[{}] days={}/{} domains={} reuse={} uses=[{}] emails={} factors={} channels={} org=[{}/{}] {}\n",
+        "{tag}: show={} score={} {} band={} headline=[{} x{}] has={} tiles=[{}] issues=[{}] recent=[{}] segs=[{}] days={}/{} domains={} reuse={} uses=[{}] emails={} factors={} channels={} org=[{}/{}] {}\n",
         ui.get_show_dashboard(),
         ui.get_dash_ring().score,
         ui.get_dash_ring().label,
@@ -1215,7 +1218,15 @@ fn dev_dump_dash(ui: &MainWindow, tag: &str) {
                 .collect::<Vec<_>>()
                 .join("/"))
             .unwrap_or_default(),
-        ui.get_dash_issues().row_count(),
+        ui.get_dash_issues()
+            .as_any()
+            .downcast_ref::<VecModel<crate::DashIssue>>()
+            .map(|m| (0..m.row_count())
+                .filter_map(|i| m.row_data(i))
+                .map(|i| i.count.to_string())
+                .collect::<Vec<_>>()
+                .join("/"))
+            .unwrap_or_default(),
         ui.get_dash_recent().row_count(),
         ui.get_dash_segments().row_count(),
         ui.get_dash_days_added(),
