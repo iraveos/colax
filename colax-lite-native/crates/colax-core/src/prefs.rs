@@ -76,6 +76,9 @@ pub struct VaultPreferences {
     pub password_age_days: i64,
     /// Ask before deleting, rather than deleting straight to undo.
     pub confirm_deletes: bool,
+    /// Minutes without activity before the vault seals itself. 0 disables
+    /// the timer (`AUTO_LOCK_CHOICES` in Settings.tsx L1266).
+    pub auto_lock_minutes: i64,
     /// The global tag catalogue; logins carry ids from it (`Tag` above).
     /// Seeded with the three shipped tags on every load — `ensureDefaultTags`
     /// in storage.ts L1076 — so a vault opened here shows the same tags the
@@ -121,6 +124,7 @@ impl Default for VaultPreferences {
             manual_order: Vec::new(),
             password_age_days: 180,
             confirm_deletes: true,
+            auto_lock_minutes: 5,
             tags: Vec::new(),
             sidebar_position: "left".into(),
             sidebar_labels: "both".into(),
@@ -210,6 +214,13 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         Some(d) if [0, 30, 60, 90, 180, 365, 730].contains(&d) => d,
         _ => 180,
     };
+    // The shipped set is 0/1/5/15/30/60 (`AUTO_LOCK_CHOICES` in
+    // Settings.tsx L1266); anything else falls back, as storage.ts L1438
+    // does. 0 is a real choice -- never -- and not a missing value.
+    out.auto_lock_minutes = match o.get("autoLockMinutes").and_then(Value::as_i64) {
+        Some(m) if [0, 1, 5, 15, 30, 60].contains(&m) => m,
+        _ => 5,
+    };
     out.sidebar_position = one_of(o.get("sidebarPosition").unwrap_or(&Value::Null), &["left","right","top","bottom"], "left");
     out.sidebar_labels = one_of(o.get("sidebarLabels").unwrap_or(&Value::Null), &["icon","name","both"], "both");
     // `Boolean(...)` over the defaults, the way normalisePreferences treats
@@ -240,7 +251,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
         "compactSidebar","showSidebar","vaultSecurity",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
-        "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes","tags"];
+        "pinFavorites","manualOrder","passwordAgeDays","confirmDeletes","tags","autoLockMinutes"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
@@ -522,6 +533,28 @@ mod tests {
         // 0 is a legitimate value (never stale) and must survive.
         let never = normalise_preferences(&json!({"passwordAgeDays": 0}));
         assert_eq!(never.password_age_days, 0);
+    }
+
+    #[test]
+    fn auto_lock_follows_the_shipped_choices() {
+        // Absent keeps the default the struct starts with: five minutes.
+        assert_eq!(normalise_preferences(&json!({})).auto_lock_minutes, 5);
+        // Every choice in `AUTO_LOCK_CHOICES` survives, including 0 --
+        // "never" is a decision the user made and must not read as missing.
+        for minutes in [0, 1, 5, 15, 30, 60] {
+            let p = normalise_preferences(&json!({ "autoLockMinutes": minutes }));
+            assert_eq!(p.auto_lock_minutes, minutes, "{minutes} must survive");
+        }
+        // Anything else falls back, as storage.ts L1438 does.
+        for off in [json!(7), json!(-1), json!("5"), json!(null), json!(61)] {
+            let p = normalise_preferences(&json!({ "autoLockMinutes": off }));
+            assert_eq!(p.auto_lock_minutes, 5, "{off} must fall back");
+        }
+        // A typed field, not a leftover: once modelled, the key must not
+        // linger in `extra` where a later field would be shadowed by it.
+        let modelled = normalise_preferences(&json!({ "autoLockMinutes": 15 }));
+        assert!(modelled.extra.get("autoLockMinutes").is_none());
+        assert!(modelled.extra.as_object().is_some_and(|e| e.is_empty()));
     }
 
     #[test]

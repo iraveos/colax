@@ -744,8 +744,9 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
     // stays exactly where the app opened it and drives the switcher from
     // there. `COLAX_DEV_RAIL` is the same deal for the rail's dials,
     // `COLAX_DEV_GATE` walks the SecurityGate across every factor it knows,
-    // and `COLAX_DEV_LOCK` walks the lock card's meter, floor, suggestion
-    // and theme dial.
+    // `COLAX_DEV_LOCK` walks the lock card's meter, floor, suggestion
+    // and theme dial, and `COLAX_DEV_AUTOLOCK` watches the idle lock seal
+    // the vault on its own and a press hold it off.
     if std::env::var_os("COLAX_DEV_VIEW").is_some() {
         let weak = ui.as_weak();
         let timer = slint::Timer::default();
@@ -807,6 +808,25 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
             move || {
                 if let Some(ui) = weak.upgrade() {
                     dev_lock(&ui, &st);
+                }
+            },
+        );
+        std::mem::forget(timer);
+        return;
+    }
+
+    // ...and `COLAX_DEV_AUTOLOCK` times the idle lock itself, with its
+    // seconds standing in for the preference's minutes.
+    if std::env::var_os("COLAX_DEV_AUTOLOCK").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_autolock(&ui, &st);
                 }
             },
         );
@@ -965,7 +985,7 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
 #[cfg(debug_assertions)]
 fn dev_dump(ui: &MainWindow, tag: &str) {
     let dump = format!(
-        "{tag}: editor={} vault={} scr=[{}] werr=[{}] section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} rail=[{}/{}] compact={} hidden={} gate={} gf=[{}/{}/{}] gerr=[{}] thr=[{}] pers={} ls=[{}/{}] lp={} lpair={} {}\n",
+        "{tag}: editor={} vault={} scr=[{}] werr=[{}] section=[{}] id=[{}] title=[{}] url=[{}] username=[{}] password=[{}] notes=[{}] fav={} attn={} days={} label=[{}] sec=[{}] totp={} staged={} passcode={} qr={} questions=[{}] prompt=[{}] errs=[{}/{}/{}] notice=[{}] org=[{}] pw=[{}] pwHint=[{}] email=[{}] emailHint=[{}] canadd={} vs=[{}/{}] cols={} rail=[{}/{}] compact={} hidden={} gate={} gf=[{}/{}/{}] gerr=[{}] thr=[{}] pers={} ls=[{}/{}] lp={} lpair={} al=[{}] {}\n",
         ui.get_screen() == Screen::Editor,
         ui.get_screen() == Screen::Vault,
         // Which screen, by name: a refusal that left the screen, or a
@@ -1056,6 +1076,9 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
         !ui.get_password_value().is_empty(),
         ui.get_password_value() == ui.get_confirm_value()
             && !ui.get_password_value().is_empty(),
+        // ...and the idle lock's: the minutes armed, where 0 is nothing
+        // running at all (a sealed vault, or the "never" choice).
+        AUTO_LOCK.with(|slot| slot.borrow().as_ref().map_or(0, |entry| entry.minutes)),
         describe_cards(ui),
     );
     let path = app_dir().join("dev-dump.txt");
@@ -1767,6 +1790,9 @@ fn create_vault(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>, password:
             state.borrow_mut().pending_password.clear();
             goto(ui, state, Screen::Vault);
             tray_lock_enabled(tray, true);
+            // A new vault is an open vault, so the countdown arms for it
+            // the same as an unlock.
+            sync_auto_lock(ui, state);
             notice(ui, "Vault created.");
         }
         Err(err) => ui.set_error_text(err.to_string().into()),
@@ -1784,6 +1810,9 @@ fn unlock_with(ui: &MainWindow, state: &Shared, password: &str) {
             // changed since boot (another device, a restore, an import).
             refresh_appearance(ui, state);
             goto(ui, state, Screen::Vault);
+            // The vault is open now, so the idle countdown arms -- with the
+            // minutes as they came back out of that re-read.
+            sync_auto_lock(ui, state);
         }
         Ok(false) => {
             ui.set_password_value("".into());
@@ -1821,6 +1850,9 @@ fn save_prefs(ui: &MainWindow, state: &Shared, prefs: &colax_core::VaultPreferen
         .is_ok();
     if saved {
         appearance::apply_appearance(ui, prefs);
+        // The minutes may have just changed; `useAutoLock` re-runs its
+        // effect on the same edit (hooks.ts L636).
+        sync_auto_lock(ui, state);
     }
     saved
 }
@@ -1865,6 +1897,8 @@ fn restore_backup(
             refresh_appearance(ui, state);
             goto(ui, state, Screen::Vault);
             tray_lock_enabled(tray, true);
+            // ...including its auto-lock minutes, and the vault is open.
+            sync_auto_lock(ui, state);
             notice(ui, "Backup imported.");
         }
         Err(VaultError::Auth) => {
@@ -3632,10 +3666,15 @@ fn editor_copy_generated(ui: &MainWindow) {
 }
 
 /// Lock: drop the key handle in the engine, then present the right unlock
-/// screen. Only meaningful from the vault screen, which is the only screen
-/// that exists while unlocked.
+/// screen.
+///
+/// The guard is whether there is anything left to seal, not which screen
+/// is up: the editor and the import's password stage are both open while
+/// unlocked, so "not the vault screen" can mean either "already sealed" or
+/// "seal it from over here" -- and a lock that quietly does nothing when
+/// the idle timer fires in the editor is a lock that does not exist.
 fn lock_vault(ui: &MainWindow, state: &Shared) {
-    if ui.get_screen() != Screen::Vault {
+    if !state.borrow().engine.is_unlocked() {
         return;
     }
     let screen = {
@@ -3658,6 +3697,253 @@ fn lock_vault(ui: &MainWindow, state: &Shared) {
     ui.set_gate_open(false);
     ui.set_gate_error("".into());
     goto(ui, state, screen);
+    // Sealed again means the idle countdown has nothing left to guard, and
+    // the next unlock arms it afresh.
+    sync_auto_lock(ui, state);
+}
+
+/* ==========================================================================
+Auto-lock -- `useAutoLock` (hooks.ts L632)
+========================================================================== */
+
+// The armed countdown, or nothing while there is nothing to guard.
+//
+// Slint cannot carry this signal itself: a `TouchArea` consumes the event
+// it handles and nothing above it is told, so the UI has no window-wide
+// "someone interacted" hook to subscribe to the way the TS build
+// subscribes to `window` (hooks.ts L649). The same four kinds of input
+// are taken from a thread-scoped Win32 hook on this window's own thread
+// instead -- button presses, the wheel and real keys, with pointer moves
+// left out, because a mouse parked over the window is not someone using
+// it.
+thread_local! {
+    static AUTO_LOCK: RefCell<Option<AutoLock>> = const { RefCell::new(None) };
+}
+
+struct AutoLock {
+    timer: slint::Timer,
+    /// The minutes in force; 0 while the vault is sealed or the preference
+    /// says never, which are the same thing as far as this is concerned.
+    minutes: i64,
+    ui: Weak<MainWindow>,
+    state: std::rc::Weak<RefCell<AppState>>,
+}
+
+impl AutoLock {
+    /// Restarts the countdown -- the `bump` of hooks.ts L644.
+    fn bump(&self) {
+        let Some(interval) = auto_lock_interval(self.minutes) else {
+            return;
+        };
+        let ui = self.ui.clone();
+        let state = self.state.clone();
+        self.timer
+            .start(slint::TimerMode::SingleShot, interval, move || {
+                if let (Some(ui), Some(state)) = (ui.upgrade(), state.upgrade()) {
+                    // `lock_vault` is the whole of what locking means here:
+                    // the engine key goes, the proof and the undo offering
+                    // with it, and the lock screen is derived from whatever
+                    // protection the vault has.
+                    lock_vault(&ui, &state);
+                }
+            });
+    }
+}
+
+/// How long an idle vault has. The preference is minutes, 0 = never
+/// (`AUTO_LOCK_CHOICES` in Settings.tsx L1266, whitelisted in prefs.rs);
+/// `COLAX_DEV_AUTOLOCK=<seconds>` replaces them in debug builds so the
+/// harness can watch a lock fire without sitting out five real minutes.
+fn auto_lock_interval(minutes: i64) -> Option<std::time::Duration> {
+    if minutes <= 0 {
+        return None;
+    }
+    let seconds = minutes as u64 * 60;
+    #[cfg(debug_assertions)]
+    let seconds = dev_auto_lock_seconds().unwrap_or(seconds);
+    Some(std::time::Duration::from_secs(seconds))
+}
+
+/// `COLAX_DEV_AUTOLOCK=<seconds>`'s own interval, or the preference's.
+#[cfg(debug_assertions)]
+fn dev_auto_lock_seconds() -> Option<u64> {
+    std::env::var_os("COLAX_DEV_AUTOLOCK")
+        .and_then(|value| value.to_str()?.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+}
+
+fn bump_auto_lock() {
+    AUTO_LOCK.with(|slot| {
+        if let Some(entry) = slot.borrow().as_ref() {
+            entry.bump();
+        }
+    });
+}
+
+/// Every mouse message this window is about to see, minus the two that say
+/// only that the cursor passed over it.
+unsafe extern "system" fn auto_lock_mouse(
+    code: i32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    _lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, WM_MOUSEMOVE, WM_NCMOUSEMOVE,
+    };
+    if code >= 0 && !matches!(wparam as u32, WM_MOUSEMOVE | WM_NCMOUSEMOVE) {
+        bump_auto_lock();
+    }
+    // The old-hook parameter is not read anymore; passing null chains to
+    // whatever the next hook on this thread is.
+    CallNextHookEx(core::ptr::null_mut(), code, wparam, _lparam)
+}
+
+/// The keyboard half. `wparam` here is the key, not the message: bit 31 of
+/// `lparam` is the transition state, so a key going down is activity and
+/// the release is not a second helping of it.
+unsafe extern "system" fn auto_lock_key(
+    code: i32,
+    _wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::CallNextHookEx;
+    if code >= 0 && (lparam >> 31) & 1 == 0 {
+        bump_auto_lock();
+    }
+    CallNextHookEx(core::ptr::null_mut(), code, _wparam, lparam)
+}
+
+/// Puts both hooks on the UI thread. A thread-scoped hook (a non-zero
+/// thread id) needs no module handle and sees only the input arriving at
+/// this thread's windows -- which is this window's input and nobody else's,
+/// exactly the scope the TS `window` listeners have. The OS keeps the
+/// hooks until the thread ends, which is when the process does.
+fn install_auto_lock() {
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD, WH_MOUSE};
+    let thread = unsafe { GetCurrentThreadId() };
+    let mouse = unsafe {
+        SetWindowsHookExW(
+            WH_MOUSE,
+            Some(auto_lock_mouse),
+            core::ptr::null_mut(),
+            thread,
+        )
+    };
+    let keys = unsafe {
+        SetWindowsHookExW(
+            WH_KEYBOARD,
+            Some(auto_lock_key),
+            core::ptr::null_mut(),
+            thread,
+        )
+    };
+    debug_assert!(
+        !mouse.is_null() && !keys.is_null(),
+        "auto-lock input hooks did not install"
+    );
+}
+
+/// Arms, re-arms or disarms the countdown. `useAutoLock` re-runs its
+/// effect whenever the minutes or the unlocked state change (hooks.ts
+/// L636), so this is called from the same three places: an unlock, a lock,
+/// and a preference save.
+fn sync_auto_lock(ui: &MainWindow, state: &Shared) {
+    let minutes = {
+        let guard = state.borrow();
+        let minutes =
+            colax_core::normalise_preferences(guard.engine.preferences()).auto_lock_minutes;
+        if guard.engine.is_unlocked() {
+            minutes
+        } else {
+            0
+        }
+    };
+    AUTO_LOCK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let entry = slot.get_or_insert_with(|| AutoLock {
+            timer: slint::Timer::default(),
+            minutes: 0,
+            ui: ui.as_weak(),
+            state: Rc::downgrade(state),
+        });
+        entry.ui = ui.as_weak();
+        entry.state = Rc::downgrade(state);
+        entry.minutes = minutes;
+        if minutes > 0 {
+            entry.bump();
+        } else {
+            entry.timer.stop();
+        }
+    });
+}
+
+/// Debug-only: watch an idle lock fire and a press hold it off, without a
+/// human sitting through five real minutes. `COLAX_DEV_AUTOLOCK=<seconds>`
+/// sets the interval this walk times against.
+#[cfg(debug_assertions)]
+fn dev_autolock(ui: &MainWindow, state: &Shared) {
+    use std::time::Duration;
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    // 1-2. Seal and unlock the seeded vault: the countdown arms, and with
+    //      no input at all it expires and the lock screen is back.
+    lock_vault(ui, state);
+    unlock_with(ui, state, "");
+    dev_dump(ui, "al1.unlocked");
+    let weak = ui.as_weak();
+    let st = state.clone();
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::SingleShot,
+        Duration::from_millis(1400),
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            dev_dump(&ui, "al2.idle-sealed");
+
+            // 3-4. Unlock once more, then put one button press on this
+            //     thread's own queue. It is input, not a screen change, so
+            //     the clock restarts: at the mark where al2 sealed, the
+            //     vault is still open.
+            unlock_with(&ui, &st, "");
+            unsafe {
+                use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    PostThreadMessageW, WM_LBUTTONDOWN,
+                };
+                PostThreadMessageW(GetCurrentThreadId(), WM_LBUTTONDOWN, 0, 0);
+            }
+            dev_dump(&ui, "al3.bumped");
+            let weak = ui.as_weak();
+            let timer = slint::Timer::default();
+            timer.start(
+                slint::TimerMode::SingleShot,
+                Duration::from_millis(600),
+                move || {
+                    let Some(ui) = weak.upgrade() else { return };
+                    dev_dump(&ui, "al4.held-open");
+                    let weak = ui.as_weak();
+                    let timer = slint::Timer::default();
+                    timer.start(
+                        slint::TimerMode::SingleShot,
+                        Duration::from_millis(1200),
+                        move || {
+                            if let Some(ui) = weak.upgrade() {
+                                // 5. ...and the press only moved the clock:
+                                //     once its minute is spent too, sealed
+                                //     again.
+                                dev_dump(&ui, "al5.sealed-again");
+                            }
+                        },
+                    );
+                    std::mem::forget(timer);
+                },
+            );
+            std::mem::forget(timer);
+        },
+    );
+    // Dropping the handle would cancel it before it fires.
+    std::mem::forget(timer);
 }
 
 /// `on_create_import` and `on_import_from_vault` are the same handler from
@@ -4474,6 +4760,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui.show()?;
+
+    // The idle lock listens on the thread the window runs on, so it goes
+    // up with the window.
+    install_auto_lock();
 
     // Focus the first input of the opening screen. The field's `init` ran
     // while the window was still invisible, so re-enter the screen now that
