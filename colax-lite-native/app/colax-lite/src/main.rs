@@ -21,6 +21,7 @@ mod dashboard;
 mod history;
 mod items;
 mod platform;
+mod settings_ops;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -784,7 +785,9 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// instead of the mouse.
 ///
 /// `COLAX_DEV_SCREEN` takes `vault`, `new` (a blank editor), `editor` (a
-/// saved login), or `editor-<section>` for any of its tabs.
+/// saved login), `editor-<section>` for any of its tabs, `settings` (the
+/// Settings walk, which closes the modal when it is done) or `settings-open`
+/// (the appearance panel, left open for a screenshot).
 #[cfg(debug_assertions)]
 fn dev_screen(ui: &MainWindow, state: &Shared) {
     // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
@@ -935,6 +938,16 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
     }
     if want == "alarm" {
         dev_alarm(ui, state);
+        return;
+    }
+    if want == "settings" {
+        settings_ops::dev(ui, state);
+        return;
+    }
+    // The appearance panel, opened and left open: the walk above closes the
+    // modal on its last step, so a screenshot needs its own target.
+    if want == "settings-open" {
+        settings_ops::open(ui, state, "");
         return;
     }
 
@@ -5200,11 +5213,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
             let weak = ui.as_weak();
-            ui.on_dash_open_settings(move |_section| {
+            let st = state.clone();
+            ui.on_dash_open_settings(move |section| {
                 if let Some(ui) = weak.upgrade() {
-                    notice(&ui, "Settings arrives with the next phase.");
+                    settings_ops::open(&ui, &st, &section);
                 }
             });
+
+            // The Settings window itself: the sidebar's footer row (and the
+            // dashboard's cards through `on_dash_open_settings` above) open
+            // it, Escape and Ctrl+1..9 arrive as `settings-closed` /
+            // `settings-tab-picked`, and the three typed dial callbacks are
+            // every panel's way of writing a pref — validated, saved and
+            // pushed back inside settings_ops.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_open_settings(move |section| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::open(&ui, &st, &section);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_settings_closed(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::close(&ui);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_settings_tab_picked(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::tab_picked(&ui, index);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_pref_string(move |key, value| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::pref_string(&ui, &st, &key, &value);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_pref_float(move |key, value| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::pref_float(&ui, &st, &key, value as f64);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_pref_bool(move |key, value| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::pref_bool(&ui, &st, &key, value);
+                }
+            });
+
+            // The modal's frame follows the window. A poll, not a binding:
+            // Slint cannot size the sheet from the window without the loop
+            // settings.slint documents. One comparison while it is closed.
+            let weak = ui.as_weak();
+            let frame_timer = slint::Timer::default();
+            frame_timer.start(
+                slint::TimerMode::Repeated,
+                std::time::Duration::from_millis(400),
+                move || {
+                    if let Some(ui) = weak.upgrade() {
+                        if ui.get_settings_open() {
+                            settings_ops::follow_window(&ui);
+                        }
+                    }
+                },
+            );
+            std::mem::forget(frame_timer);
 
             let weak = ui.as_weak();
             let st = state.clone();

@@ -196,6 +196,15 @@ fn density_scale(name: &str) -> f64 {
     }
 }
 
+/// One chip of the accent grid in the Settings window: `linear-gradient(
+/// 135deg, hsl(from 40% 56%), hsl(to 36% 46%))` from `Settings.tsx` L543,
+/// resolved through the same hue table the app paints with so the swatch
+/// can never drift from the accent it picks. Returns (from, to).
+pub(crate) fn accent_chip(id: &str) -> (slint::Color, slint::Color) {
+    let (h, h2) = accent_hues(id);
+    (hsl(h, 40.0, 56.0, 1.0), hsl(h2, 36.0, 46.0, 1.0))
+}
+
 /// `theme: 'system'` -> whatever Windows reports; anything unrecognised is
 /// dark, the same fallback `tokens.css` takes for an unknown `[data-theme]`.
 fn resolve_theme(pref: &str) -> &'static str {

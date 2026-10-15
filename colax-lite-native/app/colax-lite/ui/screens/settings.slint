@@ -1,0 +1,901 @@
+// The Settings window — Phase 5. The chrome of SettingsWindow.tsx with
+// Settings.tsx's panels behind it: an in-page modal over the whole app, a
+// 248px rail of tabs on the left, a header carrying the section's hint and
+// the close button, and a body that scrolls (app.css L932-951). Escape and
+// Ctrl+1..9 work while it is open, as they do in the TS, and clicking the
+// dimmed sheet outside the window closes it.
+//
+// The rail lists all thirteen tabs from the start: the Ctrl+number indices
+// and the dashboard's deep links ("channels", "security") are promises that
+// must not move as panels land. A panel that has not arrived yet says so
+// with an empty state rather than pretending to be built; each later task
+// replaces that branch with the real thing.
+//
+// Only the *appearance* panel lives here so far (Task 5.1). The eleven
+// dials are two-way with the window root: a drag reaches Rust through
+// `pref-*`, and Rust's saved answer flows back down the same chain.
+import { Theme } from "../theme.slint";
+import { Slider, Toggle, EmptyState, IconButton } from "../widgets.slint";
+
+/// One entry of the rail. The order is the TS's `tabs` array
+/// (Settings.tsx L500) and must match `SETTINGS_TABS` in main.rs; `num` is
+/// the Ctrl+number hint printed at the row's far end.
+struct Tab {
+    id: string,
+    glyph: string,
+    label: string,
+    hint: string,
+    num: string,
+}
+
+/// One accent chip in the Appearance grid. Built in Rust from the same
+/// `accent_hues` table that paints the app (ADR-2), because Slint has no
+/// `hsl()` builtin and the TS gradient `hsl(from 40% 56%)` has to be
+/// resolved somewhere that can do the maths.
+export struct AccentChip {
+    id: string,
+    label: string,
+    from: color,
+    to: color,
+}
+
+// The 26x18 swatch behind each theme choice (`ThemePreview`, Settings.tsx
+// L2483): fixed light / dark / split gradients — never the live palette, or
+// all three options would preview whatever is on right now.
+component theme-preview inherits Rectangle {
+    in property <string> mode;
+
+    width: 26px;
+    height: 18px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: Theme.border;
+    clip: true;
+    background: root.mode == "dark"
+        ? @linear-gradient(140deg, #2e3542, #11151c)
+        : root.mode == "system"
+            ? @linear-gradient(90deg, #ffffff 0%, #ffffff 50%, #2e3542 50%, #2e3542 100%)
+            : @linear-gradient(140deg, #ffffff, #d7e0e9);
+
+    // The accent bar along the bottom — `--grad-primary` in the TS.
+    Rectangle {
+        x: 2px;
+        y: parent.height - 5px;
+        width: parent.width - 4px;
+        height: 3px;
+        border-radius: 2px;
+        opacity: 0.95;
+        background: @linear-gradient(135deg, Theme.grad-from, Theme.grad-to);
+    }
+}
+
+// The `.setting` shell every row shares: label and hint on the left, the
+// control hugging the right, a hairline under the row (app.css L769, L858).
+// Slint has no slots, so each control kind is its own row component — the
+// shell repeats, the behaviour does not.
+component toggle-row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    in-out property <bool> checked;
+    callback toggled();
+
+    // The body panel's inner width, from the window root. It is a property
+    // and not a derivation: a width taken from this row's own layout would
+    // meet the height that layout is built from — a loop the compiler
+    // refuses (Slint treats a layout's info as one dependency).
+    in property <length> panel-w: 704px;
+    width: root.panel-w;
+    height: shell.preferred-height;
+
+    shell := HorizontalLayout {
+        alignment: space-between;
+        spacing: 16px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+
+        VerticalLayout {
+            // 216px: the 200px slider column plus the 16px gap. The hint
+            // wraps, so its column is a measurement from above the modal,
+            // never one from inside it.
+            width: root.panel-w - 216px;
+            spacing: 3px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 13.5px;
+                font-weight: 600;
+            }
+            if (root.hint != "") : Text {
+                text: root.hint;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+
+        Toggle {
+            // Pinned: the switch's own width is a layout calculation, and a
+            // stretch child here is the one edge that turns the row's
+            // layout-info loop from a warning into an error.
+            width: 44px;
+            horizontal-stretch: 0;
+            checked <=> root.checked;
+            toggled => { root.toggled(); }
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
+// A slider row: text on the left, the track in a fixed 200px column on the
+// right with the formatted value under it (Settings.tsx's local `Slider`,
+// L2432, which is a `.setting` wrapping an input and a `.slider-row`).
+component slider-row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    in property <float> minimum;
+    in property <float> maximum;
+    in property <float> step;
+    in property <string> formatted;
+    in-out property <float> value;
+    callback changed(float);
+
+    // See `toggle-row` for why the width is a property from outside.
+    in property <length> panel-w: 704px;
+    width: root.panel-w;
+    height: shell.preferred-height;
+
+    shell := HorizontalLayout {
+        alignment: space-between;
+        spacing: 16px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+
+        VerticalLayout {
+            width: root.panel-w - 216px;
+            spacing: 3px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 13.5px;
+                font-weight: 600;
+            }
+            if (root.hint != "") : Text {
+                text: root.hint;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            width: 200px;
+            horizontal-stretch: 0;
+            spacing: 2px;
+
+            Slider {
+                minimum: root.minimum;
+                maximum: root.maximum;
+                step: root.step;
+                value <=> root.value;
+                label: "";
+                formatted: "";
+                changed(v) => { root.changed(v); }
+            }
+
+            Text {
+                text: root.formatted;
+                color: Theme.faint;
+                font-size: 12px;
+                horizontal-alignment: right;
+            }
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
+// A segmented row: the pill box of `.segmented` (app.css L752), but with
+// the settings window's *neutral* selected state — plate fill, stronger
+// border, full-strength text (`.segmented__option[aria-pressed=true]`, not
+// an accent fill). `ids` are the pref values behind the labels and must be
+// the same length: the index comes along for the ride.
+component seg-row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    in property <[string]> options;
+    in property <[string]> ids;
+    in property <string> value;
+    callback picked(string);
+
+    // See `toggle-row` for why the width is a property from outside.
+    in property <length> panel-w: 704px;
+    width: root.panel-w;
+    height: shell.preferred-height;
+
+    shell := HorizontalLayout {
+        alignment: space-between;
+        spacing: 16px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+
+        VerticalLayout {
+            width: root.panel-w - 216px;
+            spacing: 3px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 13.5px;
+                font-weight: 600;
+            }
+            if (root.hint != "") : Text {
+                text: root.hint;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+
+        Rectangle {
+            width: pills.preferred-width + 6px;
+            height: 36px;
+            horizontal-stretch: 0;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: Theme.glass;
+
+            pills := HorizontalLayout {
+                padding: 3px;
+                spacing: 4px;
+
+                for opt[i] in root.options : Rectangle {
+                    width: opt-label.preferred-width + 24px;
+                    height: 30px;
+                    border-radius: 7px;
+                    border-width: 1px;
+                    border-color: root.ids[i] == root.value ? Theme.border-strong : #00000000;
+                    background: root.ids[i] == root.value
+                        ? Theme.plate
+                        : (pill-touch.has-hover ? #ffffff1a : #00000000);
+                    pill-touch := TouchArea {
+                        clicked => { root.picked(root.ids[i]); }
+                    }
+                    opt-label := Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: opt;
+                        color: root.ids[i] == root.value ? Theme.text : Theme.muted;
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
+export component Settings inherits Rectangle {
+    // Which rail row is lit. Rust owns the id list and validates every jump
+    // against it, so the index is all the window keeps — clamped before use
+    // below, because an out-of-range index must not panic a modal.
+    in property <int> tab-index: 0;
+
+    // The modal's outer frame. Rust writes these from the window's own size
+    // (`settings_ops::follow_window`) so the sheet shrinks with the window:
+    // a `min(1080px, parent.width - 60px)` written in here would bind the
+    // modal to the window's layout info, which is the binding loop the
+    // fixed constants exist to avoid.
+    in property <length> frame-w: 1080px;
+    in property <length> frame-h: 700px;
+
+    // The body panel's inner width — frame minus the 248px rail and the 32px
+    // padding on each side. Same deal as the frame: Rust's, because every
+    // wrapping hint below measures against it.
+    in property <length> panel-w: 768px;
+
+    // The appearance panel's eleven dials. Two-way with the window root: a
+    // drag writes up through `pref-float`, the saved (and quantised) answer
+    // flows back down and settles the widget.
+    in-out property <string> ap-theme: "system";
+    in-out property <string> ap-accent: "slate";
+    in-out property <float> ap-motion: 1.0;
+    in-out property <float> ap-motion-speed: 1.0;
+    in-out property <float> ap-ambient: 1.0;
+    in-out property <float> ap-text-scale: 100.0;
+    in-out property <float> ap-roundness: 1.0;
+    in-out property <float> ap-card-depth: 0.5;
+    in-out property <string> ap-density: "comfortable";
+    in-out property <bool> ap-reduce-transparency: false;
+    in-out property <bool> ap-high-contrast: false;
+
+    // The accent grid, pushed with the rest of the values when the window
+    // opens (Rust owns the hue maths).
+    in property <[AccentChip]> accent-chips: [];
+
+    callback closed();
+    callback tab-picked(index: int);
+    callback pref-string(key: string, value: string);
+    callback pref-float(key: string, value: float);
+    callback pref-bool(key: string, value: bool);
+
+    // The thirteen tabs of Settings.tsx L500, in order. Hints come from
+    // `describe()` in SettingsWindow.tsx L180 — three tabs have none there
+    // and have none here.
+    in property <[Tab]> tabs: [
+        { id: "appearance", glyph: "◐", label: "Appearance", hint: "Theme, colour, motion and the app background", num: "1" },
+        { id: "layout", glyph: "▦", label: "Layout", hint: "How your logins are displayed and ordered", num: "2" },
+        { id: "hidden", glyph: "⊘", label: "Hidden", hint: "", num: "3" },
+        { id: "background", glyph: "▨", label: "Background", hint: "The image behind the whole app", num: "4" },
+        { id: "channels", glyph: "◈", label: "Channels", hint: "Sidebar views, their tags and how they look", num: "5" },
+        { id: "generator", glyph: "✦", label: "Generator", hint: "Defaults for new passwords", num: "6" },
+        { id: "security", glyph: "◉", label: "Security", hint: "Locking, clipboard and warnings", num: "7" },
+        { id: "alarms", glyph: "◷", label: "Alarms", hint: "", num: "8" },
+        { id: "data", glyph: "⇩", label: "Data", hint: "Import, export and what is stored", num: "9" },
+        { id: "backup", glyph: "▣", label: "Backup", hint: "Encrypted backups and restore", num: "10" },
+        { id: "desktop", glyph: "⊞", label: "Desktop", hint: "", num: "11" },
+        { id: "optimize", glyph: "⚙", label: "Optimize", hint: "Trade eye-candy for memory, CPU and battery", num: "12" },
+        { id: "about", glyph: "ⓘ", label: "About", hint: "Diagnostics and resets", num: "13" },
+    ];
+
+    // The entry the header and the lit rail row read, clamped: Rust sends
+    // the index, this keeps a bad one inside the table.
+    property <Tab> active: root.tabs[min(max(root.tab-index, 0), root.tabs.length - 1)];
+
+    // The root inherits Rectangle, so with no geometry of its own it covers
+    // the wrapper the window puts it in — the same full-window backdrop the
+    // gate draws (security.slint L99).
+    // Escape closes and Ctrl+1..9 jumps — SettingsWindow.tsx L61-79. The
+    // scope only exists while the window is open (the whole component is
+    // inside `if (root.settings-open)` in main.slint), so it grabs focus on
+    // creation and dies with the modal.
+    FocusScope {
+        init => { self.focus(); }
+
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.closed();
+                return accept;
+            }
+            if (event.modifiers.control) {
+                if (event.text == "1") { root.tab-picked(0); return accept; }
+                if (event.text == "2") { root.tab-picked(1); return accept; }
+                if (event.text == "3") { root.tab-picked(2); return accept; }
+                if (event.text == "4") { root.tab-picked(3); return accept; }
+                if (event.text == "5") { root.tab-picked(4); return accept; }
+                if (event.text == "6") { root.tab-picked(5); return accept; }
+                if (event.text == "7") { root.tab-picked(6); return accept; }
+                if (event.text == "8") { root.tab-picked(7); return accept; }
+                if (event.text == "9") { root.tab-picked(8); return accept; }
+            }
+            return reject;
+        }
+    }
+
+    // `.overlay`: the dimmed sheet. This TouchArea covers everything, so
+    // only a click that lands *outside* the window (the TS's
+    // `e.target === e.currentTarget`) reaches it and closes.
+    sheet := TouchArea {
+        clicked => { root.closed(); }
+    }
+
+    // `.settings-window`: 248px of rail, the rest main (app.css L932).
+    //
+    // The *sizes* come from `frame-w`/`frame-h` (Rust, from the window's
+    // size) rather than a `min(…, parent.width - …)` in here: an explicit
+    // `parent.width` on the modal bridges this tree's wrapping hints back
+    // into the window's own layout info, which is a binding loop the
+    // compiler refuses (a wrap makes preferred-height a function of width,
+    // and the modal's width was a function of the window). The centring
+    // stays responsive — x/y feed no layout info.
+    win := Rectangle {
+        width: root.frame-w;
+        height: root.frame-h;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: Theme.radius-xl;
+        border-width: 1px;
+        border-color: Theme.border;
+        background: Theme.bg;
+        clip: true;
+        drop-shadow-color: #00000066;
+        drop-shadow-blur: 40px;
+        drop-shadow-offset-y: 14px;
+
+        HorizontalLayout {
+
+            // ---- The rail ------------------------------------------------
+            Rectangle {
+                width: 248px;
+                horizontal-stretch: 0;
+                background: Theme.bg-deep;
+
+                // The hairline turns the rail's right edge.
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    height: parent.height;
+                    background: Theme.hairline;
+                }
+
+                VerticalLayout {
+                    padding-top: 20px;
+                    padding-bottom: 16px;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 12px;
+
+                    // `.settings-window__brand`: the gradient dot and the word.
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        Rectangle {
+                            width: 9px;
+                            height: 9px;
+                            border-radius: 5px;
+                            background: @linear-gradient(135deg, Theme.grad-from, Theme.grad-to);
+                        }
+                        Text {
+                            text: "Settings";
+                            color: Theme.text;
+                            font-size: 15px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // `.settings-window__tabs`: thirteen rows, scrollable on
+                    // a short window the way the TS rail's own overflow is.
+                    Rectangle {
+                        vertical-stretch: 1;
+                        Flickable {
+                            content-width: 224px;
+                            content-height: tabs-column.preferred-height;
+
+                            tabs-column := VerticalLayout {
+                                // A constant width: a `Flickable` sizes its
+                                // content from the content's own width, so a
+                                // derived width here would meet the size
+                                // coming back — a loop. The rail is a fixed
+                                // 248px, so this is 224px.
+                                width: 224px;
+                                spacing: 2px;
+
+                                for entry[i] in root.tabs : Rectangle {
+                                    height: 40px;
+                                    border-radius: Theme.radius-md;
+                                    border-width: 1px;
+                                    border-color: root.active.id == entry.id ? Theme.border-strong : #00000000;
+                                    background: root.active.id == entry.id
+                                        ? Theme.plate
+                                        : (tab-touch.has-hover ? #ffffff0d : #00000000);
+                                    tab-touch := TouchArea {
+                                        clicked => { root.tab-picked(i); }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 10px;
+                                        spacing: 10px;
+
+                                        // `.settings-tab__icon`: the round
+                                        // plate the glyph sits in.
+                                        Rectangle {
+                                            width: 28px;
+                                            height: 28px;
+                                            border-radius: 14px;
+                                            background: root.active.id == entry.id || tab-touch.has-hover
+                                                ? Theme.surface-hover
+                                                : Theme.plate;
+                                            Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: entry.glyph;
+                                                color: root.active.id == entry.id ? Theme.text : Theme.muted;
+                                                font-size: 13px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: entry.label;
+                                            color: root.active.id == entry.id ? Theme.text : Theme.muted;
+                                            font-size: 13px;
+                                            font-weight: root.active.id == entry.id ? 600 : 500;
+                                            wrap: word-wrap;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                        }
+
+                                        // `.settings-tab__index`: the
+                                        // Ctrl+number, quiet until the row
+                                        // is lit or hovered.
+                                        Text {
+                                            text: entry.num;
+                                            color: Theme.faint;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                            visible: root.active.id == entry.id || tab-touch.has-hover;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---- The main column ------------------------------------------
+            Rectangle {
+                horizontal-stretch: 1;
+
+                VerticalLayout {
+
+                    // `.settings-window__header`: title, hint, close button.
+                    HorizontalLayout {
+                        padding-top: 30px;
+                        padding-bottom: 20px;
+                        padding-left: 32px;
+                        padding-right: 32px;
+                        spacing: 12px;
+
+                        VerticalLayout {
+                            spacing: 6px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.active.label;
+                                color: Theme.text;
+                                font-size: 24px;
+                                font-weight: 600;
+                            }
+                            if (root.active.hint != "") : Text {
+                                text: root.active.hint;
+                                color: Theme.muted;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                                // A constant, like the rows below: the header
+                                // hint must not wrap at a width the panel's
+                                // own layout info produced.
+                                width: root.panel-w - 60px;
+                            }
+                        }
+
+                        IconButton {
+                            horizontal-stretch: 0;
+                            icon: "×";
+                            clicked => { root.closed(); }
+                        }
+                    }
+
+                    // `.settings-window__body`: 8/32/32 padding, scrolling.
+                    Flickable {
+                        vertical-stretch: 1;
+                        content-width: 768px;
+                        content-height: panel.preferred-height;
+
+                        panel := VerticalLayout {
+                            // Rust's number (frame minus rail and padding),
+                            // not a derivation from the Flickable: see the
+                            // `frame-w` note above.
+                            width: root.panel-w;
+                            padding-top: 8px;
+                            padding-bottom: 32px;
+                            padding-left: 32px;
+                            padding-right: 32px;
+
+                            // ---- The appearance panel --------------------
+                            if (root.active.id == "appearance") : VerticalLayout {
+
+                                // Theme (Settings.tsx L507-530): a stacked
+                                // row — text, then three option cards.
+                                Rectangle {
+                                    height: theme-stack.preferred-height;
+
+                                    theme-stack := VerticalLayout {
+                                        spacing: 12px;
+                                        padding-top: 14px;
+                                        padding-bottom: 14px;
+
+                                        VerticalLayout {
+                                            spacing: 3px;
+                                            Text {
+                                                text: "Theme";
+                                                color: Theme.text;
+                                                font-size: 13.5px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "System follows your device and updates live.";
+                                                color: Theme.muted;
+                                                font-size: 12px;
+                                                wrap: word-wrap;
+                                                width: root.panel-w;
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+
+                                            for mode in ["light", "dark", "system"] : Rectangle {
+                                                horizontal-stretch: 1;
+                                                height: 38px;
+                                                border-radius: Theme.radius-sm;
+                                                border-width: 1px;
+                                                border-color: root.ap-theme == mode ? Theme.border-strong : #00000000;
+                                                background: root.ap-theme == mode
+                                                    ? Theme.plate
+                                                    : (theme-touch.has-hover ? #ffffff0d : #00000000);
+                                                theme-touch := TouchArea {
+                                                    clicked => { root.pref-string("theme", mode); }
+                                                }
+
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    alignment: center;
+
+                                                    theme-preview {
+                                                        mode: mode;
+                                                    }
+
+                                                    Text {
+                                                        text: mode == "light" ? "☀" : mode == "dark" ? "☾" : "☁";
+                                                        color: root.ap-theme == mode ? Theme.text : Theme.muted;
+                                                        font-size: 13px;
+                                                        vertical-alignment: center;
+                                                    }
+
+                                                    Text {
+                                                        text: mode == "light" ? "Light" : mode == "dark" ? "Dark" : "System";
+                                                        color: root.ap-theme == mode ? Theme.text : Theme.muted;
+                                                        font-size: 13px;
+                                                        font-weight: 600;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        x: 0;
+                                        y: parent.height - 1px;
+                                        width: parent.width;
+                                        height: 1px;
+                                        background: Theme.hairline;
+                                    }
+                                }
+
+                                // Accent (Settings.tsx L532-549): same stack,
+                                // swatches pushed by Rust's hue table.
+                                Rectangle {
+                                    height: accent-stack.preferred-height;
+
+                                    accent-stack := VerticalLayout {
+                                        spacing: 12px;
+                                        padding-top: 14px;
+                                        padding-bottom: 14px;
+
+                                        VerticalLayout {
+                                            spacing: 3px;
+                                            Text {
+                                                text: "Accent";
+                                                color: Theme.text;
+                                                font-size: 13.5px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "A small, calm palette on purpose.";
+                                                color: Theme.muted;
+                                                font-size: 12px;
+                                                wrap: word-wrap;
+                                                width: root.panel-w;
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+
+                                            for chip in root.accent-chips : Rectangle {
+                                                horizontal-stretch: 1;
+                                                height: 38px;
+                                                border-radius: Theme.radius-sm;
+                                                border-width: 1px;
+                                                border-color: root.ap-accent == chip.id ? Theme.border-strong : #00000000;
+                                                background: root.ap-accent == chip.id
+                                                    ? Theme.plate
+                                                    : (chip-touch.has-hover ? #ffffff0d : #00000000);
+                                                chip-touch := TouchArea {
+                                                    clicked => { root.pref-string("accent", chip.id); }
+                                                }
+
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    alignment: center;
+
+                                                    Rectangle {
+                                                        width: 16px;
+                                                        height: 16px;
+                                                        border-radius: 8px;
+                                                        background: @linear-gradient(135deg, chip.from, chip.to);
+                                                    }
+
+                                                    Text {
+                                                        text: chip.label;
+                                                        color: root.ap-accent == chip.id ? Theme.text : Theme.muted;
+                                                        font-size: 13px;
+                                                        font-weight: 600;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        x: 0;
+                                        y: parent.height - 1px;
+                                        width: parent.width;
+                                        height: 1px;
+                                        background: Theme.hairline;
+                                    }
+                                }
+
+                                // The six sliders (Settings.tsx L551-613).
+                                // Steps and formats are the TS's own: Rust
+                                // quantises the same step before it writes,
+                                // so the stored value always lands on one.
+                                slider-row {
+                                    panel-w: root.panel-w;
+                                    label: "Animation intensity";
+                                    hint: "Scales every transition. Your device's reduced-motion setting still wins.";
+                                    minimum: 0;
+                                    maximum: 1;
+                                    step: 0.25;
+                                    value <=> root.ap-motion;
+                                    formatted: root.ap-motion == 0 ? "Off" : root.ap-motion < 0.6 ? "Calm" : "Full";
+                                    changed(v) => { root.pref-float("motion", v); }
+                                }
+
+                                slider-row {
+
+                                    panel-w: root.panel-w;
+                                    label: "Animation speed";
+                                    hint: "How quickly panels, menus and settings tabs move. Faster is never slower to load — a transition is the same work, finished sooner.";
+                                    minimum: 1;
+                                    maximum: 2;
+                                    step: 0.25;
+                                    value <=> root.ap-motion-speed;
+                                    formatted: root.ap-motion-speed <= 1.25 ? "Normal" : root.ap-motion-speed < 1.75 ? "Fast" : "Instant";
+                                    changed(v) => { root.pref-float("motion-speed", v); }
+                                }
+
+                                slider-row {
+
+                                    panel-w: root.panel-w;
+                                    label: "Glow";
+                                    hint: "Strength of the ambient gradient behind everything.";
+                                    minimum: 0;
+                                    maximum: 1;
+                                    step: 0.25;
+                                    value <=> root.ap-ambient;
+                                    formatted: root.ap-ambient == 0 ? "Off" : root.ap-ambient < 0.6 ? "Subtle" : "Full";
+                                    changed(v) => { root.pref-float("ambient", v); }
+                                }
+
+                                slider-row {
+
+                                    panel-w: root.panel-w;
+                                    label: "Text size";
+                                    hint: "Scales the whole interface.";
+                                    minimum: 85;
+                                    maximum: 130;
+                                    step: 5;
+                                    value <=> root.ap-text-scale;
+                                    formatted: Math.round(root.ap-text-scale) + "%";
+                                    changed(v) => { root.pref-float("text-scale", v); }
+                                }
+
+                                slider-row {
+
+                                    panel-w: root.panel-w;
+                                    label: "Corner roundness";
+                                    hint: "How soft or sharp every surface looks.";
+                                    minimum: 0.6;
+                                    maximum: 1.4;
+                                    step: 0.1;
+                                    value <=> root.ap-roundness;
+                                    formatted: Math.round(root.ap-roundness * 100) + "%";
+                                    changed(v) => { root.pref-float("roundness", v); }
+                                }
+
+                                slider-row {
+
+                                    panel-w: root.panel-w;
+                                    label: "Card shadow";
+                                    hint: "The shadow under each login. Off keeps them flat; deep lifts them clear of the page.";
+                                    minimum: 0;
+                                    maximum: 1;
+                                    step: 0.05;
+                                    value <=> root.ap-card-depth;
+                                    formatted: root.ap-card-depth == 0 ? "Off" : root.ap-card-depth < 0.3 ? "Faint" : root.ap-card-depth < 0.7 ? "Soft" : "Deep";
+                                    changed(v) => { root.pref-float("card-depth", v); }
+                                }
+
+                                // Density (Settings.tsx L614-628).
+                                seg-row {
+                                    panel-w: root.panel-w;
+                                    label: "Density";
+                                    hint: "Row height and spacing.";
+                                    options: ["Compact", "Comfortable", "Spacious"];
+                                    ids: ["compact", "comfortable", "spacious"];
+                                    value: root.ap-density;
+                                    picked(id) => { root.pref-string("density", id); }
+                                }
+
+                                // The two switches (Settings.tsx L629-642).
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Transparency";
+                                    hint: "Turn off the frosted-glass effect for a flatter, faster surface.";
+                                    checked <=> root.ap-reduce-transparency;
+                                    toggled => { root.pref-bool("reduceTransparency", root.ap-reduce-transparency); }
+                                }
+
+                                toggle-row {
+
+                                    panel-w: root.panel-w;
+                                    label: "High contrast";
+                                    hint: "Stronger borders and dimmer greys.";
+                                    checked <=> root.ap-high-contrast;
+                                    toggled => { root.pref-bool("highContrast", root.ap-high-contrast); }
+                                }
+                            }
+
+                            // Every panel not landed yet. The header already
+                            // names the section and says what it is for, so
+                            // the body only has to be honest about the wait.
+                            if (root.active.id != "appearance") : Rectangle {
+                                // A constant width for the same reason as the
+                                // rows: `EmptyState` wraps its title, and a
+                                // wrapped height built on the panel's width
+                                // would close the loop again.
+                                width: root.panel-w;
+                                height: 340px;
+                                preferred-width: root.panel-w;
+                                preferred-height: 340px;
+
+                                EmptyState {
+                                    title: "This panel arrives with the next task.";
+                                    hint: "";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

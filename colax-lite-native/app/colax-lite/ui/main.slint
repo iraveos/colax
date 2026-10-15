@@ -21,6 +21,7 @@ import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
 import { History } from "screens/history.slint";
+import { Settings, AccentChip } from "screens/settings.slint";
 
 // ---- The vault's four presentations -------------------------------------
 // `VIEW_OPTIONS` in ViewMenu.tsx: Flow, Orbit, List, Grid -- four cards with
@@ -462,6 +463,45 @@ component rail-row inherits Rectangle {
     }
 }
 
+// The sidebar footer's Settings row (Sidebar.tsx L602): a gear and the
+// word, or just the gear once the rail narrows. It is how the shell opens
+// the modal — the dashboard's cards are the other way in.
+component settings-item inherits Rectangle {
+    in property <bool> compact: false;
+    in property <bool> labels: true;
+    callback clicked();
+
+    height: 34px;
+    border-radius: Theme.radius-sm;
+    background: footer-touch.has-hover ? Theme.row-hover : #00000000;
+
+    footer-touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+
+        Text {
+            text: "⚙";
+            color: Theme.muted;
+            font-size: 14px;
+            vertical-alignment: center;
+        }
+
+        if (root.labels && !root.compact) : Text {
+            text: "Settings";
+            color: Theme.muted;
+            font-size: 13px;
+            font-weight: 500;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+    }
+}
+
 // Re-exported so Rust can reach them: applyAppearance pushes every token into
 // this global (ADR-2), items.rs and main.rs build the models (LoginCard,
 // QuestionRow, QrCell, ...), and both need those types in the generated
@@ -750,10 +790,45 @@ export component MainWindow inherits Window {
     in-out property <DashPop> dash-pop-reuse;
     in-out property <DashPop> dash-pop-uses;
     // Bulk add and channel editing have no native panel yet; the buttons
-    // report that rather than sitting dead (Settings follows in Phase 5).
+    // report that rather than sitting dead (Settings landed in Phase 5).
     callback dash-bulk-add();
     callback dash-new-channel();
     callback dash-open-settings(section: string);
+    // ---- The Settings window (Phase 5) -----------------------------------
+    // An in-page modal over every screen: `settings-open` mounts it,
+    // `settings-tab-index` is the lit rail row (the `SETTINGS_TABS` order
+    // in main.rs), and the eleven appearance dials ride two-way so a drag
+    // writes up through `pref-float` while the saved answer settles back
+    // down. The dashboard's deep links ("channels", "security") and the
+    // sidebar's footer row both arrive through `open-settings`.
+    callback open-settings(section: string);
+    callback settings-closed();
+    callback settings-tab-picked(index: int);
+    callback settings-pref-string(key: string, value: string);
+    callback settings-pref-float(key: string, value: float);
+    callback settings-pref-bool(key: string, value: bool);
+    in-out property <bool> settings-open: false;
+    in-out property <int> settings-tab-index: 0;
+    // The modal's frame, in logical pixels, kept in step with the window by
+    // `settings_ops::follow_window` (see settings.slint for why Slint does
+    // not compute this itself).
+    in-out property <length> settings-w: 1080px;
+    in-out property <length> settings-h: 700px;
+    // The modal's body panel width, also Rust's (`follow_window`): every
+    // wrapping hint in the sheet measures against it.
+    in-out property <length> settings-panel-w: 768px;
+    in-out property <string> settings-ap-theme: "system";
+    in-out property <string> settings-ap-accent: "slate";
+    in-out property <float> settings-ap-motion: 1.0;
+    in-out property <float> settings-ap-motion-speed: 1.0;
+    in-out property <float> settings-ap-ambient: 1.0;
+    in-out property <float> settings-ap-text-scale: 100.0;
+    in-out property <float> settings-ap-roundness: 1.0;
+    in-out property <float> settings-ap-card-depth: 0.5;
+    in-out property <string> settings-ap-density: "comfortable";
+    in-out property <bool> settings-ap-reduce-transparency: false;
+    in-out property <bool> settings-ap-high-contrast: false;
+    in-out property <[AccentChip]> settings-accent-chips;
     // ---- SecurityGate ----------------------------------------------------
     // A blocking verification for a login or for the vault itself: any one
     // factor passes, and the open panel holds everything typed until Rust
@@ -974,6 +1049,12 @@ export component MainWindow inherits Window {
 
                     Rectangle { vertical-stretch: 1; height: 1px; }
 
+                    settings-item {
+                        compact: root.rail-compact;
+                        labels: root.labels-mode != "icon";
+                        clicked => { root.open-settings(""); }
+                    }
+
                     if (!root.rail-compact) : Text {
                         text: root.count-label;
                         color: Theme.faint;
@@ -1049,6 +1130,12 @@ export component MainWindow inherits Window {
                         color: Theme.faint;
                         font-size: 12px;
                         vertical-alignment: center;
+                    }
+
+                    settings-item {
+                        compact: root.rail-compact;
+                        labels: root.labels-mode != "icon";
+                        clicked => { root.open-settings(""); }
                     }
                 }
             }
@@ -2062,6 +2149,35 @@ export component MainWindow inherits Window {
                 root.gate-unlock(mode, value, question-id);
             }
             cancel => { root.gate-cancel(); }
+        }
+
+        // -- The Settings window (Phase 5) ----------------------------------
+        // The topmost sheet: mounted while `settings-open` holds, `z` past
+        // the gate's so a modal opened from anywhere lands above everything,
+        // and dead while closed along with its FocusScope and key handling.
+        if (root.settings-open) : Settings {
+            z: 61;
+            tab-index: root.settings-tab-index;
+            frame-w: root.settings-w;
+            frame-h: root.settings-h;
+            panel-w: root.settings-panel-w;
+            accent-chips: root.settings-accent-chips;
+            ap-theme <=> root.settings-ap-theme;
+            ap-accent <=> root.settings-ap-accent;
+            ap-motion <=> root.settings-ap-motion;
+            ap-motion-speed <=> root.settings-ap-motion-speed;
+            ap-ambient <=> root.settings-ap-ambient;
+            ap-text-scale <=> root.settings-ap-text-scale;
+            ap-roundness <=> root.settings-ap-roundness;
+            ap-card-depth <=> root.settings-ap-card-depth;
+            ap-density <=> root.settings-ap-density;
+            ap-reduce-transparency <=> root.settings-ap-reduce-transparency;
+            ap-high-contrast <=> root.settings-ap-high-contrast;
+            closed => { root.settings-closed(); }
+            tab-picked(index) => { root.settings-tab-picked(index); }
+            pref-string(key, value) => { root.settings-pref-string(key, value); }
+            pref-float(key, value) => { root.settings-pref-float(key, value); }
+            pref-bool(key, value) => { root.settings-pref-bool(key, value); }
         }
     }
 }
