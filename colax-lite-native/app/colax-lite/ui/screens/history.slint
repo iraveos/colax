@@ -1,0 +1,235 @@
+// The History channel's screen (Task 7.2).
+//
+// Port of `E:\acc2\src\ui\HistoryPanel.tsx` (258 lines): the header with its
+// count, the search box, the All/Added/Edited/Deleted segment, Clear log,
+// and the day-grouped rows with their action badges and per-row buttons.
+// Every row, label and flag arrives computed in Rust (`src/history.rs`)
+// through the structs in models.slint — filtering, grouping and the empty
+// states are Rust's answers to the query, so this file only draws them and
+// reports taps.
+
+import { Theme } from "../theme.slint";
+import { Btn, Field, Segmented, EmptyState, IconButton, Note } from "../widgets.slint";
+import { HistoryData, HistoryRow } from "../models.slint";
+
+// One row of the log (`.history__row`): action badge, name over meta, and
+// the buttons this row offers — Restore when a version is stored, the
+// edit/copy group while the login still exists, Forget always.
+component history-row inherits Rectangle {
+    // Not named `row`: that is a reserved grid-layout property injected in
+    // every element (`typeregister.rs` RESERVED_GRIDLAYOUT_PROPERTIES), so a
+    // property declared with it is rejected as an override.
+    in property <HistoryRow> data;
+    callback restore();
+    callback open();
+    callback copy-pw();
+    callback copy-url();
+    callback forget();
+
+    // TS colours the badge by `data-action` and gives deletions a red border
+    // (app.css L1964-1986): green for Added, warn for Edited, danger for
+    // Deleted — the same three tones Settings and the dashboard read.
+    property <color> tint: root.data.action == "added" ? Theme.good
+        : root.data.action == "edited" ? Theme.warn : Theme.danger;
+
+    // `space-3` padding, `radius-md`, `surface` over `border` — the card
+    // chrome the TS rows share with every list in the app.
+    border-radius: 10px;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: root.data.action == "deleted" ? root.tint.with-alpha(0.4) : Theme.border;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+
+        // The badge: min-width 62px pill, centred caption text (`.history__badge`).
+        Rectangle {
+            horizontal-stretch: 0;
+            width: 68px;
+            height: 20px;
+            border-radius: 999px;
+            background: root.data.action == "added" ? Theme.good-soft
+                : root.data.action == "edited" ? Theme.warn-soft : Theme.danger-soft;
+            Text {
+                text: root.data.badge;
+                color: root.tint;
+                font-size: 11.5px;
+                font-weight: 620;
+                width: parent.width;
+                height: parent.height;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // Name over meta (`.history__what`), both elided: a row never wraps
+        // and never grows, however long the address.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 2px;
+            Text {
+                text: root.data.name;
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 560;
+                overflow: elide;
+            }
+            Text {
+                text: root.data.meta;
+                color: Theme.faint;
+                font-size: 11.5px;
+                overflow: elide;
+            }
+        }
+
+        // The action cluster (`.history__actions`), tight and right.
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: 4px;
+            if (root.data.restore) : Btn {
+                label: "Restore";
+                kind: 1;
+                h: 30px;
+                clicked => { root.restore(); }
+            }
+            if (root.data.live) : IconButton {
+                icon: "✎"; // edit this login
+                enabled: true;
+                clicked => { root.open(); }
+            }
+            if (root.data.copy-pw) : IconButton {
+                icon: "⧉"; // copy the password this row restored to
+                clicked => { root.copy-pw(); }
+            }
+            if (root.data.copy-url) : IconButton {
+                icon: "↗"; // copy the address
+                clicked => { root.copy-url(); }
+            }
+            IconButton {
+                icon: "×"; // forget this row
+                clicked => { root.forget(); }
+            }
+        }
+    }
+}
+
+export component History inherits Flickable {
+    in property <HistoryData> data;
+    in property <int> filter: 0; // 0 all, 1 added, 2 edited, 3 deleted
+    in-out property <string> query;
+
+    callback query-edited();
+    callback filter-changed(int);
+    callback clear();
+    callback restore(id: string);
+    callback open-login(id: string);
+    callback copy(value: string, label: string, item-id: string);
+    callback forget(id: string);
+
+    VerticalLayout {
+        padding-top: 26px;
+        padding-bottom: 24px;
+        padding-left: 30px;
+        padding-right: 34px;
+        spacing: 20px;
+
+        // ---- Header (`.history__head`) ----
+        VerticalLayout {
+            spacing: 8px;
+
+            // Title row: clock, name, count (`.history__title`).
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: "◷";
+                    color: Theme.muted;
+                    font-size: 16px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "History";
+                    color: Theme.text;
+                    font-size: 20px;
+                    font-weight: 620;
+                    letter-spacing: -0.2px; // −0.01em at 20px, TS letter-tight display
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.data.count;
+                    color: Theme.faint;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+
+            // The standing explanation (`.field__hint` under the title).
+            Note {
+                text: "Every login that was added, edited or deleted, newest first. A row with a stored version offers Restore, which puts that version back — including a login that was deleted.";
+            }
+
+            // Tools: search, the action segment, Clear log (`.history__tools`).
+            HorizontalLayout {
+                spacing: 8px;
+
+                Field {
+                    horizontal-stretch: 1;
+                    max-width: 440px;
+                    autofocus: false;
+                    placeholder: "Search the history — name, address, site or action";
+                    value <=> root.query;
+                    edited => { root.query-edited(); }
+                }
+
+                Segmented {
+                    horizontal-stretch: 0;
+                    options: ["All", "Added", "Edited", "Deleted"];
+                    selected: root.filter;
+                    changed(i) => { root.filter-changed(i); }
+                }
+
+                Btn {
+                    horizontal-stretch: 0;
+                    label: "Clear log";
+                    kind: 2;
+                    h: 36px;
+                    enabled: root.data.has-events;
+                    clicked => { root.clear(); }
+                }
+            }
+        }
+
+        // ---- The log ----
+        // Nothing recorded, or nothing matching: the two empty states TS
+        // switches between, with the copy Rust picked (`.history__groups` is
+        // simply absent in both cases).
+        if (root.data.groups.length == 0) : EmptyState {
+            vertical-stretch: 1;
+            title: root.data.empty-title;
+            hint: root.data.empty-hint;
+        }
+
+        for group in root.data.groups : VerticalLayout {
+            spacing: 8px;
+
+            // The day caption: small, uppercase, letterspaced (`.history__day`).
+            Text {
+                text: group.label;
+                color: Theme.faint;
+                font-size: 11px;
+                font-weight: 640;
+                letter-spacing: 0.9px; // 0.08em at 11px, the TS day caption
+                vertical-stretch: 0;
+            }
+
+            for entry in group.rows : history-row {
+                data: entry;
+                restore => { root.restore(entry.event-id); }
+                open => { root.open-login(entry.item-id); }
+                copy-pw => { root.copy(entry.copy-pw-value, "Password from history", entry.item-id); }
+                copy-url => { root.copy(entry.copy-url-value, "Address from history", entry.item-id); }
+                forget => { root.forget(entry.event-id); }
+            }
+        }
+    }
+}

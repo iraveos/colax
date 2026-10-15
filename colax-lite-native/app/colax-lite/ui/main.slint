@@ -16,10 +16,11 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData } from "models.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
+import { History } from "screens/history.slint";
 
 // ---- The vault's four presentations -------------------------------------
 // `VIEW_OPTIONS` in ViewMenu.tsx: Flow, Orbit, List, Grid -- four cards with
@@ -683,6 +684,16 @@ export component MainWindow inherits Window {
     callback copy-password(id: string);
     callback search-changed(query: string);
     callback channel-selected(id: string);
+    // The History channel (Task 7.2): the query and segment are screen state
+    // like `search-text`, reset with the channel switch, and every row action
+    // travels back to Rust by id — restore, open, copy, forget, clear.
+    callback history-query-changed();
+    callback history-filter-changed(index: int);
+    callback history-clear();
+    callback history-restore(id: string);
+    callback history-open(id: string);
+    callback history-copy(value: string, label: string, item-id: string);
+    callback history-forget(id: string);
     callback toggle-favorite(id: string);
     // The switcher and the sort menu. Both take the id, not the label: Rust
     // validates it against the pref's own whitelist before it writes.
@@ -701,6 +712,12 @@ export component MainWindow inherits Window {
     // fills the models on every refresh (`dashboard.rs::fill`); the three
     // callbacks are the only way back out.
     in-out property <bool> show-dashboard: false;
+    // The History channel takes the pane the dashboard's way: its own screen,
+    // its own header, the list hidden behind it (Task 7.2).
+    in-out property <bool> show-history: false;
+    in-out property <HistoryData> history-data;
+    in-out property <string> history-query;
+    in-out property <int> history-filter: 0;
     in-out property <DashRing> dash-ring;
     in-out property <string> dash-sub: "";
     in-out property <bool> dash-empty: false;
@@ -1093,7 +1110,22 @@ export component MainWindow inherits Window {
                     new-channel() => { root.dash-new-channel(); }
                     open-settings(section) => { root.dash-open-settings(section); }
                 }
-                if (!root.show-dashboard) : VerticalLayout {
+                // The History channel swaps in the same way — the rail and
+                // the shell stay, the pane's contents go (Task 7.2).
+                if (root.show-history) : History {
+                    data: root.history-data;
+                    filter: root.history-filter;
+                    query <=> root.history-query;
+
+                    query-edited => { root.history-query-changed(); }
+                    filter-changed(i) => { root.history-filter-changed(i); }
+                    clear => { root.history-clear(); }
+                    restore(id) => { root.history-restore(id); }
+                    open-login(id) => { root.history-open(id); }
+                    copy(value, label, item-id) => { root.history-copy(value, label, item-id); }
+                    forget(id) => { root.history-forget(id); }
+                }
+                if (!root.show-dashboard && !root.show-history) : VerticalLayout {
                     padding-top: 26px;
                     padding-bottom: 16px;
                     padding-left: 30px;

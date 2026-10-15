@@ -17,6 +17,7 @@
 
 mod appearance;
 mod dashboard;
+mod history;
 mod items;
 mod platform;
 
@@ -440,15 +441,29 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     // it is computed here, while the engine is already open, and applied
     // after the guard drops like everything else on this path.
     let is_dashboard = channel.kind == ChannelKind::Dashboard;
-    let (cards, sidebar, total, dash) = match guard.engine.items() {
+    // The History channel takes the pane the dashboard's way (Task 7.2),
+    // and its rows need the log *and* the logins that still exist — so the
+    // panel is computed here too, while the engine is already open, and
+    // applied after the guard drops.
+    let is_history = channel.kind == ChannelKind::History;
+    let (cards, sidebar, total, dash, history) = match guard.engine.items() {
         Some(items) => {
             let cards = items::build_cards(items, &channel, &prefs, &query);
             let sidebar = items::build_sidebar(items, &channel_id, &prefs);
             let dash = is_dashboard
                 .then(|| dashboard::build(items, &prefs, &prefs.usage, colax_core::util::now_ms()));
-            (cards, sidebar, items.len(), dash)
+            let history = is_history.then(|| {
+                history::build(
+                    &prefs.history,
+                    items,
+                    ui.get_history_query().as_str(),
+                    ui.get_history_filter() as usize,
+                    colax_core::util::now_ms(),
+                )
+            });
+            (cards, sidebar, items.len(), dash, history)
         }
-        None => (Vec::new(), items::build_sidebar(&[], &channel_id, &prefs), 0, None),
+        None => (Vec::new(), items::build_sidebar(&[], &channel_id, &prefs), 0, None, None),
     };
     drop(guard);
 
@@ -498,8 +513,12 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     // The dashboard takes the pane; everything the list draws is simply
     // unused behind it, which is cheaper than a second screen branch.
     ui.set_show_dashboard(is_dashboard);
+    ui.set_show_history(is_history);
     if let Some(dash) = dash {
         dashboard::fill(ui, &dash);
+    }
+    if let Some(history) = history {
+        ui.set_history_data(history);
     }
     ui.set_show_urls(prefs.show_urls);
     ui.set_cards_empty_title(empty_title.into());
@@ -661,6 +680,11 @@ fn goto(ui: &MainWindow, state: &Shared, screen: Screen) {
     }
     if screen == Screen::Vault {
         ui.set_search_text("".into());
+        // The History panel keeps its query and segment on the window, so
+        // they reset on the way back from anywhere else — the TS panel's
+        // would have unmounted and lost them to useState (Task 7.2).
+        ui.set_history_query("".into());
+        ui.set_history_filter(0);
     }
     ui.set_screen(screen);
     refresh_items(ui, state);
@@ -710,8 +734,16 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
         return false;
     }
 
-    let created = {
+    let (created, before) = {
         let mut guard = state.borrow_mut();
+        // What the log saw before the seed: a fresh vault's logins were
+        // really added, and the History channel reports them exactly as it
+        // would a pasted import.
+        let before: Vec<VaultItem> = guard
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
         let result = (|| -> Result<(), VaultError> {
             if !guard.engine.exists() {
                 guard.engine.create(None)?;
@@ -725,11 +757,12 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
             }
             Ok(())
         })();
-        result
+        (result, before)
     };
 
     match created {
         Ok(()) => {
+            record_history(ui, state, &before);
             goto(ui, state, Screen::Vault);
             tray_lock_enabled(tray, true);
             true
@@ -893,6 +926,10 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
     }
     if want == "dashboard" {
         dev_dashboard(ui, state);
+        return;
+    }
+    if want == "history" {
+        dev_history(ui, state);
         return;
     }
 
@@ -1177,10 +1214,17 @@ fn dev_dashboard(ui: &MainWindow, state: &Shared) {
         .items()
         .and_then(|items| items.first().map(|item| item.id.clone()));
     if let Some(id) = first {
+        let before: Vec<VaultItem> = state
+            .borrow()
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
         let _ = state
             .borrow_mut()
             .engine
             .update_item(&id, &serde_json::json!({ "needsAttention": true }));
+        record_history(ui, state, &before);
         refresh_items(ui, state);
     }
     dev_dump_dash(ui, "dash3.flagged");
@@ -1253,6 +1297,99 @@ fn dev_dump_dash(ui: &MainWindow, tag: &str) {
     let path = app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&dash);
+    let _ = std::fs::write(path, existing);
+}
+
+/// Debug-only: open the History channel and dump what reached the window.
+///
+/// `COLAX_DEV_SCREEN=history`. The rows are read back off the screen's own
+/// properties — count, day groups, flags, and the meta line — so the panel
+/// can be checked against the engine without looking at the window (the
+/// desktop may be locked, and this writes the same file every other screen
+/// writes). Four steps: everything the seed recorded, the Added segment, a
+/// query with no answer (the second empty state), and a Forget to prove the
+/// log writes.
+#[cfg(debug_assertions)]
+fn dev_history(ui: &MainWindow, state: &Shared) {
+    ui.set_active_channel("history".into());
+    refresh_items(ui, state);
+    dev_dump_history(ui, "history1.open");
+
+    ui.set_history_filter(1); // the Added segment
+    refresh_items(ui, state);
+    dev_dump_history(ui, "history2.added");
+
+    ui.set_history_filter(0);
+    ui.set_history_query("no such word".into());
+    refresh_items(ui, state);
+    dev_dump_history(ui, "history3.nomatch");
+
+    // Forget the first row: the log writes, the count follows, and the
+    // rows behind it survive.
+    ui.set_history_query("".into());
+    let first_event = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+            .history
+            .first()
+            .map(|event| event.id.clone())
+    };
+    if let Some(id) = first_event {
+        history_forget(ui, state, &id);
+        dev_dump_history(ui, "history4.forgot");
+    }
+}
+
+/// The history half of a dump: the swap flag, the count, the segment and
+/// query as the screen holds them, each day group with its row count, and
+/// the first row's badge, name, meta and flags — enough to prove the log
+/// reached the screen without a picture of it. Password *lengths* only: a
+/// dump file is not a place to write secrets.
+#[cfg(debug_assertions)]
+fn dev_dump_history(ui: &MainWindow, tag: &str) {
+    use slint::Model;
+    let data = ui.get_history_data();
+    let groups = data
+        .groups
+        .iter()
+        .map(|group| format!("{}:{}", group.label, group.rows.row_count()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let first_row = data
+        .groups
+        .iter()
+        .next()
+        .and_then(|group| group.rows.iter().next())
+        .map(|row| {
+            format!(
+                "{} [{}] {} — {} | r={} l={} pw={} url={} pwlen={} urlv=[{}]",
+                row.badge,
+                row.action,
+                row.name,
+                row.meta,
+                row.restore,
+                row.live,
+                row.copy_pw,
+                row.copy_url,
+                row.copy_pw_value.chars().count(),
+                row.copy_url_value,
+            )
+        })
+        .unwrap_or_default();
+    let line = format!(
+        "{tag}: show={} count=[{}] filter={} query=[{}] has={} groups=[{}] empty=[{}] row0=[{}]\n",
+        ui.get_show_history(),
+        data.count,
+        ui.get_history_filter(),
+        ui.get_history_query(),
+        data.has_events,
+        groups,
+        data.empty_title,
+        first_row,
+    );
+    let path = app_dir().join("dev-dump.txt");
+    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+    existing.push_str(&line);
     let _ = std::fs::write(path, existing);
 }
 
@@ -1751,9 +1888,14 @@ fn dev_gate(ui: &MainWindow, state: &Shared) {
     //       the TS title. Cancel abandons the open and stays out of the
     //       editor -- the vault's cancel, which locks, is a different intent.
     let (hash, salt) = hash_passcode("654321");
-    let secured_login = {
+    let (secured_login, before) = {
         let mut guard = state.borrow_mut();
-        guard
+        let before: Vec<VaultItem> = guard
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
+        let added = guard
             .engine
             .add_item(&serde_json::json!({
                 "title": "Secured Bank",
@@ -1763,8 +1905,10 @@ fn dev_gate(ui: &MainWindow, state: &Shared) {
                 "security": { "passcode": { "hash": hash, "salt": salt } },
             }))
             .ok()
-            .map(|item| item.id)
+            .map(|item| item.id);
+        (added, before)
     };
+    record_history(ui, state, &before);
     let Some(id) = secured_login else {
         dev_dump(ui, "gate11.no-item");
         return;
@@ -2098,6 +2242,110 @@ fn record_use(ui: &MainWindow, state: &Shared, id: &str) {
         prefs.usage = by_recency.into_iter().take(200).collect();
     }
     save_prefs(ui, state, &prefs);
+}
+
+/* ---- The History channel (Task 7.2) -------------------------------------- */
+
+/// Writes one mutation into the History channel's log — the `mutate`
+/// wrapper of `hooks.ts` L188-201: every item write passes the list as it
+/// stood before, and this diffs it against the list now, so no call site
+/// can forget to log what it changed. A write that changed nothing (a
+/// re-save of identical data) produces no events and no preference write.
+fn record_history(ui: &MainWindow, state: &Shared, before: &[VaultItem]) {
+    let events = {
+        let guard = state.borrow();
+        let Some(items) = guard.engine.items() else { return };
+        colax_core::history_events_for(before, items, colax_core::util::now_ms())
+    };
+    if events.is_empty() {
+        return;
+    }
+    let mut prefs = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+    };
+    prefs.history = colax_core::append_history(&prefs.history, &events);
+    save_prefs(ui, state, &prefs);
+}
+
+/// `Clear log` — the whole log goes at once, event count and all. No
+/// confirmation in the TS either (`onClear`, HistoryPanel.tsx L140-147).
+fn history_clear(ui: &MainWindow, state: &Shared) {
+    if ui.get_busy() {
+        return;
+    }
+    let mut prefs = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+    };
+    if prefs.history.is_empty() {
+        return;
+    }
+    prefs.history.clear();
+    save_prefs(ui, state, &prefs);
+    refresh_items(ui, state);
+}
+
+/// `Forget` — one row leaves the log, everything else stays (`onForget`).
+fn history_forget(ui: &MainWindow, state: &Shared, id: &str) {
+    if ui.get_busy() {
+        return;
+    }
+    let mut prefs = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+    };
+    let had = prefs.history.len();
+    prefs.history.retain(|event| event.id != id);
+    if prefs.history.len() == had {
+        return;
+    }
+    save_prefs(ui, state, &prefs);
+    refresh_items(ui, state);
+}
+
+/// `Restore` — the row's stored version writes back over whatever stands
+/// there now, deleted or not (`onRestore`; the undo strip reaches the same
+/// engine call through `undo_delete`). The log records the put-back as its
+/// own row, the way the TS's `mutate` would.
+fn history_restore(ui: &MainWindow, state: &Shared, id: &str) {
+    if ui.get_busy() {
+        return;
+    }
+    let stored = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+            .history
+            .iter()
+            .find(|event| event.id == id)
+            .and_then(|event| event.before.clone())
+    };
+    // A row with no stored version has nothing to put back — its button is
+    // not drawn, and a race that reaches here changes nothing.
+    let Some(item) = stored else { return };
+    let title = item.title.clone();
+
+    ui.set_busy(true);
+    let (result, before) = {
+        let mut guard = state.borrow_mut();
+        let before: Vec<VaultItem> = guard
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
+        let result = guard.engine.restore_item(&item).map(|_| ());
+        (result, before)
+    };
+    ui.set_busy(false);
+
+    match result {
+        Ok(()) => {
+            record_history(ui, state, &before);
+            refresh_items(ui, state);
+            notice(ui, format!("Restored \u{201c}{title}\u{201d}.").as_str());
+        }
+        Err(err) => ui.set_error_text(err.to_string().as_str().into()),
+    }
 }
 
 /// The four shell switches exist twice â€” in `shell.json` (read by the tray,
@@ -2958,18 +3206,28 @@ fn editor_save(ui: &MainWindow, state: &Shared) {
     });
 
     ui.set_busy(true);
-    let result = {
+    let (result, before) = {
         let mut guard = state.borrow_mut();
-        if id.is_empty() {
+        let before: Vec<VaultItem> = guard
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
+        let result = if id.is_empty() {
             guard.engine.add_item(&patch).map(|item| item.id)
         } else {
             guard.engine.update_item(&id, &patch).map(|item| item.id)
-        }
+        };
+        (result, before)
     };
     ui.set_busy(false);
 
     match result {
         Ok(saved_id) => {
+            // The write goes through History the way `mutate` wraps every
+            // write in the TS (hooks.ts L188-201): the before-list through
+            // one diff, so no save can go unlogged.
+            record_history(ui, state, &before);
             // Saving counts as a use — a create too (`touchLogin` on both,
             // App.tsx L3612/L3630) — which is what "recent account
             // activity" and "most used" read.
@@ -3035,15 +3293,20 @@ fn editor_delete_confirmed(ui: &MainWindow, state: &Shared) {
     }
 
     ui.set_busy(true);
-    let (deleted, result) = {
+    let (deleted, result, before) = {
         let mut guard = state.borrow_mut();
+        let before: Vec<VaultItem> = guard
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
         let deleted = guard
             .engine
             .items()
             .and_then(|items| items.iter().find(|item| item.id == id))
             .cloned();
         let result = guard.engine.delete_item(&id);
-        (deleted, result)
+        (deleted, result, before)
     };
     ui.set_busy(false);
 
@@ -3054,6 +3317,10 @@ fn editor_delete_confirmed(ui: &MainWindow, state: &Shared) {
                 .map(|item| item.title.clone())
                 .unwrap_or_default();
             state.borrow_mut().last_deleted = deleted;
+            // The row carries the login itself into the log (storage.ts
+            // L407): that snapshot is the only copy left once the record is
+            // gone from storage.
+            record_history(ui, state, &before);
             goto(ui, state, Screen::Vault);
             ui.set_undo_text(format!("Deleted \u{201c}{title}\u{201d}.").as_str().into());
         }
@@ -3076,15 +3343,22 @@ fn undo_delete(ui: &MainWindow, state: &Shared) {
     let title = item.title.clone();
 
     ui.set_busy(true);
-    let result = {
+    let (result, before) = {
         let mut guard = state.borrow_mut();
-        guard.engine.restore_item(&item).map(|_| ())
+        let before: Vec<VaultItem> = guard
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
+        let result = guard.engine.restore_item(&item).map(|_| ());
+        (result, before)
     };
     ui.set_busy(false);
     ui.set_undo_text("".into());
 
     match result {
         Ok(()) => {
+            record_history(ui, state, &before);
             refresh_items(ui, state);
             notice(ui, format!("Restored \u{201c}{title}\u{201d}.").as_str());
         }
@@ -3115,15 +3389,27 @@ fn toggle_favorite(ui: &MainWindow, state: &Shared, id: &str) {
             .map(|item| !item.favorite)
     };
     let Some(next) = next else { return };
-    let result = {
+    let (result, before) = {
         let mut guard = state.borrow_mut();
-        guard
+        let before: Vec<VaultItem> = guard
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
+        let result = guard
             .engine
             .update_item(id, &serde_json::json!({ "favorite": next }))
-            .map(|_| ())
+            .map(|_| ());
+        (result, before)
     };
     match result {
-        Ok(()) => refresh_items(ui, state),
+        Ok(()) => {
+            // A star is an edit: `update_item` moves `updatedAt` and the
+            // content moved with it, so the log takes a row — the TS wraps
+            // this same call in `mutate` (App.tsx L1679).
+            record_history(ui, state, &before);
+            refresh_items(ui, state);
+        }
         Err(err) => ui.set_error_text(err.to_string().as_str().into()),
     }
 }
@@ -4726,8 +5012,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // A new channel is a new scope: a query that meant
                     // something in the old one would silently filter the new
                     // one, so the box empties with the switch (App.tsx L167).
+                    // The History panel's own two state values switch off
+                    // with it, for the same reason.
                     ui.set_search_text("".into());
+                    ui.set_history_query("".into());
+                    ui.set_history_filter(0);
                     refresh_items(&ui, &st);
+                }
+            });
+
+            // The History panel's seven (Task 7.2). The query and the
+            // segment only recompute the screen; Clear and the row actions
+            // write through Rust first, then recompute.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_history_query_changed(move || {
+                // The text itself lives in `history-query`, which
+                // `refresh_items` reads back off the window.
+                if let Some(ui) = weak.upgrade() {
+                    refresh_items(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_history_filter_changed(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_history_filter(index);
+                    refresh_items(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_history_clear(move || {
+                if let Some(ui) = weak.upgrade() {
+                    history_clear(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_history_restore(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    history_restore(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_history_open(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    open_editor(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_history_copy(move |value, label, item_id| {
+                if let Some(ui) = weak.upgrade() {
+                    // Reaching for a row counts as a use of its login, like
+                    // every other copy (`onCopy` carries the live one).
+                    if !item_id.is_empty() {
+                        record_use(&ui, &st, &item_id);
+                    }
+                    copy_to_clipboard(&ui, &st, &value, &label);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_history_forget(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    history_forget(&ui, &st, &id);
                 }
             });
 

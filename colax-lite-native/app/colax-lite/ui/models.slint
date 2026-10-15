@@ -286,3 +286,45 @@ export struct DashRing {
     clear: int,        // logins with no password problem
     total: int,
 }
+
+// ---- The history channel (Task 7.2) ----------------------------------------
+
+/// One row of the History log (`.history__row`): the event's own identity for
+/// the callbacks, the action for the badge and the red border on deletions,
+/// the name and meta line, and the three flags that say which actions this row
+/// offers — Restore needs a stored version, the edit/copy group needs the
+/// login to still exist, Forget is always there.
+export struct HistoryRow {
+    event-id: string,
+    item-id: string,
+    action: string,      // "added" | "edited" | "deleted"
+    badge: string,       // "Added" / "Edited" / "Deleted"
+    name: string,
+    meta: string,
+    restore: bool,       // the event carries a `before` snapshot
+    live: bool,          // the login still exists in the vault
+    copy-pw: bool,       // live and the snapshot has a password to copy
+    copy-pw-value: string,
+    copy-url: bool,      // live and there is an address to copy
+    copy-url-value: string,
+}
+
+/// One day of the log (`.history__group`): `Today`, `Yesterday`, or the
+/// long date the TS's `dayLabel` builds.
+export struct HistoryGroup {
+    label: string,
+    rows: [HistoryRow],
+}
+
+/// The whole screen's data, pushed as one property so the count, the groups
+/// and the empty state cannot disagree mid-keystroke: the count badge, the
+/// day groups (empty ⇒ show the empty state), and the two empty states TS
+/// switches between — nothing recorded yet, or nothing matching the query.
+export struct HistoryData {
+    count: string,
+    groups: [HistoryGroup],
+    empty-title: string,
+    empty-hint: string,
+    has-events: bool,    // Clear log stays live while the log has entries,
+                         // even when the query filters every row away
+}
