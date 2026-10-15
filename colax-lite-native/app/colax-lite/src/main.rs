@@ -16,6 +16,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod appearance;
+mod dashboard;
 mod items;
 mod platform;
 
@@ -32,8 +33,9 @@ use colax_core::totp::{
 use colax_core::{
     answer_too_weak, create_tag, estimate_strength, from_date_input, generate_passphrase,
     generate_password, hash_answer, hash_passcode, passcode_too_weak, relative_time, resolve_header,
-    security_level, to_date_input, verify_answer, verify_passcode, BackupFile, GeneratorOptions,
-    LoginSecurity, VaultEngine, VaultError, VaultItem, VaultProtection, VaultStorage,
+    security_level, to_date_input, verify_answer, verify_passcode, BackupFile, ChannelKind,
+    GeneratorOptions, LoginSecurity, VaultEngine, VaultError, VaultItem, VaultProtection,
+    VaultStorage,
 };
 use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
@@ -434,13 +436,19 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     let guard = state.borrow();
     let prefs = items::prefs_from(guard.engine.preferences());
     let channel = items::channel_by_id(&channel_id);
-    let (cards, sidebar, total) = match guard.engine.items() {
+    // The dashboard replaces the whole pane, and it reads every item — so
+    // it is computed here, while the engine is already open, and applied
+    // after the guard drops like everything else on this path.
+    let is_dashboard = channel.kind == ChannelKind::Dashboard;
+    let (cards, sidebar, total, dash) = match guard.engine.items() {
         Some(items) => {
             let cards = items::build_cards(items, &channel, &prefs, &query);
             let sidebar = items::build_sidebar(items, &channel_id, &prefs);
-            (cards, sidebar, items.len())
+            let dash = is_dashboard
+                .then(|| dashboard::build(items, &prefs, &prefs.usage, colax_core::util::now_ms()));
+            (cards, sidebar, items.len(), dash)
         }
-        None => (Vec::new(), items::build_sidebar(&[], &channel_id, &prefs), 0),
+        None => (Vec::new(), items::build_sidebar(&[], &channel_id, &prefs), 0, None),
     };
     drop(guard);
 
@@ -487,6 +495,12 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     ui.set_sidebar(ModelRc::new(VecModel::from(sidebar)));
     ui.set_count_label(label.into());
     ui.set_channel_name(channel.name.as_str().into());
+    // The dashboard takes the pane; everything the list draws is simply
+    // unused behind it, which is cheaper than a second screen branch.
+    ui.set_show_dashboard(is_dashboard);
+    if let Some(dash) = dash {
+        dashboard::fill(ui, &dash);
+    }
     ui.set_show_urls(prefs.show_urls);
     ui.set_cards_empty_title(empty_title.into());
     ui.set_cards_empty_hint(empty_hint.into());
@@ -877,6 +891,10 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         open_editor(ui, state, "");
         return;
     }
+    if want == "dashboard" {
+        dev_dashboard(ui, state);
+        return;
+    }
 
     let id = state
         .borrow()
@@ -1114,6 +1132,115 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
     let path = app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&dump);
+    let _ = std::fs::write(path, existing);
+}
+
+/// Debug-only: open the Command Center and dump what reached the window.
+///
+/// `COLAX_DEV_SCREEN=dashboard`. The numbers are the point of the walk: the
+/// score and every section's count are read back off the screen's own
+/// properties, so a seeded vault's buckets can be checked against the engine
+/// without looking at the window -- the desktop may be locked, and a
+/// screenshot then comes back white.
+#[cfg(debug_assertions)]
+fn dev_dashboard(ui: &MainWindow, state: &Shared) {
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    // 1. Pick the channel the way the rail's row does: set the id, then
+    //    refresh (the row sets `active-channel` before it fires the
+    //    callback, and the callback only clears the search and redraws).
+    ui.set_active_channel("dashboard".into());
+    refresh_items(ui, state);
+    dev_dump_dash(ui, "dash1.open");
+
+    // 2. A copy bumps the usage record: Recent Logins must lead with the
+    //    copied login and its use count, and Most used must rank it first.
+    if let Some(id) = state
+        .borrow()
+        .engine
+        .items()
+        .and_then(|items| items.first().map(|item| item.id.clone()))
+    {
+        copy_item_password(ui, state, &id);
+        refresh_items(ui, state);
+    }
+    dev_dump_dash(ui, "dash2.after-copy");
+
+    // 3. Flag one login and refresh: the attention list and the score both
+    //    move -- one login fewer counts as clear.
+    if let Some(id) = state
+        .borrow()
+        .engine
+        .items()
+        .and_then(|items| items.first().map(|item| item.id.clone()))
+    {
+        let _ = state
+            .borrow_mut()
+            .engine
+            .update_item(&id, &serde_json::json!({ "needsAttention": true }));
+        refresh_items(ui, state);
+    }
+    dev_dump_dash(ui, "dash3.flagged");
+
+    // 4. Back to the list: the pane swaps with the channel, and the
+    //    dashboard's models stay where they were (nothing clears them; the
+    //    `if` simply stops rendering them).
+    ui.set_active_channel("all".into());
+    refresh_items(ui, state);
+    dev_dump_dash(ui, "dash4.left");
+}
+
+/// The dashboard half of a dump: the swap flag, the score and label, and
+/// every section's count as the screen holds them.
+#[cfg(debug_assertions)]
+fn dev_dump_dash(ui: &MainWindow, tag: &str) {
+    use slint::Model;
+    let dash = format!(
+        "{tag}: show={} score={} {} band={} headline=[{} x{}] has={} tiles=[{}] issues={} recent=[{}] segs=[{}] days={}/{} domains={} reuse={} uses=[{}] emails={} factors={} channels={} org=[{}/{}] {}\n",
+        ui.get_show_dashboard(),
+        ui.get_dash_ring().score,
+        ui.get_dash_ring().label,
+        ui.get_dash_ring().band,
+        ui.get_dash_headline().label,
+        ui.get_dash_headline().count,
+        ui.get_dash_has_headline(),
+        ui.get_dash_stats()
+            .as_any()
+            .downcast_ref::<VecModel<crate::DashStat>>()
+            .map(|m| (0..m.row_count())
+                .map(|i| m.row_data(i).map(|s| s.value).unwrap_or(-1))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("/"))
+            .unwrap_or_default(),
+        ui.get_dash_issues().row_count(),
+        ui.get_dash_recent().row_count(),
+        ui.get_dash_segments().row_count(),
+        ui.get_dash_days_added(),
+        ui.get_dash_days_changed(),
+        ui.get_dash_domains().row_count(),
+        ui.get_dash_reuse().row_count(),
+        ui.get_dash_uses()
+            .as_any()
+            .downcast_ref::<VecModel<crate::DashUse>>()
+            .map(|m| (0..m.row_count())
+                .filter_map(|i| m.row_data(i))
+                .map(|u| format!("{}x{}", u.count, u.name))
+                .collect::<Vec<_>>()
+                .join(","))
+            .unwrap_or_default(),
+        ui.get_dash_emails().row_count(),
+        ui.get_dash_factors().row_count(),
+        ui.get_dash_channels().row_count(),
+        ui.get_dash_tag_count(),
+        ui.get_dash_channel_count(),
+        describe_cards(ui),
+    );
+    let path = app_dir().join("dev-dump.txt");
+    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+    existing.push_str(&dash);
     let _ = std::fs::write(path, existing);
 }
 
@@ -4554,6 +4681,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // one, so the box empties with the switch (App.tsx L167).
                     ui.set_search_text("".into());
                     refresh_items(&ui, &st);
+                }
+            });
+
+            // The dashboard's three deferred actions. Bulk add and the
+            // channel editor have no native panel yet (the TS modals land
+            // with the import tools and Task 1.5); Settings is Phase 5. The
+            // buttons say so rather than sitting dead.
+            let weak = ui.as_weak();
+            ui.on_dash_bulk_add(move || {
+                if let Some(ui) = weak.upgrade() {
+                    notice(&ui, "Bulk add arrives with the import tools.");
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_dash_new_channel(move || {
+                if let Some(ui) = weak.upgrade() {
+                    notice(&ui, "The channel editor arrives with the next phase.");
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_dash_open_settings(move |_section| {
+                if let Some(ui) = weak.upgrade() {
+                    notice(&ui, "Settings arrives with the next phase.");
                 }
             });
 

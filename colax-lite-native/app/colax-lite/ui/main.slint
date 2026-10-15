@@ -16,9 +16,10 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey } from "models.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
+import { Dashboard } from "screens/dashboard.slint";
 
 // ---- The vault's four presentations -------------------------------------
 // `VIEW_OPTIONS` in ViewMenu.tsx: Flow, Orbit, List, Grid -- four cards with
@@ -694,6 +695,44 @@ export component MainWindow inherits Window {
     // pref's own whitelist before it writes.
     callback rail-picked(position: string);
     callback labels-picked(labels: string);
+    // ---- The dashboard (Task 7.1) -----------------------------------------
+    // The Command Center replaces the whole content pane when its channel is
+    // active — toolbar and grid included, as the TS dashboard does. Rust
+    // fills the models on every refresh (`dashboard.rs::fill`); the three
+    // callbacks are the only way back out.
+    in-out property <bool> show-dashboard: false;
+    in-out property <DashRing> dash-ring;
+    in-out property <string> dash-sub: "";
+    in-out property <bool> dash-empty: false;
+    in-out property <bool> dash-has-password: false;
+    in-out property <bool> dash-has-headline: false;
+    in-out property <DashIssue> dash-headline;
+    in-out property <[DashStat]> dash-stats;
+    in-out property <[DashIssue]> dash-issues;
+    in-out property <[DashRow]> dash-recent;
+    in-out property <[DashKey]> dash-segments;
+    in-out property <[DashKey]> dash-keys;
+    in-out property <bool> dash-has-days: false;
+    in-out property <[DashDay]> dash-days;
+    in-out property <int> dash-days-added;
+    in-out property <int> dash-days-changed;
+    in-out property <[DashBar]> dash-domains;
+    in-out property <[DashReuse]> dash-reuse;
+    in-out property <[DashUse]> dash-uses;
+    in-out property <int> dash-uses-total;
+    in-out property <[DashRow]> dash-emails;
+    in-out property <int> dash-emails-more;
+    in-out property <[DashRow]> dash-factors;
+    in-out property <int> dash-factors-more;
+    in-out property <[DashBar]> dash-channels;
+    in-out property <int> dash-channels-more;
+    in-out property <int> dash-tag-count;
+    in-out property <int> dash-channel-count;
+    // Bulk add and channel editing have no native panel yet; the buttons
+    // report that rather than sitting dead (Settings follows in Phase 5).
+    callback dash-bulk-add();
+    callback dash-new-channel();
+    callback dash-open-settings(section: string);
     // ---- SecurityGate ----------------------------------------------------
     // A blocking verification for a login or for the vault itself: any one
     // factor passes, and the open panel holds everything typed until Rust
@@ -1003,7 +1042,50 @@ export component MainWindow inherits Window {
                 width: root.rail-side ? parent.width - root.rail-w : parent.width;
                 height: root.rail-strip ? parent.height - root.rail-h : parent.height;
 
-                VerticalLayout {
+                // The Command Center takes the whole pane when its channel is
+                // active — the toolbar and the grid go with the list, as they
+                // do in the TS, because the dashboard brings its own header
+                // and its own ways out.
+                if (root.show-dashboard) : Dashboard {
+                    ring: root.dash-ring;
+                    sub: root.dash-sub;
+                    empty: root.dash-empty;
+                    has-password: root.dash-has-password;
+                    has-headline: root.dash-has-headline;
+                    headline: root.dash-headline;
+                    stats: root.dash-stats;
+                    issues: root.dash-issues;
+                    recent: root.dash-recent;
+                    segments: root.dash-segments;
+                    keys: root.dash-keys;
+                    has-days: root.dash-has-days;
+                    days: root.dash-days;
+                    days-added: root.dash-days-added;
+                    days-changed: root.dash-days-changed;
+                    domains: root.dash-domains;
+                    reuse: root.dash-reuse;
+                    uses: root.dash-uses;
+                    uses-total: root.dash-uses-total;
+                    emails: root.dash-emails;
+                    emails-more: root.dash-emails-more;
+                    factors: root.dash-factors;
+                    factors-more: root.dash-factors-more;
+                    channels: root.dash-channels;
+                    channels-more: root.dash-channels-more;
+                    tag-count: root.dash-tag-count;
+                    channel-count: root.dash-channel-count;
+
+                    // Both routes exist on the root already: the rail handler
+                    // clears the search and refreshes, the editor handler
+                    // opens a new login for "".
+                    select-channel(id) => { root.channel-selected(id); }
+                    open-login(id) => { root.open-editor(id); }
+                    add-login() => { root.open-editor(""); }
+                    bulk-add() => { root.dash-bulk-add(); }
+                    new-channel() => { root.dash-new-channel(); }
+                    open-settings(section) => { root.dash-open-settings(section); }
+                }
+                if (!root.show-dashboard) : VerticalLayout {
                     padding-top: 26px;
                     padding-bottom: 16px;
                     padding-left: 30px;

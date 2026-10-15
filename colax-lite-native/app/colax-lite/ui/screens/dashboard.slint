@@ -1,0 +1,1062 @@
+// The Command Center — the Dashboard channel's screen (Task 7.1).
+//
+// Port of `E:\acc2\src\ui\Dashboard.tsx` (1,058 lines), section for section:
+// header, score ring, four metric tiles, attention list beside Recent
+// Logins, the five insight cards, the two review lists, channels beside
+// quick actions, and the Organize signpost. Every number, label and list
+// arrived computed in Rust (`src/dashboard.rs`) through the structs in
+// models.slint — this file draws them and reports taps. Nothing here does
+// arithmetic on vault data.
+//
+// One deferral, in the TS's own shape: the four hover popovers (strength,
+// domains, reuse, most-used) land with the follow-up commit; the cards
+// show their top rows and counts today, and no affordance here promises a
+// popover that does not exist yet.
+
+import { Theme } from "../theme.slint";
+import { Btn } from "../widgets.slint";
+import { DashStat, DashIssue, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashRing } from "../models.slint";
+
+// The two colours a row borrows. As pure functions on a global: Slint 1.18
+// has no top-level functions, and bindings may only call pure ones.
+global DashColors {
+    // The severity colour an issue takes: high, medium, low (`data-severity`).
+    public pure function sev-color(sev: int) -> color {
+        sev == 0 ? Theme.danger : sev == 1 ? Theme.warn : Theme.muted
+    }
+
+    // The strength band colour (TS `data-band` on the bar and the key dots).
+    public pure function band-color(band: int) -> color {
+        band == 0 ? Theme.danger : band == 1 ? Theme.warn : band == 2 ? #d9c36b : band == 3 ? Theme.accent : Theme.good
+    }
+}
+
+// A section's title row: name over a one-line hint (`.dash-section__head`).
+component section-head inherits Rectangle {
+    in property <string> title;
+    in property <string> hint: "";
+    height: root.hint == "" ? 24px : 42px;
+    VerticalLayout {
+        spacing: 2px;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: 15px;
+            font-weight: 700;
+            overflow: elide;
+        }
+        if (root.hint != "") : Text {
+            text: root.hint;
+            color: Theme.muted;
+            font-size: 12.5px;
+            overflow: elide;
+        }
+    }
+}
+
+// A titled card that hosts arbitrary content (`@children`), the shell every
+// dashboard panel uses.
+component card inherits Rectangle {
+    in property <string> title: "";
+    in property <string> hint: "";
+    background: Theme.card;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.border;
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        if (root.title != "") : section-head {
+            title: root.title;
+            hint: root.hint;
+        }
+        @children
+    }
+}
+
+// One list row: a login's name (a button when it opens one), its meta line,
+// and a trailing slot for a relative time or a masked address (`.dash-row`).
+component list-row inherits Rectangle {
+    in property <string> name;
+    in property <string> meta: "";
+    in property <string> right: "";
+    in property <bool> can-open: false;
+    callback open();
+
+    height: 32px;
+    touch := TouchArea {
+        enabled: root.can-open;
+        clicked => { root.open(); }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        Text {
+            text: root.name;
+            color: root.can-open && touch.has-hover ? Theme.accent-strong : Theme.text;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if (root.meta != "") : Text {
+            text: root.meta;
+            color: Theme.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+            // The TS caps the meta at 45% of the row. Bounding it against
+            // `parent.width` would close a loop back through the layout
+            // cache (the row's width is itself measured from this cell), so
+            // the cap is the same 45% of the card column, held flat: these
+            // rows all sit in same-width cards.
+            max-width: 240px;
+        }
+        if (root.right != "") : Text {
+            text: root.right;
+            color: Theme.faint;
+            font-size: 11.5px;
+            vertical-alignment: center;
+        }
+    }
+    // The touch layer sits over the row but under nothing else here.
+    Rectangle {
+        background: touch.has-hover && root.can-open ? Theme.row-hover : #00000000;
+        border-radius: Theme.radius-sm;
+    }
+}
+
+// One bar row: label, track filled to `share` of the widest row, count.
+// Taps only when the row names a channel (`.dash-bars`).
+component bar-row inherits Rectangle {
+    in property <string> label;
+    in property <int> count;
+    in property <float> share: 0.0;
+    in property <bool> can-open: false;
+    callback open();
+
+    height: 26px;
+    touch := TouchArea {
+        enabled: root.can-open;
+        clicked => { root.open(); }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        Text {
+            text: root.label;
+            color: root.can-open && touch.has-hover ? Theme.accent-strong : Theme.text;
+            font-size: 12.5px;
+            vertical-alignment: center;
+            overflow: elide;
+            width: 132px;
+        }
+        Rectangle {
+            height: 6px;
+            cross-axis-self-alignment: center;
+            horizontal-stretch: 1;
+            border-radius: 3px;
+            background: #ffffff0f;
+            Rectangle {
+                width: parent.width * max(0.0, min(1.0, root.share));
+                height: parent.height;
+                border-radius: 3px;
+                background: Theme.accent;
+            }
+        }
+        Text {
+            text: root.count;
+            color: Theme.muted;
+            font-size: 12px;
+            font-weight: 700;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            width: 32px;
+        }
+    }
+}
+
+// One attention row: a severity bar, the label and its detail, the count
+// (`.dash-issue`). The whole row opens the view behind it.
+component issue-row inherits Rectangle {
+    in property <DashIssue> issue;
+    callback open();
+
+    height: 54px;
+    touch := TouchArea {
+        clicked => { root.open(); }
+    }
+    background: touch.has-hover ? Theme.row-hover : #00000000;
+    border-radius: Theme.radius-sm;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 8px;
+        spacing: 12px;
+        Rectangle {
+            width: 3px;
+            cross-axis-self-alignment: center;
+            height: 36px;
+            border-radius: 2px;
+            background: DashColors.sev-color(root.issue.severity);
+        }
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.issue.label;
+                color: Theme.text;
+                font-size: 13px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.issue.detail;
+                color: Theme.muted;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+        Text {
+            text: root.issue.count;
+            color: DashColors.sev-color(root.issue.severity);
+            font-size: 16px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The score ring: the TS drew an SVG circle with a dasharray; here a
+// `Path` donut-segment on the same 64-unit view, start at 3 o'clock,
+// sweeping clockwise by the angle Rust computed (models.slint `DashRing`).
+component score-ring inherits Rectangle {
+    in property <DashRing> ring;
+
+    width: 64px;
+    height: 64px;
+    // Band colour: >=90 good, >=70 accent, else danger (TS data-band).
+    property <color> band: root.ring.band == 0 ? Theme.good : root.ring.band == 1 ? Theme.accent : Theme.danger;
+
+    // Track. At a perfect 100 the track itself takes the band colour: one
+    // 360° arc cannot close a donut in a single sweep, and this reads the
+    // same. Path children speak plain floats in the 64-unit view.
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: 32px;
+        border-width: 6px;
+        background: #00000000;
+        border-color: root.ring.closed ? root.band : #ffffff14;
+    }
+    if (root.ring.angle > 0 && !root.ring.closed) : Path {
+        width: parent.width;
+        height: parent.height;
+        fill: root.band;
+        // 3 o'clock on the outer radius (29), sweeping clockwise; the
+        // endpoint sets the angle (ArcTo has no angle field, only the SVG
+        // arc flags), so Rust computes the two ends and `large-arc`.
+        MoveTo { x: 61; y: 32; }
+        ArcTo {
+            radius-x: 29;
+            radius-y: 29;
+            x: root.ring.end-outer-x;
+            y: root.ring.end-outer-y;
+            large-arc: root.ring.large-arc;
+            sweep: true;
+        }
+        LineTo {
+            x: root.ring.end-inner-x;
+            y: root.ring.end-inner-y;
+        }
+        // Back along the inner radius (23), then close the donut segment so
+        // the fill cannot leak a chord across the ring's mouth.
+        ArcTo {
+            radius-x: 23;
+            radius-y: 23;
+            x: 55;
+            y: 32;
+            large-arc: root.ring.large-arc;
+            sweep: false;
+        }
+        Close {}
+    }
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.ring.score;
+        color: Theme.text;
+        font-size: 18px;
+        font-weight: 800;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// One metric tile: the value, its label, and the second line that says what
+// the number means (`.stat`). Taps through to the view behind it.
+component stat-tile inherits Rectangle {
+    in property <DashStat> stat;
+    callback open();
+
+    touch := TouchArea {
+        clicked => { root.open(); }
+    }
+    background: touch.pressed ? Theme.surface-hover : touch.has-hover ? Theme.surface-raised : Theme.surface;
+    border-radius: Theme.radius-md;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 3px;
+        Text {
+            text: root.stat.value;
+            color: Theme.text;
+            font-size: 22px;
+            font-weight: 800;
+        }
+        Text {
+            text: root.stat.label;
+            color: Theme.text;
+            font-size: 12.5px;
+            font-weight: 600;
+            overflow: elide;
+        }
+        Text {
+            text: root.stat.note;
+            color: Theme.faint;
+            font-size: 11.5px;
+            overflow: elide;
+        }
+    }
+}
+
+export component Dashboard inherits Flickable {
+    in property <DashRing> ring;
+    in property <string> sub: "";
+    in property <bool> empty: false;
+    in property <bool> has-password: false;
+    in property <bool> has-headline: false;
+    in property <DashIssue> headline;
+    in property <[DashStat]> stats;
+    in property <[DashIssue]> issues;
+    in property <[DashRow]> recent;
+    in property <[DashKey]> segments;
+    in property <[DashKey]> keys;
+    in property <bool> has-days: false;
+    in property <[DashDay]> days;
+    in property <int> days-added;
+    in property <int> days-changed;
+    in property <[DashBar]> domains;
+    in property <[DashReuse]> reuse;
+    in property <[DashUse]> uses;
+    in property <int> uses-total;
+    in property <[DashRow]> emails;
+    in property <int> emails-more;
+    in property <[DashRow]> factors;
+    in property <int> factors-more;
+    in property <[DashBar]> channels;
+    in property <int> channels-more;
+    in property <int> tag-count;
+    in property <int> channel-count;
+
+    callback select-channel(id: string);
+    callback open-login(id: string);
+    callback add-login();
+    callback bulk-add();
+    callback new-channel();
+    callback open-settings(section: string);
+
+    VerticalLayout {
+        padding-top: 26px;
+        padding-bottom: 24px;
+        padding-left: 30px;
+        padding-right: 34px;
+        spacing: 14px;
+
+        // ---- Header: eyebrow, title, one-line status (`.cc-head`) ----
+        HorizontalLayout {
+            spacing: 10px;
+            VerticalLayout {
+                spacing: 2px;
+                horizontal-stretch: 1;
+                Text {
+                    text: "Vault overview";
+                    color: Theme.accent-text;
+                    font-size: 11px;
+                    font-weight: 700;
+                    letter-spacing: 0.8px;
+                }
+                Text {
+                    text: "Command Center";
+                    color: Theme.text;
+                    font-size: 21px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.sub;
+                    color: Theme.muted;
+                    font-size: 13px;
+                    overflow: elide;
+                }
+            }
+            Rectangle {
+                height: 28px;
+                cross-axis-self-alignment: center;
+                border-radius: 14px;
+                background: Theme.good-soft;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 6px;
+                    alignment: center;
+                    cross-axis-alignment: center;
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 4px;
+                        background: Theme.good;
+                    }
+                    Text {
+                        text: "Unlocked";
+                        color: Theme.good;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ---- Security summary: the count that matters, the ring, the one
+        // action that fixes it (`.cc-security`). Hidden on an empty vault. ----
+        if (!root.empty) : Rectangle {
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 16px;
+                HorizontalLayout {
+                    spacing: 16px;
+                    if (root.has-headline) : HorizontalLayout {
+                        spacing: 14px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: root.headline.count;
+                            color: DashColors.sev-color(root.headline.severity);
+                            font-size: 30px;
+                            font-weight: 800;
+                            vertical-alignment: center;
+                        }
+                        VerticalLayout {
+                            spacing: 3px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.headline.label;
+                                color: Theme.text;
+                                font-size: 15px;
+                                font-weight: 700;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.headline.detail;
+                                color: Theme.muted;
+                                font-size: 12.5px;
+                                wrap: word-wrap;
+                            }
+                        }
+                        Btn {
+                            label: "Review now";
+                            kind: 0;
+                            h: 36px;
+                            cross-axis-self-alignment: center;
+                            clicked => { root.select-channel(root.headline.channel); }
+                        }
+                    }
+                    if (!root.has-headline) : Text {
+                        text: "Everything looks healthy. Nothing needs rotation or review.";
+                        color: Theme.muted;
+                        font-size: 13.5px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+                }
+                // The foot: ring on the left, what the number means beside it.
+                HorizontalLayout {
+                    spacing: 14px;
+                    score-ring {
+                        ring: root.ring;
+                        cross-axis-self-alignment: center;
+                    }
+                    VerticalLayout {
+                        spacing: 3px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Vault score " + root.ring.score + "/100 · " + root.ring.label;
+                            color: Theme.text;
+                            font-size: 13px;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            // "No password problem", not "clear of everything":
+                            // untagged logins are tidiness, not weakness (the
+                            // TS says the same in its comment at L508).
+                            text: root.ring.clear + " of " + root.ring.total + (root.ring.total == 1 ? " login" : " logins") + " with no password problem.";
+                            color: Theme.muted;
+                            font-size: 12.5px;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- The four tiles: every one navigates to its number's view ----
+        HorizontalLayout {
+            spacing: 14px;
+            for stat in root.stats : stat-tile {
+                stat: stat;
+                horizontal-stretch: 1;
+                open => { root.select-channel(stat.channel); }
+            }
+        }
+
+        // ---- Get started: the empty vault's only call to action ----
+        if (root.empty) : Rectangle {
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 22px;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        spacing: 3px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Get started";
+                            color: Theme.text;
+                            font-size: 15px;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: "Your first login is encrypted on this device straight away.";
+                            color: Theme.muted;
+                            font-size: 12.5px;
+                            overflow: elide;
+                        }
+                    }
+                    Btn {
+                        label: "Add a login";
+                        kind: 0;
+                        h: 36px;
+                        cross-axis-self-alignment: center;
+                        clicked => { root.add-login(); }
+                    }
+                }
+            }
+        }
+
+        // ---- Attention beside Recent Logins (`.dash-grid`) ----
+        if (!root.empty && (root.issues.length > 0 || root.recent.length > 0)) : HorizontalLayout {
+            spacing: 14px;
+
+            if (root.issues.length > 0) : VerticalLayout {
+                spacing: 10px;
+                horizontal-stretch: 1;
+                section-head {
+                    title: "Needs your attention";
+                    hint: "Worst first. Each row opens the matching view.";
+                }
+                Rectangle {
+                    background: Theme.card;
+                    border-radius: Theme.radius-lg;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        for issue in root.issues : issue-row {
+                            issue: issue;
+                            open => { root.select-channel(issue.channel); }
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 10px;
+                width: 380px;
+                section-head {
+                    title: "Recent Logins";
+                    hint: "What you have actually touched lately.";
+                }
+                Rectangle {
+                    background: Theme.card;
+                    border-radius: Theme.radius-lg;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        if (root.recent.length == 0) : VerticalLayout {
+                            padding: 8px;
+                            Text {
+                                text: "No activity yet — copy or edit a login and it appears here.";
+                                color: Theme.muted;
+                                font-size: 12.5px;
+                                wrap: word-wrap;
+                            }
+                        }
+                        for row in root.recent : list-row {
+                            name: row.name;
+                            meta: row.meta;
+                            right: row.right;
+                            can-open: row.item != "";
+                            open => { root.open-login(row.item); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Insights: strength, 30 days, sites, reuse, most used ----
+        if (!root.empty && root.has-password) : VerticalLayout {
+            spacing: 10px;
+            section-head {
+                title: "Insights";
+                hint: "How guessable passwords are, and what changed lately.";
+            }
+            HorizontalLayout {
+                spacing: 14px;
+
+                card {
+                    title: "Password strength";
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        spacing: 10px;
+                        // The stacked bar: one segment per non-empty band,
+                        // weighted by count (TS `flexGrow`).
+                        Rectangle {
+                            height: 10px;
+                            border-radius: 5px;
+                            background: #ffffff0f;
+                            HorizontalLayout {
+                                spacing: 2px;
+                                for seg in root.segments : Rectangle {
+                                    horizontal-stretch: max(1, seg.count);
+                                    border-radius: 4px;
+                                    background: DashColors.band-color(seg.band);
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
+                            for key in root.keys : HorizontalLayout {
+                                spacing: 6px;
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: DashColors.band-color(key.band);
+                                    cross-axis-self-alignment: center;
+                                }
+                                Text {
+                                    text: key.label;
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: key.count;
+                                    color: Theme.text;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                card {
+                    title: "Last 30 days";
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        spacing: 10px;
+                        if (root.has-days) : HorizontalLayout {
+                            spacing: 3px;
+                            alignment: center;
+                            for day in root.days : Rectangle {
+                                horizontal-stretch: 1;
+                                max-width: 14px;
+                                height: 84px;
+                                // The bar rides the bottom, faint stub for a
+                                // quiet day (TS `data-empty`).
+                                Rectangle {
+                                    y: parent.height - self.height;
+                                    width: parent.width;
+                                    height: day.fill > 0.0 ? day.fill * parent.height : 3px;
+                                    border-radius: 3px;
+                                    background: day.fill > 0.0 ? Theme.accent : #ffffff14;
+                                }
+                            }
+                        }
+                        if (!root.has-days) : Text {
+                            text: "Nothing added or changed in the last 30 days.";
+                            color: Theme.muted;
+                            font-size: 12.5px;
+                            wrap: word-wrap;
+                        }
+                        if (root.has-days) : Text {
+                            text: root.days-added + " added · " + root.days-changed + " changed";
+                            color: Theme.faint;
+                            font-size: 11.5px;
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 14px;
+
+                card {
+                    title: "Most logins per site";
+                    horizontal-stretch: 1;
+                    if (root.domains.length == 0) : Text {
+                        text: "No websites saved yet.";
+                        color: Theme.muted;
+                        font-size: 12.5px;
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        for bar in root.domains : bar-row {
+                            label: bar.label;
+                            count: bar.count;
+                            share: bar.share;
+                        }
+                    }
+                }
+
+                card {
+                    title: "Reused passwords";
+                    horizontal-stretch: 1;
+                    if (root.reuse.length == 0) : Text {
+                        text: root.has-password ? "Nothing is reused. Good." : "No passwords stored yet.";
+                        color: Theme.muted;
+                        font-size: 12.5px;
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        for group in root.reuse : HorizontalLayout {
+                            spacing: 10px;
+                            Text {
+                                text: group.count + "×";
+                                color: Theme.danger;
+                                font-size: 13px;
+                                font-weight: 800;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: group.sites;
+                                color: Theme.text;
+                                font-size: 12.5px;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+
+                card {
+                    title: "Most used";
+                    horizontal-stretch: 1;
+                    if (root.uses.length == 0) : Text {
+                        text: "Copy or edit a login and it climbs here.";
+                        color: Theme.muted;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        for use in root.uses : HorizontalLayout {
+                            spacing: 10px;
+                            touch := TouchArea {
+                                clicked => { root.open-login(use.item); }
+                            }
+                            Text {
+                                text: use.count + "×";
+                                color: Theme.text;
+                                font-size: 12.5px;
+                                font-weight: 800;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: use.name;
+                                color: touch.has-hover ? Theme.accent-strong : Theme.text;
+                                font-size: 12.5px;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                        }
+                        if (root.uses.length > 0) : Text {
+                            text: "Top " + min(5, root.uses.length) + " of " + root.uses-total;
+                            color: Theme.faint;
+                            font-size: 11.5px;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Email review beside Second factors ----
+        if (root.emails.length > 0 || root.factors.length > 0) : HorizontalLayout {
+            spacing: 14px;
+
+            if (root.emails.length > 0) : VerticalLayout {
+                spacing: 10px;
+                horizontal-stretch: 1;
+                section-head {
+                    title: "Email review";
+                    hint: "Addresses untouched past the check window. Open one to update it.";
+                }
+                Rectangle {
+                    background: Theme.card;
+                    border-radius: Theme.radius-lg;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        for row in root.emails : list-row {
+                            name: row.name;
+                            meta: row.meta;
+                            can-open: row.item != "";
+                            open => { root.open-login(row.item); }
+                        }
+                        if (root.emails-more > 0) : VerticalLayout {
+                            padding: 4px;
+                            Text {
+                                text: "+" + root.emails-more + " more in the vault.";
+                                color: Theme.faint;
+                                font-size: 11.5px;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (root.factors.length > 0) : VerticalLayout {
+                spacing: 10px;
+                width: 380px;
+                section-head {
+                    title: "Second factors";
+                    hint: "Every login carrying its own factor. Open one to change it.";
+                }
+                Rectangle {
+                    background: Theme.card;
+                    border-radius: Theme.radius-lg;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        for row in root.factors : list-row {
+                            name: row.name;
+                            meta: row.meta;
+                            can-open: row.item != "";
+                            open => { root.open-login(row.item); }
+                        }
+                        if (root.factors-more > 0) : VerticalLayout {
+                            padding: 4px;
+                            Text {
+                                text: "+" + root.factors-more + " more in the vault.";
+                                color: Theme.faint;
+                                font-size: 11.5px;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Channels beside Quick actions ----
+        if (!root.empty) : HorizontalLayout {
+            spacing: 14px;
+
+            VerticalLayout {
+                spacing: 10px;
+                horizontal-stretch: 1;
+                section-head {
+                    title: "Channels";
+                    hint: "Where your logins live. Open one.";
+                }
+                Rectangle {
+                    background: Theme.card;
+                    border-radius: Theme.radius-lg;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 4px;
+                        for bar in root.channels : bar-row {
+                            label: bar.label;
+                            count: bar.count;
+                            share: bar.share;
+                            can-open: bar.channel != "";
+                            open => { root.select-channel(bar.channel); }
+                        }
+                        if (root.channels-more > 0) : VerticalLayout {
+                            padding: 4px;
+                            Text {
+                                text: "+" + root.channels-more + " more in the sidebar.";
+                                color: Theme.faint;
+                                font-size: 11.5px;
+                            }
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 10px;
+                width: 380px;
+                section-head {
+                    title: "Quick actions";
+                    hint: "Create without leaving.";
+                }
+                Rectangle {
+                    background: Theme.card;
+                    border-radius: Theme.radius-lg;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+                        Btn {
+                            label: "New login";
+                            kind: 0;
+                            clicked => { root.add-login(); }
+                        }
+                        Btn {
+                            label: "Bulk add logins";
+                            kind: 1;
+                            clicked => { root.bulk-add(); }
+                        }
+                        Btn {
+                            label: "New channel";
+                            kind: 1;
+                            clicked => { root.new-channel(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Organize: a signpost, not a second copy of Settings ----
+        Rectangle {
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                section-head {
+                    title: "Organize";
+                    hint: "Structure at a glance. Editing happens in Settings.";
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.tag-count + (root.tag-count == 1 ? " tag" : " tags");
+                                color: Theme.text;
+                                font-size: 13px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: "Rename, recolour, delete";
+                                color: Theme.muted;
+                                font-size: 12px;
+                            }
+                        }
+                        Btn {
+                            label: "Manage tags";
+                            kind: 2;
+                            h: 30px;
+                            cross-axis-self-alignment: center;
+                            clicked => { root.open-settings("channels"); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.channel-count + (root.channel-count == 1 ? " channel" : " channels");
+                                color: Theme.text;
+                                font-size: 13px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: "Create, edit, reorder";
+                                color: Theme.muted;
+                                font-size: 12px;
+                            }
+                        }
+                        Btn {
+                            label: "Manage channels";
+                            kind: 2;
+                            h: 30px;
+                            cross-axis-self-alignment: center;
+                            clicked => { root.open-settings("channels"); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: "Reminder windows";
+                                color: Theme.text;
+                                font-size: 13px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: "Rotation, email checks, stale flags";
+                                color: Theme.muted;
+                                font-size: 12px;
+                            }
+                        }
+                        Btn {
+                            label: "Open Security";
+                            kind: 2;
+                            h: 30px;
+                            cross-axis-self-alignment: center;
+                            clicked => { root.open-settings("security"); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

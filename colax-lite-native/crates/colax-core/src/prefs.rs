@@ -111,6 +111,12 @@ pub struct VaultPreferences {
     /// *failure* notice is not a toast and shows either way — TS notifies
     /// it before the toast flag is ever consulted (hooks.ts L580).
     pub copy_toasts: bool,
+    /// Show addresses as `ab•••@site.test` outside their own row
+    /// (`maskEmails`, storage.ts L714, normalised L1108 as `!== false` —
+    /// anything but an explicit `false` leaves it on). Copying still
+    /// copies the whole address; this only ever changes what shoulders
+    /// can surf.
+    pub mask_emails: bool,
     /// The global tag catalogue; logins carry ids from it (`Tag` above).
     /// Seeded with the three shipped tags on every load — `ensureDefaultTags`
     /// in storage.ts L1076 — so a vault opened here shows the same tags the
@@ -162,6 +168,7 @@ impl Default for VaultPreferences {
             clear_clipboard_seconds: 30.0,
             clear_clipboard_on_lock: true,
             copy_toasts: true,
+            mask_emails: true,
             tags: Vec::new(),
             sidebar_position: "left".into(),
             sidebar_labels: "both".into(),
@@ -274,6 +281,9 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // normalisePreferences runs the on/off flags through).
     out.clear_clipboard_on_lock = truthy(o.get("clearClipboardOnLock"), true);
     out.copy_toasts = truthy(o.get("copyToasts"), true);
+    // `!== false` in TS: a stored `false` is the only thing that turns the
+    // masking off — a missing key, null or any other value leaves it on.
+    out.mask_emails = o.get("maskEmails").and_then(Value::as_bool) != Some(false);
     // Use counts (`storage.ts` L1341-1355): `{ count, at }` objects only —
     // a malformed field falls back to 0, an entry with neither a count nor
     // a date drops out, and the newest 200 survive the cap. Load validates
@@ -336,7 +346,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "compactSidebar","showSidebar","vaultSecurity",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
         "pinFavorites","manualOrder","passwordAgeDays","emailCheckDays","confirmDeletes","tags","autoLockMinutes",
-        "clearClipboardSeconds","clearClipboardOnLock","copyToasts","usage"];
+        "clearClipboardSeconds","clearClipboardOnLock","copyToasts","maskEmails","usage"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
