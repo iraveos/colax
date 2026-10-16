@@ -201,12 +201,19 @@ pub struct VaultPreferences {
     pub manual_order: Vec<String>,
     /// Days before a password counts as stale. 0 disables the check.
     pub password_age_days: i64,
+    /// Days before an unchanged address counts as stale in the health views
+    /// (`emailAgeDays`, storage.ts L643 — a year out of the box; whitelist
+    /// [0, 90, 180, 365, 730] at L1411). 0 disables that check too.
+    pub email_age_days: i64,
     /// Days before a login's *username* counts as due for review
     /// (`emailCheckDays`, storage.ts L645 — default 90, whitelist
     /// [0, 30, 60, 90, 180, 365] at L1414). 0 disables that check too.
     pub email_check_days: i64,
     /// Ask before deleting, rather than deleting straight to undo.
     pub confirm_deletes: bool,
+    /// Ask for a password to protect an exported backup (`confirmBeforeExport`,
+    /// storage.ts L822 — shipped off, so the plain export stays one press).
+    pub confirm_before_export: bool,
     // Activity (Task 7.1).
     /// Copy/edit counts per login id (`usage`, storage.ts L613): the
     /// dashboard's "most used" and "recent account activity" read this.
@@ -230,6 +237,13 @@ pub struct VaultPreferences {
     /// Also wipe the clipboard when the vault locks (`clearClipboardOnLock`,
     /// storage.ts L805 — shipped on).
     pub clear_clipboard_on_lock: bool,
+    /// Watch the clipboard for an address and a password copied together and
+    /// offer to save them (`clipboardCapture`, storage.ts L710 — shipped
+    /// off, and read back as `Boolean(...)`).
+    pub clipboard_capture: bool,
+    /// Skip that offer and save straight away (`clipboardAutoSave`, L712 —
+    /// shipped off; only meaningful with the watch above).
+    pub clipboard_auto_save: bool,
     /// Toast on a successful copy (`copyToasts`, storage.ts L836). The
     /// *failure* notice is not a toast and shows either way — TS notifies
     /// it before the toast flag is ever consulted (hooks.ts L580).
@@ -240,6 +254,13 @@ pub struct VaultPreferences {
     /// copies the whole address; this only ever changes what shoulders
     /// can surf.
     pub mask_emails: bool,
+    /// A tappable reuse warning after saving a shared password
+    /// (`warnOnReuse`, storage.ts L814 — shipped on).
+    pub warn_on_reuse: bool,
+    /// File every login sharing a password under the "reused" tag
+    /// (`autoTagReused`, storage.ts L820, normalised L1104 as `!== false` —
+    /// the masking rule again). The tag itself is a shipped seed.
+    pub auto_tag_reused: bool,
     /// The global tag catalogue; logins carry ids from it (`Tag` above).
     /// Seeded with the three shipped tags on every load — `ensureDefaultTags`
     /// in storage.ts L1076 — so a vault opened here shows the same tags the
@@ -288,16 +309,22 @@ impl Default for VaultPreferences {
             pin_favorites: true,
             manual_order: Vec::new(),
             password_age_days: 180,
+            email_age_days: 365,
             email_check_days: 90,
             confirm_deletes: true,
+            confirm_before_export: false,
             usage: BTreeMap::new(),
             history: Vec::new(),
             alarms: Vec::new(),
             auto_lock_minutes: 5,
             clear_clipboard_seconds: 30.0,
             clear_clipboard_on_lock: true,
+            clipboard_capture: false,
+            clipboard_auto_save: false,
             copy_toasts: true,
             mask_emails: true,
+            warn_on_reuse: true,
+            auto_tag_reused: true,
             tags: Vec::new(),
             password_generator: PasswordGenerator::default(),
             sidebar_position: "left".into(),
@@ -386,6 +413,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // JS Boolean(...) again: a stored string still reads as a choice.
     out.pin_favorites = truthy(o.get("pinFavorites"), true);
     out.confirm_deletes = truthy(o.get("confirmDeletes"), true);
+    out.confirm_before_export = truthy(o.get("confirmBeforeExport"), false);
     // The list is deduplicated and emptied of anything that is not a non-empty
     // id, so a hand-edited record cannot put nulls in the drag order.
     out.manual_order = id_list(o.get("manualOrder"));
@@ -394,6 +422,12 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.password_age_days = match o.get("passwordAgeDays").and_then(Value::as_i64) {
         Some(d) if [0, 30, 60, 90, 180, 365, 730].contains(&d) => d,
         _ => 180,
+    };
+    // The address-review window is the same whitelist the check below uses,
+    // by its own list (storage.ts L1411): 0/90/180/365/730.
+    out.email_age_days = match o.get("emailAgeDays").and_then(Value::as_i64) {
+        Some(d) if [0, 90, 180, 365, 730].contains(&d) => d,
+        _ => 365,
     };
     // The shipped set is 0/1/5/15/30/60 (`AUTO_LOCK_CHOICES` in
     // Settings.tsx L1266); anything else falls back, as storage.ts L1438
@@ -417,10 +451,18 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // a stored value reads by JS `Boolean` (the `Boolean(...)` family that
     // normalisePreferences runs the on/off flags through).
     out.clear_clipboard_on_lock = truthy(o.get("clearClipboardOnLock"), true);
+    // The clipboard watch is the `Boolean(...)` pair storage.ts L1106-1107
+    // runs: truthy either way, both shipped off.
+    out.clipboard_capture = truthy(o.get("clipboardCapture"), false);
+    out.clipboard_auto_save = truthy(o.get("clipboardAutoSave"), false);
     out.copy_toasts = truthy(o.get("copyToasts"), true);
     // `!== false` in TS: a stored `false` is the only thing that turns the
     // masking off — a missing key, null or any other value leaves it on.
     out.mask_emails = o.get("maskEmails").and_then(Value::as_bool) != Some(false);
+    // The reuse pair: the warning is a plain switch over its shipped default,
+    // the tag follows the masking rule (`!== false`, L1104).
+    out.warn_on_reuse = truthy(o.get("warnOnReuse"), true);
+    out.auto_tag_reused = o.get("autoTagReused").and_then(Value::as_bool) != Some(false);
     // Use counts (`storage.ts` L1341-1355): `{ count, at }` objects only —
     // a malformed field falls back to 0, an entry with neither a count nor
     // a date drops out, and the newest 200 survive the cap. Load validates
@@ -521,9 +563,9 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "showSettingsButton","showHideSidebarButton","floatingChrome","hideDividers",
         "hiddenChannels","hiddenFolders","hiddenButtons",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
-        "pinFavorites","manualOrder","passwordAgeDays","emailCheckDays","confirmDeletes","tags","autoLockMinutes",
+        "pinFavorites","manualOrder","passwordAgeDays","emailAgeDays","emailCheckDays","confirmDeletes","confirmBeforeExport","tags","autoLockMinutes",
         "passwordGenerator",
-        "clearClipboardSeconds","clearClipboardOnLock","copyToasts","maskEmails","usage","history","alarms"];
+        "clearClipboardSeconds","clearClipboardOnLock","clipboardCapture","clipboardAutoSave","copyToasts","maskEmails","warnOnReuse","autoTagReused","usage","history","alarms"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
@@ -1104,6 +1146,60 @@ mod tests {
             normalise_preferences(&json!({ "emailCheckDays": "90" })).email_check_days,
             90
         );
+    }
+
+    #[test]
+    fn the_health_and_clipboard_watch_fields_land_typed() {
+        // The six fields the Security panel's clipboard, warnings and
+        // confirmations groups read (Settings.tsx L1311-1433). The shipped
+        // defaults first (storage.ts L901, L922-923, L932-934).
+        let fresh = normalise_preferences(&json!({}));
+        assert_eq!(fresh.email_age_days, 365);
+        assert!(!fresh.clipboard_capture && !fresh.clipboard_auto_save);
+        assert!(fresh.warn_on_reuse && fresh.auto_tag_reused);
+        assert!(!fresh.confirm_before_export);
+
+        // The address window has its own whitelist (L1411): 0/90/180/365/730,
+        // where a stray number falls back to the shipped year — not to the
+        // nearest choice, the way `includes` is strict in JS.
+        for days in [0, 90, 180, 365, 730] {
+            assert_eq!(
+                normalise_preferences(&json!({ "emailAgeDays": days })).email_age_days,
+                days
+            );
+        }
+        assert_eq!(
+            normalise_preferences(&json!({ "emailAgeDays": 30 })).email_age_days,
+            365
+        );
+
+        // The watch is the `Boolean(...)` pair of storage.ts L1106-1107:
+        // truthy reads as on, and the two switches are independent.
+        assert!(normalise_preferences(&json!({ "clipboardCapture": "yes" })).clipboard_capture);
+        assert!(!normalise_preferences(&json!({ "clipboardCapture": false })).clipboard_capture);
+        assert!(normalise_preferences(&json!({ "clipboardAutoSave": 1 })).clipboard_auto_save);
+
+        // The reuse pair: the tag follows the masking rule (L1104 — anything
+        // but an explicit false leaves it on), the warning is a plain switch.
+        assert!(normalise_preferences(&json!({ "autoTagReused": null })).auto_tag_reused);
+        assert!(!normalise_preferences(&json!({ "autoTagReused": false })).auto_tag_reused);
+        assert!(!normalise_preferences(&json!({ "warnOnReuse": false })).warn_on_reuse);
+        assert!(normalise_preferences(&json!({ "confirmBeforeExport": true })).confirm_before_export);
+
+        // Typed fields, not leftovers in `extra`.
+        let modelled = normalise_preferences(&json!({
+            "emailAgeDays": 90,
+            "clipboardCapture": true,
+            "clipboardAutoSave": true,
+            "warnOnReuse": false,
+            "autoTagReused": false,
+            "confirmBeforeExport": true,
+        }));
+        assert_eq!(modelled.email_age_days, 90);
+        assert!(modelled.clipboard_capture && modelled.clipboard_auto_save);
+        assert!(!modelled.warn_on_reuse && !modelled.auto_tag_reused);
+        assert!(modelled.confirm_before_export);
+        assert!(modelled.extra.as_object().is_some_and(|e| e.is_empty()));
     }
 
     #[test]

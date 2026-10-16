@@ -11,8 +11,17 @@
 
 use crate::appearance;
 use crate::items;
-use crate::{save_prefs, AccentChip, AlarmRow, DayChip, HiddenRow, MainWindow, Shared};
-use colax_core::{Alarm, AlarmSound, VaultPreferences};
+use crate::{
+    save_prefs, AccentChip, AlarmRow, DayChip, HiddenRow, MainWindow, QuestionRow, QrCell, Shared,
+};
+use colax_core::model::{SecurityPasscode, SecurityQuestion, TotpSecret};
+use colax_core::totp::{
+    current_totp_code, extract_totp_secret, generate_totp_seed, otpauth_url, qr_matrix, verify_totp,
+};
+use colax_core::{
+    answer_too_weak, hash_answer, hash_passcode, passcode_too_weak, security_level, verify_answer,
+    verify_passcode, Alarm, AlarmSound, LoginSecurity, VaultPreferences,
+};
 use slint::ComponentHandle;
 
 /// The tab ids in rail order — must match `tabs` in `settings.slint`, whose
@@ -155,6 +164,11 @@ pub fn open(ui: &MainWindow, state: &Shared, section: &str) {
     // dies with the component when the window closes; the modal opening is
     // that mount here, so the same reset belongs here.
     reset_alarm_draft(ui, state);
+    // The Security tab's two fresh-mount states: the lit sub-tab starts on
+    // "locking", and the vault form's own `useState`s -- the staged key, the
+    // typed code, the passcode drafts -- are empty.
+    ui.set_settings_sec_group(0);
+    reset_vault_draft(ui, state);
     refresh(ui, state);
     ui.set_settings_open(true);
 }
@@ -282,6 +296,35 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     // sound. The card's two text fields are the panel's own and are not
     // touched here — only `reset_alarm_draft` moves those.
     push_alarms(ui, state);
+    // The Security tab: five pickers, nine switches and the crypto chip. The
+    // picks go back as the strings the pills compare against — `String(x)`
+    // in every TS `<Select>` — so a refused write settles the widget on the
+    // stored value.
+    ui.set_settings_sec_auto_lock(prefs.auto_lock_minutes.to_string().as_str().into());
+    ui.set_settings_sec_clipboard(prefs.clear_clipboard_seconds.to_string().as_str().into());
+    ui.set_settings_sec_pw_age(prefs.password_age_days.to_string().as_str().into());
+    ui.set_settings_sec_email_age(prefs.email_age_days.to_string().as_str().into());
+    ui.set_settings_sec_email_check(prefs.email_check_days.to_string().as_str().into());
+    ui.set_settings_sec_clear_on_lock(prefs.clear_clipboard_on_lock);
+    ui.set_settings_sec_clip_capture(prefs.clipboard_capture);
+    ui.set_settings_sec_clip_autosave(prefs.clipboard_auto_save);
+    ui.set_settings_sec_warn_reuse(prefs.warn_on_reuse);
+    ui.set_settings_sec_tag_reused(prefs.auto_tag_reused);
+    ui.set_settings_sec_mask_emails(prefs.mask_emails);
+    ui.set_settings_sec_confirm_export(prefs.confirm_before_export);
+    ui.set_settings_sec_confirm_deletes(prefs.confirm_deletes);
+    ui.set_settings_sec_copy_toasts(prefs.copy_toasts);
+    // `PBKDF2_ITERATIONS.toLocaleString()` (Settings.tsx L1298): the commas
+    // are put in here because Slint has no number formatter.
+    ui.set_settings_sec_kdf(
+        format!(
+            "PBKDF2-SHA256 · {} rounds",
+            thousands(colax_core::crypto::PBKDF2_ITERATIONS)
+        )
+        .as_str()
+        .into(),
+    );
+    push_vault_security(ui, state);
 }
 
 /// One settings write, whichever dial made it. The closure owns the
@@ -382,6 +425,46 @@ fn string_key(prefs: &mut VaultPreferences, key: &str, value: &str) -> bool {
                 return false;
             }
             prefs.sidebar_position = value.to_string();
+            true
+        }
+        // The Security tab's five pickers (Task 5.7). Each list is the TS's
+        // own choices (Settings.tsx L72-115), membership-checked here so an
+        // off-list value is refused outright rather than silently replaced
+        // by the normaliser's fallback while the widget that asked believes
+        // it wrote something.
+        "auto-lock" => {
+            if !matches!(value, "1" | "5" | "15" | "30" | "60" | "0") {
+                return false;
+            }
+            prefs.auto_lock_minutes = value.parse().unwrap_or(5);
+            true
+        }
+        "clear-clipboard" => {
+            if !matches!(value, "0" | "15" | "30" | "60" | "120") {
+                return false;
+            }
+            prefs.clear_clipboard_seconds = value.parse().unwrap_or(30.0);
+            true
+        }
+        "password-age" => {
+            if !matches!(value, "0" | "30" | "60" | "90" | "180" | "365" | "730") {
+                return false;
+            }
+            prefs.password_age_days = value.parse().unwrap_or(180);
+            true
+        }
+        "email-age" => {
+            if !matches!(value, "0" | "90" | "180" | "365" | "730") {
+                return false;
+            }
+            prefs.email_age_days = value.parse().unwrap_or(365);
+            true
+        }
+        "email-check" => {
+            if !matches!(value, "0" | "30" | "60" | "90" | "180" | "365") {
+                return false;
+            }
+            prefs.email_check_days = value.parse().unwrap_or(90);
             true
         }
         _ => false,
@@ -489,6 +572,16 @@ fn bool_key(prefs: &mut VaultPreferences, key: &str, value: bool) -> bool {
         "trayEnabled" => &mut prefs.tray_enabled,
         "closeToTray" => &mut prefs.close_to_tray,
         "soundsMuted" => &mut prefs.sounds_muted,
+        // The Security tab's switches (Settings.tsx L1321-1432).
+        "clearClipboardOnLock" => &mut prefs.clear_clipboard_on_lock,
+        "clipboardCapture" => &mut prefs.clipboard_capture,
+        "clipboardAutoSave" => &mut prefs.clipboard_auto_save,
+        "warnOnReuse" => &mut prefs.warn_on_reuse,
+        "autoTagReused" => &mut prefs.auto_tag_reused,
+        "maskEmails" => &mut prefs.mask_emails,
+        "confirmBeforeExport" => &mut prefs.confirm_before_export,
+        "confirmDeletes" => &mut prefs.confirm_deletes,
+        "copyToasts" => &mut prefs.copy_toasts,
         _ => return false,
     };
     *slot = value;
@@ -807,6 +900,470 @@ fn sound_mime(path: &std::path::Path) -> &'static str {
     }
 }
 
+/* ==========================================================================
+The Security tab -- the vault's own second factor
+========================================================================== */
+
+/// The vault form back to its opening state. Its `useState`s are the ones a
+/// fresh `SecurityForm` mount holds in TS: nothing staged, no typed code, no
+/// passcode drafts. The panel's own view (which tile is open) is Slint state
+/// and dies with the `Settings` instance; this covers the half that lives on
+/// the window root and would otherwise outlive the modal.
+fn reset_vault_draft(ui: &MainWindow, state: &Shared) {
+    {
+        let mut guard = state.borrow_mut();
+        guard.vault_staged_seed = None;
+        guard.vault_prompt_index = 0;
+    }
+    ui.set_settings_vsec_totp_seed("".into());
+    ui.set_settings_vsec_totp_code("".into());
+    ui.set_settings_vsec_totp_note("".into());
+    ui.set_settings_vsec_passcode_new("".into());
+    ui.set_settings_vsec_passcode_confirm("".into());
+    ui.set_settings_vsec_passcode_input("".into());
+    ui.set_settings_vsec_passcode_error("".into());
+    ui.set_settings_vsec_answer_error("".into());
+    ui.set_settings_vsec_checking_id("".into());
+    ui.set_settings_vsec_check_input("".into());
+    ui.set_settings_vsec_new_answer("".into());
+}
+
+/// Pushes the vault's second factor into the Settings window: the same
+/// read-out `push_security` gives the editor — level, the two flags, the
+/// staged key, the prompts, the QR — read from `prefs.vaultSecurity` rather
+/// than a draft, because there is no draft here.
+pub fn push_vault_security(ui: &MainWindow, state: &Shared) {
+    let (sec, staged, prompt_index) = {
+        let guard = state.borrow();
+        (
+            items::prefs_from(guard.engine.preferences()).vault_security,
+            guard.vault_staged_seed.clone(),
+            guard.vault_prompt_index,
+        )
+    };
+
+    ui.set_settings_vsec_level(security_level(&sec).into());
+    ui.set_settings_vsec_totp(sec.totp.is_some());
+    ui.set_settings_vsec_passcode(sec.passcode.is_some());
+    // Staged stays its own flag: a key no phone has confirmed must not read
+    // as a set factor, exactly as in the editor.
+    ui.set_settings_vsec_totp_staged(staged.is_some());
+
+    let note = match sec.questions.len() {
+        0 => "Not set".to_string(),
+        1 => "1 question".to_string(),
+        n => format!("{n} questions"),
+    };
+    ui.set_settings_vsec_questions_note(note.as_str().into());
+
+    let rows: Vec<QuestionRow> = sec
+        .questions
+        .iter()
+        .map(|q| QuestionRow {
+            id: q.id.clone().into(),
+            prompt: q.prompt.clone().into(),
+        })
+        .collect();
+    ui.set_settings_vsec_questions(slint::ModelRc::new(slint::VecModel::from(rows)));
+
+    let prompt = crate::QUESTION_PROMPTS
+        .get(prompt_index)
+        .copied()
+        .unwrap_or(crate::QUESTION_PROMPTS[0]);
+    ui.set_settings_vsec_new_prompt(prompt.into());
+
+    push_vault_qr(ui, &sec, staged.as_deref());
+}
+
+/// The QR half of the vault's push. Same walk as `push_security_qr`, but the
+/// `otpauth://` label is the form's own `label="Colax Vault"`
+/// (Settings.tsx L1280) — there is no login title to carry here.
+fn push_vault_qr(ui: &MainWindow, sec: &LoginSecurity, staged: Option<&str>) {
+    let seed = staged.or_else(|| sec.totp.as_ref().map(|totp| totp.seed.as_str()));
+    let Some(seed) = seed else {
+        ui.set_settings_vsec_qr_size(0);
+        ui.set_settings_vsec_qr_cells(slint::ModelRc::new(slint::VecModel::from(Vec::<QrCell>::new())));
+        ui.set_settings_vsec_otpauth("".into());
+        return;
+    };
+
+    let url = otpauth_url("Colax Vault", seed);
+    let symbol = qr_matrix(&url).map(|(side, bits)| {
+        let cells: Vec<QrCell> = bits
+            .iter()
+            .enumerate()
+            .filter(|(_, dark)| **dark)
+            .map(|(i, _)| QrCell {
+                col: (i % side) as i32,
+                row: (i / side) as i32,
+            })
+            .collect();
+        (side as i32, cells)
+    });
+
+    match symbol {
+        Some((side, cells)) => {
+            ui.set_settings_vsec_qr_size(side);
+            ui.set_settings_vsec_qr_cells(slint::ModelRc::new(slint::VecModel::from(cells)));
+            ui.set_settings_vsec_otpauth(url.as_str().into());
+        }
+        None => {
+            // No symbol can hold this URI: "no QR", key still usable, the
+            // same answer the editor's push gives.
+            ui.set_settings_vsec_qr_size(0);
+            ui.set_settings_vsec_qr_cells(slint::ModelRc::new(slint::VecModel::from(Vec::<QrCell>::new())));
+            ui.set_settings_vsec_otpauth(url.as_str().into());
+        }
+    }
+}
+
+/// One proven change to the vault's factor. The TS's `set({ vaultSecurity })`
+/// (Settings.tsx L1278) writes the whole document at once — there is no draft
+/// and no Save — so every op below that really changes something funnels
+/// through this door and lets `write` repaint the panel from the store.
+fn vault_write<F>(ui: &MainWindow, state: &Shared, apply: F) -> bool
+where
+    F: FnOnce(&mut LoginSecurity) -> bool,
+{
+    write(ui, state, |prefs| apply(&mut prefs.vault_security))
+}
+
+/// These twelve ops are the editor's twelve again, over the stored record:
+/// the same staging, the same refusals in the same order, the same notices.
+/// The only guard that changes is the first line — the Settings window
+/// answers only while it is open, where the editor's ops asked for the
+/// editor screen.
+pub fn vsec_totp_attach(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    let input = ui.get_settings_vsec_totp_seed().to_string();
+    let Some(seed) = extract_totp_secret(&input) else {
+        ui.set_settings_vsec_totp_note("That does not look like an authenticator key".into());
+        return;
+    };
+    ui.set_settings_vsec_totp_seed("".into());
+    ui.set_settings_vsec_totp_code("".into());
+    ui.set_settings_vsec_totp_note("".into());
+    state.borrow_mut().vault_staged_seed = Some(seed);
+    push_vault_security(ui, state);
+    crate::notice(ui, "Scan the code, then confirm one to keep the key");
+}
+
+/// Mint a fresh key and stage it, from a seed the app generated rather than
+/// one the user pasted.
+pub fn vsec_totp_generate(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    let seed = generate_totp_seed();
+    ui.set_settings_vsec_totp_code("".into());
+    ui.set_settings_vsec_totp_note("".into());
+    state.borrow_mut().vault_staged_seed = Some(seed);
+    push_vault_security(ui, state);
+    crate::notice(ui, "Scan the code, then confirm one to keep the key");
+}
+
+/// Check the typed code against whichever key is live: the staged one while
+/// confirming, otherwise the saved one.
+pub fn vsec_totp_check(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    let code = ui.get_settings_vsec_totp_code().to_string();
+    let (staged, saved) = {
+        let guard = state.borrow();
+        (
+            guard.vault_staged_seed.clone(),
+            items::prefs_from(guard.engine.preferences())
+                .vault_security
+                .totp
+                .as_ref()
+                .map(|totp| totp.seed.clone()),
+        )
+    };
+    let Some(seed) = staged.clone().or(saved) else {
+        return;
+    };
+    if code.chars().filter(char::is_ascii_digit).count() != 6 {
+        ui.set_settings_vsec_totp_note("A code is six digits.".into());
+        return;
+    }
+    if !verify_totp(&seed, &code) {
+        ui.set_settings_vsec_totp_note(
+            "That code did not match. Check the clock on this device.".into(),
+        );
+        return;
+    }
+    ui.set_settings_vsec_totp_note("".into());
+    if staged.is_some() {
+        // The first successful confirmation is the write. Until this runs,
+        // nothing about the vault has changed.
+        state.borrow_mut().vault_staged_seed = None;
+        vault_write(ui, state, |sec| {
+            sec.totp = Some(TotpSecret { seed });
+            true
+        });
+        crate::notice(ui, "Authenticator key saved");
+    } else {
+        crate::notice(ui, "Authenticator confirmed");
+    }
+}
+
+/// Drop a staged key without touching the record: walking away leaves no
+/// trace.
+pub fn vsec_totp_discard(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    state.borrow_mut().vault_staged_seed = None;
+    ui.set_settings_vsec_totp_code("".into());
+    ui.set_settings_vsec_totp_note("".into());
+    push_vault_security(ui, state);
+}
+
+/// Remove the saved key.
+pub fn vsec_totp_remove(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    state.borrow_mut().vault_staged_seed = None;
+    ui.set_settings_vsec_totp_code("".into());
+    ui.set_settings_vsec_totp_note("".into());
+    vault_write(ui, state, |sec| {
+        sec.totp = None;
+        true
+    });
+    crate::notice(ui, "Authenticator removed");
+}
+
+/// Set the vault's extra passcode. The three refusals in the TS order, so
+/// the first message names the user's mistake rather than the last rule the
+/// string broke.
+pub fn vsec_passcode_save(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    let new = ui.get_settings_vsec_passcode_new().to_string();
+    let confirm = ui.get_settings_vsec_passcode_confirm().to_string();
+    if passcode_too_weak(&new, false) {
+        ui.set_settings_vsec_passcode_error(
+            "Use at least 8 characters, and mix letters, numbers or symbols. Not \"password\"."
+                .into(),
+        );
+        return;
+    }
+    if new != confirm {
+        ui.set_settings_vsec_passcode_error("Those two do not match.".into());
+        return;
+    }
+    // The gate must not become the credential: a short passcode beside an
+    // authenticator would be the weakest factor guarding the vault.
+    let totp_set = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+            .vault_security
+            .totp
+            .is_some()
+    };
+    if totp_set && new.chars().count() < 12 {
+        ui.set_settings_vsec_passcode_error(
+            "With an authenticator already set, use at least 12 characters.".into(),
+        );
+        return;
+    }
+    let (hash, salt) = hash_passcode(&new);
+    ui.set_settings_vsec_passcode_new("".into());
+    ui.set_settings_vsec_passcode_confirm("".into());
+    ui.set_settings_vsec_passcode_error("".into());
+    ui.set_settings_vsec_passcode_input("".into());
+    vault_write(ui, state, |sec| {
+        sec.passcode = Some(SecurityPasscode { hash, salt });
+        true
+    });
+    crate::notice(ui, "Passcode saved");
+}
+
+/// Prove the typed passcode against the stored hash.
+pub fn vsec_passcode_check(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    let input = ui.get_settings_vsec_passcode_input().to_string();
+    let stored = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+            .vault_security
+            .passcode
+            .as_ref()
+            .map(|passcode| (passcode.hash.clone(), passcode.salt.clone()))
+    };
+    let Some((hash, salt)) = stored else {
+        return;
+    };
+    if verify_passcode(&input, &hash, &salt) {
+        ui.set_settings_vsec_passcode_input("".into());
+        ui.set_settings_vsec_passcode_error("".into());
+        crate::notice(ui, "Passcode confirmed");
+    } else {
+        ui.set_settings_vsec_passcode_error("That does not match the stored passcode.".into());
+    }
+}
+
+/// Drop the extra passcode.
+pub fn vsec_passcode_remove(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    ui.set_settings_vsec_passcode_input("".into());
+    ui.set_settings_vsec_passcode_error("".into());
+    vault_write(ui, state, |sec| {
+        sec.passcode = None;
+        true
+    });
+    crate::notice(ui, "Passcode removed");
+}
+
+/// Add a recovery question. Only the prompt reaches the screen; the hash and
+/// salt are built here and stay here.
+pub fn vsec_question_add(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    let prompt = ui.get_settings_vsec_new_prompt().to_string();
+    let answer = ui.get_settings_vsec_new_answer().to_string();
+    if prompt.trim().is_empty() {
+        return;
+    }
+    if answer_too_weak(&answer) {
+        ui.set_settings_vsec_answer_error(
+            "Use something a stranger could not guess, not a single word or \"yes\".".into(),
+        );
+        return;
+    }
+    let (hash, salt) = hash_answer(&answer);
+    let id = format!("sq_{}", &colax_core::new_item_id().replace('-', "")[..8]);
+    ui.set_settings_vsec_new_answer("".into());
+    ui.set_settings_vsec_answer_error("".into());
+    vault_write(ui, state, |sec| {
+        sec.questions.push(SecurityQuestion {
+            id,
+            prompt: prompt.trim().to_string(),
+            hash,
+            salt,
+        });
+        true
+    });
+    crate::notice(ui, "Recovery question added");
+}
+
+/// Two-stage, exactly as `checkQuestion` in TS: the first press for an id
+/// opens its answer box, the second verifies what is typed in it.
+pub fn vsec_question_check(ui: &MainWindow, state: &Shared, id: &str) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    if ui.get_settings_vsec_checking_id().to_string() != id {
+        ui.set_settings_vsec_checking_id(id.into());
+        ui.set_settings_vsec_check_input("".into());
+        ui.set_settings_vsec_answer_error("".into());
+        return;
+    }
+    let answer = ui.get_settings_vsec_check_input().to_string();
+    let stored = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+            .vault_security
+            .questions
+            .iter()
+            .find(|question| question.id == id)
+            .map(|question| (question.hash.clone(), question.salt.clone()))
+    };
+    let Some((hash, salt)) = stored else {
+        // Removed while its box was open: the row is gone, so the box is too.
+        ui.set_settings_vsec_checking_id("".into());
+        ui.set_settings_vsec_check_input("".into());
+        return;
+    };
+    if verify_answer(&answer, &hash, &salt) {
+        ui.set_settings_vsec_checking_id("".into());
+        ui.set_settings_vsec_check_input("".into());
+        ui.set_settings_vsec_answer_error("".into());
+        crate::notice(ui, "Answer confirmed");
+    } else {
+        ui.set_settings_vsec_answer_error("That does not match the stored answer.".into());
+    }
+}
+
+/// Remove a question, and close its box if that is the one that was open.
+pub fn vsec_question_remove(ui: &MainWindow, state: &Shared, id: &str) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    if ui.get_settings_vsec_checking_id().to_string() == id {
+        ui.set_settings_vsec_checking_id("".into());
+        ui.set_settings_vsec_check_input("".into());
+    }
+    vault_write(ui, state, |sec| {
+        sec.questions.retain(|question| question.id != id);
+        true
+    });
+}
+
+/// Step the prompt the add row offers. The list is fixed, so it wraps.
+pub fn vsec_prompt_step(ui: &MainWindow, state: &Shared, delta: i32) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    let len = crate::QUESTION_PROMPTS.len() as i32;
+    let index = {
+        let mut guard = state.borrow_mut();
+        guard.vault_prompt_index =
+            (guard.vault_prompt_index as i32 + delta).rem_euclid(len) as usize;
+        guard.vault_prompt_index
+    };
+    ui.set_settings_vsec_new_prompt(crate::QUESTION_PROMPTS[index].into());
+}
+
+/// The Security panel's "Lock now": seal the vault, then close the sheet —
+/// `onLock(); onClose()` in the TS (Settings.tsx L1286-1289). Locking drops
+/// the key and presents the unlock screen under the closing modal.
+pub fn security_lock(ui: &MainWindow, state: &Shared) {
+    if !ui.get_settings_open() {
+        return;
+    }
+    crate::lock_vault(ui, state);
+    close(ui);
+}
+
+/// `600000.toLocaleString()`: the en-US commas the TS's own
+/// `PBKDF2_ITERATIONS.toLocaleString()` prints.
+fn thousands(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// The id of the nth stored vault question, read straight off the document:
+/// the walk needs it because `new_item_id` is random and the row model it
+/// clicks is never on screen in a dump run.
+#[cfg(debug_assertions)]
+pub fn stored_vault_question_id(state: &Shared, index: usize) -> String {
+    let guard = state.borrow();
+    items::prefs_from(guard.engine.preferences())
+        .vault_security
+        .questions
+        .get(index)
+        .map(|question| question.id.clone())
+        .unwrap_or_default()
+}
+
 /// The Hidden tab's per-row Show button. A switch row sends its pref key and
 /// an empty id and is the same write the Layout toggle makes; a hidden-list
 /// row sends the list in `key` and the id to drop — `filter(entry => entry
@@ -940,8 +1497,56 @@ pub fn dev(ui: &MainWindow, state: &Shared) {
     alarm_delete(ui, state, &second);
     dump(ui, state, "settings13.alarms");
 
+    // The Security tab. The second group is shown — the sub-tab is a plain
+    // property write, no callback — four simple rows are written through the
+    // same door the pills and switches use (one of them off the list, which
+    // must be refused and leave the stored days alone), then the vault's own
+    // form: a generated key staged, a wrong code refused, the right one
+    // saved, a passcode and a recovery question added and checked.
+    tab_picked(ui, 6); // Ctrl+7 -> security
+    ui.set_settings_sec_group(1); // clipboard
+    pref_string(ui, state, "clear-clipboard", "60");
+    pref_bool(ui, state, "clipboardCapture", true);
+    pref_string(ui, state, "password-age", "90");
+    pref_string(ui, state, "email-age", "45"); // off the list: refused
+    pref_bool(ui, state, "confirmDeletes", false);
+    pref_bool(ui, state, "maskEmails", false);
+    dump(ui, state, "settings14.security");
+
+    ui.set_settings_sec_group(0); // back to locking, where the form lives
+    vsec_totp_generate(ui, state);
+    ui.set_settings_vsec_totp_code("000000".into());
+    vsec_totp_check(ui, state); // wrong: the staged key must survive
+    dump(ui, state, "settings15.vsec-staged");
+
+    let code = state
+        .borrow()
+        .vault_staged_seed
+        .clone()
+        .and_then(|seed| current_totp_code(&seed).ok())
+        .unwrap_or_default();
+    ui.set_settings_vsec_totp_code(code.as_str().into());
+    vsec_totp_check(ui, state); // the first right code is the write
+    ui.set_settings_vsec_passcode_new("short".into());
+    ui.set_settings_vsec_passcode_confirm("short".into());
+    vsec_passcode_save(ui, state); // too weak: refused
+    ui.set_settings_vsec_passcode_new("vault-gate-2026".into());
+    ui.set_settings_vsec_passcode_confirm("vault-gate-2026".into());
+    vsec_passcode_save(ui, state);
+    ui.set_settings_vsec_new_answer("ten past four".into());
+    vsec_question_add(ui, state);
+    let question = stored_vault_question_id(state, 0);
+    vsec_question_check(ui, state, &question); // first press opens the box
+    ui.set_settings_vsec_check_input("half past nine".into());
+    vsec_question_check(ui, state, &question); // wrong: refused
+    ui.set_settings_vsec_check_input("ten past four".into());
+    vsec_question_check(ui, state, &question); // right: box closes
+    ui.set_settings_vsec_passcode_input("vault-gate-2026".into());
+    vsec_passcode_check(ui, state);
+    dump(ui, state, "settings16.vsec-saved");
+
     close(ui);
-    dump(ui, state, "settings14.closed");
+    dump(ui, state, "settings17.closed");
 }
 
 /// The id of the nth stored alarm, read straight off the document: the walk
@@ -992,8 +1597,15 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
                 .unwrap_or_else(|| "-".to_string()),
         )
     };
+    // The Security tab's stored half: what the vault's own factor actually
+    // is in the document, next to the window's copy below.
+    let (vsave_totp, vsave_passcode, vsave_questions) = (
+        prefs.vault_security.totp.is_some(),
+        prefs.vault_security.passcode.is_some(),
+        prefs.vault_security.questions.len(),
+    );
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -1046,6 +1658,34 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         alarms_on,
         first_alarm_time,
         first_alarm_days,
+        // The Security tab: the lit group, the six picks and nine switches
+        // as the window holds them, the KDF chip, the vault form's five
+        // read-outs, and the stored factor beside them.
+        ui.get_settings_sec_group(),
+        ui.get_settings_sec_auto_lock(),
+        ui.get_settings_sec_clipboard(),
+        ui.get_settings_sec_pw_age(),
+        ui.get_settings_sec_email_age(),
+        ui.get_settings_sec_email_check(),
+        ui.get_settings_sec_clear_on_lock() as i32,
+        ui.get_settings_sec_clip_capture() as i32,
+        ui.get_settings_sec_clip_autosave() as i32,
+        ui.get_settings_sec_warn_reuse() as i32,
+        ui.get_settings_sec_tag_reused() as i32,
+        ui.get_settings_sec_mask_emails() as i32,
+        ui.get_settings_sec_confirm_export() as i32,
+        ui.get_settings_sec_confirm_deletes() as i32,
+        ui.get_settings_sec_copy_toasts() as i32,
+        ui.get_settings_sec_kdf(),
+        ui.get_settings_vsec_level(),
+        ui.get_settings_vsec_totp() as i32,
+        ui.get_settings_vsec_totp_staged() as i32,
+        ui.get_settings_vsec_passcode() as i32,
+        slint::Model::row_count(&ui.get_settings_vsec_questions()),
+        security_level(&prefs.vault_security),
+        vsave_totp as i32,
+        vsave_passcode as i32,
+        vsave_questions,
         prefs.theme,
         prefs.text_scale,
         prefs.accent,
@@ -1213,6 +1853,77 @@ mod tests {
         assert!(string_key(&mut prefs, "sidebar-position", "top"));
         assert!(!string_key(&mut prefs, "sidebar-position", "middle"));
         assert_eq!(prefs.sidebar_position, "top");
+    }
+
+    #[test]
+    fn the_security_panel_keys_reach_their_fields() {
+        // The Security panel's fourteen simple rows: five pickers through
+        // `string_key`, nine switches through `bool_key`. Each key below is
+        // one settings.slint sends, and the panel and the handler are two
+        // files — a typo between them would be a row that looks alive and
+        // writes nothing.
+        let mut prefs = VaultPreferences::default();
+
+        // The switches (Settings.tsx L1321-1432).
+        for key in [
+            "clearClipboardOnLock",
+            "clipboardCapture",
+            "clipboardAutoSave",
+            "warnOnReuse",
+            "autoTagReused",
+            "maskEmails",
+            "confirmBeforeExport",
+            "confirmDeletes",
+            "copyToasts",
+        ] {
+            assert!(bool_key(&mut prefs, key, false), "{key} is not a switch");
+        }
+        assert!(!prefs.clear_clipboard_on_lock && !prefs.confirm_deletes);
+        assert!(bool_key(&mut prefs, "clearClipboardOnLock", true));
+        assert!(prefs.clear_clipboard_on_lock);
+        // A near-miss is refused rather than guessed at.
+        assert!(!bool_key(&mut prefs, "clipboardDetection", true));
+
+        // The pickers, each with a value outside its whitelist left alone.
+        // The values are the `<Select>` strings, so they parse into the
+        // typed fields.
+        assert!(string_key(&mut prefs, "auto-lock", "30"));
+        assert_eq!(prefs.auto_lock_minutes, 30);
+        assert!(!string_key(&mut prefs, "auto-lock", "45"));
+        assert_eq!(prefs.auto_lock_minutes, 30);
+
+        assert!(string_key(&mut prefs, "clear-clipboard", "120"));
+        assert_eq!(prefs.clear_clipboard_seconds, 120.0);
+        assert!(!string_key(&mut prefs, "clear-clipboard", "20"));
+        assert_eq!(prefs.clear_clipboard_seconds, 120.0);
+
+        assert!(string_key(&mut prefs, "password-age", "730"));
+        assert_eq!(prefs.password_age_days, 730);
+        assert!(!string_key(&mut prefs, "password-age", "3650"));
+        assert_eq!(prefs.password_age_days, 730);
+
+        // The two email lists are their own whitelists: 365 is a
+        // password-age choice and 45 is nobody's.
+        assert!(string_key(&mut prefs, "email-age", "365"));
+        assert_eq!(prefs.email_age_days, 365);
+        assert!(!string_key(&mut prefs, "email-age", "30"));
+        assert_eq!(prefs.email_age_days, 365);
+
+        assert!(string_key(&mut prefs, "email-check", "180"));
+        assert_eq!(prefs.email_check_days, 180);
+        assert!(!string_key(&mut prefs, "email-check", "45"));
+        assert_eq!(prefs.email_check_days, 180);
+    }
+
+    #[test]
+    fn the_kdf_chip_reads_like_to_locale_string() {
+        // `PBKDF2_ITERATIONS.toLocaleString()` -> "600,000" (Settings.tsx
+        // L1298). Slint has no number formatter, so the commas are put in
+        // here; the groups have to sit where the TS's own print puts them.
+        assert_eq!(thousands(600_000), "600,000");
+        assert_eq!(thousands(1_000), "1,000");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_234_567), "1,234,567");
     }
 
     #[test]

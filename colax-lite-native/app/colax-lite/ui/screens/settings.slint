@@ -18,6 +18,8 @@ import { Theme } from "../theme.slint";
 import {
     Slider, Toggle, EmptyState, IconButton, Btn, Field, Chip, Label
 } from "../widgets.slint";
+import { QuestionRow, QrCell } from "../models.slint";
+import { SecurityForm } from "security_form.slint";
 
 /// One entry of the rail. The order is the TS's `tabs` array
 /// (Settings.tsx L500) and must match `SETTINGS_TABS` in main.rs; `num` is
@@ -591,10 +593,12 @@ component cards-row inherits Rectangle {
     }
 }
 
-// A segmented row that wraps: the six sort orders are longer than the four
-// density pills, so `.segmented--wrap` puts them on two rows of three
-// (app.css L752) — one flat row would either clip the labels or need them
-// elided. Same neutral pressed state as `seg-row`.
+// A segmented row that stacks: the six sort orders are longer than the four
+// density pills of `seg-row`, so the choices run one per line across the
+// panel instead of a single clipped line (`.segmented--wrap`, app.css L752).
+// Same neutral pressed state as `seg-row`, and the options list itself drives
+// the walk — six choices stack six pills, the Security tab's seven stack
+// seven, and no pill can read past the end of a short list.
 component seg-stack-row inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
@@ -633,22 +637,116 @@ component seg-stack-row inherits Rectangle {
         VerticalLayout {
             spacing: 6px;
 
-            for i in 3 : pill {
+            // The list drives the walk: six choices stack six pills and the
+            // seven-choice password-age list stacks seven — there is no count
+            // to keep in step, and no pill can read past the end of a short
+            // list. (The Security tab's pickers are the same stack the sort
+            // picker wears, one option per line across the panel.)
+            for option[i] in root.options : pill {
                 option-index: i;
                 labels: root.options;
                 ids: root.ids;
                 value: root.value;
                 picked(id) => { root.picked(id); }
             }
-            for j in 3 : pill {
-                // The second half of the list: `for` walks from zero, so the
-                // offset is put back here rather than in the labels.
-                option-index: j + 3;
-                labels: root.options;
-                ids: root.ids;
-                value: root.value;
-                picked(id) => { root.picked(id); }
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
+// The Security tab's four groups (Settings.tsx L166-171). Seventeen rows in
+// one column read as a wall, so the same two-level shape the Optimize tab
+// uses keeps each list short. `.subtabs` is a sunken well of quiet pills with
+// the live one on the plate; picking is a plain write, because the chosen
+// group never leaves this window.
+component sub-tabs inherits Rectangle {
+    in property <[string]> labels: [];
+    in-out property <int> active: 0;
+
+    height: 34px;
+    horizontal-stretch: 0;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: #ffffff08;
+
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 3px;
+
+        for label[i] in root.labels : Rectangle {
+            height: 28px;
+            horizontal-stretch: 0;
+            border-radius: 7px;
+            background: root.active == i
+                ? Theme.plate
+                : (tab-touch.has-hover ? #ffffff1a : #00000000);
+
+            tab-touch := TouchArea {
+                clicked => { root.active = i; }
             }
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: center;
+
+                Text {
+                    text: label;
+                    color: root.active == i ? Theme.text : Theme.muted;
+                    font-size: 12.5px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// A row whose right-hand control is a read-only chip: the crypto in force
+// (Settings.tsx L1295-1306) is a fact, not a dial — the chip look without a
+// press.
+component chip-row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    in property <string> chip-text;
+
+    in property <length> panel-w: 704px;
+    width: root.panel-w;
+    height: shell.preferred-height;
+
+    shell := HorizontalLayout {
+        alignment: space-between;
+        spacing: 16px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+
+        VerticalLayout {
+            width: root.panel-w - 216px;
+            spacing: 3px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 13.5px;
+                font-weight: 600;
+            }
+            if (root.hint != "") : Text {
+                text: root.hint;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+
+        Chip {
+            label: root.chip-text;
         }
     }
 
@@ -765,6 +863,55 @@ export component Settings inherits Rectangle {
     in-out property <string> alarm-label;
     in-out property <string> alarm-time: "08:00";
 
+    // The Security tab (Task 5.7). `sec-group` is the lit sub-tab: the four
+    // groups of Settings.tsx L1245-1433, indexed in order. The rest are the
+    // fourteen rows' values, plus `sec-kdf` - the rounds count is formatted in
+    // Rust, because Slint cannot put a comma into a number.
+    in-out property <int> sec-group: 0;
+    in-out property <string> sec-auto-lock: "5";
+    in-out property <string> sec-clipboard: "30";
+    in-out property <string> sec-pw-age: "180";
+    in-out property <string> sec-email-age: "365";
+    in-out property <string> sec-email-check: "90";
+    in-out property <bool> sec-clear-on-lock: true;
+    in-out property <bool> sec-clip-capture: false;
+    in-out property <bool> sec-clip-autosave: false;
+    in-out property <bool> sec-warn-reuse: true;
+    in-out property <bool> sec-tag-reused: true;
+    in-out property <bool> sec-mask-emails: true;
+    in-out property <bool> sec-confirm-export: false;
+    in-out property <bool> sec-confirm-deletes: true;
+    in-out property <bool> sec-copy-toasts: true;
+    in property <string> sec-kdf;
+
+    // The vault's own second factor: a `SecurityForm` instance bound to
+    // `prefs.vaultSecurity`. The transient half — the typed code, the
+    // passcode drafts, the checking row — are the window's own fields,
+    // exactly as the editor's `sec-*` set is, because Rust reads them back
+    // when a button fires. `vsec-questions` carries prompts only; the hashes
+    // never leave Rust.
+    in property <string> vsec-level: "none";
+    in property <string> vsec-questions-note: "Not set";
+    in property <bool> vsec-totp: false;
+    in property <string> vsec-otpauth;
+    in property <int> vsec-qr-size: 0;
+    in property <[QrCell]> vsec-qr-cells;
+    in property <bool> vsec-totp-staged: false;
+    in property <string> vsec-totp-note;
+    in-out property <string> vsec-totp-seed;
+    in-out property <string> vsec-totp-code;
+    in property <bool> vsec-passcode: false;
+    in-out property <string> vsec-passcode-new;
+    in-out property <string> vsec-passcode-confirm;
+    in-out property <string> vsec-passcode-input;
+    in property <string> vsec-passcode-error;
+    in property <[QuestionRow]> vsec-questions;
+    in property <string> vsec-answer-error;
+    in-out property <string> vsec-checking-id;
+    in-out property <string> vsec-check-input;
+    in property <string> vsec-new-prompt;
+    in-out property <string> vsec-new-answer;
+
     callback closed();
     callback tab-picked(index: int);
     callback pref-string(key: string, value: string);
@@ -779,6 +926,22 @@ export component Settings inherits Rectangle {
     callback alarm-day-toggled(index: int);
     callback alarm-import();
     callback alarm-reset-sound();
+    // The Security tab's own: the lock button and the vault form's twelve
+    // actions. The fourteen simple rows ride the generic `pref-*` callbacks
+    // above, the way the Layout tab's do.
+    callback security-lock();
+    callback vsec-totp-attach();
+    callback vsec-totp-generate();
+    callback vsec-totp-check();
+    callback vsec-totp-discard();
+    callback vsec-totp-remove();
+    callback vsec-passcode-save();
+    callback vsec-passcode-check();
+    callback vsec-passcode-remove();
+    callback vsec-question-add();
+    callback vsec-question-remove(id: string);
+    callback vsec-question-check(id: string);
+    callback vsec-prompt-step(delta: int);
 
     // The thirteen tabs of Settings.tsx L500, in order. Hints come from
     // `describe()` in SettingsWindow.tsx L180 — three tabs have none there
@@ -1908,10 +2071,268 @@ export component Settings inherits Rectangle {
                                 }
                             }
 
+                            // ---- Security ------------------------------------
+                            // The four groups as sub-tabs, each a short list.
+                            // The selects are pill stacks rather than the TS's
+                            // dropdowns — this app has no `Select` — and the
+                            // vault's second factor is the same `SecurityForm`
+                            // the editor mounts, bound to the stored
+                            // `vaultSecurity` instead of a draft.
+                            if (root.active.id == "security") : VerticalLayout {
+                                width: root.panel-w;
+                                spacing: 12px;
+                                padding-top: 12px;
+
+                                sub-tabs {
+                                    labels: ["Locking", "Clipboard", "Health warnings", "Confirmations"];
+                                    active <=> root.sec-group;
+                                }
+
+                                if (root.sec-group == 0) : VerticalLayout {
+                                    spacing: 0px;
+
+                                    seg-stack-row {
+                                        panel-w: root.panel-w;
+                                        label: "Auto-lock";
+                                        hint: "Lock after a period without activity.";
+                                        options: ["1 minute", "5 minutes", "15 minutes", "30 minutes", "1 hour", "Never"];
+                                        ids: ["1", "5", "15", "30", "60", "0"];
+                                        value: root.sec-auto-lock;
+                                        picked(id) => { root.pref-string("auto-lock", id); }
+                                    }
+
+                                    // `Row stacked` in the TS: the hint
+                                    // describes the form below it rather than
+                                    // sitting beside it. The rule under it is
+                                    // the row's own — a layout child cannot
+                                    // set `y`, so the hairline hangs off the
+                                    // wrapper the layout is inside of.
+                                    Rectangle {
+                                        width: root.panel-w;
+                                        height: stacked.preferred-height;
+
+                                        stacked := VerticalLayout {
+                                            padding-top: 14px;
+                                            padding-bottom: 14px;
+                                            spacing: 10px;
+
+                                            VerticalLayout {
+                                                spacing: 3px;
+                                                Text {
+                                                    text: "Vault second factor";
+                                                    color: Theme.text;
+                                                    font-size: 13.5px;
+                                                    font-weight: 600;
+                                                }
+                                                Text {
+                                                    text: "After the vault opens, require an authenticator code or a recovery answer too. Optional, and per-device.";
+                                                    color: Theme.muted;
+                                                    font-size: 12px;
+                                                    wrap: word-wrap;
+                                                    width: root.panel-w;
+                                                }
+                                            }
+
+                                            SecurityForm {
+                                                subject: "the vault";
+                                                sec-level: root.vsec-level;
+                                                sec-questions-note: root.vsec-questions-note;
+                                                sec-totp: root.vsec-totp;
+                                                sec-otpauth: root.vsec-otpauth;
+                                                qr-size: root.vsec-qr-size;
+                                                qr-cells: root.vsec-qr-cells;
+                                                sec-totp-staged: root.vsec-totp-staged;
+                                                sec-totp-note: root.vsec-totp-note;
+                                                sec-totp-seed <=> root.vsec-totp-seed;
+                                                sec-totp-code <=> root.vsec-totp-code;
+                                                sec-passcode: root.vsec-passcode;
+                                                sec-passcode-new <=> root.vsec-passcode-new;
+                                                sec-passcode-confirm <=> root.vsec-passcode-confirm;
+                                                sec-passcode-input <=> root.vsec-passcode-input;
+                                                sec-passcode-error: root.vsec-passcode-error;
+                                                sec-questions: root.vsec-questions;
+                                                sec-answer-error: root.vsec-answer-error;
+                                                sec-checking-id <=> root.vsec-checking-id;
+                                                sec-check-input <=> root.vsec-check-input;
+                                                sec-new-prompt: root.vsec-new-prompt;
+                                                sec-new-answer <=> root.vsec-new-answer;
+                                                sec-totp-attach => { root.vsec-totp-attach(); }
+                                                sec-totp-generate => { root.vsec-totp-generate(); }
+                                                sec-totp-check => { root.vsec-totp-check(); }
+                                                sec-totp-discard => { root.vsec-totp-discard(); }
+                                                sec-totp-remove => { root.vsec-totp-remove(); }
+                                                sec-passcode-save => { root.vsec-passcode-save(); }
+                                                sec-passcode-check => { root.vsec-passcode-check(); }
+                                                sec-passcode-remove => { root.vsec-passcode-remove(); }
+                                                sec-question-add => { root.vsec-question-add(); }
+                                                sec-question-remove(id) => { root.vsec-question-remove(id); }
+                                                sec-question-check(id) => { root.vsec-question-check(id); }
+                                                sec-prompt-step(delta) => { root.vsec-prompt-step(delta); }
+                                            }
+
+                                        }
+
+                                        Rectangle {
+                                            x: 0;
+                                            y: parent.height - 1px;
+                                            width: parent.width;
+                                            height: 1px;
+                                            background: Theme.hairline;
+                                        }
+                                    }
+
+                                    btn-row {
+                                        panel-w: root.panel-w;
+                                        label: "Lock now";
+                                        hint: "Clears the decryption key from memory straight away.";
+                                        button-text: "Lock";
+                                        clicked => { root.security-lock(); }
+                                    }
+
+                                    chip-row {
+                                        panel-w: root.panel-w;
+                                        label: "Key derivation";
+                                        hint: "Rounds applied to your password before it can derive the vault key.";
+                                        chip-text: root.sec-kdf;
+                                    }
+
+                                    chip-row {
+                                        panel-w: root.panel-w;
+                                        label: "Encryption";
+                                        hint: "Every login is sealed individually with a fresh nonce.";
+                                        chip-text: "AES-256-GCM";
+                                    }
+                                }
+
+                                if (root.sec-group == 1) : VerticalLayout {
+                                    spacing: 0px;
+
+                                    seg-stack-row {
+                                        panel-w: root.panel-w;
+                                        label: "Clear clipboard";
+                                        hint: "Wipe the clipboard after copying.";
+                                        options: ["Never", "15 seconds", "30 seconds", "60 seconds", "2 minutes"];
+                                        ids: ["0", "15", "30", "60", "120"];
+                                        value: root.sec-clipboard;
+                                        picked(id) => { root.pref-string("clear-clipboard", id); }
+                                    }
+
+                                    toggle-row {
+                                        panel-w: root.panel-w;
+                                        label: "Clear clipboard on lock";
+                                        hint: "Adds a wipe to the lock action itself.";
+                                        checked <=> root.sec-clear-on-lock;
+                                        toggled => { root.pref-bool("clearClipboardOnLock", root.sec-clear-on-lock); }
+                                    }
+
+                                    toggle-row {
+                                        panel-w: root.panel-w;
+                                        label: "Detect logins on the clipboard";
+                                        hint: "Watches for an email and a password copied together, and offers to save them.";
+                                        checked <=> root.sec-clip-capture;
+                                        toggled => { root.pref-bool("clipboardCapture", root.sec-clip-capture); }
+                                    }
+
+                                    toggle-row {
+                                        panel-w: root.panel-w;
+                                        label: "Save clipboard logins straight away";
+                                        hint: "Skips the confirmation prompt from clipboard detection.";
+                                        checked <=> root.sec-clip-autosave;
+                                        toggled => { root.pref-bool("clipboardAutoSave", root.sec-clip-autosave); }
+                                    }
+                                }
+
+                                if (root.sec-group == 2) : VerticalLayout {
+                                    spacing: 0px;
+
+                                    toggle-row {
+                                        panel-w: root.panel-w;
+                                        label: "Warn on reused passwords";
+                                        hint: "A tappable notice, not a dialog: it points at the Dashboard, which lists the shared logins.";
+                                        checked <=> root.sec-warn-reuse;
+                                        toggled => { root.pref-bool("warnOnReuse", root.sec-warn-reuse); }
+                                    }
+
+                                    toggle-row {
+                                        panel-w: root.panel-w;
+                                        label: "Tag reused passwords";
+                                        hint: "Files every login sharing a password under a “Reused password” tag, so the group has a sidebar row of its own.";
+                                        checked <=> root.sec-tag-reused;
+                                        toggled => { root.pref-bool("autoTagReused", root.sec-tag-reused); }
+                                    }
+
+                                    seg-stack-row {
+                                        panel-w: root.panel-w;
+                                        label: "Flag stale passwords";
+                                        hint: "A password unchanged for this long counts as stale in the health views.";
+                                        options: ["Never", "30 days", "60 days", "90 days", "180 days", "1 year", "2 years"];
+                                        ids: ["0", "30", "60", "90", "180", "365", "730"];
+                                        value: root.sec-pw-age;
+                                        picked(id) => { root.pref-string("password-age", id); }
+                                    }
+
+                                    seg-stack-row {
+                                        panel-w: root.panel-w;
+                                        label: "Flag stale emails";
+                                        hint: "An address unchanged for this long is flagged for review.";
+                                        options: ["Never", "90 days", "180 days", "1 year", "2 years"];
+                                        ids: ["0", "90", "180", "365", "730"];
+                                        value: root.sec-email-age;
+                                        picked(id) => { root.pref-string("email-age", id); }
+                                    }
+
+                                    seg-stack-row {
+                                        panel-w: root.panel-w;
+                                        label: "Email check reminder";
+                                        hint: "How often you are asked to review the addresses you have saved.";
+                                        options: ["Never", "Every month", "Every 2 months", "Every 3 months", "Every 6 months", "Every year"];
+                                        ids: ["0", "30", "60", "90", "180", "365"];
+                                        value: root.sec-email-check;
+                                        picked(id) => { root.pref-string("email-check", id); }
+                                    }
+
+                                    toggle-row {
+                                        panel-w: root.panel-w;
+                                        label: "Mask email addresses";
+                                        hint: "Shows the first letters only on cards and messages. Copying still copies the full address.";
+                                        checked <=> root.sec-mask-emails;
+                                        toggled => { root.pref-bool("maskEmails", root.sec-mask-emails); }
+                                    }
+                                }
+
+                                if (root.sec-group == 3) : VerticalLayout {
+                                    spacing: 0px;
+
+                                    toggle-row {
+                                        panel-w: root.panel-w;
+                                        label: "Confirm before export";
+                                        hint: "Ask for a password to protect the backup file.";
+                                        checked <=> root.sec-confirm-export;
+                                        toggled => { root.pref-bool("confirmBeforeExport", root.sec-confirm-export); }
+                                    }
+
+                                    toggle-row {
+                                        panel-w: root.panel-w;
+                                        label: "Confirm deletions";
+                                        hint: "Ask before removing a login.";
+                                        checked <=> root.sec-confirm-deletes;
+                                        toggled => { root.pref-bool("confirmDeletes", root.sec-confirm-deletes); }
+                                    }
+
+                                    toggle-row {
+                                        panel-w: root.panel-w;
+                                        label: "Copy toasts";
+                                        hint: "Show a small confirmation after copying.";
+                                        checked <=> root.sec-copy-toasts;
+                                        toggled => { root.pref-bool("copyToasts", root.sec-copy-toasts); }
+                                    }
+                                }
+                            }
+
                             // Every panel not landed yet. The header already
                             // names the section and says what it is for, so
                             // the body only has to be honest about the wait.
-                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms") : Rectangle {
+                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms" && root.active.id != "security") : Rectangle {
                                 // A constant width for the same reason as the
                                 // rows: `EmptyState` wraps its title, and a
                                 // wrapped height built on the panel's width

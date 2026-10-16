@@ -824,6 +824,22 @@ export component MainWindow inherits Window {
     callback settings-alarm-day-toggled(index: int);
     callback settings-alarm-import();
     callback settings-alarm-reset-sound();
+    // The Security tab's own (Task 5.7): the lock button and the vault
+    // form's twelve actions. The fourteen simple rows ride the three `pref-*`
+    // callbacks above.
+    callback settings-security-lock();
+    callback settings-vsec-totp-attach();
+    callback settings-vsec-totp-generate();
+    callback settings-vsec-totp-check();
+    callback settings-vsec-totp-discard();
+    callback settings-vsec-totp-remove();
+    callback settings-vsec-passcode-save();
+    callback settings-vsec-passcode-check();
+    callback settings-vsec-passcode-remove();
+    callback settings-vsec-question-add();
+    callback settings-vsec-question-remove(id: string);
+    callback settings-vsec-question-check(id: string);
+    callback settings-vsec-prompt-step(delta: int);
     in-out property <bool> settings-open: false;
     in-out property <int> settings-tab-index: 0;
     // The modal's frame, in logical pixels, kept in step with the window by
@@ -901,6 +917,48 @@ export component MainWindow inherits Window {
     in-out property <string> settings-alarm-sound;
     in-out property <string> settings-alarm-label;
     in-out property <string> settings-alarm-time: "08:00";
+    // ---- The Settings window's Security tab (Task 5.7) -------------------
+    // Fourteen simple rows (five pickers, nine switches) land here through the
+    // `pref-*` callbacks; the vault's own second factor is a `SecurityForm`
+    // instance bound to `prefs.vaultSecurity`, whose props and twelve
+    // actions cross this boundary one for one.
+    in-out property <int> settings-sec-group: 0;
+    in-out property <string> settings-sec-auto-lock: "5";
+    in-out property <string> settings-sec-clipboard: "30";
+    in-out property <string> settings-sec-pw-age: "180";
+    in-out property <string> settings-sec-email-age: "365";
+    in-out property <string> settings-sec-email-check: "90";
+    in-out property <bool> settings-sec-clear-on-lock: true;
+    in-out property <bool> settings-sec-clip-capture: false;
+    in-out property <bool> settings-sec-clip-autosave: false;
+    in-out property <bool> settings-sec-warn-reuse: true;
+    in-out property <bool> settings-sec-tag-reused: true;
+    in-out property <bool> settings-sec-mask-emails: true;
+    in-out property <bool> settings-sec-confirm-export: false;
+    in-out property <bool> settings-sec-confirm-deletes: true;
+    in-out property <bool> settings-sec-copy-toasts: true;
+    in property <string> settings-sec-kdf;
+    in property <string> settings-vsec-level: "none";
+    in property <string> settings-vsec-questions-note: "Not set";
+    in property <bool> settings-vsec-totp: false;
+    in property <string> settings-vsec-otpauth;
+    in property <int> settings-vsec-qr-size: 0;
+    in property <[QrCell]> settings-vsec-qr-cells;
+    in property <bool> settings-vsec-totp-staged: false;
+    in property <string> settings-vsec-totp-note;
+    in-out property <string> settings-vsec-totp-seed;
+    in-out property <string> settings-vsec-totp-code;
+    in property <bool> settings-vsec-passcode: false;
+    in-out property <string> settings-vsec-passcode-new;
+    in-out property <string> settings-vsec-passcode-confirm;
+    in-out property <string> settings-vsec-passcode-input;
+    in property <string> settings-vsec-passcode-error;
+    in property <[QuestionRow]> settings-vsec-questions;
+    in property <string> settings-vsec-answer-error;
+    in-out property <string> settings-vsec-checking-id;
+    in-out property <string> settings-vsec-check-input;
+    in property <string> settings-vsec-new-prompt;
+    in-out property <string> settings-vsec-new-answer;
     // ---- SecurityGate ----------------------------------------------------
     // A blocking verification for a login or for the vault itself: any one
     // factor passes, and the open panel holds everything typed until Rust
@@ -2305,6 +2363,43 @@ export component MainWindow inherits Window {
             alarm-sound <=> root.settings-alarm-sound;
             alarm-label <=> root.settings-alarm-label;
             alarm-time <=> root.settings-alarm-time;
+            sec-group <=> root.settings-sec-group;
+            sec-auto-lock <=> root.settings-sec-auto-lock;
+            sec-clipboard <=> root.settings-sec-clipboard;
+            sec-pw-age <=> root.settings-sec-pw-age;
+            sec-email-age <=> root.settings-sec-email-age;
+            sec-email-check <=> root.settings-sec-email-check;
+            sec-clear-on-lock <=> root.settings-sec-clear-on-lock;
+            sec-clip-capture <=> root.settings-sec-clip-capture;
+            sec-clip-autosave <=> root.settings-sec-clip-autosave;
+            sec-warn-reuse <=> root.settings-sec-warn-reuse;
+            sec-tag-reused <=> root.settings-sec-tag-reused;
+            sec-mask-emails <=> root.settings-sec-mask-emails;
+            sec-confirm-export <=> root.settings-sec-confirm-export;
+            sec-confirm-deletes <=> root.settings-sec-confirm-deletes;
+            sec-copy-toasts <=> root.settings-sec-copy-toasts;
+            sec-kdf: root.settings-sec-kdf;
+            vsec-level: root.settings-vsec-level;
+            vsec-questions-note: root.settings-vsec-questions-note;
+            vsec-totp: root.settings-vsec-totp;
+            vsec-otpauth: root.settings-vsec-otpauth;
+            vsec-qr-size: root.settings-vsec-qr-size;
+            vsec-qr-cells: root.settings-vsec-qr-cells;
+            vsec-totp-staged: root.settings-vsec-totp-staged;
+            vsec-totp-note: root.settings-vsec-totp-note;
+            vsec-totp-seed <=> root.settings-vsec-totp-seed;
+            vsec-totp-code <=> root.settings-vsec-totp-code;
+            vsec-passcode: root.settings-vsec-passcode;
+            vsec-passcode-new <=> root.settings-vsec-passcode-new;
+            vsec-passcode-confirm <=> root.settings-vsec-passcode-confirm;
+            vsec-passcode-input <=> root.settings-vsec-passcode-input;
+            vsec-passcode-error: root.settings-vsec-passcode-error;
+            vsec-questions: root.settings-vsec-questions;
+            vsec-answer-error: root.settings-vsec-answer-error;
+            vsec-checking-id <=> root.settings-vsec-checking-id;
+            vsec-check-input <=> root.settings-vsec-check-input;
+            vsec-new-prompt: root.settings-vsec-new-prompt;
+            vsec-new-answer <=> root.settings-vsec-new-answer;
             closed => { root.settings-closed(); }
             tab-picked(index) => { root.settings-tab-picked(index); }
             pref-string(key, value) => { root.settings-pref-string(key, value); }
@@ -2319,6 +2414,19 @@ export component MainWindow inherits Window {
             alarm-day-toggled(index) => { root.settings-alarm-day-toggled(index); }
             alarm-import => { root.settings-alarm-import(); }
             alarm-reset-sound => { root.settings-alarm-reset-sound(); }
+            security-lock => { root.settings-security-lock(); }
+            vsec-totp-attach => { root.settings-vsec-totp-attach(); }
+            vsec-totp-generate => { root.settings-vsec-totp-generate(); }
+            vsec-totp-check => { root.settings-vsec-totp-check(); }
+            vsec-totp-discard => { root.settings-vsec-totp-discard(); }
+            vsec-totp-remove => { root.settings-vsec-totp-remove(); }
+            vsec-passcode-save => { root.settings-vsec-passcode-save(); }
+            vsec-passcode-check => { root.settings-vsec-passcode-check(); }
+            vsec-passcode-remove => { root.settings-vsec-passcode-remove(); }
+            vsec-question-add => { root.settings-vsec-question-add(); }
+            vsec-question-remove(id) => { root.settings-vsec-question-remove(id); }
+            vsec-question-check(id) => { root.settings-vsec-question-check(id); }
+            vsec-prompt-step(delta) => { root.settings-vsec-prompt-step(delta); }
         }
     }
 }

@@ -368,6 +368,15 @@ struct AppState {
     editor_staged_seed: Option<String>,
     /// Which of `QUESTION_PROMPTS` the add-question row is showing.
     editor_prompt_index: usize,
+    /// The vault's own second factor (Settings › Security) staged exactly as
+    /// the editor's is: a key generated or pasted but not yet confirmed by a
+    /// code. Nothing about `prefs.vaultSecurity` changes until a code proves
+    /// a phone holds the key; closing the modal drops it.
+    vault_staged_seed: Option<String>,
+    /// Which of `QUESTION_PROMPTS` the vault form's add row is showing — the
+    /// editor's own index again, kept apart so one window's stepper never
+    /// moves the other's.
+    vault_prompt_index: usize,
     /// The Organise half of the draft: which of the catalogue's tags this
     /// login carries. Kept here rather than in Slint because the catalogue it
     /// is chosen from lives in preferences and only Rust sees both — and
@@ -805,9 +814,12 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// (the appearance panel), `settings-layout`, `settings-hidden` or
 /// `settings-desktop` (each left open for a screenshot), `settings-generator`
 /// (same, with a stored length and one switch off), `settings-alarms` (same,
-/// two stored alarms and one switched off), `editor-generator` (the
-/// editor's own generator with one chip flipped), or `chrome` (the
-/// three shortcuts the Layout tab takes off the shell, all left off).
+/// two stored alarms and one switched off), `settings-security` (same, with
+/// the vault's own factor stored: key, passcode and two questions),
+/// `settings-security-clip` (the clipboard group with a pick moved),
+/// `editor-generator` (the editor's own generator with one chip flipped), or
+/// `chrome` (the three shortcuts the Layout tab takes off the shell, all left
+/// off).
 #[cfg(debug_assertions)]
 fn dev_screen(ui: &MainWindow, state: &Shared) {
     // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
@@ -1014,6 +1026,40 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         let first = settings_ops::stored_alarm_id(state, 0);
         settings_ops::alarm_toggle(ui, state, &first);
         settings_ops::open(ui, state, "alarms");
+        return;
+    }
+    // The Security tab, two shots. The first seeds the vault's own factor
+    // through the panel's own ops — a generated key confirmed with the code
+    // the app itself derives, a passcode, two recovery questions — so the
+    // form shows filled tiles and the QR in place under the locking group.
+    if want == "settings-security" {
+        settings_ops::open(ui, state, "security");
+        settings_ops::vsec_totp_generate(ui, state);
+        let code = state
+            .borrow()
+            .vault_staged_seed
+            .clone()
+            .and_then(|seed| colax_core::totp::current_totp_code(&seed).ok())
+            .unwrap_or_default();
+        ui.set_settings_vsec_totp_code(code.as_str().into());
+        settings_ops::vsec_totp_check(ui, state);
+        ui.set_settings_vsec_passcode_new("vault-gate-2026".into());
+        ui.set_settings_vsec_passcode_confirm("vault-gate-2026".into());
+        settings_ops::vsec_passcode_save(ui, state);
+        ui.set_settings_vsec_new_answer("ten past four".into());
+        settings_ops::vsec_question_add(ui, state);
+        settings_ops::vsec_prompt_step(ui, state, 1);
+        ui.set_settings_vsec_new_answer("the blue door".into());
+        settings_ops::vsec_question_add(ui, state);
+        return;
+    }
+    // The clipboard group: a moved pick and one switch on, so the shot has
+    // both a set and an unset row.
+    if want == "settings-security-clip" {
+        settings_ops::pref_string(ui, state, "clear-clipboard", "60");
+        settings_ops::pref_bool(ui, state, "clipboardCapture", true);
+        settings_ops::open(ui, state, "security");
+        ui.set_settings_sec_group(1);
         return;
     }
     // The three shortcuts the Layout tab takes off the shell (Task 5.2b),
@@ -4943,6 +4989,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 editor_security: LoginSecurity::default(),
                 editor_staged_seed: None,
                 editor_prompt_index: 0,
+                vault_staged_seed: None,
+                vault_prompt_index: 0,
                 editor_tags: Vec::new(),
                 alarm_days: Vec::new(),
                 alarm_sound: None,
@@ -5519,6 +5567,102 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_settings_hidden_restore_all(move || {
                 if let Some(ui) = weak.upgrade() {
                     settings_ops::restore_all(&ui, &st);
+                }
+            });
+            // The Security tab's own handholds: the lock button and the vault
+            // form's twelve actions, each the same shape as the alarm block
+            // above. "Lock now" seals the vault and closes the sheet; every
+            // other op either stages a key (nothing written yet) or writes
+            // `prefs.vaultSecurity` through the panel's own door.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_security_lock(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::security_lock(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_totp_attach(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_totp_attach(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_totp_generate(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_totp_generate(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_totp_check(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_totp_check(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_totp_discard(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_totp_discard(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_totp_remove(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_totp_remove(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_passcode_save(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_passcode_save(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_passcode_check(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_passcode_check(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_passcode_remove(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_passcode_remove(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_question_add(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_question_add(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_question_remove(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_question_remove(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_question_check(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_question_check(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_vsec_prompt_step(move |delta| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::vsec_prompt_step(&ui, &st, delta);
                 }
             });
 
