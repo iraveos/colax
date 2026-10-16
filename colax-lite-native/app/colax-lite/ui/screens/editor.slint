@@ -229,6 +229,10 @@ export component Editor inherits VerticalLayout {
     callback section-selected(id: string);
     callback generator-toggled();
     callback regenerate();
+    // A hand moved on the generator's own dials. The options are the stored
+    // preference, so this is a write, not a redraw (ItemEditor.tsx L171: every
+    // chip calls `onOptionsChange`, which lands in `updatePrefs`).
+    callback gen-options-changed();
     // Indices, not labels: see the note at the top of the file.
     callback gen-mode-picked(index: int);
     callback use-generated();
@@ -667,7 +671,7 @@ export component Editor inherits VerticalLayout {
                             minimum: 8;
                             maximum: 64;
                             value <=> root.gen-length;
-                            changed(value) => { root.gen-length = round(value); root.regenerate(); }
+                            changed(value) => { root.gen-length = round(value); root.gen-options-changed(); root.regenerate(); }
                         }
 
                         if (root.gen-mode == "Words") : Slider {
@@ -691,22 +695,22 @@ export component Editor inherits VerticalLayout {
                                 Chip {
                                     label: "a-z";
                                     selected: root.gen-lower;
-                                    toggled => { root.gen-lower = !root.gen-lower; root.regenerate(); }
+                                    toggled => { root.gen-lower = !root.gen-lower; root.gen-options-changed(); root.regenerate(); }
                                 }
                                 Chip {
                                     label: "A-Z";
                                     selected: root.gen-upper;
-                                    toggled => { root.gen-upper = !root.gen-upper; root.regenerate(); }
+                                    toggled => { root.gen-upper = !root.gen-upper; root.gen-options-changed(); root.regenerate(); }
                                 }
                                 Chip {
                                     label: "0-9";
                                     selected: root.gen-digits;
-                                    toggled => { root.gen-digits = !root.gen-digits; root.regenerate(); }
+                                    toggled => { root.gen-digits = !root.gen-digits; root.gen-options-changed(); root.regenerate(); }
                                 }
                                 Chip {
                                     label: "!@#";
                                     selected: root.gen-symbols;
-                                    toggled => { root.gen-symbols = !root.gen-symbols; root.regenerate(); }
+                                    toggled => { root.gen-symbols = !root.gen-symbols; root.gen-options-changed(); root.regenerate(); }
                                 }
 
                                 Rectangle { horizontal-stretch: 1; width: 1px; }
@@ -714,7 +718,7 @@ export component Editor inherits VerticalLayout {
                                 Checkbox {
                                     label: "Avoid look-alikes (l, 1, I, O, 0, o)";
                                     checked <=> root.gen-avoid;
-                                    toggled => { root.regenerate(); }
+                                    toggled => { root.gen-options-changed(); root.regenerate(); }
                                 }
                             }
                         }

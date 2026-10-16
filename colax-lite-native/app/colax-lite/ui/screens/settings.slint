@@ -87,12 +87,52 @@ component theme-preview inherits Rectangle {
 // control hugging the right, a hairline under the row (app.css L769, L858).
 // Slint has no slots, so each control kind is its own row component — the
 // shell repeats, the behaviour does not.
+//
+// A heading with no control at all: the `stacked` Row of Settings.tsx
+// (`<Row label="Character sets" hint="At least one must stay on." stacked>`),
+// which groups the switches under it without repeating the sentence five
+// times. Same width rule as the rows around it.
+component group-row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    in property <length> panel-w: 704px;
+    width: root.panel-w;
+    height: shell.preferred-height;
+
+    shell := VerticalLayout {
+        spacing: 3px;
+        padding-top: 16px;
+        padding-bottom: 8px;
+
+        Text {
+            text: root.label;
+            color: Theme.text;
+            font-size: 13.5px;
+            font-weight: 600;
+        }
+        if (root.hint != "") : Text {
+            text: root.hint;
+            color: Theme.muted;
+            font-size: 12px;
+            wrap: word-wrap;
+            width: root.panel-w;
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.hairline;
+    }
+}
+
 component toggle-row inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
     in-out property <bool> checked;
     callback toggled();
-
     // The body panel's inner width, from the window root. It is a property
     // and not a derivation: a width taken from this row's own layout would
     // meet the height that layout is built from — a loop the compiler
@@ -650,6 +690,18 @@ export component Settings inherits Rectangle {
     in-out property <bool> desk-tray: true;
     in-out property <bool> desk-close-to-tray: true;
     in-out property <bool> desk-mute: false;
+
+    // The Generator tab. One object with the editor's own generator: these six
+    // are the fields `passwordGenerator` holds, so a chip toggled in the editor
+    // shows up here and vice versa. The label is formatted in Rust, the way
+    // the editor's is.
+    in-out property <float> gen-length: 20;
+    in-out property <string> gen-length-label;
+    in-out property <bool> gen-lower: true;
+    in-out property <bool> gen-upper: true;
+    in-out property <bool> gen-digits: true;
+    in-out property <bool> gen-symbols: true;
+    in-out property <bool> gen-avoid: true;
 
     callback closed();
     callback tab-picked(index: int);
@@ -1513,10 +1565,73 @@ export component Settings inherits Rectangle {
                                 }
                             }
 
+                            // ---- The generator panel ----------------------
+                            // Settings.tsx L1199-1242. Six fields that are one
+                            // object in the document, and the same object the
+                            // editor's generator works from: a chip toggled
+                            // there arrives here on the next refresh, and a
+                            // switch thrown here re-rolls the preview there.
+                            if (root.active.id == "generator") : VerticalLayout {
+                                spacing: 0px;
+
+                                slider-row {
+                                    panel-w: root.panel-w;
+                                    label: "Default length";
+                                    hint: "Used when the generator opens.";
+                                    minimum: 8;
+                                    maximum: 64;
+                                    step: 1;
+                                    formatted: root.gen-length-label;
+                                    value <=> root.gen-length;
+                                    changed(v) => { root.pref-float("gen-length", v); }
+                                }
+
+                                group-row {
+                                    panel-w: root.panel-w;
+                                    label: "Character sets";
+                                    hint: "At least one must stay on.";
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Lowercase  a–z";
+                                    checked <=> root.gen-lower;
+                                    toggled => { root.pref-bool("gen-lower", root.gen-lower); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Uppercase  A–Z";
+                                    checked <=> root.gen-upper;
+                                    toggled => { root.pref-bool("gen-upper", root.gen-upper); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Digits  0–9";
+                                    checked <=> root.gen-digits;
+                                    toggled => { root.pref-bool("gen-digits", root.gen-digits); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Symbols  !@#";
+                                    checked <=> root.gen-symbols;
+                                    toggled => { root.pref-bool("gen-symbols", root.gen-symbols); }
+                                }
+
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Avoid look-alikes  l 1 I O 0";
+                                    checked <=> root.gen-avoid;
+                                    toggled => { root.pref-bool("gen-avoid", root.gen-avoid); }
+                                }
+                            }
+
                             // Every panel not landed yet. The header already
                             // names the section and says what it is for, so
                             // the body only has to be honest about the wait.
-                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop") : Rectangle {
+                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator") : Rectangle {
                                 // A constant width for the same reason as the
                                 // rows: `EmptyState` wraps its title, and a
                                 // wrapped height built on the panel's width

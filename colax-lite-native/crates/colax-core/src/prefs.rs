@@ -81,6 +81,37 @@ pub fn new_alarm_id() -> String {
     format!("al_{}", &uuid[..8])
 }
 
+/// The password generator's defaults (`passwordGenerator`, storage.ts L935).
+///
+/// One object with two doors: the editor's generator reads it and writes every
+/// chip back through `onOptionsChange`, and Settings › Generator edits the same
+/// six fields. Porting it as a preference rather than a session setting is what
+/// makes "Default length — used when the generator opens" true.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PasswordGenerator {
+    pub length: u32,
+    pub lower: bool,
+    pub upper: bool,
+    pub digits: bool,
+    pub symbols: bool,
+    /// Leave out `l 1 I O 0 o` (`avoid_ambiguous`, storage.ts L941).
+    pub avoid_ambiguous: bool,
+}
+
+impl Default for PasswordGenerator {
+    fn default() -> Self {
+        Self {
+            length: 20,
+            lower: true,
+            upper: true,
+            digits: true,
+            symbols: true,
+            avoid_ambiguous: true,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VaultPreferences {
@@ -214,6 +245,10 @@ pub struct VaultPreferences {
     /// in storage.ts L1076 — so a vault opened here shows the same tags the
     /// web build would, without the user having created any.
     pub tags: Vec<Tag>,
+    /// What the generator opens with (`passwordGenerator`, storage.ts L935).
+    /// The editor's own panel writes this same object as its chips move, so
+    /// Settings and the editor are two doors to one set of six fields.
+    pub password_generator: PasswordGenerator,
     // Shell switches. They live in `shell.json` too so the tray (which exists
     // before unlock) can read them, and the two are written together — see
     // `mirror_shell_flags` in the app.
@@ -264,6 +299,7 @@ impl Default for VaultPreferences {
             copy_toasts: true,
             mask_emails: true,
             tags: Vec::new(),
+            password_generator: PasswordGenerator::default(),
             sidebar_position: "left".into(),
             sidebar_labels: "both".into(),
             compact_sidebar: false,
@@ -458,6 +494,8 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // The vault's own second factor, through the same helper the items use:
     // a stored vault.json from the web build verifies exactly the same way.
     out.vault_security = normalise_security(o.get("vaultSecurity"));
+    // The generator's defaults (`normalisePreferences`, storage.ts L1434-1451).
+    out.password_generator = normalise_generator(o.get("passwordGenerator"));
     // Boolean(...) in JS: anything truthy reads as true, so a legacy string
     // here is still honoured rather than reset.
     out.tray_enabled = truthy(o.get("trayEnabled"), true);
@@ -484,12 +522,40 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "hiddenChannels","hiddenFolders","hiddenButtons",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
         "pinFavorites","manualOrder","passwordAgeDays","emailCheckDays","confirmDeletes","tags","autoLockMinutes",
+        "passwordGenerator",
         "clearClipboardSeconds","clearClipboardOnLock","copyToasts","maskEmails","usage","history","alarms"];
     for (k,v) in o.iter() {
         if !known.contains(&k.as_str()) { extra.insert(k.clone(), v.clone()); }
     }
     out.extra = Value::Object(extra);
     out
+}
+
+/// `passwordGenerator` as stored (storage.ts L1434-1451): the length is
+/// rounded and clamped 8..64, the five switches read the way `Boolean()`
+/// reads them after the defaults were spread underneath, and a stored object
+/// with every character set off is discarded whole — the TS puts the shipped
+/// defaults back (`merged.passwordGenerator = { ...DEFAULT_PREFERENCES.
+/// passwordGenerator }`), so the length and the look-alike flag are reset too
+/// rather than kept beside a generator that could not run.
+pub fn normalise_generator(stored: Option<&Value>) -> PasswordGenerator {
+    let Some(obj) = stored.and_then(Value::as_object) else {
+        return PasswordGenerator::default();
+    };
+    let dflt = PasswordGenerator::default();
+    let out = PasswordGenerator {
+        length: clamp(num(obj.get("length"), dflt.length as f64), 8.0, 64.0).round() as u32,
+        lower: bool_or(obj.get("lower"), dflt.lower),
+        upper: bool_or(obj.get("upper"), dflt.upper),
+        digits: bool_or(obj.get("digits"), dflt.digits),
+        symbols: bool_or(obj.get("symbols"), dflt.symbols),
+        avoid_ambiguous: bool_or(obj.get("avoidAmbiguous"), dflt.avoid_ambiguous),
+    };
+    if out.lower || out.upper || out.digits || out.symbols {
+        out
+    } else {
+        dflt
+    }
 }
 
 fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
@@ -1168,5 +1234,91 @@ mod tests {
         let twice = ensure_default_tags(ensure_default_tags(once.clone()));
         assert_eq!(twice, once);
         assert_eq!(once.len(), 3);
+    }
+
+    #[test]
+    fn the_generator_opens_at_the_shipped_defaults() {
+        let p = normalise_preferences(&json!({}));
+        // storage.ts L935: twenty characters, every set on, look-alikes out.
+        assert_eq!(p.password_generator, PasswordGenerator::default());
+        assert_eq!(p.password_generator.length, 20);
+        assert!(p.password_generator.lower && p.password_generator.upper);
+        assert!(p.password_generator.digits && p.password_generator.symbols);
+        assert!(p.password_generator.avoid_ambiguous);
+
+        // camelCase on the wire, and the key is typed rather than pocketed in
+        // `extra` -- which is flattened into the same object, so an un-typed
+        // copy would write the six fields a second time beside the typed one.
+        let back = serde_json::to_value(&p).unwrap();
+        assert_eq!(
+            back["passwordGenerator"],
+            json!({
+                "length": 20,
+                "lower": true,
+                "upper": true,
+                "digits": true,
+                "symbols": true,
+                "avoidAmbiguous": true,
+            })
+        );
+        assert!(back.get("password_generator").is_none());
+    }
+
+    #[test]
+    fn a_stored_generator_is_clamped_and_cleaned() {
+        let p = normalise_preferences(&json!({
+            "passwordGenerator": {
+                "length": 100.4,
+                "lower": false,
+                "upper": false,
+                "digits": false,
+                "symbols": true,
+                "avoidAmbiguous": false,
+            },
+        }));
+        assert_eq!(p.password_generator.length, 64);
+        assert!(!p.password_generator.lower);
+        assert!(p.password_generator.symbols);
+        assert!(!p.password_generator.avoid_ambiguous);
+
+        // A length under the floor comes back up to it, and an absent one
+        // keeps the shipped default rather than reading as zero.
+        let low = normalise_preferences(&json!({ "passwordGenerator": { "length": 3 } }));
+        assert_eq!(low.password_generator.length, 8);
+        let half = normalise_preferences(&json!({ "passwordGenerator": { "lower": false, "upper": false } }));
+        assert_eq!(half.password_generator.length, 20);
+        assert!(half.password_generator.digits && half.password_generator.symbols);
+
+        // Junk in place of the object is the default, not a load failure.
+        assert_eq!(
+            normalise_preferences(&json!({ "passwordGenerator": "twenty" })).password_generator,
+            PasswordGenerator::default()
+        );
+    }
+
+    #[test]
+    fn a_generator_with_nothing_on_is_put_back_to_the_defaults() {
+        // The panel's own hint is "At least one must stay on"; the TS honours
+        // it by discarding the whole object, so a length the user chose beside
+        // four dead switches does not survive either (storage.ts L1449-1451).
+        let p = normalise_preferences(&json!({
+            "passwordGenerator": {
+                "length": 48,
+                "lower": false,
+                "upper": false,
+                "digits": false,
+                "symbols": false,
+                "avoidAmbiguous": false,
+            },
+        }));
+        assert_eq!(p.password_generator, PasswordGenerator::default());
+
+        // One set left on is enough, and the rest of the object is kept.
+        let one = normalise_preferences(&json!({
+            "passwordGenerator": { "length": 48, "lower": true, "upper": false, "digits": false, "symbols": false },
+        }));
+        assert_eq!(one.password_generator.length, 48);
+        assert!(one.password_generator.lower);
+        assert!(!one.password_generator.upper && !one.password_generator.digits);
     }
 }

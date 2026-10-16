@@ -794,7 +794,9 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// saved login), `editor-<section>` for any of its tabs, `settings` (the
 /// Settings walk, which closes the modal when it is done), `settings-open`
 /// (the appearance panel), `settings-layout`, `settings-hidden` or
-/// `settings-desktop` (each left open for a screenshot), or `chrome` (the
+/// `settings-desktop` (each left open for a screenshot), `settings-generator`
+/// (same, with a stored length and one switch off), `editor-generator` (the
+/// editor's own generator with one chip flipped), or `chrome` (the
 /// three shortcuts the Layout tab takes off the shell, all left off).
 #[cfg(debug_assertions)]
 fn dev_screen(ui: &MainWindow, state: &Shared) {
@@ -979,6 +981,15 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         settings_ops::open(ui, state, "desktop");
         return;
     }
+    // The Generator tab. A length and one switch are moved first so the
+    // screenshot shows a stored generator rather than the shipped defaults --
+    // and so the panel is known to be reading what the document holds.
+    if want == "settings-generator" {
+        settings_ops::pref_float(ui, state, "gen-length", 32.0);
+        settings_ops::pref_bool(ui, state, "gen-symbols", false);
+        settings_ops::open(ui, state, "generator");
+        return;
+    }
     // The three shortcuts the Layout tab takes off the shell (Task 5.2b),
     // left off so a screenshot shows the bare topbar and rail.
     if want == "chrome" {
@@ -994,6 +1005,41 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         .items()
         .and_then(|items| items.first().map(|item| item.id.clone()));
     let Some(id) = id else { return };
+
+    // The editor's own generator is the second door to `passwordGenerator`:
+    // a chip there is a write (ItemEditor.tsx L171), not a session switch, so
+    // the walk flips one and leaves the document to say whether it landed --
+    // `passwordGenerator.lower` false in vault.json. One tick late, for the
+    // reason the security run below gives: `dev_screen` runs before `main`
+    // has wired any callbacks, and this drives the callback a chip would.
+    if want == "editor-generator" {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                let Some(ui) = weak.upgrade() else { return };
+                let id = st
+                    .borrow()
+                    .engine
+                    .items()
+                    .and_then(|items| items.first().map(|item| item.id.clone()));
+                let Some(id) = id else { return };
+                open_editor(&ui, &st, &id);
+                ui.set_editor_section("credentials".into());
+                ui.set_gen_show(true);
+                // The chip's own handler: flip the property, then call back.
+                ui.set_gen_lower(false);
+                ui.invoke_editor_gen_options_changed();
+            },
+        );
+        // Dropping the handle would cancel it before it fires.
+        std::mem::forget(timer);
+        return;
+    }
+
     open_editor(ui, state, &id);
 
     if let Some(section) = want.strip_prefix("editor-") {
@@ -3109,8 +3155,10 @@ fn toggle_theme(ui: &MainWindow, state: &Shared) {
 /// Everything the generator shows is written here, in one place, so the
 /// preview can never be one password while the meter describes another.
 fn regenerate(ui: &MainWindow) {
+    // The read-outs are the TS's own: `{options.length}` beside the random
+    // slider and `${words} words` beside the word one (ItemEditor.tsx L150-152).
     ui.set_gen_length_label(
-        format!("{} characters", ui.get_gen_length().round().max(0.0) as i64).as_str().into(),
+        format!("{}", ui.get_gen_length().round().max(0.0) as i64).as_str().into(),
     );
     ui.set_gen_words_label(
         format!("{} words", ui.get_gen_words().round().max(0.0) as i64).as_str().into(),
@@ -3324,6 +3372,10 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
     // The Organise cloud and dates last of all: both read the draft the two
     // branches above just filled.
     push_organise(ui, state);
+    // The generator's options are the stored preference, so they are read off
+    // the document as the editor opens -- "Default length: used when the
+    // generator opens" (Settings.tsx L1206) is exactly this line.
+    settings_ops::refresh_generator(ui, state);
 
     goto(ui, state, Screen::Editor);
 }
@@ -5582,6 +5634,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_editor_gen_mode_picked(move |index| {
                 if let Some(ui) = weak.upgrade() {
                     editor_gen_mode_picked(&ui, index);
+                }
+            });
+
+            // The editor's generator options are a write, not a redraw: the
+            // chips and the length slider are the same six fields Settings ›
+            // Generator holds (`onOptionsChange` -> `updatePrefs` in the TS).
+            // The mode and the word count stay session state -- neither is in
+            // `passwordGenerator`, and the word count is derived from the
+            // length when the panel opens (`ItemEditor.tsx L69`).
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_editor_gen_options_changed(move || {
+                if let Some(ui) = weak.upgrade() {
+                    if ui.get_screen() == Screen::Editor {
+                        settings_ops::gen_options(&ui, &st);
+                    }
                 }
             });
 

@@ -874,6 +874,16 @@ export component MainWindow inherits Window {
     in-out property <bool> settings-desk-tray: true;
     in-out property <bool> settings-desk-close-to-tray: true;
     in-out property <bool> settings-desk-mute: false;
+    // The Generator tab. Its six dials are the same fields the editor's own
+    // generator works from (`gen-length` and the five beside it), which is why
+    // the settings-side names carry the tab's prefix: one object, two doors.
+    in-out property <float> settings-gen-length: 20;
+    in-out property <string> settings-gen-length-label;
+    in-out property <bool> settings-gen-lower: true;
+    in-out property <bool> settings-gen-upper: true;
+    in-out property <bool> settings-gen-digits: true;
+    in-out property <bool> settings-gen-symbols: true;
+    in-out property <bool> settings-gen-avoid: true;
     // ---- SecurityGate ----------------------------------------------------
     // A blocking verification for a login or for the vault itself: any one
     // factor passes, and the open panel holds everything typed until Rust
@@ -925,6 +935,11 @@ export component MainWindow inherits Window {
     callback editor-generator-toggled();
     callback editor-regenerate();
     callback editor-gen-mode-picked(index: int);
+    // The generator's options are the stored preference, not a session copy:
+    // a chip or the length slider is a write (ItemEditor.tsx L171), so the
+    // callback carries no value -- Rust reads the six properties, which are
+    // the same fields Settings › Generator edits.
+    callback editor-gen-options-changed();
     callback editor-use-generated();
     callback editor-copy-generated();
     callback editor-reminder-picked(index: int);
@@ -1801,6 +1816,7 @@ export component MainWindow inherits Window {
             generator-toggled => { root.editor-generator-toggled(); }
             regenerate => { root.editor-regenerate(); }
             gen-mode-picked(i) => { root.editor-gen-mode-picked(i); }
+            gen-options-changed => { root.editor-gen-options-changed(); }
             use-generated => { root.editor-use-generated(); }
             copy-generated => { root.editor-copy-generated(); }
             reminder-picked(i) => { root.editor-reminder-picked(i); }
@@ -2260,6 +2276,13 @@ export component MainWindow inherits Window {
             desk-tray <=> root.settings-desk-tray;
             desk-close-to-tray <=> root.settings-desk-close-to-tray;
             desk-mute <=> root.settings-desk-mute;
+            gen-length <=> root.settings-gen-length;
+            gen-length-label: root.settings-gen-length-label;
+            gen-lower <=> root.settings-gen-lower;
+            gen-upper <=> root.settings-gen-upper;
+            gen-digits <=> root.settings-gen-digits;
+            gen-symbols <=> root.settings-gen-symbols;
+            gen-avoid <=> root.settings-gen-avoid;
             closed => { root.settings-closed(); }
             tab-picked(index) => { root.settings-tab-picked(index); }
             pref-string(key, value) => { root.settings-pref-string(key, value); }

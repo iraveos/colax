@@ -269,6 +269,10 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     ui.set_settings_desk_tray(prefs.tray_enabled);
     ui.set_settings_desk_close_to_tray(prefs.close_to_tray && prefs.tray_enabled);
     ui.set_settings_desk_mute(prefs.sounds_muted);
+    // The Generator tab, whose six dials are the editor's generator as well:
+    // `refresh_generator` pushes both sets of properties and re-rolls the
+    // preview the editor is showing.
+    refresh_generator(ui, state);
 }
 
 /// One settings write, whichever dial made it. The closure owns the
@@ -402,6 +406,13 @@ pub fn pref_float(ui: &MainWindow, state: &Shared, key: &str, value: f64) {
             prefs.card_depth = snap(value, 0.0, 1.0, 0.05);
             true
         }
+        // The generator's length (Settings.tsx L1206-1218). Its five
+        // neighbours are switches and go through `bool_key`; the two doors
+        // meet in the same object.
+        "gen-length" => {
+            prefs.password_generator.length = snap(value, 8.0, 64.0, 1.0) as u32;
+            true
+        }
         _ => false,
     });
 }
@@ -432,8 +443,14 @@ pub fn is_shell_flag(key: &str) -> bool {
 
 /// The whitelist behind `pref_bool`. Every key is a stored pref's camelCase
 /// and nothing else: a near-miss (`showSidebarButton` for
-/// `showHideSidebarButton`) is refused, not guessed at.
+/// `showHideSidebarButton`) is refused, not guessed at. The five `gen-` keys
+/// are the exception in spelling, not in spirit: the document has no flat key
+/// for a field of `passwordGenerator`, so they are named the way the panel
+/// names them and land inside the object (`gen_set`).
 fn bool_key(prefs: &mut VaultPreferences, key: &str, value: bool) -> bool {
+    if gen_set(prefs, key, value) {
+        return true;
+    }
     let slot = match key {
         "reduceTransparency" => &mut prefs.reduce_transparency,
         "highContrast" => &mut prefs.high_contrast,
@@ -467,6 +484,81 @@ fn bool_key(prefs: &mut VaultPreferences, key: &str, value: bool) -> bool {
     };
     *slot = value;
     true
+}
+
+/// One of the generator's five switches, written into the object it belongs
+/// to. `false` means the key was not one of them, which is how `bool_key`
+/// tells a generator switch from a flat pref it does not know at all.
+///
+/// The write runs the object through its own normaliser before it is stored,
+/// so the rule the panel's hint states ("At least one must stay on") holds
+/// between loads and not only until the next one: a write that turns the last
+/// set off is answered with the shipped defaults immediately, which is what
+/// storage.ts does when it puts `DEFAULT_PREFERENCES.passwordGenerator` back
+/// (L1449-1451).
+fn gen_set(prefs: &mut VaultPreferences, key: &str, value: bool) -> bool {
+    let gen = &mut prefs.password_generator;
+    match key {
+        "gen-lower" => gen.lower = value,
+        "gen-upper" => gen.upper = value,
+        "gen-digits" => gen.digits = value,
+        "gen-symbols" => gen.symbols = value,
+        "gen-avoid" => gen.avoid_ambiguous = value,
+        _ => return false,
+    }
+    let raw = serde_json::to_value(*gen).unwrap_or(serde_json::Value::Null);
+    prefs.password_generator = colax_core::normalise_generator(Some(&raw));
+    true
+}
+
+/// The editor's generator is the other door to the same six fields: a chip or
+/// the length slider there writes the preference itself, exactly as
+/// `onOptionsChange` does in the TS (ItemEditor.tsx L171, App.tsx L3575),
+/// rather than keeping a session copy that would disagree with Settings the
+/// moment either was touched.
+pub fn gen_options(ui: &MainWindow, state: &Shared) {
+    let mut next = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences()).password_generator
+    };
+    next.length = snap(ui.get_gen_length() as f64, 8.0, 64.0, 1.0) as u32;
+    next.lower = ui.get_gen_lower();
+    next.upper = ui.get_gen_upper();
+    next.digits = ui.get_gen_digits();
+    next.symbols = ui.get_gen_symbols();
+    next.avoid_ambiguous = ui.get_gen_avoid();
+    write(ui, state, |prefs| {
+        prefs.password_generator = next;
+        true
+    });
+}
+
+/// Pushes the stored generator into the window: the Settings panel's six
+/// dials and the editor's generator read the same fields, so both are written
+/// on every refresh. The preview is re-rolled afterwards for the same reason
+/// the TS's `useEffect([options, mode, words])` re-runs -- the options are the
+/// object it generates from, and they have just moved.
+pub fn refresh_generator(ui: &MainWindow, state: &Shared) {
+    let gen = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences()).password_generator
+    };
+    ui.set_settings_gen_length(gen.length as f32);
+    // The panel's own read-out: `{gen.length}` and nothing else
+    // (Settings.tsx L1214), the same bare number the editor shows.
+    ui.set_settings_gen_length_label(format!("{}", gen.length).as_str().into());
+    ui.set_settings_gen_lower(gen.lower);
+    ui.set_settings_gen_upper(gen.upper);
+    ui.set_settings_gen_digits(gen.digits);
+    ui.set_settings_gen_symbols(gen.symbols);
+    ui.set_settings_gen_avoid(gen.avoid_ambiguous);
+    ui.set_gen_length(gen.length as f32);
+    ui.set_gen_lower(gen.lower);
+    ui.set_gen_upper(gen.upper);
+    ui.set_gen_digits(gen.digits);
+    ui.set_gen_symbols(gen.symbols);
+    ui.set_gen_avoid(gen.avoid_ambiguous);
+    crate::regenerate(ui);
 }
 
 /// The Hidden tab's per-row Show button. A switch row sends its pref key and
@@ -568,10 +660,23 @@ pub fn dev(ui: &MainWindow, state: &Shared) {
     crate::settings_bool(ui, state, "closeToTray", true);
     crate::settings_bool(ui, state, "soundsMuted", true);
     dump(ui, state, "settings9.desktop");
-    dump_shell(state, "settings9.shell-file");
+    dump_shell(state, "settings10.shell-file");
+
+    // The Generator tab, whose six fields are one object in the document and
+    // the editor's own generator besides. The last set is switched off to show
+    // the object's rule answering: the store puts the shipped defaults back
+    // (length included), so the dials come up on again two lines later.
+    tab_picked(ui, 5); // Ctrl+6 -> generator
+    pref_float(ui, state, "gen-length", 48.0);
+    pref_bool(ui, state, "gen-lower", false);
+    dump(ui, state, "settings11.generator");
+    pref_bool(ui, state, "gen-upper", false);
+    pref_bool(ui, state, "gen-digits", false);
+    pref_bool(ui, state, "gen-symbols", false);
+    dump(ui, state, "settings12.generator-reset");
 
     close(ui);
-    dump(ui, state, "settings10.closed");
+    dump(ui, state, "settings13.closed");
 }
 
 /// The settings half of a dump: the mount, the lit tab and the dials *as the
@@ -593,7 +698,7 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         .map(|id| *id)
         .unwrap_or("?");
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -636,6 +741,12 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         ui.get_settings_desk_tray() as i32,
         ui.get_settings_desk_close_to_tray() as i32,
         ui.get_settings_desk_mute() as i32,
+        ui.get_settings_gen_length() as i32,
+        ui.get_settings_gen_lower() as i32,
+        ui.get_settings_gen_upper() as i32,
+        ui.get_settings_gen_digits() as i32,
+        ui.get_settings_gen_symbols() as i32,
+        ui.get_settings_gen_avoid() as i32,
         prefs.theme,
         prefs.text_scale,
         prefs.accent,
@@ -833,6 +944,46 @@ mod tests {
         // Every other switch is a vault matter only.
         assert!(!is_shell_flag("showSidebar"));
         assert!(!is_shell_flag("highContrast"));
+    }
+
+    #[test]
+    fn the_generator_panel_keys_reach_the_object() {
+        // The five `gen-` keys settings.slint sends, in panel order. They are
+        // the one set of boolean keys that is not a flat field: each lands in
+        // `passwordGenerator`, and the object's own rule runs on the way in.
+        let mut prefs = VaultPreferences::default();
+        prefs.password_generator.length = 48;
+
+        assert!(bool_key(&mut prefs, "gen-lower", false));
+        assert!(!prefs.password_generator.lower);
+        assert!(bool_key(&mut prefs, "gen-avoid", false));
+        assert!(!prefs.password_generator.avoid_ambiguous);
+        // The length is not a character set: three sets off still leaves the
+        // user's own object, length included.
+        assert!(bool_key(&mut prefs, "gen-upper", false));
+        assert!(bool_key(&mut prefs, "gen-digits", false));
+        assert_eq!(prefs.password_generator.length, 48);
+        assert!(prefs.password_generator.symbols);
+
+        // The fourth set: nothing can generate, so the store answers with the
+        // shipped defaults -- and takes the length with them, the way
+        // storage.ts L1449-1451 puts the whole object back.
+        assert!(bool_key(&mut prefs, "gen-symbols", false));
+        assert_eq!(
+            prefs.password_generator,
+            colax_core::PasswordGenerator::default()
+        );
+
+        // From the defaults one switch still moves on its own.
+        assert!(bool_key(&mut prefs, "gen-lower", false));
+        assert!(!prefs.password_generator.lower);
+        assert!(prefs.password_generator.upper);
+
+        // A near miss is refused rather than guessed at, so a panel typo
+        // cannot quietly change the generator.
+        assert!(!bool_key(&mut prefs, "gen-lookalikes", false));
+        assert!(!bool_key(&mut prefs, "generator.lower", false));
+        assert!(!prefs.password_generator.lower);
     }
 
     #[test]
