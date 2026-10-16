@@ -855,6 +855,11 @@ export component MainWindow inherits Window {
     callback settings-data-restore-cancel();
     callback settings-data-restore-edit();
     callback settings-data-restore-submit();
+    // Background (Task 5.9): the field's own edits and the two buttons beside
+    // it. The sliders ride the generic `settings-pref-float` above.
+    callback settings-bg-url-edited();
+    callback settings-bg-upload();
+    callback settings-bg-remove();
     in-out property <bool> settings-open: false;
     in-out property <int> settings-tab-index: 0;
     // The modal's frame, in logical pixels, kept in step with the window by
@@ -996,6 +1001,23 @@ export component MainWindow inherits Window {
     in property <bool> settings-data-restore-busy: false;
     in property <bool> settings-data-restore-ready: false;
     in property <string> settings-backup-hint;
+    // ---- The Settings window's Background tab (Task 5.9) ------------------
+    // The URL draft, the error line and the three dials. The two layer
+    // properties are the app's own: the picture itself is decoded in Rust
+    // (Slint cannot fetch or decode a stored data URL), so what arrives here
+    // is already an image.
+    in-out property <string> settings-bg-url;
+    in property <string> settings-bg-error;
+    in property <bool> settings-bg-has-image: false;
+    in-out property <float> settings-bg-opacity: 0.35;
+    in-out property <float> settings-bg-blur: 0;
+    in-out property <float> settings-bg-dim: 0.25;
+    // The picture the window paints behind everything, and the wash over it.
+    // Both are pushed by `push_background`: the preference's photo, or the
+    // active channel's own, which carries its own three dials with it.
+    in property <image> app-bg;
+    in property <float> app-bg-opacity: 0;
+    in property <float> app-bg-dim: 0;
     // ---- SecurityGate ----------------------------------------------------
     // A blocking verification for a login or for the vault itself: any one
     // factor passes, and the open panel holds everything typed until Rust
@@ -1111,6 +1133,24 @@ export component MainWindow inherits Window {
     // The tree below keeps the indentation it already had -- Slint reads
     // structure, not columns -- so the only new lines here are this one and
     // its closing brace.
+    // -- The app background (Settings › Background) -----------------------
+    // The preference's picture, or the active channel's own, painted under
+    // every screen: `body::before` in the web, whose photo shows through the
+    // content pane because nothing there paints over it. The wash above it is
+    // `.ambient:after` -- `background: var(--bg)` at `--bg-dim` opacity --
+    // which is what keeps text legible over an arbitrary photo. There is no
+    // blur to be had here (a Slint rectangle has no filter chain), so the
+    // blur happens in Rust, on the pixels, before they arrive.
+    if (root.app-bg-opacity > 0) : Image {
+        source: root.app-bg;
+        image-fit: cover;
+        opacity: root.app-bg-opacity;
+    }
+    if (root.app-bg-dim > 0) : Rectangle {
+        background: Theme.bg;
+        opacity: root.app-bg-dim;
+    }
+
     Rectangle {
     VerticalLayout {
         spacing: 0px;
@@ -2455,6 +2495,12 @@ export component MainWindow inherits Window {
             data-restore-busy: root.settings-data-restore-busy;
             data-restore-ready: root.settings-data-restore-ready;
             backup-hint: root.settings-backup-hint;
+            bg-url <=> root.settings-bg-url;
+            bg-error: root.settings-bg-error;
+            bg-has-image: root.settings-bg-has-image;
+            bg-opacity <=> root.settings-bg-opacity;
+            bg-blur <=> root.settings-bg-blur;
+            bg-dim <=> root.settings-bg-dim;
             closed => { root.settings-closed(); }
             tab-picked(index) => { root.settings-tab-picked(index); }
             pref-string(key, value) => { root.settings-pref-string(key, value); }
@@ -2495,6 +2541,9 @@ export component MainWindow inherits Window {
             data-restore-cancel => { root.settings-data-restore-cancel(); }
             data-restore-edit => { root.settings-data-restore-edit(); }
             data-restore-submit => { root.settings-data-restore-submit(); }
+            bg-url-edited => { root.settings-bg-url-edited(); }
+            bg-upload => { root.settings-bg-upload(); }
+            bg-remove => { root.settings-bg-remove(); }
         }
     }
 }

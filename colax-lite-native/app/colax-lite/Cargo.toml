@@ -10,6 +10,11 @@ description = "Colax Lite — a local-first, zero-knowledge password vault (nati
 base64.workspace = true
 colax-core = { path = "../../crates/colax-core" }
 dirs = "7.0.0"
+# Decoding an uploaded background (and re-encoding it small enough to store),
+# then the box blur the CSS's `filter: blur()` does not exist for here. Only
+# the codecs a user can actually hand us; the SVG/PNG-encoder defaults stay
+# off the tree.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
 rodio = "0.20"
 serde.workspace = true
 serde_json.workspace = true

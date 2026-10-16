@@ -196,6 +196,16 @@ pub fn pick_csv_file(owner: isize) -> Option<PathBuf> {
     pick_file(owner, "CSV files (*.csv)\0*.csv\0All files (*.*)\0*.*\0\0")
 }
 
+/// The same dialog for a photo: Settings › Background's "Upload" and the
+/// per-login background, whose picker is `accept="image/*"` (Settings.tsx
+/// L2318).
+pub fn pick_image_file(owner: isize) -> Option<PathBuf> {
+    pick_file(
+        owner,
+        "Images (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.tif;*.tiff)\0*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.tif;*.tiff\0All files (*.*)\0*.*\0\0",
+    )
+}
+
 /// Modal "save file" dialog, pre-named and restricted to the caller's
 /// filter, returning the chosen path. The write counterpart of `pick_file`:
 /// the Data tab's CSV export and the Backup tab's export both hand the user

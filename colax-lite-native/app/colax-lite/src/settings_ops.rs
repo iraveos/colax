@@ -174,6 +174,18 @@ pub fn open(ui: &MainWindow, state: &Shared, section: &str) {
     ui.set_settings_data_reset_open(false);
     ui.set_settings_data_restore_name("".into());
     state.borrow_mut().settings_restore = None;
+    // The Background tab's URL field is the window's own draft, seeded once
+    // per open the way `BackgroundSection`'s `useState` seeds it: only a
+    // stored `http(s)` URL is shown (Settings.tsx L2265), because a data URL
+    // from an upload is not text anyone typed.
+    {
+        let image = {
+            let guard = state.borrow();
+            items::prefs_from(guard.engine.preferences()).background_image
+        };
+        ui.set_settings_bg_url(if is_http_url(&image) { image.as_str().into() } else { "".into() });
+        ui.set_settings_bg_error("".into());
+    }
     refresh(ui, state);
     ui.set_settings_open(true);
 }
@@ -334,6 +346,8 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     // export, and the backup row's composed hint. Cheap reads, so they ride
     // every refresh the way the other tabs' dials do.
     push_data(ui, state);
+    // The Background tab's three dials and its "is there a picture" flag.
+    push_background_fields(ui, state);
 }
 
 /// One settings write, whichever dial made it. The closure owns the
@@ -512,6 +526,21 @@ pub fn pref_float(ui: &MainWindow, state: &Shared, key: &str, value: f64) {
         // meet in the same object.
         "gen-length" => {
             prefs.password_generator.length = snap(value, 8.0, 64.0, 1.0) as u32;
+            true
+        }
+        // The Background tab's three dials (Settings.tsx L2330-2359):
+        // opacity is a share of the photo, blur a pixel radius, dim a share
+        // of the wash. Their bounds are `normaliseBackgroundLook`'s own.
+        "bg-opacity" => {
+            prefs.background_opacity = snap(value, 0.0, 1.0, 0.05);
+            true
+        }
+        "bg-blur" => {
+            prefs.background_blur = snap(value, 0.0, 40.0, 2.0);
+            true
+        }
+        "bg-dim" => {
+            prefs.background_dim = snap(value, 0.0, 0.9, 0.05);
             true
         }
         _ => false,
@@ -1760,6 +1789,100 @@ pub fn data_restore_edited(ui: &MainWindow) {
     ui.set_settings_data_restore_ready(ready);
 }
 
+/* ---- Background (Task 5.9) --------------------------------------------- */
+
+/// Whether a stored string is the kind of URL this app treats as "the URL
+/// field's own text": `^https?:\/\/`, case-insensitive, which is the TS's
+/// `valid` test and its `startsWith('http')` initialiser test in one place.
+fn is_http_url(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// The URL field's own edit: store the trimmed text when it is a bare
+/// `http(s)` URL or empty (Settings.tsx L2295). Anything else stays in the
+/// box without touching the preference, which is why the field holds its own
+/// draft: the web app has the same rule and the same visible result.
+///
+/// A URL is *stored*, not fetched. This app makes no network request for a
+/// picture (`art.rs`), so a URL is a value the web app can use and this one
+/// carries faithfully without pretending to load it.
+pub fn background_url_edited(ui: &MainWindow, state: &Shared) {
+    let trimmed = ui.get_settings_bg_url().to_string().trim().to_string();
+    if !trimmed.is_empty() && !is_http_url(&trimmed) {
+        return;
+    }
+    write(ui, state, |prefs| {
+        prefs.background_image = trimmed;
+        true
+    });
+}
+
+/// "Upload": read a picked photo into the data URL a preference stores, the
+/// way `onPick` calls `readImageFile` (Settings.tsx L2269) — the same reader,
+/// so the same four sentences come back on the way out.
+pub fn background_upload(ui: &MainWindow, state: &Shared) {
+    let Some(path) = crate::platform::pick_image_file(crate::find_main_window()) else {
+        return;
+    };
+    match crate::art::read_image_data_url(&path, crate::art::MAX_APP_BACKGROUND_BYTES) {
+        Ok(data_url) => {
+            ui.set_settings_bg_url("".into());
+            ui.set_settings_bg_error("".into());
+            write(ui, state, |prefs| {
+                prefs.background_image = data_url;
+                true
+            });
+            crate::notice(ui, "Background image added");
+        }
+        Err(message) => ui.set_settings_bg_error(message.as_str().into()),
+    }
+}
+
+/// The ✕ beside the field: clear the draft and the preference
+/// (Settings.tsx L2306).
+pub fn background_remove(ui: &MainWindow, state: &Shared) {
+    ui.set_settings_bg_url("".into());
+    ui.set_settings_bg_error("".into());
+    write(ui, state, |prefs| {
+        prefs.background_image = String::new();
+        true
+    });
+}
+
+/// The Background tab's three dials and the flag behind its ✕. The URL
+/// *field* is not pushed here on purpose — it is the window's draft, and a
+/// push after every keystroke would fight the typing; `open` seeds it once.
+pub fn push_background_fields(ui: &MainWindow, state: &Shared) {
+    let prefs = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+    };
+    ui.set_settings_bg_opacity(prefs.background_opacity as f32);
+    ui.set_settings_bg_blur(prefs.background_blur as f32);
+    ui.set_settings_bg_dim(prefs.background_dim as f32);
+    ui.set_settings_bg_has_image(!prefs.background_image.is_empty());
+}
+
+/// Dev-only: store a photo straight from a path, so a walk step or a
+/// screenshot can have the layer without a file dialog standing in the way.
+/// It reads the file through the very reader an upload uses, which is the
+/// point: the bytes on the screen are the bytes the button would store.
+#[cfg(debug_assertions)]
+pub fn background_set_from_file(ui: &MainWindow, state: &Shared, path: &std::path::Path) {
+    match crate::art::read_image_data_url(path, crate::art::MAX_APP_BACKGROUND_BYTES) {
+        Ok(data_url) => {
+            ui.set_settings_bg_url("".into());
+            ui.set_settings_bg_error("".into());
+            write(ui, state, |prefs| {
+                prefs.background_image = data_url;
+                true
+            });
+        }
+        Err(message) => ui.set_settings_bg_error(message.as_str().into()),
+    }
+}
+
 /// The settings walk — `COLAX_DEV_SCREEN=settings`. Opens the window the
 /// way the sidebar does (no tab), jumps the way Ctrl+number does, follows
 /// a dashboard deep link, then drives four dials through the same handlers
@@ -1987,8 +2110,99 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
     data_reset_cancel(ui);
     dump(ui, state, "settings28.reset-cancelled");
 
+    // The Background tab (Task 5.9): the field's own rule, the three dials, a
+    // stored photo and the ✕. The photo is generated here and read back
+    // through the same reader an upload uses, so `app=[width opacity dim]` on
+    // the dump line is the proof the pixels reached Slint -- not just that a
+    // preference changed.
+    tab_picked(ui, 3);
+    dump(ui, state, "settings29.background");
+    // A scheme other than http(s) is refused: the box keeps the text and the
+    // preference keeps its old value, which is the TS's `valid` test and the
+    // reason the field owns a draft at all.
+    ui.set_settings_bg_url("file:///C:/photo.jpg".into());
+    background_url_edited(ui, state);
+    debug_assert!(
+        !ui.get_settings_bg_has_image(),
+        "a non-http scheme is not stored"
+    );
+    dump(ui, state, "settings30.background-refused");
+    ui.set_settings_bg_url("https://example.com/photo.jpg".into());
+    background_url_edited(ui, state);
+    debug_assert!(
+        ui.get_settings_bg_has_image(),
+        "an https URL is stored, as text"
+    );
+    // A URL is stored and never fetched, so it paints nothing: the layer is
+    // still bare even though the preference is set. That is the honest half
+    // of this tab, and the dump says so.
+    debug_assert!(
+        ui.get_app_bg().size().width == 0,
+        "a URL paints nothing"
+    );
+    dump(ui, state, "settings31.background-url");
+    pref_float(ui, state, "bg-opacity", 0.6);
+    pref_float(ui, state, "bg-blur", 12.0);
+    pref_float(ui, state, "bg-dim", 0.4);
+    debug_assert!(
+        (ui.get_settings_bg_opacity() - 0.6).abs() < 0.001
+            && (ui.get_settings_bg_blur() - 12.0).abs() < 0.001,
+        "the three dials land on their steps"
+    );
+    dump(ui, state, "settings32.background-dials");
+    background_dev_photo(ui, state);
+    debug_assert!(
+        ui.get_app_bg().size().width > 0,
+        "a stored photo reaches the layer"
+    );
+    dump(ui, state, "settings33.background-photo");
+    background_remove(ui, state);
+    debug_assert!(
+        !ui.get_settings_bg_has_image() && ui.get_app_bg().size().width == 0,
+        "the cross clears the flag and the layer together"
+    );
+    dump(ui, state, "settings34.background-removed");
+
     close(ui);
     dump(ui, state, "settings17.closed");
+}
+
+/// Dev-only: the walk's photo and the screenshot target's, in one step --
+/// write it, then store it through the reader an upload uses. One definition
+/// of "a stored photo" for both.
+#[cfg(debug_assertions)]
+pub fn background_dev_photo(ui: &MainWindow, state: &Shared) {
+    let path = crate::app_dir().join("dev-background.png");
+    if write_dev_photo(&path).is_err() {
+        ui.set_settings_bg_error("Could not write the dev photo.".into());
+        return;
+    }
+    background_set_from_file(ui, state, &path);
+}
+
+/// The walk's photo: four flat quadrants with a corner-to-corner shade, big
+/// enough to be unmistakable on a screenshot and small enough to encode in a
+/// millisecond. Written where `background_set_from_file` can read it.
+#[cfg(debug_assertions)]
+fn write_dev_photo(path: &std::path::Path) -> Result<(), String> {
+    let (width, height) = (640u32, 420u32);
+    let mut image = image::RgbaImage::new(width, height);
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let (r, g, b) = match (x < width / 2, y < height / 2) {
+            (true, true) => (58u8, 92u8, 160u8),
+            (false, true) => (150, 78, 120),
+            (true, false) => (46, 120, 110),
+            (false, false) => (190, 140, 70),
+        };
+        let shade = ((x + y) % 32) as u8;
+        *pixel = image::Rgba([
+            r.saturating_add(shade),
+            g.saturating_add(shade),
+            b.saturating_add(shade),
+            255,
+        ]);
+    }
+    image.save(path).map_err(|error| error.to_string())
 }
 
 /// The id of the nth stored alarm, read straight off the document: the walk
@@ -2061,7 +2275,7 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         }
     };
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}] data=[{} {} {} {} {} {} {} {}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}] data=[{} {} {} {} {} {} {} {}] bg=[{} {} {} {}] app=[{} {} {}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -2160,6 +2374,17 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         (!ui.get_settings_data_restore_name().is_empty()) as i32,
         (!ui.get_settings_data_restore_error().is_empty()) as i32,
         ui.get_settings_data_restore_ready() as i32,
+        // The Background tab as the window holds it -- the flag, the three
+        // dials -- and then the app's own layer, which is the only proof
+        // that a stored photo actually reached the screen: the size Slint
+        // decoded it to, the opacity it is painted at, and the wash.
+        ui.get_settings_bg_has_image() as i32,
+        ui.get_settings_bg_opacity(),
+        ui.get_settings_bg_blur(),
+        ui.get_settings_bg_dim(),
+        ui.get_app_bg().size().width,
+        ui.get_app_bg_opacity(),
+        ui.get_app_bg_dim(),
     );
     let path = crate::app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();

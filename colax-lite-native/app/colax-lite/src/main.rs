@@ -17,6 +17,7 @@
 
 mod appearance;
 mod alarms;
+mod art;
 mod dashboard;
 mod history;
 mod items;
@@ -416,6 +417,12 @@ struct AppState {
     /// `vaultVerified`), and spent again on lock: the vault was sealed, so
     /// the proof went with it.
     vault_verified: bool,
+    /// What `push_background` last painted: the source, blur, opacity and dim
+    /// it handed Slint. Decoding and blurring a photo costs real
+    /// milliseconds, and the layer is re-resolved on every pref write and
+    /// every channel switch, so a push that would paint the same picture is
+    /// skipped.
+    background_pushed: Option<(String, f64, f64, f64)>,
 }
 
 type Shared = Rc<RefCell<AppState>>;
@@ -570,6 +577,61 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     let vault_width = state.borrow().vault_width;
     ui.set_grid_cols(grid_cols_for(vault_width));
     ui.set_sort_options(ModelRc::new(VecModel::from(items::sort_options())));
+    // The app's own background layer rides the same derivation: it is the
+    // preference's photo, or the active channel's, and both are read from the
+    // same guard that produced the rails above.
+    push_background(ui, state);
+}
+
+/// The picture behind every screen, and its wash.
+///
+/// `body::before` plus `.ambient:after` in the web: the photo at its own
+/// opacity, then a `--bg`-coloured veil at `--bg-dim`, which is what keeps
+/// the shell readable over an arbitrary picture. Which photo is
+/// `background_of`'s decision — the active channel's own wins, dials
+/// included — and the *painting* is Slint's, so what crosses the fence is an
+/// already-decoded `image` (this app fetches nothing, so an http URL paints
+/// nothing at all).
+///
+/// Cheap to call: the last painted tuple is kept in `AppState`, and an
+/// unchanged background is skipped rather than decoded and blurred again.
+fn push_background(ui: &MainWindow, state: &Shared) {
+    let resolved = {
+        let guard = state.borrow();
+        let prefs = items::prefs_from(guard.engine.preferences());
+        let channel = items::channel_by_id(&ui.get_active_channel());
+        crate::art::background_of(&prefs, Some(&channel))
+    };
+    if state.borrow().background_pushed.as_ref() == resolved.as_ref() {
+        return;
+    }
+    match &resolved {
+        Some((src, opacity, blur, dim)) => {
+            match crate::art::slint_background(src, *blur) {
+                Some(image) => {
+                    ui.set_app_bg(image);
+                    ui.set_app_bg_opacity(*opacity as f32);
+                    ui.set_app_bg_dim(*dim as f32);
+                }
+                // A URL, or a picture this build cannot decode: nothing is
+                // painted, and no veil either. The web sets `--bg-dim` whenever
+                // a photo is *named*, so a URL that fails to load still darkens
+                // the app for no reason; there is nothing to read over here, so
+                // the wash stays off until pixels arrive.
+                None => {
+                    ui.set_app_bg(slint::Image::default());
+                    ui.set_app_bg_opacity(0.0);
+                    ui.set_app_bg_dim(0.0);
+                }
+            }
+        }
+        None => {
+            ui.set_app_bg(slint::Image::default());
+            ui.set_app_bg_opacity(0.0);
+            ui.set_app_bg_dim(0.0);
+        }
+    }
+    state.borrow_mut().background_pushed = resolved;
 }
 
 /// How many grid cells fit across a given content width. Below ~220px a cell
@@ -824,7 +886,10 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// `settings-data` or `settings-backup` (the two seams Task 5.8 added, left
 /// open for a screenshot), `settings-data-protect` / `settings-data-reset` /
 /// `settings-data-restore` (the same panel with one of its three sheets up),
-/// `editor-generator` (the editor's own generator with one chip flipped), or
+/// `settings-background` (the Background panel, left open) or
+/// `background-photo` (the vault screen wearing a stored photo, which is the
+/// layer rather than the panel), `editor-generator` (the editor's own
+/// generator with one chip flipped), or
 /// `chrome` (the three shortcuts the Layout tab takes off the shell, all left
 /// off).
 #[cfg(debug_assertions)]
@@ -1077,6 +1142,16 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
     }
     if want == "settings-backup" {
         settings_ops::open(ui, state, "backup");
+        return;
+    }
+    // Background (Task 5.9): the panel itself, or the whole app wearing the
+    // stored photo, which is what the panel's picture actually does.
+    if want == "settings-background" {
+        settings_ops::open(ui, state, "background");
+        return;
+    }
+    if want == "background-photo" {
+        settings_ops::background_dev_photo(ui, state);
         return;
     }
     // The three sheets 5.8 added, opened with their fields as a user would
@@ -5153,6 +5228,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gate: None,
                 verified: HashSet::new(),
                 vault_verified: false,
+                background_pushed: None,
             }));
             // Debug scratch profiles open straight into the vault with demo
             // content; everything else starts on the real startup screen.
@@ -5907,6 +5983,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_settings_data_restore_submit(move || {
                 if let Some(ui) = weak.upgrade() {
                     settings_data_restore_submit(&ui, &st, &tw);
+                }
+            });
+            // Background (Task 5.9): the field's own edits, then the two
+            // buttons. Upload opens a real dialog, the way every other file
+            // row in this window does.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_bg_url_edited(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::background_url_edited(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_bg_upload(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::background_upload(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_bg_remove(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::background_remove(&ui, &st);
                 }
             });
 

@@ -1057,6 +1057,20 @@ export component Settings inherits Rectangle {
     // both already composed the way the TS template composes them.
     in property <string> backup-hint; 
 
+    // ---- Background (Task 5.9) --------------------------------------------
+    // The URL draft is the window's own field, exactly as `BackgroundSection`'s
+    // `url` state is the component's: typing does not write the preference
+    // until the text is a bare `http(s)` URL or empty, so the field can hold
+    // half-typed nonsense without a refused write settling it back.
+    in-out property <string> bg-url;
+    in property <string> bg-error;
+    in property <bool> bg-has-image: false;
+    // The three dials, pushed from the stored values on every refresh and
+    // written back through the generic `pref-float`.
+    in-out property <float> bg-opacity: 0.35;
+    in-out property <float> bg-blur: 0;
+    in-out property <float> bg-dim: 0.25;
+
     callback closed();
     callback tab-picked(index: int);
     callback pref-string(key: string, value: string);
@@ -1101,6 +1115,12 @@ export component Settings inherits Rectangle {
     callback backup-restore-pick();
     callback data-restore-cancel();
     callback data-restore-edit();
+    // Background: the field's own edits, and the two buttons beside it. The
+    // three sliders ride the generic `pref-float` above, keyed "bg-opacity",
+    // "bg-blur" and "bg-dim".
+    callback bg-url-edited();
+    callback bg-upload();
+    callback bg-remove();
     callback data-restore-submit();
 
     // The thirteen tabs of Settings.tsx L500, in order. Hints come from
@@ -1915,6 +1935,138 @@ export component Settings inherits Rectangle {
                                 }
                             }
 
+                            // ---- The background panel ---------------------
+                            // Settings.tsx's `BackgroundSection` (L2254): one
+                            // picture behind the whole app, three dials over
+                            // it. The field writes only when its text is a
+                            // bare `http(s)` URL or empty -- the TS's own
+                            // `valid` test, checked in Rust -- so a half-typed
+                            // URL is simply not stored yet. A URL is never
+                            // fetched here: this app makes no network request
+                            // for a picture, which is why the hint says so
+                            // rather than promising a photo that cannot load.
+                            if (root.active.id == "background") : VerticalLayout {
+                                width: root.panel-w;
+                                spacing: 0px;
+
+                                VerticalLayout {
+                                    width: root.panel-w;
+                                    spacing: 3px;
+                                    padding-top: 14px;
+                                    padding-bottom: 10px;
+
+                                    Text {
+                                        text: "Background image";
+                                        color: Theme.text;
+                                        font-size: 13.5px;
+                                        font-weight: 600;
+                                    }
+                                    Text {
+                                        text: "A URL is kept as text: this app fetches nothing. An upload is stored with the vault.";
+                                        color: Theme.muted;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                        width: root.panel-w;
+                                    }
+                                }
+
+                                // A row of its own height, so the three
+                                // children centre on it: the field is 44px and
+                                // the buttons are shorter, and a layout's
+                                // cross-axis default would line the shorter
+                                // ones up with the top. The row's own layout
+                                // keeps the *default* `alignment`, too -- an
+                                // inner `alignment: start` distributes the
+                                // leftover width instead of stretching into it,
+                                // which collapses the field to nothing and
+                                // leaves the button alone at the left edge.
+                                Rectangle {
+                                    width: root.panel-w;
+                                    height: 44px;
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+
+                                        bg-url-field := Field {
+                                            horizontal-stretch: 1;
+                                            placeholder: "https://example.com/photo.jpg";
+                                            autofocus: false;
+                                            value <=> root.bg-url;
+                                            edited => { root.bg-url-edited(); }
+                                        }
+
+                                        Btn {
+                                            horizontal-stretch: 0;
+                                            label: "Upload";
+                                            kind: 1;
+                                            h: 44px;
+                                            clicked => { root.bg-upload(); }
+                                        }
+
+                                        if (root.bg-has-image) : VerticalLayout {
+                                            horizontal-stretch: 0;
+                                            alignment: center;
+                                            IconButton {
+                                                icon: "×"; // remove the background
+                                                clicked => { root.bg-remove(); }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (root.bg-error != "") : Text {
+                                    width: root.panel-w;
+                                    text: root.bg-error;
+                                    color: Theme.danger;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                Text {
+                                    width: root.panel-w;
+                                    text: "Uploads are resized to at most 1600px and re-encoded, then capped at 8 MB - so almost any photo fits. The picture is stored inside this vault's own file.";
+                                    color: Theme.faint;
+                                    font-size: 11.5px;
+                                    wrap: word-wrap;
+                                }
+
+                                slider-row {
+                                    panel-w: root.panel-w;
+                                    label: "Image opacity";
+                                    hint: "How strongly the photo shows through.";
+                                    minimum: 0;
+                                    maximum: 1;
+                                    step: 0.05;
+                                    formatted: Math.round(root.bg-opacity * 100) + "%";
+                                    value <=> root.bg-opacity;
+                                    changed(v) => { root.pref-float("bg-opacity", v); }
+                                }
+
+                                slider-row {
+                                    panel-w: root.panel-w;
+                                    label: "Blur";
+                                    hint: "Softens the photo so text stays readable.";
+                                    minimum: 0;
+                                    maximum: 40;
+                                    step: 2;
+                                    formatted: Math.round(root.bg-blur) + "px";
+                                    value <=> root.bg-blur;
+                                    changed(v) => { root.pref-float("bg-blur", v); }
+                                }
+
+                                slider-row {
+                                    panel-w: root.panel-w;
+                                    label: "Dim";
+                                    hint: "Darks or lightens everything behind the interface.";
+                                    minimum: 0;
+                                    maximum: 0.9;
+                                    step: 0.05;
+                                    formatted: Math.round(root.bg-dim * 100) + "%";
+                                    value <=> root.bg-dim;
+                                    changed(v) => { root.pref-float("bg-dim", v); }
+                                }
+                            }
+
                             // ---- The desktop panel ------------------------
                             // The four switches of Settings.tsx L1551-1585. The
                             // TS renders this tab only inside the desktop shell:
@@ -2572,7 +2724,7 @@ export component Settings inherits Rectangle {
                             // Every panel not landed yet. The header already
                             // names the section and says what it is for, so
                             // the body only has to be honest about the wait.
-                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms" && root.active.id != "security" && root.active.id != "data" && root.active.id != "backup") : Rectangle {
+                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms" && root.active.id != "security" && root.active.id != "data" && root.active.id != "backup" && root.active.id != "background") : Rectangle {
                                 // A constant width for the same reason as the
                                 // rows: `EmptyState` wraps its title, and a
                                 // wrapped height built on the panel's width
