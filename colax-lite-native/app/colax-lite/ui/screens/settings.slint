@@ -15,7 +15,9 @@
 // dials are two-way with the window root: a drag reaches Rust through
 // `pref-*`, and Rust's saved answer flows back down the same chain.
 import { Theme } from "../theme.slint";
-import { Slider, Toggle, EmptyState, IconButton, Btn } from "../widgets.slint";
+import {
+    Slider, Toggle, EmptyState, IconButton, Btn, Field, Chip, Label
+} from "../widgets.slint";
 
 /// One entry of the rail. The order is the TS's `tabs` array
 /// (Settings.tsx L500) and must match `SETTINGS_TABS` in main.rs; `num` is
@@ -51,6 +53,54 @@ export struct HiddenRow {
     detail: string,
     key: string,
     id: string,
+}
+
+/// One stored alarm in the Alarms tab. Every cell is already the string the
+/// row shows — "No label" when the alarm has none, "Every day" or "Sun, Tue"
+/// for its days (AlarmsPanel.tsx L70-73) — and `id` is what Test, the dot and
+/// the bin send back, so a row does not address its alarm by position.
+export struct AlarmRow {
+    id: string,
+    time: string,
+    label: string,
+    days: string,
+    enabled: bool,
+}
+
+/// One of the seven day chips in the New alarm card: `Sun`..`Sat` in
+/// `Date.getDay()` order, lit when the draft has picked it.
+export struct DayChip {
+    label: string,
+    on: bool,
+}
+
+// `.alarms__dot`: the circle that enables a row (AlarmsPanel.tsx L86-91),
+// green when the alarm is on. A dot rather than the settings Toggle because
+// this value comes from a model element, and a model element cannot be
+// two-way bound: the click goes to Rust and the push that follows repaints it.
+component alarm-dot inherits Rectangle {
+    in property <bool> on;
+    callback clicked();
+
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    background: touch.has-hover ? #ffffff1a : #00000000;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    Rectangle {
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        // hsl(152 55% 55%), the `.alarms__dot--on` green; `Theme.faint` is
+        // the off dot's --text-faint.
+        background: root.on ? #5ec98f : Theme.faint;
+    }
 }
 
 // The 26x18 swatch behind each theme choice (`ThemePreview`, Settings.tsx
@@ -703,6 +753,18 @@ export component Settings inherits Rectangle {
     in-out property <bool> gen-symbols: true;
     in-out property <bool> gen-avoid: true;
 
+    // The Alarms tab. `alarm-rows` is the stored list and `alarm-day-chips`
+    // is the draft's seven days; both are built in Rust, because the day
+    // picks are not a key of the document. The label and the time are the
+    // card's own two fields — Rust reads them when Add is pressed, the way
+    // the editor's tag box is read — and `alarm-sound` names the imported
+    // sound in the draft, empty while the built-in chime is chosen.
+    in property <[AlarmRow]> alarm-rows: [];
+    in property <[DayChip]> alarm-day-chips: [];
+    in-out property <string> alarm-sound;
+    in-out property <string> alarm-label;
+    in-out property <string> alarm-time: "08:00";
+
     callback closed();
     callback tab-picked(index: int);
     callback pref-string(key: string, value: string);
@@ -710,6 +772,13 @@ export component Settings inherits Rectangle {
     callback pref-bool(key: string, value: bool);
     callback hidden-restore(key: string, id: string);
     callback hidden-restore-all();
+    callback alarm-add();
+    callback alarm-test(id: string);
+    callback alarm-toggle(id: string);
+    callback alarm-delete(id: string);
+    callback alarm-day-toggled(index: int);
+    callback alarm-import();
+    callback alarm-reset-sound();
 
     // The thirteen tabs of Settings.tsx L500, in order. Hints come from
     // `describe()` in SettingsWindow.tsx L180 — three tabs have none there
@@ -1628,10 +1697,221 @@ export component Settings inherits Rectangle {
                                 }
                             }
 
+                            // ---- The alarms panel -------------------------
+                            // AlarmsPanel.tsx L60-166: the stored reminders,
+                            // then the card that makes the next one. Every
+                            // cell of a row is a string Rust already printed
+                            // ("No label", "Sun, Tue"), because the TS decides
+                            // those at render time and a model element cannot
+                            // be sorted out in Slint. The dot is the panel's
+                            // own little control for the same reason: the
+                            // value comes from the model, and a click goes to
+                            // Rust, which pushes the new list back.
+                            if (root.active.id == "alarms") : VerticalLayout {
+                                width: root.panel-w;
+                                spacing: 12px;
+                                padding-top: 12px;
+
+                                Text {
+                                    width: parent.width;
+                                    text: "Alarms ring while the app is open. Pick a sound from your device or keep the built-in chime.";
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                // `.alarms__list`: 4px between the cards, 12px
+                                // between the list and its neighbours.
+                                VerticalLayout {
+                                    spacing: 4px;
+
+                                    if (root.alarm-rows.length == 0) : Text {
+                                        width: parent.width;
+                                        text: "No alarms yet.";
+                                        color: Theme.muted;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    for row in root.alarm-rows : Rectangle {
+                                        width: parent.width;
+                                        height: alarm-shell.preferred-height;
+                                        border-radius: Theme.radius-md;
+                                        border-width: 1px;
+                                        border-color: Theme.border;
+                                        background: Theme.surface;
+
+                                        alarm-shell := HorizontalLayout {
+                                            padding-left: 14px;
+                                            padding-right: 8px;
+                                            padding-top: 8px;
+                                            padding-bottom: 8px;
+                                            spacing: 8px;
+                                            alignment: space-between;
+
+                                            // time · label · days
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                alignment: start;
+
+                                                Text {
+                                                    text: row.time;
+                                                    font-family: "Consolas";
+                                                    font-weight: 600;
+                                                    color: Theme.text;
+                                                    font-size: 14px;
+                                                    vertical-alignment: center;
+                                                }
+                                                Text {
+                                                    text: row.label;
+                                                    color: Theme.muted;
+                                                    font-size: 13px;
+                                                    vertical-alignment: center;
+                                                }
+                                                Text {
+                                                    text: row.days;
+                                                    color: Theme.faint;
+                                                    font-size: 12px;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            // Test · dot · delete
+                                            HorizontalLayout {
+                                                spacing: 4px;
+                                                alignment: end;
+
+                                                Btn {
+                                                    horizontal-stretch: 0;
+                                                    kind: 2;
+                                                    h: 30px;
+                                                    label: "Test";
+                                                    clicked => { root.alarm-test(row.id); }
+                                                }
+
+                                                alarm-dot {
+                                                    on: row.enabled;
+                                                    clicked => { root.alarm-toggle(row.id); }
+                                                }
+
+                                                IconButton {
+                                                    horizontal-stretch: 0;
+                                                    icon: "×"; // delete this alarm
+                                                    clicked => { root.alarm-delete(row.id); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // `.sec__card`, the New alarm form. Label and
+                                // Time are the card's own fields; Days and
+                                // Sound are the draft Rust keeps, because both
+                                // are pushed in as data.
+                                Rectangle {
+                                    width: parent.width;
+                                    border-radius: Theme.radius-md;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+                                    background: Theme.surface;
+                                    height: new-alarm-shell.preferred-height;
+
+                                    new-alarm-shell := VerticalLayout {
+                                        padding: 16px;
+                                        spacing: 12px;
+
+                                        Text {
+                                            text: "New alarm";
+                                            color: Theme.text;
+                                            font-size: 13px;
+                                            font-weight: 620;
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 6px;
+                                            Label { text: "Label"; }
+                                            Field {
+                                                value <=> root.alarm-label;
+                                                placeholder: "Call mum";
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 6px;
+                                            Label { text: "Time"; }
+                                            Field {
+                                                value <=> root.alarm-time;
+                                                placeholder: "08:00";
+                                                autofocus: false;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 6px;
+                                            Label { text: "Days"; }
+                                            HorizontalLayout {
+                                                spacing: 4px;
+                                                alignment: start;
+
+                                                for chip[index] in root.alarm-day-chips : Chip {
+                                                    label: chip.label;
+                                                    selected: chip.on;
+                                                    toggled => { root.alarm-day-toggled(index); }
+                                                }
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 6px;
+                                            Label { text: "Sound"; }
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                alignment: start;
+
+                                                Btn {
+                                                    horizontal-stretch: 0;
+                                                    kind: 1;
+                                                    h: 34px;
+                                                    label: "Import sound";
+                                                    clicked => { root.alarm-import(); }
+                                                }
+
+                                                if (root.alarm-sound != "") : Chip {
+                                                    label: root.alarm-sound;
+                                                }
+
+                                                if (root.alarm-sound != "") : Btn {
+                                                    horizontal-stretch: 0;
+                                                    kind: 2;
+                                                    h: 34px;
+                                                    label: "Reset to chime";
+                                                    clicked => { root.alarm-reset-sound(); }
+                                                }
+
+                                                if (root.alarm-sound == "") : Text {
+                                                    text: "Built-in chime";
+                                                    color: Theme.faint;
+                                                    font-size: 12px;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        Btn {
+                                            kind: 0;
+                                            h: 38px;
+                                            label: "Add alarm";
+                                            enabled: root.alarm-time != "";
+                                            clicked => { root.alarm-add(); }
+                                        }
+                                    }
+                                }
+                            }
+
                             // Every panel not landed yet. The header already
                             // names the section and says what it is for, so
                             // the body only has to be honest about the wait.
-                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator") : Rectangle {
+                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms") : Rectangle {
                                 // A constant width for the same reason as the
                                 // rows: `EmptyState` wraps its title, and a
                                 // wrapped height built on the panel's width

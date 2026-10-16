@@ -21,7 +21,7 @@ import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
 import { History } from "screens/history.slint";
-import { Settings, AccentChip, HiddenRow } from "screens/settings.slint";
+import { Settings, AccentChip, HiddenRow, AlarmRow, DayChip } from "screens/settings.slint";
 
 // ---- The vault's four presentations -------------------------------------
 // `VIEW_OPTIONS` in ViewMenu.tsx: Flow, Orbit, List, Grid -- four cards with
@@ -817,6 +817,13 @@ export component MainWindow inherits Window {
     callback settings-pref-bool(key: string, value: bool);
     callback settings-hidden-restore(key: string, id: string);
     callback settings-hidden-restore-all();
+    callback settings-alarm-add();
+    callback settings-alarm-test(id: string);
+    callback settings-alarm-toggle(id: string);
+    callback settings-alarm-delete(id: string);
+    callback settings-alarm-day-toggled(index: int);
+    callback settings-alarm-import();
+    callback settings-alarm-reset-sound();
     in-out property <bool> settings-open: false;
     in-out property <int> settings-tab-index: 0;
     // The modal's frame, in logical pixels, kept in step with the window by
@@ -884,6 +891,16 @@ export component MainWindow inherits Window {
     in-out property <bool> settings-gen-digits: true;
     in-out property <bool> settings-gen-symbols: true;
     in-out property <bool> settings-gen-avoid: true;
+    // ---- The Settings window's Alarms tab (Task 5.5) ---------------------
+    // The stored list and the draft's seven day chips arrive from Rust as
+    // models; the imported sound's name and the card's own Label and Time
+    // fields ride as strings. `settings-alarm-time` opens at 08:00, the
+    // hour the TS's `useState('08:00')` starts on.
+    in property <[AlarmRow]> settings-alarm-rows: [];
+    in property <[DayChip]> settings-alarm-day-chips: [];
+    in-out property <string> settings-alarm-sound;
+    in-out property <string> settings-alarm-label;
+    in-out property <string> settings-alarm-time: "08:00";
     // ---- SecurityGate ----------------------------------------------------
     // A blocking verification for a login or for the vault itself: any one
     // factor passes, and the open panel holds everything typed until Rust
@@ -2283,6 +2300,11 @@ export component MainWindow inherits Window {
             gen-digits <=> root.settings-gen-digits;
             gen-symbols <=> root.settings-gen-symbols;
             gen-avoid <=> root.settings-gen-avoid;
+            alarm-rows: root.settings-alarm-rows;
+            alarm-day-chips: root.settings-alarm-day-chips;
+            alarm-sound <=> root.settings-alarm-sound;
+            alarm-label <=> root.settings-alarm-label;
+            alarm-time <=> root.settings-alarm-time;
             closed => { root.settings-closed(); }
             tab-picked(index) => { root.settings-tab-picked(index); }
             pref-string(key, value) => { root.settings-pref-string(key, value); }
@@ -2290,6 +2312,13 @@ export component MainWindow inherits Window {
             pref-bool(key, value) => { root.settings-pref-bool(key, value); }
             hidden-restore(key, id) => { root.settings-hidden-restore(key, id); }
             hidden-restore-all => { root.settings-hidden-restore-all(); }
+            alarm-add => { root.settings-alarm-add(); }
+            alarm-test(id) => { root.settings-alarm-test(id); }
+            alarm-toggle(id) => { root.settings-alarm-toggle(id); }
+            alarm-delete(id) => { root.settings-alarm-delete(id); }
+            alarm-day-toggled(index) => { root.settings-alarm-day-toggled(index); }
+            alarm-import => { root.settings-alarm-import(); }
+            alarm-reset-sound => { root.settings-alarm-reset-sound(); }
         }
     }
 }

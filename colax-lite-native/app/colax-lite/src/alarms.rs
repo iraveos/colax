@@ -235,6 +235,14 @@ fn play_sound(alarm: &Alarm) {
     }
 }
 
+/// Play an alarm's sound from outside the ticker: the Test button in
+/// Settings › Alarms (AlarmsPanel.tsx L77). Mute or not, because hearing it
+/// is the whole point of the button — only the ring itself consults
+/// `soundsMuted` (useAlarms L18).
+pub fn play(alarm: &Alarm) {
+    play_sound(alarm);
+}
+
 /// `data:[<mime>][;base64],<bytes>` down to its bytes. The TS only ever
 /// builds these from a FileReader read (Settings), which is base64 after
 /// the comma, so splitting on the first comma is the whole parse.

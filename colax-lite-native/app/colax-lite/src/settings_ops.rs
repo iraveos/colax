@@ -11,8 +11,8 @@
 
 use crate::appearance;
 use crate::items;
-use crate::{save_prefs, AccentChip, HiddenRow, MainWindow, Shared};
-use colax_core::VaultPreferences;
+use crate::{save_prefs, AccentChip, AlarmRow, DayChip, HiddenRow, MainWindow, Shared};
+use colax_core::{Alarm, AlarmSound, VaultPreferences};
 use slint::ComponentHandle;
 
 /// The tab ids in rail order — must match `tabs` in `settings.slint`, whose
@@ -150,6 +150,11 @@ pub fn open(ui: &MainWindow, state: &Shared, section: &str) {
             ui.set_settings_tab_index(index as i32);
         }
     }
+    // A fresh mount of the New alarm card holds an empty label, 08:00, no
+    // days and the built-in chime (AlarmsPanel.tsx L18-22). The TS's draft
+    // dies with the component when the window closes; the modal opening is
+    // that mount here, so the same reset belongs here.
+    reset_alarm_draft(ui, state);
     refresh(ui, state);
     ui.set_settings_open(true);
 }
@@ -273,6 +278,10 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     // `refresh_generator` pushes both sets of properties and re-rolls the
     // preview the editor is showing.
     refresh_generator(ui, state);
+    // The Alarms tab: the stored rows, the draft's day chips and its imported
+    // sound. The card's two text fields are the panel's own and are not
+    // touched here — only `reset_alarm_draft` moves those.
+    push_alarms(ui, state);
 }
 
 /// One settings write, whichever dial made it. The closure owns the
@@ -561,6 +570,243 @@ pub fn refresh_generator(ui: &MainWindow, state: &Shared) {
     crate::regenerate(ui);
 }
 
+/// The Alarms tab's day names, `Date.getDay()` order (`DAY_LABELS`,
+/// AlarmsPanel.tsx L6).
+const DAY_LABELS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/// The hour the New alarm card opens on (`useState('08:00')`, L19).
+const ALARM_DEFAULT_TIME: &str = "08:00";
+
+/// The ceiling the TS puts on an imported sound: over 400_000 characters of
+/// data URL it is refused before it is ever stored (AlarmsPanel.tsx L33-36).
+const SOUND_URL_LIMIT: usize = 400_000;
+
+/// A row's middle cell: `alarm.label || 'No label'` (AlarmsPanel.tsx L70).
+fn alarm_row_label(label: &str) -> String {
+    if label.is_empty() {
+        "No label".to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+/// A row's last cell: `days.length === 0 ? 'Every day' :
+/// days.map((day) => DAY_LABELS[day]).join(', ')` (L71-73). The draft's own
+/// click order is kept — `[...days, day]` appends — so a Sunday picked late
+/// reads after the Wednesday picked first.
+fn alarm_days_label(days: &[u8]) -> String {
+    if days.is_empty() {
+        return "Every day".to_string();
+    }
+    days.iter()
+        .filter_map(|day| DAY_LABELS.get(*day as usize))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The seven chips of the New alarm card, lit where the draft has picked
+/// them (L122-134).
+fn day_chips(days: &[u8]) -> Vec<DayChip> {
+    DAY_LABELS
+        .iter()
+        .enumerate()
+        .map(|(index, label)| DayChip {
+            label: (*label).into(),
+            on: days.contains(&(index as u8)),
+        })
+        .collect()
+}
+
+/// Pushes the Alarms tab's three halves: the stored rows in the TS's own
+/// reading of them, the draft's day chips, and the draft's sound as the name
+/// the chip shows ("" while the built-in chime is chosen). Called from
+/// `refresh`, so a write made anywhere shows up here.
+fn push_alarms(ui: &MainWindow, state: &Shared) {
+    let (rows, chips, sound) = {
+        let guard = state.borrow();
+        let prefs = items::prefs_from(guard.engine.preferences());
+        let rows: Vec<AlarmRow> = prefs
+            .alarms
+            .iter()
+            .map(|alarm| AlarmRow {
+                id: alarm.id.as_str().into(),
+                time: alarm.time.as_str().into(),
+                label: alarm_row_label(&alarm.label).into(),
+                days: alarm_days_label(&alarm.days).into(),
+                enabled: alarm.enabled,
+            })
+            .collect();
+        let sound = guard
+            .alarm_sound
+            .as_ref()
+            .map(|sound| sound.name.clone())
+            .unwrap_or_default();
+        (rows, day_chips(&guard.alarm_days), sound)
+    };
+    ui.set_settings_alarm_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+    ui.set_settings_alarm_day_chips(slint::ModelRc::new(slint::VecModel::from(chips)));
+    ui.set_settings_alarm_sound(sound.as_str().into());
+}
+
+/// The New alarm card back to its opening state — empty label, 08:00, no
+/// days, the built-in chime. What a fresh mount of `AlarmsPanel` holds
+/// (L18-22); the push a refresh or a write does next is what paints the
+/// cleared chips.
+fn reset_alarm_draft(ui: &MainWindow, state: &Shared) {
+    {
+        let mut guard = state.borrow_mut();
+        guard.alarm_days.clear();
+        guard.alarm_sound = None;
+    }
+    ui.set_settings_alarm_label("".into());
+    ui.set_settings_alarm_time(ALARM_DEFAULT_TIME.into());
+}
+
+/// "Add alarm" (AlarmsPanel.tsx L44-58): the draft becomes a stored alarm
+/// and the card starts over. The label and the time are read off the panel's
+/// own fields; the days and the sound are this module's, because both arrive
+/// in the panel as data rather than as editable text.
+pub fn alarms_add(ui: &MainWindow, state: &Shared) {
+    let (days, sound) = {
+        let guard = state.borrow();
+        (guard.alarm_days.clone(), guard.alarm_sound.clone())
+    };
+    let alarm = Alarm {
+        id: colax_core::new_alarm_id(),
+        label: ui.get_settings_alarm_label().trim().to_string(),
+        time: ui.get_settings_alarm_time().to_string(),
+        days,
+        sound,
+        enabled: true,
+    };
+    // The draft is dropped first so the write's own refresh pushes the empty
+    // chips and the chime label, not a copy of the alarm just stored.
+    reset_alarm_draft(ui, state);
+    if write(ui, state, |prefs| {
+        prefs.alarms.push(alarm);
+        true
+    }) {
+        crate::notice(ui, "Alarm added");
+    }
+}
+
+/// One of the seven day chips: a picked day comes off, an unpicked one lands
+/// at the end — `on ? days.filter((day) => day !== index) : [...days, index]`
+/// (AlarmsPanel.tsx L129).
+pub fn alarm_day_toggled(ui: &MainWindow, state: &Shared, index: i32) {
+    if !(0..7).contains(&index) {
+        return;
+    }
+    {
+        let mut guard = state.borrow_mut();
+        let day = index as u8;
+        match guard.alarm_days.iter().position(|picked| *picked == day) {
+            Some(at) => {
+                guard.alarm_days.remove(at);
+            }
+            None => guard.alarm_days.push(day),
+        }
+    }
+    push_alarms(ui, state);
+}
+
+/// A row's Test button: `playAlarmSound(alarm)` (L77) — the stored sound as
+/// it is, mute or not, because hearing it is what the button is for.
+pub fn alarm_test(state: &Shared, id: &str) {
+    let alarm = {
+        let guard = state.borrow();
+        items::prefs_from(guard.engine.preferences())
+            .alarms
+            .into_iter()
+            .find(|alarm| alarm.id == id)
+    };
+    if let Some(alarm) = alarm {
+        crate::alarms::play(&alarm);
+    }
+}
+
+/// A row's dot: `{ ...entry, enabled: !entry.enabled }` (L86).
+pub fn alarm_toggle(ui: &MainWindow, state: &Shared, id: &str) {
+    write(ui, state, |prefs| {
+        let Some(alarm) = prefs.alarms.iter_mut().find(|alarm| alarm.id == id) else {
+            return false;
+        };
+        alarm.enabled = !alarm.enabled;
+        true
+    });
+}
+
+/// A row's delete: `alarms.filter((entry) => entry.id !== id)` (L94).
+pub fn alarm_delete(ui: &MainWindow, state: &Shared, id: &str) {
+    write(ui, state, |prefs| {
+        let before = prefs.alarms.len();
+        prefs.alarms.retain(|alarm| alarm.id != id);
+        prefs.alarms.len() != before
+    });
+}
+
+/// "Import sound" (AlarmsPanel.tsx L24-41): the device's own picker —
+/// `accept="audio/*"` — the bytes base64'd behind the mime its extension
+/// suggests, and the length ceiling tested before anything is stored. The
+/// name is the file's own, which is what the chip beside the button shows.
+pub fn alarm_import(ui: &MainWindow, state: &Shared) {
+    let Some(path) = crate::platform::pick_sound_file(crate::find_main_window()) else {
+        return;
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        ui.set_error_text("Could not read that file.".into());
+        return;
+    };
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    use base64::Engine as _;
+    let data_url = format!(
+        "data:{};base64,{}",
+        sound_mime(&path),
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    );
+    if data_url.len() > SOUND_URL_LIMIT {
+        ui.set_error_text("That sound file is too large; keep it under ~300 KB.".into());
+        return;
+    }
+    state.borrow_mut().alarm_sound = Some(AlarmSound {
+        name: name.clone(),
+        data_url: Some(data_url),
+    });
+    push_alarms(ui, state);
+    crate::notice(ui, &format!("Sound \"{name}\" imported"));
+}
+
+/// "Reset to chime" (L146): the draft drops the imported sound. Nothing
+/// stored moves — only the alarm made next carries it.
+pub fn alarm_reset_sound(ui: &MainWindow, state: &Shared) {
+    state.borrow_mut().alarm_sound = None;
+    push_alarms(ui, state);
+}
+
+/// The mime a browser would write into the data URL for this file, guessed
+/// from the extension the way `FileReader` guesses it; anything else is
+/// `application/octet-stream`. The decoder sniffs the bytes either way, so
+/// this only decides what the stored string says.
+fn sound_mime(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("wav") => "audio/wav",
+        Some("mp3") => "audio/mpeg",
+        Some("ogg") => "audio/ogg",
+        Some("flac") => "audio/flac",
+        Some("m4a") => "audio/mp4",
+        _ => "application/octet-stream",
+    }
+}
+
 /// The Hidden tab's per-row Show button. A switch row sends its pref key and
 /// an empty id and is the same write the Layout toggle makes; a hidden-list
 /// row sends the list in `key` and the id to drop — `filter(entry => entry
@@ -675,8 +921,40 @@ pub fn dev(ui: &MainWindow, state: &Shared) {
     pref_bool(ui, state, "gen-symbols", false);
     dump(ui, state, "settings12.generator-reset");
 
+    // The Alarms tab: two alarms through the panel's own handlers. The first
+    // carries two picked days; the second is added straight after, so it is
+    // the reset draft — no label, 08:00, every day. The dot and the bin then
+    // address a row by the id its model carried, which `new_alarm_id` made
+    // random, so both are read back off the document first.
+    tab_picked(ui, 7); // Ctrl+8 -> alarms
+    ui.set_settings_alarm_label("Stand up".into());
+    ui.set_settings_alarm_time("07:30".into());
+    alarm_day_toggled(ui, state, 0); // Sun
+    alarm_day_toggled(ui, state, 2); // Tue
+    alarms_add(ui, state);
+    alarms_add(ui, state);
+    let first = stored_alarm_id(state, 0);
+    let second = stored_alarm_id(state, 1);
+    alarm_test(state, &first); // the Test button's own path
+    alarm_toggle(ui, state, &first);
+    alarm_delete(ui, state, &second);
+    dump(ui, state, "settings13.alarms");
+
     close(ui);
-    dump(ui, state, "settings13.closed");
+    dump(ui, state, "settings14.closed");
+}
+
+/// The id of the nth stored alarm, read straight off the document: the walk
+/// needs it because `new_alarm_id` is random and the row model it clicks is
+/// never on screen in a dump run.
+#[cfg(debug_assertions)]
+pub fn stored_alarm_id(state: &Shared, index: usize) -> String {
+    let guard = state.borrow();
+    items::prefs_from(guard.engine.preferences())
+        .alarms
+        .get(index)
+        .map(|alarm| alarm.id.clone())
+        .unwrap_or_default()
 }
 
 /// The settings half of a dump: the mount, the lit tab and the dials *as the
@@ -697,8 +975,25 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         .get(index.max(0) as usize)
         .map(|id| *id)
         .unwrap_or("?");
+    // The Alarms tab in four words: how many alarms are stored, how many of
+    // them ring, and the first row's time and days — "Every" or "Sun,Tue",
+    // joined without the spaces the row itself prints so the dump line keeps
+    // its own field boundaries.
+    let (alarms_count, alarms_on, first_alarm_time, first_alarm_days) = {
+        let first = prefs.alarms.first();
+        (
+            prefs.alarms.len(),
+            prefs.alarms.iter().filter(|alarm| alarm.enabled).count(),
+            first
+                .map(|alarm| alarm.time.clone())
+                .unwrap_or_else(|| "-".to_string()),
+            first
+                .map(|alarm| alarm_days_label(&alarm.days).replace(", ", ","))
+                .unwrap_or_else(|| "-".to_string()),
+        )
+    };
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -747,6 +1042,10 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         ui.get_settings_gen_digits() as i32,
         ui.get_settings_gen_symbols() as i32,
         ui.get_settings_gen_avoid() as i32,
+        alarms_count,
+        alarms_on,
+        first_alarm_time,
+        first_alarm_days,
         prefs.theme,
         prefs.text_scale,
         prefs.accent,
@@ -984,6 +1283,46 @@ mod tests {
         assert!(!bool_key(&mut prefs, "gen-lookalikes", false));
         assert!(!bool_key(&mut prefs, "generator.lower", false));
         assert!(!prefs.password_generator.lower);
+    }
+
+    #[test]
+    fn an_alarm_row_reads_the_way_the_ts_reads_it() {
+        // A row's three cells: `alarm.label || 'No label'`, the time as
+        // stored, and `days.length === 0 ? 'Every day' : DAY_LABELS.join(', ')`
+        // (AlarmsPanel.tsx L70-73).
+        assert_eq!(alarm_row_label("Gym"), "Gym");
+        assert_eq!(alarm_row_label(""), "No label");
+        assert_eq!(alarm_days_label(&[]), "Every day");
+        assert_eq!(alarm_days_label(&[0]), "Sun");
+        // Click order is display order -- `[...days, day]` appends -- not the
+        // calendar's.
+        assert_eq!(alarm_days_label(&[2, 1]), "Tue, Mon");
+        // A day the store would have dropped already (normalise_alarms keeps
+        // 0..=6) is skipped rather than printed as the TS's `undefined`.
+        assert_eq!(alarm_days_label(&[9]), "");
+
+        // The card's seven chips: Sun..Sat, lit where the draft has them.
+        let chips = day_chips(&[3]);
+        assert_eq!(chips.len(), 7);
+        assert_eq!(chips[0].label.as_str(), "Sun");
+        assert!(!chips[0].on);
+        assert!(chips[3].on);
+        assert_eq!(chips[6].label.as_str(), "Sat");
+    }
+
+    #[test]
+    fn a_sound_data_url_gets_the_mime_its_extension_wants() {
+        // The browser guesses from the extension; anything it does not know
+        // is `application/octet-stream`, which the decoder ignores (the
+        // bytes are sniffed either way).
+        let mime = |name: &str| sound_mime(std::path::Path::new(name));
+        assert_eq!(mime("chime.wav"), "audio/wav");
+        assert_eq!(mime("Anthem.MP3"), "audio/mpeg");
+        assert_eq!(mime("bell.ogg"), "audio/ogg");
+        assert_eq!(mime("tone.flac"), "audio/flac");
+        assert_eq!(mime("ring.m4a"), "audio/mp4");
+        assert_eq!(mime("ding"), "application/octet-stream");
+        assert_eq!(mime("odd.xyz"), "application/octet-stream");
     }
 
     #[test]

@@ -176,6 +176,21 @@ const OFN_EXPLORER: u32 = 0x0008_0000;
 /// Blocking on purpose: the dialog runs its own message loop, and the UI has
 /// nothing to do meanwhile -- the pick *is* the next step of the import flow.
 pub fn pick_backup_file(owner: isize) -> Option<PathBuf> {
+    pick_file(owner, "Colax backups (*.json)\0*.json\0All files (*.*)\0*.*\0\0")
+}
+
+/// The same dialog for a sound file: Settings › Alarms' "Import sound",
+/// whose picker is `accept="audio/*"` (AlarmsPanel.tsx L153-159).
+pub fn pick_sound_file(owner: isize) -> Option<PathBuf> {
+    pick_file(
+        owner,
+        "Sound files (*.wav;*.mp3;*.ogg;*.flac;*.m4a)\0*.wav;*.mp3;*.ogg;*.flac;*.m4a\0All files (*.*)\0*.*\0\0",
+    )
+}
+
+/// One run of comdlg32's `GetOpenFileNameW`, with the caller's filter string
+/// (already double-NUL terminated: "label\0pattern\0…\0\0").
+fn pick_file(owner: isize, filter: &str) -> Option<PathBuf> {
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
     // SAFETY: comdlg32 is a system DLL that lives for the process; a failed
@@ -189,10 +204,7 @@ pub fn pick_backup_file(owner: isize) -> Option<PathBuf> {
         std::mem::transmute(proc)
     };
 
-    // Double-NUL terminated filter: "label\0pattern\0label\0pattern\0\0".
-    let filter: Vec<u16> = "Colax backups (*.json)\0*.json\0All files (*.*)\0*.*\0\0"
-        .encode_utf16()
-        .collect();
+    let filter: Vec<u16> = filter.encode_utf16().collect();
     let mut buffer = vec![0u16; 4096];
 
     // SAFETY: every pointer below points at a local that outlives the call;

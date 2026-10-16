@@ -232,7 +232,7 @@ Window chrome
 /// The tray's message window carries an empty title, so the title check
 /// is what keeps this from returning that instead.
 #[cfg(windows)]
-fn find_main_window() -> isize {
+pub(crate) fn find_main_window() -> isize {
     use windows_sys::core::BOOL;
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -373,6 +373,13 @@ struct AppState {
     /// is chosen from lives in preferences and only Rust sees both — and
     /// because Save must hand back exactly the ids, not a drawing of them.
     editor_tags: Vec<String>,
+    /// The New-alarm draft's two halves that are not editable text: the days
+    /// picked so far (0 = Sunday, `Alarm.days`) and the imported sound. The
+    /// label and the time stay in the panel's own fields, so these two are
+    /// kept here for the same reason the editor's tags are — both arrive in
+    /// the panel as data, and `Add alarm` reads them straight back.
+    alarm_days: Vec<u8>,
+    alarm_sound: Option<colax_core::AlarmSound>,
     /// The two stamps of the "Last changed" grid, in milliseconds. Exact i64s
     /// rather than the Slint floats a timestamp would be rounded through: a
     /// date the user typed has to be written back unchanged.
@@ -706,8 +713,10 @@ fn goto(ui: &MainWindow, state: &Shared, screen: Screen) {
 }
 
 /// A green strip that clears itself. `Timer::single_shot` owns its own
-/// lifetime, so there is nothing to keep alive here.
-fn notice(ui: &MainWindow, text: &str) {
+/// lifetime, so there is nothing to keep alive here. Visible to the whole
+/// crate because the Settings window's Alarms tab raises the same toasts the
+/// TS does ("Alarm added", `Sound "…" imported`).
+pub(crate) fn notice(ui: &MainWindow, text: &str) {
     ui.set_notice_text(text.into());
     let weak = ui.as_weak();
     slint::Timer::single_shot(std::time::Duration::from_millis(2500), move || {
@@ -795,7 +804,8 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// Settings walk, which closes the modal when it is done), `settings-open`
 /// (the appearance panel), `settings-layout`, `settings-hidden` or
 /// `settings-desktop` (each left open for a screenshot), `settings-generator`
-/// (same, with a stored length and one switch off), `editor-generator` (the
+/// (same, with a stored length and one switch off), `settings-alarms` (same,
+/// two stored alarms and one switched off), `editor-generator` (the
 /// editor's own generator with one chip flipped), or `chrome` (the
 /// three shortcuts the Layout tab takes off the shell, all left off).
 #[cfg(debug_assertions)]
@@ -988,6 +998,22 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         settings_ops::pref_float(ui, state, "gen-length", 32.0);
         settings_ops::pref_bool(ui, state, "gen-symbols", false);
         settings_ops::open(ui, state, "generator");
+        return;
+    }
+    // The Alarms tab: one alarm with two picked days, one left on the reset
+    // draft (no label, 08:00, every day) and switched off -- so the shot has
+    // all three cell readings and both dot states, with the New alarm card
+    // under them holding a clean draft.
+    if want == "settings-alarms" {
+        ui.set_settings_alarm_label("Call mum".into());
+        ui.set_settings_alarm_time("18:30".into());
+        settings_ops::alarm_day_toggled(ui, state, 1); // Mon
+        settings_ops::alarm_day_toggled(ui, state, 3); // Wed
+        settings_ops::alarms_add(ui, state);
+        settings_ops::alarms_add(ui, state);
+        let first = settings_ops::stored_alarm_id(state, 0);
+        settings_ops::alarm_toggle(ui, state, &first);
+        settings_ops::open(ui, state, "alarms");
         return;
     }
     // The three shortcuts the Layout tab takes off the shell (Task 5.2b),
@@ -4918,6 +4944,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 editor_staged_seed: None,
                 editor_prompt_index: 0,
                 editor_tags: Vec::new(),
+                alarm_days: Vec::new(),
+                alarm_sound: None,
                 editor_password_updated_at: 0,
                 editor_username_updated_at: 0,
                 editor_panel_width: 0.0,
@@ -5434,6 +5462,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_settings_hidden_restore(move |key, id| {
                 if let Some(ui) = weak.upgrade() {
                     settings_ops::restore(&ui, &st, &key, &id);
+                }
+            });
+            // The Alarms tab's seven handholds. Everything but Test goes
+            // through `write`, so the panel is repainted from the document
+            // after each one; Test only plays, and the draft's own day chip
+            // and sound never leave `settings_ops`.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_alarm_add(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::alarms_add(&ui, &st);
+                }
+            });
+            let st = state.clone();
+            ui.on_settings_alarm_test(move |id| {
+                settings_ops::alarm_test(&st, &id);
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_alarm_toggle(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::alarm_toggle(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_alarm_delete(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::alarm_delete(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_alarm_day_toggled(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::alarm_day_toggled(&ui, &st, index);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_alarm_import(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::alarm_import(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_alarm_reset_sound(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::alarm_reset_sound(&ui, &st);
                 }
             });
             let weak = ui.as_weak();
