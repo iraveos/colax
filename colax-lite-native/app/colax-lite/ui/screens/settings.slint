@@ -16,7 +16,7 @@
 // `pref-*`, and Rust's saved answer flows back down the same chain.
 import { Theme } from "../theme.slint";
 import {
-    Slider, Toggle, EmptyState, IconButton, Btn, Field, Chip, Label
+    Alert, Slider, Toggle, EmptyState, IconButton, Btn, Field, Chip, Label
 } from "../widgets.slint";
 import { QuestionRow, QrCell } from "../models.slint";
 import { SecurityForm } from "security_form.slint";
@@ -184,6 +184,9 @@ component toggle-row inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
     in-out property <bool> checked;
+    // The rule under the row. The panels want it; the confirm sheets -- the
+    // TS's bare `.toggle-row` inside a modal -- do not.
+    in property <bool> hairline: true;
     callback toggled();
     // The body panel's inner width, from the window root. It is a property
     // and not a derivation: a width taken from this row's own layout would
@@ -231,6 +234,7 @@ component toggle-row inherits Rectangle {
     }
 
     Rectangle {
+        visible: root.hairline;
         x: 0;
         y: parent.height - 1px;
         width: parent.width;
@@ -410,6 +414,10 @@ component btn-row inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
     in property <string> button-text: "Show";
+    // The Btn kinds: 1 = secondary (the default for a row action),
+    // 3 = danger ("Delete everything").
+    in property <int> button-kind: 1;
+    in property <bool> button-enabled: true;
     callback clicked();
 
     // See `toggle-row` for why the width is a property from outside.
@@ -442,7 +450,8 @@ component btn-row inherits Rectangle {
 
         Btn {
             horizontal-stretch: 0;
-            kind: 1;
+            kind: root.button-kind;
+            enabled: root.button-enabled;
             h: 34px;
             label: root.button-text;
             clicked => { root.clicked(); }
@@ -712,11 +721,13 @@ component sub-tabs inherits Rectangle {
 
 // A row whose right-hand control is a read-only chip: the crypto in force
 // (Settings.tsx L1295-1306) is a fact, not a dial — the chip look without a
-// press.
+// press. `accent` lights it the way `.chip--accent` does (the Data tab's
+// App version); the plain reading is `.chip--muted`.
 component chip-row inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
     in property <string> chip-text;
+    in property <bool> accent: false;
 
     in property <length> panel-w: 704px;
     width: root.panel-w;
@@ -728,8 +739,12 @@ component chip-row inherits Rectangle {
         padding-top: 14px;
         padding-bottom: 14px;
 
+        // The text column gives way to the pill, not the other way round: a
+        // long reading (the App version stamp) must not be clipped by the
+        // panel, so the row's leftover space comes off this column and its
+        // hint wraps instead.
         VerticalLayout {
-            width: root.panel-w - 216px;
+            width: root.panel-w - reading-chip.preferred-width - 16px;
             spacing: 3px;
             Text {
                 text: root.label;
@@ -745,8 +760,9 @@ component chip-row inherits Rectangle {
             }
         }
 
-        Chip {
+        reading-chip := Chip {
             label: root.chip-text;
+            selected: root.accent;
         }
     }
 
@@ -756,6 +772,99 @@ component chip-row inherits Rectangle {
         width: parent.width;
         height: 1px;
         background: Theme.hairline;
+    }
+}
+
+// The confirm sheets the Data and Backup tabs open: the TS's `<Modal>`
+// (primitives.tsx L6; `.overlay`/`.modal` in app.css L726-737). Drawn over
+// the whole window rather than inside the panel, so the dimmed backdrop
+// covers the app the way the settings sheet's own does.
+//
+// The body is `@children`, the way `card` hosts its content in
+// dashboard.slint; the caller supplies its rows and its footer row last,
+// because Slint carries one children slot and a separate footer would need
+// a second. The plate is a plain Rectangle on purpose: a background over
+// the backdrop's TouchArea is what keeps a click on the dialog from
+// reaching it (verified against the settings sheet's own backdrop).
+component modal inherits Rectangle {
+    in property <string> title;
+    callback closed();
+
+    // No width/height binding: a plain child fills its parent by default,
+    // and `parent` is not an accessible id from a component's own root
+    // anyway. The plate below does the centring off this root's size.
+
+    // `.overlay`'s dim wash, on the root so every pixel the dialog does not
+    // cover is dimmed: app.css L726's `#05060b9e`, or the light theme's
+    // `#3d568f4d`. Slint rectangles have no `backdrop-filter`, so the 4px
+    // blur the CSS puts behind the wash is the one part not drawn.
+    background: Theme.resolved-theme == "light" ? #3d568f4d : #05060b9e;
+
+    // In the TS a click closes only when it lands on the backdrop itself
+    // (`e.target === e.currentTarget`); here the plate above intercepts
+    // everything inside the dialog.
+    backdrop := TouchArea {
+        clicked => { root.closed(); }
+    }
+
+    plate := Rectangle {
+        width: min(540px, parent.width - 60px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        height: column.preferred-height;
+        border-radius: Theme.radius-xl;
+        border-width: 1px;
+        border-color: Theme.border;
+        background: Theme.bg;
+        clip: true;
+        drop-shadow-color: #00000066;
+        drop-shadow-blur: 40px;
+        drop-shadow-offset-y: 14px;
+
+        column := VerticalLayout {
+            // `.modal__header`: title, close button.
+            HorizontalLayout {
+                padding-top: 16px;
+                padding-bottom: 14px;
+                padding-left: 22px;
+                padding-right: 16px;
+                spacing: 12px;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.title;
+                    color: Theme.text;
+                    font-size: 17px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    min-height: 27px;
+                }
+
+                IconButton {
+                    horizontal-stretch: 0;
+                    icon: "×";
+                    clicked => { root.closed(); }
+                }
+            }
+
+            // `.modal__header`'s border-bottom.
+            Rectangle {
+                width: parent.width;
+                height: 1px;
+                background: Theme.hairline;
+            }
+
+            // `.modal__body`: the caller's rows.
+            VerticalLayout {
+                padding-top: 18px;
+                padding-bottom: 6px;
+                padding-left: 22px;
+                padding-right: 22px;
+                spacing: 14px;
+
+                @children
+            }
+        }
     }
 }
 
@@ -912,6 +1021,42 @@ export component Settings inherits Rectangle {
     in property <string> vsec-new-prompt;
     in-out property <string> vsec-new-answer;
 
+    // ---- Data and Backup (Task 5.8) ---------------------------------------
+    // The two chips' text is Rust's, composed where the numbers live: the
+    // stored count and the vault file's real size, and the build stamp vite
+    // would have baked into the web bundle. `data-count` gates the CSV
+    // export's button, exactly as `items.length === 0` does in the TS.
+    in property <string> data-stored: "0 · about 1 KB";
+    in property <string> data-version;
+    in property <int> data-count: 0;
+
+    // "Protect this backup": the confirm-before-export sheet.
+    in property <bool> data-protect-open: false;
+    in-out property <string> data-export-password;
+    in property <int> data-export-score: 0;
+
+    // "Delete all data?": the sheet's message carries the count, so it is
+    // composed in Rust beside the items.
+    in property <bool> data-reset-open: false;
+    in property <string> data-reset-message;
+
+    // "Restore from backup": the sheet opens with the picked file's name.
+    in property <string> data-restore-name;
+    in property <string> data-restore-message;
+    in property <string> data-restore-error;
+    in-out property <string> data-restore-password;
+    in-out property <bool> data-restore-passwordless: false;
+    in-out property <bool> data-restore-rekey: false;
+    in-out property <string> data-restore-next;
+    in property <bool> data-restore-busy: false;
+    // The submit button's own gate, rescored in Rust on every keystroke and
+    // toggle: Slint has no string length to test `next.length < 10` with.
+    in property <bool> data-restore-ready: false;
+
+    // The Backup tab's first row hint: the count and the password warning,
+    // both already composed the way the TS template composes them.
+    in property <string> backup-hint; 
+
     callback closed();
     callback tab-picked(index: int);
     callback pref-string(key: string, value: string);
@@ -942,6 +1087,21 @@ export component Settings inherits Rectangle {
     callback vsec-question-remove(id: string);
     callback vsec-question-check(id: string);
     callback vsec-prompt-step(delta: int);
+    // Data and Backup: the row actions and the three sheets' own. The
+    // sheets' fields ride in-out properties; only the presses come back.
+    callback data-export-csv();
+    callback data-import-csv();
+    callback data-reset-open-clicked();
+    callback data-reset-cancel();
+    callback data-reset-confirmed();
+    callback data-export-edited();
+    callback data-protect-cancel();
+    callback data-protect-confirm();
+    callback backup-export();
+    callback backup-restore-pick();
+    callback data-restore-cancel();
+    callback data-restore-edit();
+    callback data-restore-submit();
 
     // The thirteen tabs of Settings.tsx L500, in order. Hints come from
     // `describe()` in SettingsWindow.tsx L180 — three tabs have none there
@@ -978,6 +1138,12 @@ export component Settings inherits Rectangle {
 
         key-pressed(event) => {
             if (event.text == Key.Escape) {
+                // A confirm sheet swallows the key first: Escape closes the
+                // dialog, not the whole window (the TS modal's own handler
+                // stops propagation before SettingsWindow's does).
+                if (root.data-protect-open) { root.data-protect-cancel(); return accept; }
+                if (root.data-reset-open) { root.data-reset-cancel(); return accept; }
+                if (root.data-restore-name != "") { root.data-restore-cancel(); return accept; }
                 root.closed();
                 return accept;
             }
@@ -2329,10 +2495,84 @@ export component Settings inherits Rectangle {
                                 }
                             }
 
+                            // ---- Data ----------------------------------------
+                            // What is stored and who this build is, then the
+                            // two plaintext escapes: CSV out through the save
+                            // dialog, CSV back in through the open one — each
+                            // row added as a fresh login, exactly as
+                            // `service.addItem` does per parsed line.
+                            if (root.active.id == "data") : VerticalLayout {
+                                width: root.panel-w;
+                                spacing: 0px;
+
+                                chip-row {
+                                    panel-w: root.panel-w;
+                                    label: "Stored logins";
+                                    hint: "Everything lives in a local vault file on this device.";
+                                    chip-text: root.data-stored;
+                                }
+
+                                chip-row {
+                                    panel-w: root.panel-w;
+                                    label: "App version";
+                                    hint: "The exact build running right now. If a fix you expected is missing, this tells you the install is stale.";
+                                    chip-text: root.data-version;
+                                    accent: true;
+                                }
+
+                                btn-row {
+                                    panel-w: root.panel-w;
+                                    label: "Export as CSV";
+                                    hint: "Plaintext, for moving to another tool. Delete it afterwards.";
+                                    button-text: "Export CSV";
+                                    button-enabled: root.data-count > 0;
+                                    clicked => { root.data-export-csv(); }
+                                }
+
+                                btn-row {
+                                    panel-w: root.panel-w;
+                                    label: "Import from CSV";
+                                    hint: "Expects the columns name, url, username, password, notes.";
+                                    button-text: "Import CSV";
+                                    clicked => { root.data-import-csv(); }
+                                }
+
+                                btn-row {
+                                    panel-w: root.panel-w;
+                                    label: "Delete all data";
+                                    hint: "Removes every login, tag, channel, folder, alarm, connected mailbox, setting and usage record from this device, and clears the clipboard. There is no undo.";
+                                    button-text: "Delete everything";
+                                    button-kind: 3;
+                                    clicked => { root.data-reset-open-clicked(); }
+                                }
+                            }
+
+                            // ---- Backup --------------------------------------
+                            if (root.active.id == "backup") : VerticalLayout {
+                                width: root.panel-w;
+                                spacing: 0px;
+
+                                btn-row {
+                                    panel-w: root.panel-w;
+                                    label: "Encrypted backup";
+                                    hint: root.backup-hint;
+                                    button-text: "Export";
+                                    clicked => { root.backup-export(); }
+                                }
+
+                                btn-row {
+                                    panel-w: root.panel-w;
+                                    label: "Restore from backup";
+                                    hint: "Replaces everything currently in this vault.";
+                                    button-text: "Restore";
+                                    clicked => { root.backup-restore-pick(); }
+                                }
+                            }
+
                             // Every panel not landed yet. The header already
                             // names the section and says what it is for, so
                             // the body only has to be honest about the wait.
-                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms" && root.active.id != "security") : Rectangle {
+                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms" && root.active.id != "security" && root.active.id != "data" && root.active.id != "backup") : Rectangle {
                                 // A constant width for the same reason as the
                                 // rows: `EmptyState` wraps its title, and a
                                 // wrapped height built on the panel's width
@@ -2350,6 +2590,155 @@ export component Settings inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // ---- The three confirm sheets -----------------------------------------
+    // Declared last so they draw over the sheet. `modal` puts each in the
+    // window's middle; the footer buttons share the width, the way
+    // `.modal__footer .btn{flex:1}` stretches them.
+
+    if (root.data-protect-open) : modal {
+        title: "Protect this backup";
+        closed => { root.data-protect-cancel(); }
+
+        Alert {
+            info: true;
+            message: "The backup is re-wrapped with this password, so the file is protected even if it leaves this device. Remember it: there is no way to recover a lost backup password.";
+        }
+
+        Field {
+            value <=> root.data-export-password;
+            placeholder: "Backup password";
+            password: true;
+            edited => { root.data-export-edited(); }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Btn {
+                horizontal-stretch: 1;
+                kind: 1;
+                label: "Cancel";
+                clicked => { root.data-protect-cancel(); }
+            }
+            Btn {
+                horizontal-stretch: 1;
+                kind: 0;
+                label: "Export";
+                // `disabled={busy || estimateStrength(exportPassword).score < 2}`
+                // (Settings.tsx L2197) -- the score is Rust's.
+                enabled: root.data-export-score >= 2;
+                clicked => { root.data-protect-confirm(); }
+            }
+        }
+    }
+
+    if (root.data-reset-open) : modal {
+        title: "Delete all data?";
+        closed => { root.data-reset-cancel(); }
+
+        Alert {
+            message: root.data-reset-message;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Btn {
+                horizontal-stretch: 1;
+                kind: 1;
+                label: "Cancel";
+                clicked => { root.data-reset-cancel(); }
+            }
+            Btn {
+                horizontal-stretch: 1;
+                kind: 3;
+                label: "Delete everything";
+                clicked => { root.data-reset-confirmed(); }
+            }
+        }
+    }
+
+    if (root.data-restore-name != "") : modal {
+        title: "Restore from backup";
+        closed => { root.data-restore-cancel(); }
+
+        Alert {
+            warn: true;
+            message: root.data-restore-message;
+        }
+
+        if (root.data-restore-error != "") : Alert {
+            message: root.data-restore-error;
+        }
+
+        // `.field` with its `.field__note`: the note sits under the input
+        // and is honest about the passwordless case even though the button
+        // below still wants a character typed.
+        VerticalLayout {
+            spacing: 6px;
+
+            Field {
+                value <=> root.data-restore-password;
+                placeholder: "Backup vault password";
+                password: true;
+                edited => { root.data-restore-edit(); }
+            }
+
+            Text {
+                text: "Leave empty if the backup has no vault password.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                width: parent.width;
+            }
+        }
+
+        toggle-row {
+            panel-w: 496px;
+            hairline: false;
+            label: "Restore without a vault password";
+            checked <=> root.data-restore-passwordless;
+            toggled => { root.data-restore-edit(); }
+        }
+
+        if (!root.data-restore-passwordless) : VerticalLayout {
+            spacing: 14px;
+
+            toggle-row {
+                panel-w: 496px;
+                hairline: false;
+                label: "Use a different password on this device";
+                checked <=> root.data-restore-rekey;
+                toggled => { root.data-restore-edit(); }
+            }
+
+            if (root.data-restore-rekey) : Field {
+                value <=> root.data-restore-next;
+                placeholder: "New vault password";
+                password: true;
+                edited => { root.data-restore-edit(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Btn {
+                horizontal-stretch: 1;
+                kind: 1;
+                label: "Cancel";
+                clicked => { root.data-restore-cancel(); }
+            }
+            Btn {
+                horizontal-stretch: 1;
+                kind: 0;
+                label: "Restore vault";
+                // `busy || password.length === 0 || (rekey && next.length < 10)`
+                // (Settings.tsx L2686) — `data-restore-ready` is that
+                // expression's first two clauses, rescored in Rust.
+                enabled: root.data-restore-ready && !root.data-restore-busy;
+                clicked => { root.data-restore-submit(); }
             }
         }
     }

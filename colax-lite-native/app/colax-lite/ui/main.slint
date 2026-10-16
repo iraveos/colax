@@ -840,6 +840,21 @@ export component MainWindow inherits Window {
     callback settings-vsec-question-remove(id: string);
     callback settings-vsec-question-check(id: string);
     callback settings-vsec-prompt-step(delta: int);
+    // Data and Backup (Task 5.8): the row actions and the three sheets'
+    // own. The sheets' fields ride in-out properties; only presses come back.
+    callback settings-data-export-csv();
+    callback settings-data-import-csv();
+    callback settings-data-reset-ask();
+    callback settings-data-reset-cancel();
+    callback settings-data-reset-confirmed();
+    callback settings-data-export-edited();
+    callback settings-data-protect-cancel();
+    callback settings-data-protect-confirm();
+    callback settings-backup-export();
+    callback settings-backup-restore-pick();
+    callback settings-data-restore-cancel();
+    callback settings-data-restore-edit();
+    callback settings-data-restore-submit();
     in-out property <bool> settings-open: false;
     in-out property <int> settings-tab-index: 0;
     // The modal's frame, in logical pixels, kept in step with the window by
@@ -959,6 +974,28 @@ export component MainWindow inherits Window {
     in-out property <string> settings-vsec-check-input;
     in property <string> settings-vsec-new-prompt;
     in-out property <string> settings-vsec-new-answer;
+    // ---- The Settings window's Data and Backup tabs (Task 5.8) ------------
+    // The chips' text and the sheets' state. The fields a sheet owns are
+    // in-out so a keystroke reaches Rust and Rust's answer (the password
+    // score gates Export) comes back down the same chain.
+    in property <string> settings-data-stored;
+    in property <string> settings-data-version;
+    in property <int> settings-data-count: 0;
+    in property <bool> settings-data-protect-open: false;
+    in-out property <string> settings-data-export-password;
+    in property <int> settings-data-export-score: 0;
+    in property <bool> settings-data-reset-open: false;
+    in property <string> settings-data-reset-message;
+    in property <string> settings-data-restore-name;
+    in property <string> settings-data-restore-message;
+    in property <string> settings-data-restore-error;
+    in-out property <string> settings-data-restore-password;
+    in-out property <bool> settings-data-restore-passwordless: false;
+    in-out property <bool> settings-data-restore-rekey: false;
+    in-out property <string> settings-data-restore-next;
+    in property <bool> settings-data-restore-busy: false;
+    in property <bool> settings-data-restore-ready: false;
+    in property <string> settings-backup-hint;
     // ---- SecurityGate ----------------------------------------------------
     // A blocking verification for a login or for the vault itself: any one
     // factor passes, and the open panel holds everything typed until Rust
@@ -2400,6 +2437,24 @@ export component MainWindow inherits Window {
             vsec-check-input <=> root.settings-vsec-check-input;
             vsec-new-prompt: root.settings-vsec-new-prompt;
             vsec-new-answer <=> root.settings-vsec-new-answer;
+            data-stored: root.settings-data-stored;
+            data-version: root.settings-data-version;
+            data-count: root.settings-data-count;
+            data-protect-open: root.settings-data-protect-open;
+            data-export-password <=> root.settings-data-export-password;
+            data-export-score: root.settings-data-export-score;
+            data-reset-open: root.settings-data-reset-open;
+            data-reset-message: root.settings-data-reset-message;
+            data-restore-name: root.settings-data-restore-name;
+            data-restore-message: root.settings-data-restore-message;
+            data-restore-error: root.settings-data-restore-error;
+            data-restore-password <=> root.settings-data-restore-password;
+            data-restore-passwordless <=> root.settings-data-restore-passwordless;
+            data-restore-rekey <=> root.settings-data-restore-rekey;
+            data-restore-next <=> root.settings-data-restore-next;
+            data-restore-busy: root.settings-data-restore-busy;
+            data-restore-ready: root.settings-data-restore-ready;
+            backup-hint: root.settings-backup-hint;
             closed => { root.settings-closed(); }
             tab-picked(index) => { root.settings-tab-picked(index); }
             pref-string(key, value) => { root.settings-pref-string(key, value); }
@@ -2427,6 +2482,19 @@ export component MainWindow inherits Window {
             vsec-question-remove(id) => { root.settings-vsec-question-remove(id); }
             vsec-question-check(id) => { root.settings-vsec-question-check(id); }
             vsec-prompt-step(delta) => { root.settings-vsec-prompt-step(delta); }
+            data-export-csv => { root.settings-data-export-csv(); }
+            data-import-csv => { root.settings-data-import-csv(); }
+            data-reset-open-clicked => { root.settings-data-reset-ask(); }
+            data-reset-cancel => { root.settings-data-reset-cancel(); }
+            data-reset-confirmed => { root.settings-data-reset-confirmed(); }
+            data-export-edited => { root.settings-data-export-edited(); }
+            data-protect-cancel => { root.settings-data-protect-cancel(); }
+            data-protect-confirm => { root.settings-data-protect-confirm(); }
+            backup-export => { root.settings-backup-export(); }
+            backup-restore-pick => { root.settings-backup-restore-pick(); }
+            data-restore-cancel => { root.settings-data-restore-cancel(); }
+            data-restore-edit => { root.settings-data-restore-edit(); }
+            data-restore-submit => { root.settings-data-restore-submit(); }
         }
     }
 }

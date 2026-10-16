@@ -452,6 +452,20 @@ impl VaultEngine {
     pub fn export_backup_json(&self) -> Result<String, VaultError> {
         serialize_backup(&self.export_backup()?)
     }
+
+    /// The same document, its header re-wrapped under `password` so the file
+    /// is protected rather than relying on this device's protection. The
+    /// vault key itself never changes, so every item ciphertext stays valid
+    /// — the settings sheet's "Protect this backup" export.
+    ///
+    /// The TS export re-opens the backup's own header with an empty password
+    /// first, which works for a device vault but fails once a vault password
+    /// is set; the session handle does the same job in both cases.
+    pub fn export_backup_json_with_password(&self, password: &str) -> Result<String, VaultError> {
+        let mut backup = self.export_backup()?;
+        backup.header = rewrap_vault_key(self.require_handle()?, password, self.kdf_iterations)?;
+        serialize_backup(&backup)
+    }
 }
 
 /// Checks a backup can be opened, without writing anything. Passwordless

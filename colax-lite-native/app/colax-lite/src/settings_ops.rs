@@ -15,12 +15,11 @@ use crate::{
     save_prefs, AccentChip, AlarmRow, DayChip, HiddenRow, MainWindow, QuestionRow, QrCell, Shared,
 };
 use colax_core::model::{SecurityPasscode, SecurityQuestion, TotpSecret};
-use colax_core::totp::{
-    current_totp_code, extract_totp_secret, generate_totp_seed, otpauth_url, qr_matrix, verify_totp,
-};
+use colax_core::totp::{extract_totp_secret, generate_totp_seed, otpauth_url, qr_matrix, verify_totp};
 use colax_core::{
-    answer_too_weak, hash_answer, hash_passcode, passcode_too_weak, security_level, verify_answer,
-    verify_passcode, Alarm, AlarmSound, LoginSecurity, VaultPreferences,
+    answer_too_weak, estimate_strength, hash_answer, hash_passcode, passcode_too_weak,
+    security_level, verify_answer, verify_passcode, Alarm, AlarmSound, LoginSecurity,
+    VaultPreferences,
 };
 use slint::ComponentHandle;
 
@@ -169,6 +168,12 @@ pub fn open(ui: &MainWindow, state: &Shared, section: &str) {
     // typed code, the passcode drafts -- are empty.
     ui.set_settings_sec_group(0);
     reset_vault_draft(ui, state);
+    // The three confirm sheets die with the window in the TS; here their
+    // flags live on the window root, so opening resets them.
+    ui.set_settings_data_protect_open(false);
+    ui.set_settings_data_reset_open(false);
+    ui.set_settings_data_restore_name("".into());
+    state.borrow_mut().settings_restore = None;
     refresh(ui, state);
     ui.set_settings_open(true);
 }
@@ -325,6 +330,10 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
         .into(),
     );
     push_vault_security(ui, state);
+    // The Data and Backup tabs: two chips, the count that gates the CSV
+    // export, and the backup row's composed hint. Cheap reads, so they ride
+    // every refresh the way the other tabs' dials do.
+    push_data(ui, state);
 }
 
 /// One settings write, whichever dial made it. The closure owns the
@@ -1407,6 +1416,350 @@ pub fn restore_all(ui: &MainWindow, state: &Shared) {
     });
 }
 
+/* ---- Data and Backup (Task 5.8) ---------------------------------------- */
+
+/// The Data tab's chips and the Backup row's hint, pushed from the facts:
+/// the stored count and the vault file's real size for the first chip, the
+/// build stamp for the second, and "Downloads N login(s) as ciphertext."
+/// plus the conditional password sentence for the row (Settings.tsx
+/// L1460-1471, L1506).
+pub fn push_data(ui: &MainWindow, state: &Shared) {
+    let (count, bytes, has_password) = data_facts(state);
+    let kb = bytes.div_ceil(1024).max(1);
+    ui.set_settings_data_stored(format!("{count} · about {kb} KB").as_str().into());
+    ui.set_settings_data_count(count as i32);
+    ui.set_settings_data_version(build_stamp().as_str().into());
+    let noun = if count == 1 { "login" } else { "logins" };
+    let warning = if has_password {
+        ""
+    } else {
+        " Without a vault password, anyone with the file can read it once restored."
+    };
+    ui.set_settings_backup_hint(
+        format!("Downloads {count} {noun} as ciphertext.{warning}")
+            .as_str()
+            .into(),
+    );
+}
+
+/// The numbers behind the Data and Backup tabs: how many logins are stored,
+/// the vault file's size on disk, and whether a vault password exists at all
+/// (the Backup hint's conditional sentence).
+fn data_facts(state: &Shared) -> (usize, u64, bool) {
+    let guard = state.borrow();
+    let count = guard
+        .engine
+        .items()
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let bytes = std::fs::metadata(crate::vault_path())
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let has_password = matches!(
+        guard.engine.protection(),
+        Ok(Some(colax_core::VaultProtection::Password))
+    );
+    (count, bytes, has_password)
+}
+
+/// "windows · 1.1.0 · built 2026-10-16 10:52 UTC" — the Data tab's App
+/// version chip. The TS splits the same claim in two: `getPlatform().name`
+/// and a stamp vite baked in at bundle time. Here the platform is this
+/// port's own word and the time is the running exe's file stamp, which is
+/// the honest native reading of "the exact build running right now".
+fn build_stamp() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let ms = std::env::current_exe()
+        .ok()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|stamp| stamp.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_millis() as i64)
+        .unwrap_or_else(colax_core::util::now_ms);
+    format!(
+        "windows · {version} · built {}",
+        colax_core::util::utc_stamp_minutes(ms)
+    )
+}
+
+/// The whole vault as the TS's plaintext CSV (Settings.tsx L422-447): the
+/// seven-column header, one quoted line per login, `"` doubled inside cells
+/// and the item's ISO timestamp in `created`. Deliberately readable — the
+/// point is to move logins into another tool.
+pub fn csv_text(items: &[colax_core::VaultItem]) -> String {
+    fn escape(value: &str) -> String {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    }
+    let mut out = String::from("name,url,username,password,notes,favorite,created");
+    for item in items {
+        out.push('\n');
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{}",
+            escape(&item.title),
+            escape(&item.url),
+            escape(&item.username),
+            escape(&item.password),
+            escape(&item.notes),
+            escape(if item.favorite { "true" } else { "false" }),
+            escape(&colax_core::util::iso_from_ms(item.created_at)),
+        ));
+    }
+    out
+}
+
+/// One CSV line split the way the TS's reader does (Settings.tsx
+/// L449-473): `""` inside a quoted cell is one `"`, a comma outside quotes
+/// ends the cell, and unquoted text passes through untouched.
+fn csv_cells(line: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                if quoted && chars.peek() == Some(&'"') {
+                    cell.push('"');
+                    chars.next();
+                } else {
+                    quoted = !quoted;
+                }
+            }
+            ',' if !quoted => cells.push(std::mem::take(&mut cell)),
+            other => cell.push(other),
+        }
+    }
+    cells.push(cell);
+    cells
+}
+
+/// Settings › Data's "Export CSV" — the save dialog in front of `csv_text`.
+/// The TS hands the browser a download named `colax-vault-YYYY-MM-DD.csv`
+/// (Settings.tsx L440-446); here the user picks the folder and the same name
+/// is pre-filled.
+pub fn data_export_csv(ui: &MainWindow, state: &Shared) {
+    let (document, count) = {
+        let guard = state.borrow();
+        match guard.engine.items() {
+            Some(items) => (csv_text(items), items.len()),
+            None => (String::new(), 0),
+        }
+    };
+    if count == 0 {
+        return; // the row's button is disabled at zero; belt and braces
+    }
+    let day = colax_core::util::utc_stamp_minutes(colax_core::util::now_ms());
+    let name = format!("colax-vault-{}.csv", &day[..10]);
+    let Some(path) = crate::platform::save_csv_file(crate::find_main_window(), &name) else {
+        return; // cancelled: nothing written, nothing said
+    };
+    if std::fs::write(&path, document).is_err() {
+        ui.set_error_text("That file could not be written.".into());
+        return;
+    }
+    crate::notice(ui, "Plaintext CSV exported — delete it once imported elsewhere");
+}
+
+/// Settings › Data's "Import CSV": open a .csv through the system dialog
+/// and add every row as a login.
+pub fn data_import_csv(ui: &MainWindow, state: &Shared) {
+    let Some(path) = crate::platform::pick_csv_file(crate::find_main_window()) else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        ui.set_error_text("That file could not be read.".into());
+        return;
+    };
+    data_import_from_text(ui, state, &text);
+}
+
+/// The half of the import a dump run can drive without a dialog: parse and
+/// add, then refresh. The parse is the TS's `importCsv` (Settings.tsx
+/// L449-505): blank lines dropped, the header row skipped, cells unquoted,
+/// and `favorite` true only for the literal "true". Returns how many rows
+/// landed.
+pub fn data_import_from_text(ui: &MainWindow, state: &Shared, text: &str) -> usize {
+    let lines: Vec<&str> = text
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.is_empty())
+        .collect();
+    let mut imported = 0usize;
+    for line in lines.iter().skip(1) {
+        let cells = csv_cells(line);
+        let cell = |index: usize| cells.get(index).cloned().unwrap_or_default();
+        let draft = serde_json::json!({
+            "title": cell(0),
+            "url": cell(1),
+            "username": cell(2),
+            "password": cell(3),
+            "notes": cell(4),
+            "favorite": cell(5) == "true",
+        });
+        let added = state.borrow_mut().engine.add_item(&draft).is_ok();
+        if !added {
+            ui.set_error_text("That import could not be saved.".into());
+            break;
+        }
+        imported += 1;
+    }
+    crate::refresh_items(ui, state);
+    refresh(ui, state);
+    crate::notice(ui, &format!("Imported {imported} logins"));
+    imported
+}
+
+/// The Data tab's "Delete everything": open the confirm sheet with the
+/// count baked into its message (Settings.tsx L2240-2245). The erase
+/// itself is `crate::settings_data_reset` — it needs the tray and the
+/// navigation, which live in main.
+pub fn data_reset_open(ui: &MainWindow, state: &Shared) {
+    let count = state
+        .borrow()
+        .engine
+        .items()
+        .map(|items| items.len())
+        .unwrap_or(0);
+    ui.set_settings_data_reset_message(
+        format!(
+            "All {count} logins, every tag, channel, folder, alarm, connected mailbox, setting \
+             and usage record will be erased from this device, and the clipboard will be \
+             cleared. The app returns to first-run setup. This cannot be undone, and nobody — \
+             including whoever built this — can recover any of it."
+        )
+        .as_str()
+        .into(),
+    );
+    ui.set_settings_data_reset_open(true);
+}
+
+pub fn data_reset_cancel(ui: &MainWindow) {
+    ui.set_settings_data_reset_open(false);
+}
+
+/// Settings › Backup's "Export". With "ask before exporting" on, the sheet
+/// comes first and its password protects the file; off, the document is
+/// written as it stands (the `confirmBeforeExport` branch, Settings.tsx
+/// L1507-1523).
+pub fn backup_export(ui: &MainWindow, state: &Shared) {
+    let confirm = items::prefs_from(state.borrow().engine.preferences()).confirm_before_export;
+    if confirm {
+        ui.set_settings_data_export_password("".into());
+        ui.set_settings_data_export_score(0);
+        ui.set_settings_data_protect_open(true);
+        return;
+    }
+    export_backup_file(ui, state, None);
+}
+
+/// The score gate's input: every keystroke in the protect sheet rescores
+/// through the same `estimate_strength` the vault's password fields use, and
+/// the Export button lights at 2 (Settings.tsx L2197).
+pub fn data_export_edited(ui: &MainWindow) {
+    let score = estimate_strength(&ui.get_settings_data_export_password()).score as i32;
+    ui.set_settings_data_export_score(score);
+}
+
+pub fn data_protect_cancel(ui: &MainWindow) {
+    ui.set_settings_data_protect_open(false);
+}
+
+pub fn data_protect_confirm(ui: &MainWindow, state: &Shared) {
+    let password = ui.get_settings_data_export_password().to_string();
+    export_backup_file(ui, state, Some(&password));
+}
+
+/// Both exports meet here: serialize (re-wrapped when a password came from
+/// the sheet), pick a path, write, and say so. The pre-filled name is the
+/// TS's `backupFilename()` (src/vault/backup.ts L27).
+fn export_backup_file(ui: &MainWindow, state: &Shared, password: Option<&str>) {
+    let document = {
+        let guard = state.borrow();
+        match password {
+            Some(password) => guard.engine.export_backup_json_with_password(password),
+            None => guard.engine.export_backup_json(),
+        }
+    };
+    let document = match document {
+        Ok(document) => document,
+        Err(_) => {
+            ui.set_error_text("The backup could not be written.".into());
+            return;
+        }
+    };
+    let name = format!(
+        "colax-vault-backup-{}.json",
+        colax_core::util::utc_stamp_seconds(colax_core::util::now_ms())
+    );
+    let Some(path) = crate::platform::save_backup_file(crate::find_main_window(), &name) else {
+        return; // cancelled: the sheet stays up, fields intact
+    };
+    if std::fs::write(&path, document).is_err() {
+        ui.set_error_text("That file could not be written.".into());
+        return;
+    }
+    ui.set_settings_data_protect_open(false);
+    crate::notice(ui, "Encrypted backup downloaded");
+}
+
+/// Settings › Backup's "Restore": open a backup file and show the sheet.
+/// The text is read at pick time, as `pickBackupFile` reads the File before
+/// the modal mounts (src/vault/backup.ts L43); the pair then waits in
+/// `AppState.settings_restore` until submit or cancel.
+pub fn backup_restore_pick(ui: &MainWindow, state: &Shared) {
+    let Some(path) = crate::platform::pick_backup_file(crate::find_main_window()) else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        ui.set_error_text("Could not read that file.".into());
+        return;
+    };
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    backup_restore_from_text(ui, state, &name, &text);
+}
+
+/// The sheet's half of the restore, dialog-free so a dump run can drive a
+/// whole export → import → restore round-trip: stash the file, set the
+/// sheet up (name, warning sentence, cleared fields), open it, and let
+/// `crate::settings_data_restore_submit` do the rest.
+pub fn backup_restore_from_text(ui: &MainWindow, state: &Shared, name: &str, text: &str) {
+    ui.set_settings_data_restore_message(
+        format!("{name} will replace every login currently stored in this vault.")
+            .as_str()
+            .into(),
+    );
+    ui.set_settings_data_restore_error("".into());
+    ui.set_settings_data_restore_password("".into());
+    ui.set_settings_data_restore_passwordless(false);
+    ui.set_settings_data_restore_rekey(false);
+    ui.set_settings_data_restore_next("".into());
+    ui.set_settings_data_restore_busy(false);
+    ui.set_settings_data_restore_ready(false);
+    state.borrow_mut().settings_restore = Some((text.to_string(), name.to_string()));
+    // Last, because the sheet is open exactly while the name is set.
+    ui.set_settings_data_restore_name(name.into());
+}
+
+pub fn data_restore_cancel(ui: &MainWindow, state: &Shared) {
+    state.borrow_mut().settings_restore = None;
+    ui.set_settings_data_restore_name("".into());
+    ui.set_settings_data_restore_error("".into());
+}
+
+/// The restore button's gate, rescored on every keystroke and toggle. The
+/// TS computes it inline — `password.length === 0 || (rekey && next.length
+/// < 10)` (Settings.tsx L2686) — and Slint has no string length, so the
+/// expression lands here.
+pub fn data_restore_edited(ui: &MainWindow) {
+    let password_ok = !ui.get_settings_data_restore_password().is_empty();
+    let next_ok = ui.get_settings_data_restore_next().chars().count() >= 10;
+    let ready = password_ok && (!ui.get_settings_data_restore_rekey() || next_ok);
+    ui.set_settings_data_restore_ready(ready);
+}
+
 /// The settings walk — `COLAX_DEV_SCREEN=settings`. Opens the window the
 /// way the sidebar does (no tab), jumps the way Ctrl+number does, follows
 /// a dashboard deep link, then drives four dials through the same handlers
@@ -1414,7 +1767,7 @@ pub fn restore_all(ui: &MainWindow, state: &Shared) {
 /// (117 lands on 115). Each dump carries both the window's own values and
 /// what reached the engine, so the write is checked without looking at it.
 #[cfg(debug_assertions)]
-pub fn dev(ui: &MainWindow, state: &Shared) {
+pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) {
     open(ui, state, "");
     dump(ui, state, "settings1.open");
 
@@ -1519,11 +1872,13 @@ pub fn dev(ui: &MainWindow, state: &Shared) {
     vsec_totp_check(ui, state); // wrong: the staged key must survive
     dump(ui, state, "settings15.vsec-staged");
 
+    // Fully qualified: this walk block is `#[cfg(debug_assertions)]`, so the
+    // import would read as unused in a release build.
     let code = state
         .borrow()
         .vault_staged_seed
         .clone()
-        .and_then(|seed| current_totp_code(&seed).ok())
+        .and_then(|seed| colax_core::totp::current_totp_code(&seed).ok())
         .unwrap_or_default();
     ui.set_settings_vsec_totp_code(code.as_str().into());
     vsec_totp_check(ui, state); // the first right code is the write
@@ -1544,6 +1899,93 @@ pub fn dev(ui: &MainWindow, state: &Shared) {
     ui.set_settings_vsec_passcode_input("vault-gate-2026".into());
     vsec_passcode_check(ui, state);
     dump(ui, state, "settings16.vsec-saved");
+
+    // The Data and Backup tabs (Task 5.8). The chips are read-outs; the
+    // real flows are a CSV round-trip and a whole backup restore, and every
+    // file dialog is the one thing a dump run cannot click — so the walk
+    // takes the same seams the buttons take after their pickers:
+    // `csv_text`, `data_import_from_text`, `backup_restore_from_text`.
+    tab_picked(ui, 8); // Ctrl+9 -> data
+    dump(ui, state, "settings18.data");
+
+    // A password-protected backup of the vault *before* the import — the
+    // rows as they stand. Taken here so the restore below has something the
+    // import changed: the count coming back is the proof it replaced
+    // everything rather than merging.
+    let before = state.borrow().engine.items().map_or(0, |items| items.len());
+    let backup = {
+        let guard = state.borrow();
+        guard
+            .engine
+            .export_backup_json_with_password("walk passphrase")
+            .unwrap_or_default()
+    };
+
+    // The export text, re-imported — every seed row out and back in — plus
+    // one hand-written line whose cells carry a comma and doubled quotes, to
+    // prove the escaping in both directions. `before + 1` rows must land.
+    let csv = {
+        let guard = state.borrow();
+        csv_text(guard.engine.items().unwrap_or_default())
+    };
+    let round_trip = format!(
+        "{csv}\n\"Comma, \"\"quoted\"\"\",\"https://quotes.test\",\"ann\",\"pw\",\"a, b\",\"true\",\"\"\n"
+    );
+    let imported = data_import_from_text(ui, state, &round_trip);
+    debug_assert_eq!(imported, before + 1, "the export's rows plus the crafted line");
+    dump(ui, state, "settings19.csv-import");
+
+    // The sheet: a wrong password refused with the vault untouched, the
+    // right one restoring the file's rows and re-keying back to device
+    // protection.
+    backup_restore_from_text(ui, state, "walk-backup.json", &backup);
+    dump(ui, state, "settings20.restore-open");
+
+    ui.set_settings_data_restore_password("wrong".into());
+    data_restore_edited(ui); // the Field's own callback in the real UI
+    crate::settings_data_restore_submit(ui, state, tray);
+    dump(ui, state, "settings21.restore-refused");
+
+    ui.set_settings_data_restore_password("walk passphrase".into());
+    ui.set_settings_data_restore_passwordless(true);
+    data_restore_edited(ui); // the toggle's own callback
+    crate::settings_data_restore_submit(ui, state, tray);
+    let restored = state.borrow().engine.items().map_or(0, |items| items.len());
+    debug_assert_eq!(restored, before, "the backup replaces everything the import added");
+    dump(ui, state, "settings22.restored");
+
+    // The protect sheet: "ask before exporting" on, Export opens it; the
+    // score gate refuses "short" and lights at two for a mixed password;
+    // cancel closes.
+    pref_bool(ui, state, "confirmBeforeExport", true);
+    backup_export(ui, state);
+    dump(ui, state, "settings23.protect-open");
+    ui.set_settings_data_export_password("short".into());
+    data_export_edited(ui);
+    debug_assert!(
+        ui.get_settings_data_export_score() < 2,
+        "the gate stays shut on \"short\""
+    );
+    dump(ui, state, "settings24.protect-weak");
+    // Note the estimator's conservatism: even a four-word phrase
+    // (`correct horse battery staple`) reads as 1, so the sample that has to
+    // clear the gate is a mixed-character one.
+    ui.set_settings_data_export_password("Tr0ub4dor&3".into());
+    data_export_edited(ui);
+    debug_assert!(
+        ui.get_settings_data_export_score() >= 2,
+        "the gate opens on a mixed password"
+    );
+    dump(ui, state, "settings25.protect-strong");
+    data_protect_cancel(ui);
+    dump(ui, state, "settings26.protect-cancelled");
+
+    // The reset sheet: the message carries the count, and cancelling leaves
+    // every login exactly where it was.
+    data_reset_open(ui, state);
+    dump(ui, state, "settings27.reset-open");
+    data_reset_cancel(ui);
+    dump(ui, state, "settings28.reset-cancelled");
 
     close(ui);
     dump(ui, state, "settings17.closed");
@@ -1604,8 +2046,22 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         prefs.vault_security.passcode.is_some(),
         prefs.vault_security.questions.len(),
     );
+    // The Data and Backup tabs: the count the chip carries, the engine's own
+    // count beside it, how many favorites the CSV's `true` cell would tick,
+    // and the three sheets' state -- open flags, the export score, the
+    // restore error.
+    let (engine_items, favorites) = {
+        let guard = state.borrow();
+        match guard.engine.items() {
+            Some(items) => (
+                items.len(),
+                items.iter().filter(|item| item.favorite).count(),
+            ),
+            None => (0, 0),
+        }
+    };
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}] data=[{} {} {} {} {} {} {} {}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -1696,6 +2152,14 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         prefs.sidebar_position,
         prefs.show_new_login_button as i32,
         prefs.show_sidebar as i32,
+        ui.get_settings_data_count(),
+        engine_items,
+        favorites,
+        ui.get_settings_data_protect_open() as i32,
+        ui.get_settings_data_export_score(),
+        (!ui.get_settings_data_restore_name().is_empty()) as i32,
+        (!ui.get_settings_data_restore_error().is_empty()) as i32,
+        ui.get_settings_data_restore_ready() as i32,
     );
     let path = crate::app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -2073,5 +2537,65 @@ mod tests {
             assert_ne!(from, to, "{id} chip gradient must move");
             assert!(!label.is_empty());
         }
+    }
+
+    #[test]
+    fn the_csv_writes_the_frames_the_typescript_writes() {
+        // `escape` doubles every `"` and wraps the cell (Settings.tsx L424);
+        // the header is fixed and rows join with plain newlines. The second
+        // argument is the item's clock, which lands in `created` verbatim.
+        let item = colax_core::normalise_item(
+            &serde_json::json!({
+                "title": "Comma, \"quoted\"",
+                "url": "https://one.test",
+                "username": "ann",
+                "password": "pw",
+                "notes": "line",
+                "favorite": true,
+            }),
+            1_767_255_697_123,
+        );
+
+        let text = csv_text(&[item]);
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            "name,url,username,password,notes,favorite,created"
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            "\"Comma, \"\"quoted\"\"\",\"https://one.test\",\"ann\",\"pw\",\"line\",\"true\",\"2026-01-01T08:21:37.123Z\""
+        );
+        assert_eq!(lines.next(), None, "no trailing newline");
+    }
+
+    #[test]
+    fn the_csv_reader_unquotes_what_the_writer_quoted() {
+        let item = colax_core::normalise_item(
+            &serde_json::json!({
+                "title": "Comma, \"quoted\"",
+                "url": "https://one.test",
+                "username": "ann",
+                "password": "pw",
+                "notes": "a, b",
+                "favorite": true,
+            }),
+            1_767_255_697_123,
+        );
+
+        // The row the writer made must survive the reader: commas inside
+        // cells stay, doubled quotes become one, separators still split.
+        let text = csv_text(&[item]);
+        let cells = csv_cells(text.lines().nth(1).unwrap());
+        assert_eq!(cells.len(), 7);
+        assert_eq!(cells[0], "Comma, \"quoted\"");
+        assert_eq!(cells[1], "https://one.test");
+        assert_eq!(cells[4], "a, b");
+        assert_eq!(cells[5], "true");
+
+        // Unquoted text passes through untouched; an empty line is one
+        // empty cell, the way the TS reader leaves it.
+        assert_eq!(csv_cells("a,b"), vec!["a", "b"]);
+        assert_eq!(csv_cells(""), vec![""]);
     }
 }

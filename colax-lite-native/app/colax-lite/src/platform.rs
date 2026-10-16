@@ -164,8 +164,10 @@ struct OpenFileNameW {
 }
 
 type GetOpenFileNameWFn = unsafe extern "system" fn(*mut OpenFileNameW) -> i32;
+type GetSaveFileNameWFn = unsafe extern "system" fn(*mut OpenFileNameW) -> i32;
 
 // OFN_* from <comdlg.h>.
+const OFN_OVERWRITEPROMPT: u32 = 0x0000_0002;
 const OFN_NOCHANGEDIR: u32 = 0x0000_0008;
 const OFN_PATHMUSTEXIST: u32 = 0x0000_0800;
 const OFN_FILEMUSTEXIST: u32 = 0x0000_1000;
@@ -185,6 +187,93 @@ pub fn pick_sound_file(owner: isize) -> Option<PathBuf> {
     pick_file(
         owner,
         "Sound files (*.wav;*.mp3;*.ogg;*.flac;*.m4a)\0*.wav;*.mp3;*.ogg;*.flac;*.m4a\0All files (*.*)\0*.*\0\0",
+    )
+}
+
+/// The same dialog filtered to CSV: Settings › Data's "Import from CSV",
+/// whose picker is `accept="text/csv,.csv"` (Settings.tsx L1485).
+pub fn pick_csv_file(owner: isize) -> Option<PathBuf> {
+    pick_file(owner, "CSV files (*.csv)\0*.csv\0All files (*.*)\0*.*\0\0")
+}
+
+/// Modal "save file" dialog, pre-named and restricted to the caller's
+/// filter, returning the chosen path. The write counterpart of `pick_file`:
+/// the Data tab's CSV export and the Backup tab's export both hand the user
+/// a download in the TS, and a file with a sensible name here.
+pub fn save_file(
+    owner: isize,
+    filter: &str,
+    default_name: &str,
+    default_ext: &str,
+) -> Option<PathBuf> {
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+
+    // SAFETY: comdlg32 is a system DLL that lives for the process; a failed
+    // load or a missing export means no dialog, not UB.
+    let get_save_file_name: GetSaveFileNameWFn = unsafe {
+        let module = LoadLibraryW(windows_sys::core::w!("comdlg32.dll"));
+        if module.is_null() {
+            return None;
+        }
+        let proc = GetProcAddress(module, c"GetSaveFileNameW".as_ptr().cast())?;
+        std::mem::transmute(proc)
+    };
+
+    let filter: Vec<u16> = filter.encode_utf16().collect();
+    let ext: Vec<u16> = default_ext
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut buffer = vec![0u16; 4096];
+    // The dialog opens with the default name already in the box; the user
+    // only has to pick a folder (or edit it). The 4096 slots bound the copy.
+    for (slot, ch) in buffer.iter_mut().zip(default_name.encode_utf16()) {
+        *slot = ch;
+    }
+
+    // SAFETY: every pointer below points at a local that outlives the call;
+    // the struct is zeroed first so fields left unset (no hook, no title)
+    // are documented nulls rather than stack garbage. The call runs the
+    // dialog's own modal loop and returns with the buffer filled or the
+    // user having cancelled.
+    unsafe {
+        let mut dialog = OpenFileNameW {
+            l_struct_size: std::mem::size_of::<OpenFileNameW>() as u32,
+            hwnd_owner: owner,
+            lpstr_filter: filter.as_ptr(),
+            lpstr_file: buffer.as_mut_ptr(),
+            n_max_file: buffer.len() as u32,
+            lpstr_def_ext: ext.as_ptr(),
+            flags: OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+            ..Default::default()
+        };
+
+        if get_save_file_name(&mut dialog) == 0 {
+            return None; // cancelled, or the common-dialog error path
+        }
+    }
+
+    let len = buffer.iter().position(|&c| c == 0)?;
+    Some(PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
+}
+
+/// `save_file` with the two filters this app writes: the CSV export and the
+/// JSON backup download.
+pub fn save_csv_file(owner: isize, default_name: &str) -> Option<PathBuf> {
+    save_file(
+        owner,
+        "CSV files (*.csv)\0*.csv\0All files (*.*)\0*.*\0\0",
+        default_name,
+        "csv",
+    )
+}
+
+pub fn save_backup_file(owner: isize, default_name: &str) -> Option<PathBuf> {
+    save_file(
+        owner,
+        "Colax backups (*.json)\0*.json\0All files (*.*)\0*.*\0\0",
+        default_name,
+        "json",
     )
 }
 

@@ -6,7 +6,8 @@ import { Theme } from "theme.slint";
 // top) so it works anywhere without std-widgets' styling.
 export component Btn inherits Rectangle {
     in property <string> label;
-    // 0 = primary, 1 = secondary (outline), 2 = ghost (text only)
+    // 0 = primary, 1 = secondary (outline), 2 = ghost (text only),
+    // 3 = danger -- the TS's `.btn--danger` (soft fill, solid on hover).
     in property <int> kind;
     in property <bool> enabled: true;
     in property <length> h: 40px;
@@ -23,7 +24,9 @@ export component Btn inherits Rectangle {
             ? (touch.pressed ? Theme.accent-press : touch.has-hover ? Theme.accent-strong : Theme.accent)
             : root.kind == 1
                 ? (touch.pressed ? #ffffff0d : touch.has-hover ? #ffffff1f : #ffffff14)
-                : (touch.pressed ? #ffffff0d : touch.has-hover ? #ffffff14 : #00000000);
+                : root.kind == 3
+                    ? (touch.pressed ? Theme.danger : touch.has-hover ? Theme.danger : Theme.danger-soft)
+                    : (touch.pressed ? #ffffff0d : touch.has-hover ? #ffffff14 : #00000000);
     border-color: root.kind == 1
         ? (root.enabled ? Theme.border-strong : #ffffff12)
         : #00000000;
@@ -37,11 +40,13 @@ export component Btn inherits Rectangle {
             text: root.label;
             color: !root.enabled
                 ? Theme.faint
-                : root.kind == 0
-                    ? #10182a
-                    : root.kind == 2
-                        ? Theme.muted
-                        : Theme.text;
+                : root.kind == 3
+                    ? (touch.pressed || touch.has-hover ? #ffffff : Theme.danger)
+                    : root.kind == 0
+                        ? #10182a
+                        : root.kind == 2
+                            ? Theme.muted
+                            : Theme.text;
             font-size: 14px;
             font-weight: 600;
             vertical-alignment: center;
@@ -144,11 +149,15 @@ export component Alert inherits Rectangle {
     // outlive the process, a clipboard the OS refused (LockScreen.tsx's
     // `tone="warn"`).
     in property <bool> warn: false;
+    // The neutral one: `.alert--info` (app.css L681) -- a glass fill on the
+    // plain border with muted text. The "Protect this backup" explainer
+    // wears it.
+    in property <bool> info: false;
 
     border-radius: 9px;
     border-width: 1px;
-    background: root.good ? Theme.good-soft : root.warn ? Theme.warn-soft : Theme.danger-soft;
-    border-color: root.good ? #7dd3a055 : root.warn ? #e6b87855 : #e07b8055;
+    background: root.good ? Theme.good-soft : root.warn ? Theme.warn-soft : root.info ? Theme.glass : Theme.danger-soft;
+    border-color: root.good ? #7dd3a055 : root.warn ? #e6b87855 : root.info ? Theme.border : #e07b8055;
 
     VerticalLayout {
         padding-top: 9px;
@@ -158,7 +167,7 @@ export component Alert inherits Rectangle {
 
         Text {
             text: root.message;
-            color: root.good ? #9fe3bd : root.warn ? #f2dcac : #f0a5a8;
+            color: root.good ? #9fe3bd : root.warn ? #f2dcac : root.info ? Theme.muted : #f0a5a8;
             font-size: 13px;
             wrap: word-wrap;
         }
@@ -364,6 +373,12 @@ export component Chip inherits Rectangle {
     callback removed();
 
     height: root.compact ? 18px : 26px;
+    // Hug the label. The pill is mostly a read-out (a stored reading, a day,
+    // a tag), so it must not soak up a `space-between` row's leftover width
+    // -- which is what clipped the Data tab's App version stamp. Measured
+    // from the content layout, the way `Badge` measures its text.
+    horizontal-stretch: 0;
+    width: chip-content.preferred-width;
     touch := TouchArea {
         clicked => { root.toggled(); }
     }
@@ -372,7 +387,7 @@ export component Chip inherits Rectangle {
         background: root.selected ? Theme.accent-soft : #ffffff0a;
         border-width: 1px;
         border-color: root.selected ? Theme.accent-soft : Theme.border;
-        HorizontalLayout {
+        chip-content := HorizontalLayout {
             padding-left: root.compact ? 6px : 10px;
             padding-right: root.compact ? 6px : 10px;
             spacing: 4px;

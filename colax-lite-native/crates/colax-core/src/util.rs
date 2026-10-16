@@ -20,6 +20,62 @@ pub fn now_iso() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00+00:00".to_string())
 }
 
+/// The vite build stamp's clock face for a millisecond epoch: what
+/// `new Date(ms).toISOString().slice(0, 16).replace('T', ' ')` plus the
+/// literal " UTC" produces in `vite.config.ts` — "2026-10-16 10:52 UTC".
+/// Used by the Data tab's App version chip and the CSV file's name.
+pub fn utc_stamp_minutes(ms: i64) -> String {
+    match time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000) {
+        Ok(at) => format!(
+            "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+            at.year(),
+            at.month() as u8,
+            at.day(),
+            at.hour(),
+            at.minute()
+        ),
+        Err(_) => "1970-01-01 00:00 UTC".to_string(),
+    }
+}
+
+/// `new Date(ms).toISOString().slice(0, 19).replace(/[:T]/g, '-')` — the
+/// backup file's name stamp, "2026-10-16-10-52-37" (`backupFilename`,
+/// src/vault/backup.ts L27).
+pub fn utc_stamp_seconds(ms: i64) -> String {
+    match time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000) {
+        Ok(at) => format!(
+            "{:04}-{:02}-{:02}-{:02}-{:02}-{:02}",
+            at.year(),
+            at.month() as u8,
+            at.day(),
+            at.hour(),
+            at.minute(),
+            at.second()
+        ),
+        Err(_) => "1970-01-01-00-00-00".to_string(),
+    }
+}
+
+/// The full `Date.prototype.toISOString()` of `ms` — "2026-10-16T08:21:37.123Z",
+/// milliseconds and the Z included. That is what the CSV's `created` column
+/// carries in the TS; `time`'s own RFC 3339 formatter prints up to nine
+/// subsecond digits, so the fields are assembled here to match JS's three.
+pub fn iso_from_ms(ms: i64) -> String {
+    match time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000) {
+        Ok(at) => format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            at.year(),
+            at.month() as u8,
+            at.day(),
+            at.hour(),
+            at.minute(),
+            at.second(),
+            at.millisecond()
+        ),
+        Err(_) => "1970-01-01T00:00:00.000Z".to_string(),
+    }
+}
+
 /// JavaScript truthiness: `false`, `null`, `0` and `""` are falsy; missing
 /// values should never reach here (callers use `Option`), and objects or
 /// arrays are always truthy, even empty ones.
@@ -89,6 +145,17 @@ mod tests {
         assert_eq!(js_string(&json!(true)).as_deref(), Some("true"));
         assert_eq!(js_string(&Value::Null), None);
         assert_eq!(js_string(&json!({})), None);
+    }
+
+    #[test]
+    fn the_stamp_matches_the_vite_clock_face() {
+        // 2026-01-01T00:00:00Z, then the same day at 08:21:37.123 — the two
+        // digits on every field, the " UTC" suffix, and midnight itself.
+        assert_eq!(utc_stamp_minutes(1_767_225_600_000), "2026-01-01 00:00 UTC");
+        assert_eq!(utc_stamp_minutes(1_767_255_660_000), "2026-01-01 08:21 UTC");
+        assert_eq!(utc_stamp_seconds(1_767_255_697_123), "2026-01-01-08-21-37");
+        assert_eq!(iso_from_ms(1_767_255_697_123), "2026-01-01T08:21:37.123Z");
+        assert_eq!(iso_from_ms(1_767_225_600_000), "2026-01-01T00:00:00.000Z");
     }
 
     #[test]

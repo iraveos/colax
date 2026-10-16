@@ -60,6 +60,8 @@ fn local_now() -> OffsetDateTime {
 
 /// The wall clock's next minute as "HH:MM" — what the dev walk arms so the
 /// gate ("an alarm set one minute out fires") needs one wait, not a day.
+/// Dev-walk-only, like `dev_alarm` itself.
+#[cfg(debug_assertions)]
 pub fn next_minute() -> String {
     let now = local_now();
     let total = now.hour() as u32 * 60 + now.minute() as u32 + 1;
@@ -112,6 +114,7 @@ struct Audio {
 
 /// Every toast raised since launch, ", "-joined: the walk's proof that the
 /// match happened, because the strip itself only lives 2.5s.
+#[cfg(debug_assertions)]
 pub fn fired_log() -> String {
     RANG.with(|rang| rang.borrow().join(", "))
 }

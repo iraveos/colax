@@ -351,6 +351,10 @@ struct AppState {
     engine: VaultEngine,
     pending_password: String,
     pending_backup: Option<BackupFile>,
+    /// The file the Backup tab's restore sheet is holding: its text and its
+    /// name, stashed at pick time the way `pickBackupFile` hands the modal a
+    /// `{ name, text }` pair, and cleared on cancel or a finished restore.
+    settings_restore: Option<(String, String)>,
     /// The row the strip at the bottom of the list offers to put back. Kept
     /// whole rather than as an id, because `delete_item` has already dropped
     /// the record by the time Undo is pressed.
@@ -817,11 +821,14 @@ fn dev_seed(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) -> bool {
 /// two stored alarms and one switched off), `settings-security` (same, with
 /// the vault's own factor stored: key, passcode and two questions),
 /// `settings-security-clip` (the clipboard group with a pick moved),
+/// `settings-data` or `settings-backup` (the two seams Task 5.8 added, left
+/// open for a screenshot), `settings-data-protect` / `settings-data-reset` /
+/// `settings-data-restore` (the same panel with one of its three sheets up),
 /// `editor-generator` (the editor's own generator with one chip flipped), or
 /// `chrome` (the three shortcuts the Layout tab takes off the shell, all left
 /// off).
 #[cfg(debug_assertions)]
-fn dev_screen(ui: &MainWindow, state: &Shared) {
+fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
     // `COLAX_DEV_VIEW` takes its own branch before the screen picker below:
     // the four presentations live on the vault screen itself, so the run
     // stays exactly where the app opened it and drives the switcher from
@@ -973,7 +980,7 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         return;
     }
     if want == "settings" {
-        settings_ops::dev(ui, state);
+        settings_ops::dev(ui, state, tray);
         return;
     }
     // The panels, opened and left open: the walk above closes the modal on
@@ -1060,6 +1067,47 @@ fn dev_screen(ui: &MainWindow, state: &Shared) {
         settings_ops::pref_bool(ui, state, "clipboardCapture", true);
         settings_ops::open(ui, state, "security");
         ui.set_settings_sec_group(1);
+        return;
+    }
+    // The two panels Task 5.8 added, left open for a screenshot. The walk
+    // covers both flows end to end; these targets only hold the tab still.
+    if want == "settings-data" {
+        settings_ops::open(ui, state, "data");
+        return;
+    }
+    if want == "settings-backup" {
+        settings_ops::open(ui, state, "backup");
+        return;
+    }
+    // The three sheets 5.8 added, opened with their fields as a user would
+    // leave them: the export protector past its gate, the delete confirm
+    // (whose message carries the count), and a restore already holding a
+    // picked file.
+    if want == "settings-data-protect" {
+        settings_ops::open(ui, state, "data");
+        settings_ops::pref_bool(ui, state, "confirmBeforeExport", true);
+        settings_ops::backup_export(ui, state);
+        ui.set_settings_data_export_password("Tr0ub4dor&3".into());
+        settings_ops::data_export_edited(ui);
+        return;
+    }
+    if want == "settings-data-reset" {
+        settings_ops::open(ui, state, "data");
+        settings_ops::data_reset_open(ui, state);
+        return;
+    }
+    if want == "settings-data-restore" {
+        settings_ops::open(ui, state, "backup");
+        let text = {
+            let guard = state.borrow();
+            guard.engine.export_backup_json().unwrap_or_default()
+        };
+        settings_ops::backup_restore_from_text(
+            ui,
+            state,
+            "colax-vault-backup-2026-10-16-09-30-00.json",
+            &text,
+        );
         return;
     }
     // The three shortcuts the Layout tab takes off the shell (Task 5.2b),
@@ -2705,6 +2753,107 @@ fn restore_backup(
             ui.set_error_text("That backup password is not correct.".into());
         }
         Err(err) => ui.set_error_text(err.to_string().into()),
+    }
+}
+
+/// Settings › Data's confirmed "Delete everything" — `resetVault` in the TS
+/// (hooks.ts L291) driven from the Data tab's sheet: the clipboard is wiped,
+/// the document and its key are forgotten, the shipped preferences come
+/// back, everything repaints, and the app lands on first-run setup.
+fn settings_data_reset(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
+    ui.set_settings_data_reset_open(false);
+    settings_ops::close(ui);
+    // Before the erase, not after: whatever is on the clipboard was copied
+    // out of a login that is about to not exist.
+    let _ = platform::copy_text("");
+    {
+        let mut guard = state.borrow_mut();
+        let _ = guard.engine.reset();
+        guard.pending_backup = None;
+        guard.settings_restore = None;
+        // The undo offering and the gate are both proof of a vault that is
+        // gone; the two staged keys are secrets of the same gone world.
+        guard.last_deleted = None;
+        guard.vault_staged_seed = None;
+        guard.editor_staged_seed = None;
+        guard.gate = None;
+    }
+    // The defaults carry the appearance, so the repaint starts there.
+    refresh_appearance(ui, state);
+    refresh_items(ui, state);
+    tray_lock_enabled(tray, true);
+    sync_tray(tray, state);
+    sync_auto_lock(ui, state);
+    goto(ui, state, Screen::CreateChoose);
+    notice(ui, "All data deleted from this device");
+}
+
+/// Settings › Backup's restore submit — the gate's engine call with the
+/// sheet's own re-key options, landing back in the sheet's world: the app
+/// stays where it is, everything the backup carries is repainted, and the
+/// toast is the settings one (Settings.tsx L2659-2675; the TS `onDone`
+/// notifies and navigates nowhere).
+fn settings_data_restore_submit(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
+    let text = state
+        .borrow()
+        .settings_restore
+        .as_ref()
+        .map(|(text, _)| text.clone());
+    let Some(text) = text else { return };
+    let backup = match colax_core::parse_backup(&text) {
+        Ok(backup) => backup,
+        Err(_) => {
+            ui.set_settings_data_restore_error("Could not restore that file.".into());
+            return;
+        }
+    };
+    let password = ui.get_settings_data_restore_password().to_string();
+    let passwordless = ui.get_settings_data_restore_passwordless();
+    let rekey = ui.get_settings_data_restore_rekey();
+    let next = ui.get_settings_data_restore_next().to_string();
+    let new_password: Option<&str> = if passwordless {
+        Some("")
+    } else if rekey {
+        Some(next.as_str())
+    } else {
+        None
+    };
+    ui.set_settings_data_restore_busy(true);
+    let result = {
+        state
+            .borrow_mut()
+            .engine
+            .restore_backup(&backup, Some(&password), new_password)
+    };
+    ui.set_settings_data_restore_busy(false);
+    match result {
+        Ok(()) => {
+            state.borrow_mut().settings_restore = None;
+            // The sheet's fields are spent; the empty name closes it. (The
+            // TS unmounts the modal with its own state.)
+            ui.set_settings_data_restore_name("".into());
+            ui.set_settings_data_restore_error("".into());
+            ui.set_settings_data_restore_password("".into());
+            ui.set_settings_data_restore_passwordless(false);
+            ui.set_settings_data_restore_rekey(false);
+            ui.set_settings_data_restore_next("".into());
+            ui.set_settings_data_restore_ready(false);
+            // The backup carries its own preferences and logins: repaint the
+            // app, the sidebar and the still-open window over it.
+            refresh_appearance(ui, state);
+            refresh_items(ui, state);
+            settings_ops::refresh(ui, state);
+            tray_lock_enabled(tray, true);
+            sync_tray(tray, state);
+            sync_auto_lock(ui, state);
+            notice(ui, "Vault restored from backup");
+        }
+        Err(VaultError::Auth) => {
+            ui.set_settings_data_restore_error(
+                "That password does not unlock this backup file.".into(),
+            );
+        }
+        Err(err) => ui.set_settings_data_restore_error(err.to_string().as_str().into()),
     }
 }
 
@@ -4985,6 +5134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 engine,
                 pending_password: String::new(),
                 pending_backup: None,
+                settings_restore: None,
                 last_deleted: None,
                 editor_security: LoginSecurity::default(),
                 editor_staged_seed: None,
@@ -5043,7 +5193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // screen and would otherwise be overwritten by the one above.
             #[cfg(debug_assertions)]
             if seeded {
-                dev_screen(&ui, &state);
+                dev_screen(&ui, &state, &tray.as_weak());
             }
             Some(state)
         }
@@ -5663,6 +5813,100 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_settings_vsec_prompt_step(move |delta| {
                 if let Some(ui) = weak.upgrade() {
                     settings_ops::vsec_prompt_step(&ui, &st, delta);
+                }
+            });
+
+            // Data and Backup (Task 5.8): the two panels' rows and the three
+            // confirm sheets. The pickers and the save dialog live inside the
+            // ops; the two sheet actions that repaint the world — reset and
+            // restore — need the tray, which is why they are wired here.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_data_export_csv(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::data_export_csv(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_data_import_csv(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::data_import_csv(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_data_reset_ask(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::data_reset_open(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_settings_data_reset_cancel(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::data_reset_cancel(&ui);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            let tw = tray.as_weak();
+            ui.on_settings_data_reset_confirmed(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_data_reset(&ui, &st, &tw);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_settings_data_export_edited(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::data_export_edited(&ui);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_settings_data_protect_cancel(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::data_protect_cancel(&ui);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_data_protect_confirm(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::data_protect_confirm(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_backup_export(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::backup_export(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_backup_restore_pick(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::backup_restore_pick(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_data_restore_cancel(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::data_restore_cancel(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_settings_data_restore_edit(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::data_restore_edited(&ui);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            let tw = tray.as_weak();
+            ui.on_settings_data_restore_submit(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_data_restore_submit(&ui, &st, &tw);
                 }
             });
 

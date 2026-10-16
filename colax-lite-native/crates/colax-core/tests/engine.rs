@@ -407,6 +407,50 @@ fn a_passwordless_backup_restores_without_a_password() {
 }
 
 #[test]
+fn a_protected_export_unlocks_with_the_export_password_alone() {
+    let mut source = fast(temp_storage("backup-protected-export"));
+    source.create(None).unwrap();
+    source
+        .add_item(&json!({ "title": "Wrapped", "password": "alpha" }))
+        .unwrap();
+
+    let text = source
+        .export_backup_json_with_password("export passphrase")
+        .unwrap();
+    let backup = parse_backup(&text).unwrap();
+    assert_eq!(backup.header.protection, Some(VaultProtection::Password));
+    assert!(verify_backup_password(&backup, Some("export passphrase")));
+    assert!(!verify_backup_password(&backup, Some("wrong")));
+
+    // The item ciphertexts survive the re-wrap and the file installs
+    // elsewhere under its own password.
+    let mut target = fast(temp_storage("backup-protected-export-target"));
+    target
+        .restore_backup(&backup, Some("export passphrase"), None)
+        .unwrap();
+    assert_eq!(target.items().unwrap()[0].password, "alpha");
+}
+
+#[test]
+fn a_protected_export_re_wraps_a_password_vault_too() {
+    let mut source = fast(temp_storage("backup-reprotected"));
+    source.create(Some(MASTER)).unwrap();
+    source
+        .add_item(&json!({ "title": "Both", "password": "beta" }))
+        .unwrap();
+
+    let text = source
+        .export_backup_json_with_password("file only passphrase")
+        .unwrap();
+    let backup = parse_backup(&text).unwrap();
+    assert!(verify_backup_password(&backup, Some("file only passphrase")));
+    assert!(
+        !verify_backup_password(&backup, Some(MASTER)),
+        "the session password must not open the re-wrapped file"
+    );
+}
+
+#[test]
 fn restore_rejects_a_wrong_password_and_foreign_files() {
     let mut source = fast(temp_storage("backup-protected"));
     source.create(Some(MASTER)).unwrap();
