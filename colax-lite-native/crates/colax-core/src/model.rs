@@ -460,6 +460,51 @@ mod tests {
         assert_eq!(item.reminder_days, 0.0);
     }
 
+    /// Task 9.8: a vault written by 1.1.0 has neither `showMail` nor
+    /// `mailFilter` on its logins — they are the two fields the mail work
+    /// added, so a 1.1.0 document is exactly the one that cannot have them.
+    /// Reading such a record has to fill them in *and* the re-save has to keep
+    /// everything else, which is what the round trip below proves.
+    #[test]
+    fn a_1_1_0_record_gains_the_mail_fields_without_losing_anything() {
+        let raw = json!({
+            "id": "old-bank",
+            "title": "Old Bank",
+            "username": "iraveos",
+            "url": "https://bank.example.com",
+            "password": "hunter2",
+            "notes": "Call the branch.",
+            "tags": ["money"],
+            "favorite": true,
+            "createdAt": 1_600_000_000_000_i64,
+            "updatedAt": 1_610_000_000_000_i64,
+            "passwordUpdatedAt": 1_605_000_000_000_i64,
+            "usernameUpdatedAt": 1_600_000_000_000_i64,
+        });
+        let item = normalise_item(&raw, 1_700_000_000_000);
+        // A record saved before the field existed reads as on: the one-time
+        // linked-only pass decides, never a default of false.
+        assert!(item.show_mail);
+        assert_eq!(item.mail_filter, "auto");
+        assert_eq!(item.updated_at, 1_610_000_000_000, "not stamped 'now'");
+
+        // The re-save, which is where a missing field would have gone missing.
+        let again = serde_json::to_value(&item).unwrap();
+        assert_eq!(again["title"], "Old Bank");
+        assert_eq!(again["username"], "iraveos");
+        assert_eq!(again["password"], "hunter2");
+        assert_eq!(again["notes"], "Call the branch.");
+        assert_eq!(again["tags"][0], "money");
+        assert_eq!(again["favorite"], true);
+        assert_eq!(again["createdAt"], 1_600_000_000_000_i64);
+        assert_eq!(again["passwordUpdatedAt"], 1_605_000_000_000_i64);
+        assert_eq!(again["showMail"], true);
+        assert_eq!(again["mailFilter"], "auto");
+        // ...and reading the re-saved record lands on the same login, so the
+        // second upgrade pass writes nothing new.
+        assert_eq!(normalise_item(&again, 1_700_000_000_000), item);
+    }
+
     #[test]
     fn normalise_type_checks_match_the_ts_checks() {
         let raw = json!({
