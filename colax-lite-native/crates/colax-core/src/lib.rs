@@ -19,6 +19,7 @@ pub mod engine;
 pub mod error;
 pub mod health;
 pub mod history;
+pub mod mail;
 pub mod model;
 pub mod optimize;
 pub mod order;

@@ -35,6 +35,12 @@ time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
 unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1"
+# Mail (Task 9.3): bodies arrive labelled with arbitrary charsets, and the
+# WHATWG label table `TextDecoder` uses is the one `encoding_rs` implements.
+encoding_rs = "0.8"
+# `stripHtml` is a regex pipeline on purpose (no DOM); the Rust port keeps the
+# same patterns so the TS fixtures pass unchanged.
+regex = "1"
 
 # The point of the native build is a small, quiet binary, same as the lite
 # profile: LTO and one codegen unit cost build time and buy a smaller exe.
