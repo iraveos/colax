@@ -191,6 +191,15 @@ export struct MenuRow {
     checked: bool,
 }
 
+/// One row of the shortcuts sheet (Task 8.2): the sentence on the left and
+/// the key caps on the right. `keys` is a list because the TS draws each
+/// chord as its own `.kbd` chip ("Alt" and "1–9" are two caps, not one
+/// string) -- the sheet walks them into a row of chips.
+export struct ShortcutRow {
+    label: string,
+    keys: [string],
+}
+
 /// One login, ready to render. Built in Rust from a `VaultItem`, so the
 /// plaintext password is *not* here: `masked-password` is dots, and reveal
 /// asks the engine by id (Task 3.6 / Phase 6's SecurityGate).

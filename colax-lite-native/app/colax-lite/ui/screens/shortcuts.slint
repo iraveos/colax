@@ -1,0 +1,120 @@
+// The keyboard-shortcuts sheet (Task 8.2).
+//
+// Port of the `showShortcuts` modal in `src/ui/App.tsx` L3733-3761: a plain
+// two-column grid -- the sentence on the left, one `.kbd` cap per chord key
+// on the right. The rows themselves are Rust's (`shortcuts.rs`, the same
+// table the dispatcher validates against), so the sheet can never promise a
+// key the app does not answer, nor hide one it does.
+//
+// Same shape as `SecurityGate` and the Settings window: the root inherits
+// Rectangle and, with no geometry of its own, covers the wrapper the window
+// puts it in -- one full-window backdrop that keeps the shell behind it inert
+// -- with the card floating in the middle. `Esc` and `?` (again) close it;
+// both keys arrive through the window's one FocusScope in main.slint.
+
+import { Theme } from "../theme.slint";
+import { Btn } from "../widgets.slint";
+import { ShortcutRow } from "../models.slint";
+
+// One key cap: the `.kbd` token (app.css L..): a glass fill, a hairline
+// border that is thicker underneath (the pressed-key illusion), faint text.
+component Kbd inherits Rectangle {
+    in property <string> label;
+
+    height: 22px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.glass-strong;
+
+    HorizontalLayout {
+        padding-left: 7px;
+        padding-right: 7px;
+        Text {
+            text: root.label;
+            color: Theme.faint;
+            font-size: 12px;
+            font-weight: 560;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component ShortcutsSheet inherits Rectangle {
+    in property <[ShortcutRow]> rows;
+
+    callback closed();
+
+    // A press anywhere off the card dismisses it, like every other overlay in
+    // the port.
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        z: 1;
+        clicked => { root.closed(); }
+    }
+
+    card := Rectangle {
+        z: 2;
+        width: 460px;
+        height: body.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: Theme.radius-2xl;
+        background: Theme.bg;
+        border-width: 1px;
+        border-color: Theme.border;
+        clip: true;
+
+        body := VerticalLayout {
+            padding-top: 22px;
+            padding-bottom: 20px;
+            padding-left: 26px;
+            padding-right: 26px;
+            spacing: 14px;
+
+            Text {
+                text: "Keyboard shortcuts";
+                color: Theme.text;
+                font-size: 17px;
+                font-weight: 700;
+                vertical-stretch: 0;
+            }
+
+            // The `.shortcuts` grid: label left, caps right. `horizontal-stretch`
+            // on the label pushes the chips to the far edge, which is what the
+            // CSS `justify-self:end` does.
+            rows-layout := VerticalLayout {
+                spacing: 10px;
+
+                for row in root.rows : HorizontalLayout {
+                    spacing: 12px;
+
+                    Text {
+                        text: row.label;
+                        color: Theme.muted;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 3px;
+                        alignment: end;
+                        for key in row.keys : Kbd {
+                            label: key;
+                        }
+                    }
+                }
+            }
+
+            Btn {
+                label: "Close";
+                kind: 2;
+                h: 34px;
+                width: 96px;
+                clicked => { root.closed(); }
+            }
+        }
+    }
+}

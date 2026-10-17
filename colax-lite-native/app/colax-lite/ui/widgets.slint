@@ -74,6 +74,12 @@ export component Field inherits Rectangle {
     // `init` fires per element, so all of them would fight and the last one
     // in the layout order would win.
     in property <bool> autofocus: true;
+    // Asked to take focus after the fact -- the `/` shortcut (Task 8.2). A
+    // Field is a Rectangle, so it has no `focus()` of its own to call from
+    // outside; the caller bumps this number and the field focuses its own
+    // TextInput. Only ever fired by a change, so building a field does not
+    // steal focus through it (that is `autofocus`'s job).
+    in property <int> focus-tick: 0;
     callback accepted();
     callback edited();
 
@@ -93,6 +99,7 @@ export component Field inherits Rectangle {
     clip: true;
 
     init => { if (root.autofocus) { input.focus(); } }
+    changed focus-tick => { input.focus(); }
 
     Text {
         visible: root.value == "" && !input.has-focus;

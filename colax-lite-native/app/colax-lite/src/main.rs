@@ -26,6 +26,7 @@ mod menus;
 mod optimize_ops;
 mod platform;
 mod settings_ops;
+mod shortcuts;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -45,7 +46,7 @@ use colax_core::{
     VaultStorage,
 };
 use serde::{Deserialize, Serialize};
-use slint::{ComponentHandle, ModelRc, VecModel, Weak};
+use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
 
 slint::include_modules!();
 
@@ -363,6 +364,16 @@ struct AppState {
     /// whole rather than as an id, because `delete_item` has already dropped
     /// the record by the time Undo is pressed.
     last_deleted: Option<VaultItem>,
+    /// Undo/redo (Task 8.2): whole-document snapshots -- the item list and the
+    /// preferences as they stood before a write -- the TS's `HistoryEntry`
+    /// (`{ items, prefs }`, hooks.ts L231). One is pushed by `record_history`
+    /// for every recorded mutation, so Ctrl+Z reaches exactly the changes the
+    /// History channel logs; undo/redo themselves do not push (they swap
+    /// between the two stacks), matching `restore`'s separation from `mutate`.
+    /// Capped at 50 like the TS stacks, and emptied on lock -- a snapshot
+    /// holds plaintext, so it must not outlive the key.
+    undo_stack: Vec<UndoSnapshot>,
+    redo_stack: Vec<UndoSnapshot>,
     /// The Security half of the editor's draft. It lives here rather than in
     /// Slint for the same reason passwords stay in the engine: a PBKDF2 hash
     /// and its salt are not something a screen should hold. The panel is sent
@@ -445,6 +456,16 @@ struct AppState {
     /// The width the editor's tag cloud last reported, so its rows can be
     /// packed for it on every push instead of only while it is on screen.
     channel_ed_width: f64,
+}
+
+/// One undoable state: the whole item list and the raw preferences document,
+/// exactly the pair `replaceItems` + `savePreferences` put back (hooks.ts
+/// L217-226). Preferences are held raw rather than through
+/// `VaultPreferences` so the round-trip cannot drop the untyped fields the
+/// rail tree lives in (`prefs.extra["sidebar"]`).
+struct UndoSnapshot {
+    items: Vec<VaultItem>,
+    prefs: serde_json::Value,
 }
 
 type Shared = Rc<RefCell<AppState>>;
@@ -1031,6 +1052,27 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
         return;
     }
 
+    // ...and `COLAX_DEV_KEYS` drives the global shortcuts (Task 8.2) through
+    // the dispatcher itself: a dev walk cannot press a key, so it hands
+    // `shortcuts::key` the text and modifiers a real press would carry and
+    // writes back what the window then holds.
+    if std::env::var_os("COLAX_DEV_KEYS").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_keys(&ui, &st);
+                }
+            },
+        );
+        std::mem::forget(timer);
+        return;
+    }
+
     // `COLAX_DEV_SEC` implies the Security section and `COLAX_DEV_ORG` the
     // Organise one: each exists so its panel can be verified without *looking*
     // at it -- the desktop may be locked, when a screenshot comes back white
@@ -1445,6 +1487,16 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
         std::mem::forget(timer);
         let _ = counter;
     }
+}
+
+/// Debug-only: append one free-form line to `dev-dump.txt`, for walks whose
+/// steps are not the editor draft the stock `dev_dump` describes.
+#[cfg(debug_assertions)]
+fn dev_note(tag: &str, text: &str) {
+    let path = app_dir().join("dev-dump.txt");
+    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+    existing.push_str(&format!("{tag}: {text}\n"));
+    let _ = std::fs::write(path, existing);
 }
 
 /// Debug-only: write what the UI actually holds, so a blank field can be
@@ -2217,6 +2269,165 @@ fn dev_view(ui: &MainWindow) {
     dev_dump(ui, "view11.wide");
 }
 
+/// Debug-only: drive the global shortcuts (Task 8.2) straight through the
+/// dispatcher -- a dev walk cannot press an OS key, so each step hands
+/// `shortcuts::key` the text and modifiers a real press would carry and reads
+/// back what the window then holds. `COLAX_DEV_KEYS=1`.
+#[cfg(debug_assertions)]
+fn dev_keys(ui: &MainWindow, state: &Shared) {
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    let screen = || match ui.get_screen() {
+        Screen::Vault => "vault",
+        Screen::Editor => "editor",
+        Screen::CreateChoose => "create-choose",
+        Screen::CreatePassword => "create-password",
+        Screen::CreateConfirm => "create-confirm",
+        Screen::UnlockPassword => "unlock-password",
+        Screen::UnlockDevice => "unlock-device",
+        Screen::ImportPassword => "import-password",
+        Screen::Error => "error",
+    };
+    let count = |state: &Shared| state.borrow().engine.items().map(|i| i.len()).unwrap_or(0);
+
+    // 1. Where the walk opens: the vault, nothing open, nothing typed.
+    dev_note(
+        "keys01.open",
+        &format!(
+            "scr={} view={} chan={} tick={} sheet={} items={}",
+            screen(),
+            ui.get_vault_view(),
+            ui.get_active_channel(),
+            ui.get_search_focus_tick(),
+            ui.get_show_shortcuts(),
+            count(state),
+        ),
+    );
+
+    // 2. `/` focuses the search box; the tick is the only thing it moves.
+    let took = shortcuts::key(ui, state, "/", false, false, false);
+    dev_note(
+        "keys02.slash",
+        &format!("took={took} tick={}", ui.get_search_focus_tick()),
+    );
+
+    // 3. `N` opens a blank editor and Escape backs out of it.
+    let took = shortcuts::key(ui, state, "n", false, false, false);
+    let opened = screen() == "editor";
+    let took_esc = shortcuts::key(ui, state, "\u{1b}", false, false, false);
+    dev_note(
+        "keys03.new+esc",
+        &format!("n={took} opened={opened} esc={took_esc} scr={}", screen()),
+    );
+
+    // 4. `V` cycles the view: animated -> carousel.
+    let before = ui.get_vault_view().to_string();
+    let took = shortcuts::key(ui, state, "v", false, false, false);
+    dev_note(
+        "keys04.v",
+        &format!("took={took} {before}->{}", ui.get_vault_view()),
+    );
+
+    // 5. Ctrl+3 picks the third view by number.
+    let took = shortcuts::key(ui, state, "3", true, false, false);
+    dev_note(
+        "keys05.ctrl3",
+        &format!("took={took} view={}", ui.get_vault_view()),
+    );
+
+    // 6. `?` opens the sheet with all ten rows, and Escape closes it.
+    let took = shortcuts::key(ui, state, "?", false, true, false);
+    let rows = ui.get_shortcut_rows().row_count();
+    let sheet_open = ui.get_show_shortcuts();
+    let took_esc = shortcuts::key(ui, state, "\u{1b}", false, false, false);
+    dev_note(
+        "keys06.sheet+esc",
+        &format!(
+            "took={took} rows={rows} open={sheet_open} esc={took_esc} closed={}",
+            !ui.get_show_shortcuts()
+        ),
+    );
+
+    // 7. Alt+2 jumps to the second rail channel.
+    let second = ui
+        .get_sidebar()
+        .iter()
+        .filter(|row| row.kind == 0 && !row.hidden)
+        .nth(1)
+        .map(|row| row.id.to_string())
+        .unwrap_or_default();
+    let took = shortcuts::key(ui, state, "2", false, false, true);
+    dev_note(
+        "keys07.alt2",
+        &format!(
+            "took={took} want={second} chan={}",
+            ui.get_active_channel()
+        ),
+    );
+
+    // 8. The guard: with Settings open a bare `v` is refused and the view is
+    //    untouched -- the one rule a stray shortcut could break.
+    ui.set_settings_open(true);
+    let view_before = ui.get_vault_view().to_string();
+    let took = shortcuts::key(ui, state, "v", false, false, false);
+    ui.set_settings_open(false);
+    dev_note(
+        "keys08.guard",
+        &format!(
+            "took={took} view={} unchanged={}",
+            ui.get_vault_view(),
+            view_before == ui.get_vault_view().to_string()
+        ),
+    );
+
+    // 9. The app menu's own row: open the menu, find "Keyboard shortcuts"
+    //    among its rows, and dispatch it the way a click would.
+    crate::menus::open_app_menu(ui, state, 10.0, 10.0);
+    let menu_ids: Vec<String> = ui
+        .get_menu_root_rows()
+        .iter()
+        .map(|row| row.id.to_string())
+        .collect();
+    let has_shortcuts_row = menu_ids.iter().any(|id| id == "app.shortcuts");
+    crate::menus::menu_picked(ui, state, "app.shortcuts");
+    dev_note(
+        "keys09.menu",
+        &format!(
+            "row={has_shortcuts_row} sheet={} rows={}",
+            ui.get_show_shortcuts(),
+            ui.get_shortcut_rows().row_count()
+        ),
+    );
+    let _ = shortcuts::key(ui, state, "\u{1b}", false, false, false);
+
+    // 10. Undo/redo: delete the first login through the same `record_history`
+    //     path every mutation takes, then Ctrl+Z puts it back and
+    //     Ctrl+Shift+Z takes it away again.
+    let (victim, before_count, before_items) = {
+        let guard = state.borrow();
+        let items = guard.engine.items().map(|i| i.to_vec()).unwrap_or_default();
+        let victim = items.first().map(|i| i.id.clone()).unwrap_or_default();
+        (victim, items.len(), items)
+    };
+    let _ = state.borrow_mut().engine.delete_item(&victim);
+    record_history(ui, state, &before_items);
+    let after_delete = count(state);
+    let took_undo = shortcuts::key(ui, state, "z", true, false, false);
+    let after_undo = count(state);
+    let took_redo = shortcuts::key(ui, state, "z", true, true, false);
+    let after_redo = count(state);
+    dev_note(
+        "keys10.undo",
+        &format!(
+            "del={before_count}->{after_delete} undo={took_undo}->{after_undo} redo={took_redo}->{after_redo}"
+        ),
+    );
+
+    // 11. `L` locks the vault -- last, so the dump survives it.
+    let took = shortcuts::key(ui, state, "l", false, false, false);
+    dev_note("keys11.lock", &format!("took={took} scr={}", screen()));
+}
+
 /// Debug-only: dock the rail four ways, label it three, and take it off the
 /// window -- one dump per step, same shape as the other runs. `showSidebar`
 /// and `compactSidebar` are written as prefs the way Settings will write
@@ -2747,12 +2958,103 @@ fn record_history(ui: &MainWindow, state: &Shared, before: &[VaultItem]) {
     if events.is_empty() {
         return;
     }
+    // A write that changed something is undoable: snapshot the state it is
+    // moving away from, before this call's own log entry is added (so undoing
+    // takes that entry back too, as the TS's pre-change snapshot does). The
+    // redo stack belongs to a branch that no longer exists once a fresh change
+    // lands.
+    {
+        let mut guard = state.borrow_mut();
+        let prefs = guard.engine.preferences().clone();
+        guard.undo_stack.push(UndoSnapshot {
+            items: before.to_vec(),
+            prefs,
+        });
+        if guard.undo_stack.len() > 50 {
+            guard.undo_stack.remove(0);
+        }
+        guard.redo_stack.clear();
+    }
     let mut prefs = {
         let guard = state.borrow();
         items::prefs_from(guard.engine.preferences())
     };
     prefs.history = colax_core::append_history(&prefs.history, &events);
     save_prefs(ui, state, &prefs);
+}
+
+/// Ctrl+Z: put the previous snapshot back -- `restore`, the `replaceItems` +
+/// `savePreferences` pair of hooks.ts L217-226. Where the change being left
+/// stood is pushed onto the redo stack first, so Ctrl+Shift+Z can return to
+/// it. Nothing is logged: an undo is not itself a change to log, which is why
+/// the TS keeps `restore` apart from `mutate`.
+///
+/// Returns whether there was anything to undo, which the caller turns into the
+/// "Undone" toast.
+pub(crate) fn undo(ui: &MainWindow, state: &Shared) -> bool {
+    let snapshot = {
+        let mut guard = state.borrow_mut();
+        let Some(snapshot) = guard.undo_stack.pop() else {
+            return false;
+        };
+        push_current(&mut guard, false);
+        snapshot
+    };
+    apply_snapshot(ui, state, snapshot);
+    notice(ui, "Undone");
+    true
+}
+
+/// Ctrl+Shift+Z / Ctrl+Y: the other way along the same two stacks.
+pub(crate) fn redo(ui: &MainWindow, state: &Shared) -> bool {
+    let snapshot = {
+        let mut guard = state.borrow_mut();
+        let Some(snapshot) = guard.redo_stack.pop() else {
+            return false;
+        };
+        push_current(&mut guard, true);
+        snapshot
+    };
+    apply_snapshot(ui, state, snapshot);
+    notice(ui, "Redone");
+    true
+}
+
+/// Move the live document onto one of the stacks before a restore. `onto_undo`
+/// says which: an undo sends the current state to the redo stack, a redo sends
+/// it back to the undo stack.
+fn push_current(guard: &mut AppState, onto_undo: bool) {
+    let items = guard
+        .engine
+        .items()
+        .map(|items| items.to_vec())
+        .unwrap_or_default();
+    let prefs = guard.engine.preferences().clone();
+    let stack = if onto_undo {
+        &mut guard.undo_stack
+    } else {
+        &mut guard.redo_stack
+    };
+    stack.push(UndoSnapshot { items, prefs });
+    if stack.len() > 50 {
+        stack.remove(0);
+    }
+}
+
+/// Write a snapshot back and repaint everything it can have touched: the
+/// cards and rail (`items`), the look and the idle countdown (`prefs`).
+fn apply_snapshot(ui: &MainWindow, state: &Shared, snapshot: UndoSnapshot) {
+    {
+        let mut guard = state.borrow_mut();
+        if guard.engine.replace_items(snapshot.items).is_err() {
+            notice(ui, "Could not restore");
+            return;
+        }
+        let _ = guard.engine.save_preferences(snapshot.prefs);
+    }
+    refresh_items(ui, state);
+    refresh_appearance(ui, state);
+    sync_auto_lock(ui, state);
 }
 
 /// `Clear log` — the whole log goes at once, event count and all. No
@@ -2950,6 +3252,10 @@ fn settings_data_reset(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
         // The undo offering and the gate are both proof of a vault that is
         // gone; the two staged keys are secrets of the same gone world.
         guard.last_deleted = None;
+        // The undo history is of the vault that is gone too: replaying it
+        // would put the wiped logins back.
+        guard.undo_stack.clear();
+        guard.redo_stack.clear();
         guard.vault_staged_seed = None;
         guard.editor_staged_seed = None;
         guard.gate = None;
@@ -4935,6 +5241,10 @@ fn lock_vault(ui: &MainWindow, state: &Shared) {
         // An undo offering to restore a row cannot outlive the lock: the
         // offer would still be on screen while the vault is sealed.
         guard.last_deleted = None;
+        // Neither can the undo history, for the same reason: a snapshot is
+        // plaintext standing outside the sealed engine.
+        guard.undo_stack.clear();
+        guard.redo_stack.clear();
         // Neither can the vault's proof: sealed again means asked again on
         // the next unlock (TS rebuilds `vaultVerified` along with the locked
         // component tree).
@@ -5312,6 +5622,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pending_backup: None,
                 settings_restore: None,
                 last_deleted: None,
+                undo_stack: Vec::new(),
+                redo_stack: Vec::new(),
                 editor_security: LoginSecurity::default(),
                 editor_staged_seed: None,
                 editor_prompt_index: 0,
@@ -5713,6 +6025,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_menu_hover(move |index| {
                 if let Some(ui) = weak.upgrade() {
                     menus::menu_hover(&ui, &st, index);
+                }
+            });
+
+            // ---- Global keyboard shortcuts (Task 8.2) -------------------------
+            // The window's one FocusScope hands every key no widget claimed to
+            // `shortcuts::key`, which answers whether it acted; `accept` stops
+            // the key there, `reject` lets Slint go on to Tab traversal. This
+            // is the whole native replacement for the web build's `window`
+            // keydown listeners.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_shortcut_key(move |text, ctrl, shift, alt| match weak.upgrade() {
+                Some(ui) => shortcuts::key(&ui, &st, &text, ctrl, shift, alt),
+                None => false,
+            });
+
+            // The sheet's Close button and backdrop landing here. The `changed
+            // show-shortcuts` handler in the .slint re-focuses the key scope
+            // once it is gone.
+            let weak = ui.as_weak();
+            ui.on_shortcuts_closed(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_show_shortcuts(false);
                 }
             });
 

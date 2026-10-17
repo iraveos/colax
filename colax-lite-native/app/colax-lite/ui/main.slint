@@ -16,7 +16,8 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow, ShortcutRow } from "models.slint";
+import { ShortcutsSheet } from "screens/shortcuts.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
@@ -816,6 +817,22 @@ export component MainWindow inherits Window {
     // menu. Coordinates are window-logical pixels.
     callback app-menu(x: float, y: float);
     callback item-menu(id: string, x: float, y: float);
+    // ---- Global keyboard shortcuts (Task 8.2) -----------------------------
+    // One FocusScope wraps the whole sheet of screens (`shortcut-scope`,
+    // below), so a key that no focused widget claims bubbles up to it -- the
+    // Slint counterpart of the TS's one window keydown listener. `shortcut-key`
+    // hands the press to Rust, which reproduces `useHotkeys`' guard and
+    // dispatches, and answers whether it acted: `accept` stops the key,
+    // `reject` lets Slint's own Tab navigation and the like still run.
+    callback shortcut-key(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
+    // The sheet (`shortcuts.slint`) is mounted while this holds; its rows are
+    // Rust's (`shortcuts::rows`), so it can only list keys the app answers.
+    in-out property <bool> show-shortcuts: false;
+    in property <[ShortcutRow]> shortcut-rows;
+    // `/` focuses the search box. A Field is not focusable itself, so the tick
+    // rides down to the one field and it focuses its own TextInput.
+    in-out property <int> search-focus-tick: 0;
+    callback shortcuts-closed();
     // ---- The dashboard (Task 7.1) -----------------------------------------
     // The Command Center replaces the whole content pane when its channel is
     // active — toolbar and grid included, as the TS dashboard does. Rust
@@ -1348,6 +1365,42 @@ export component MainWindow inherits Window {
     }
 
     Rectangle {
+    // The one owner of the keyboard (Task 8.2). It wraps every screen -- the
+    // vault list, the editor and the boot/lock/import stages all live in the
+    // layout inside it -- so a key no focused widget wants bubbles up to here,
+    // exactly as the TS's single `window` listener sees them. The overlays
+    // (gate, Settings, the channel editor) are siblings *outside* it: each
+    // brings its own FocusScope and its own keys, and the dispatcher refuses
+    // to act while one of them is up. Holding focus here is what makes a bare
+    // key reach us at all (Slint delivers key events to the focused item
+    // only), which is why the `changed` handlers further down re-focus it when
+    // a screen switches or an overlay closes.
+    shortcut-scope := FocusScope {
+        // Sized to the window rather than to the content rectangle around it.
+        // The rectangle's height is this layout's preferred height, and the
+        // cards wrap their text, so a width the wrapper took from the
+        // rectangle would feed back into the height the window asks for.
+        // Anchoring both to `root` keeps that edge out; Slint still reports
+        // the residual width <-> preferred-height coupling as a window-layout
+        // binding-loop *warning* (its own source downgrades a loop that runs
+        // through the window layout, since wrapping text inside a sized window
+        // cannot avoid it), and the window opens and resizes fine regardless.
+        width: root.width;
+        height: root.height;
+        init => { self.focus(); }
+
+        key-pressed(event) => {
+            if (root.shortcut-key(
+                event.text,
+                event.modifiers.control,
+                event.modifiers.shift,
+                event.modifiers.alt,
+            )) {
+                return accept;
+            }
+            return reject;
+        }
+
     VerticalLayout {
         spacing: 0px;
         // What the window opens at is decided by the `Window` above:
@@ -1717,6 +1770,13 @@ export component MainWindow inherits Window {
 
                     search-input := Field {
                         placeholder: "Search logins...";
+                        // The vault does not open on the search box: the
+                        // window's key scope holds focus so a bare key is a
+                        // shortcut, and `/` is what lands the caret here
+                        // (Task 8.2) -- so no autofocus, and the tick is the
+                        // only thing that moves focus in.
+                        autofocus: false;
+                        focus-tick: root.search-focus-tick;
                         value <=> root.search-text;
                         edited => { root.search-changed(root.search-text); }
                     }
@@ -2658,6 +2718,7 @@ export component MainWindow inherits Window {
         }
 
     } // VerticalLayout
+    } // shortcut-scope
 
         // -- The SecurityGate ------------------------------------------------
         // One panel, whichever flow opened it: the vault's own factor the
@@ -2967,7 +3028,29 @@ export component MainWindow inherits Window {
             show-mail-toggled(value) => { root.channel-ed-show-mail-toggled(value); }
             mail-account-picked(id) => { root.channel-ed-mail-account-picked(id); }
         }
+
+        // The shortcuts sheet (Task 8.2), the last overlay so `?` can be
+        // answered from anywhere: Escape closes it through the window's key
+        // scope below it.
+        if (root.show-shortcuts) : ShortcutsSheet {
+            z: 70;
+            rows: root.shortcut-rows;
+            closed => { root.shortcuts-closed(); }
+        }
     }
+
+    // Re-arm the global key scope after anything that took focus away from it.
+    // Switching to the vault lands the scope (a locked screen's password field
+    // autofocuses instead, and must keep it -- hence the `Screen.Vault` test);
+    // a menu, gate, Settings or the channel editor closing destroys the
+    // FocusScope that had focus a moment ago, leaving the window with no
+    // focused item, which would drop every later key on the floor.
+    changed screen => { if (root.screen == Screen.Vault) { shortcut-scope.focus(); } }
+    changed menu-open => { if (!root.menu-open) { shortcut-scope.focus(); } }
+    changed settings-open => { if (!root.settings-open) { shortcut-scope.focus(); } }
+    changed gate-open => { if (!root.gate-open) { shortcut-scope.focus(); } }
+    changed channel-ed-open => { if (!root.channel-ed-open) { shortcut-scope.focus(); } }
+    changed show-shortcuts => { if (!root.show-shortcuts) { shortcut-scope.focus(); } }
 }
 
 // The tray is its own top-level component: Slint's SystemTrayIcon has no

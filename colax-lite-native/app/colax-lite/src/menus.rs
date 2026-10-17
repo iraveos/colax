@@ -227,8 +227,7 @@ pub fn open_app_menu(ui: &MainWindow, state: &Shared, x: f32, y: f32) {
     rows.push(sep());
     rows.push(item("app.settings", "Settings", "", false, false, false));
     rows.push(item("app.hidden", "Show hidden items\u{2026}", "", false, false, false));
-    // "Keyboard shortcuts" ('?' in the TS, L2037-2043) shows the shortcuts
-    // sheet, which is Task 8.2; the row ships with it.
+    rows.push(item("app.shortcuts", "Keyboard shortcuts", "?", false, false, false));
     rows.push(item("app.lock", "Lock vault", "L", false, false, false));
 
     set_root(ui, rows, x, y);
@@ -712,6 +711,9 @@ fn picked(ui: &MainWindow, state: &Shared, id: &str) {
             }
             "hidden" => {
                 ui.invoke_open_settings("hidden".into());
+            }
+            "shortcuts" => {
+                crate::shortcuts::open_sheet(ui);
             }
             "lock" => {
                 lock_vault(ui, state);
