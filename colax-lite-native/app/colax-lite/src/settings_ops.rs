@@ -366,6 +366,12 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     // same refresh keeps the counter, the locked rows and the profiles
     // honest.
     crate::optimize_ops::push_panel(ui, state);
+    // The About tab's version stamp: built every refresh, so a rebuilt exe
+    // shows its own build the moment it runs (`buildStamp` + the TS's
+    // `getPlatform().name`, Settings.tsx L2082).
+    ui.set_settings_about_version(
+        format!("{} · {}", std::env::consts::OS, env!("CARGO_PKG_VERSION")).into(),
+    );
 }
 
 /// The four accent chips the Appearance grid and the channel editor's Theme
@@ -2749,8 +2755,98 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
     dump(ui, state, "settings63.optimize-images");
     pref_bool(ui, state, "mailInlineImages", true);
 
+    // ---- About (Task 5.12) ------------------------------------------------
+    // The last tab: a stamp, a report, a reset. The stamp is built from the
+    // running exe's own constants, so it must at least name the platform.
+    tab_picked(ui, 12); // Ctrl+13
+    debug_assert!(
+        ui.get_settings_about_version().contains(std::env::consts::OS),
+        "the stamp names the platform it was built for"
+    );
+    dump(ui, state, "settings64.about");
+
+    // Copy diagnostics: the clipboard holds the report the button promises,
+    // every key of it, with the counts and the protection of the vault this
+    // walk has been using all along.
+    about_copy_report(ui, state);
+    {
+        let report = crate::platform::read_text().expect("the clipboard took the report");
+        debug_assert!(report.contains("\"prefs\""), "the record travels");
+        debug_assert!(report.contains("\"itemCount\""));
+        debug_assert!(report.contains("device"), "the walk vault is device-protected");
+        debug_assert!(report.contains(std::env::consts::OS));
+    }
+    dump(ui, state, "settings65.about-report");
+
+    // Reset settings: every dial back to the shipped record, logins and
+    // channels untouched. The saved looks go with it — they are settings.
+    about_reset(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(prefs.accent, "slate");
+        debug_assert_eq!(prefs.text_scale, 100.0);
+        debug_assert_eq!(prefs.motion, 1.0);
+        debug_assert!(prefs.optimize_profiles.is_empty());
+        debug_assert!(prefs.backup_with_settings, "the switch ships back on");
+        debug_assert_eq!(crate::optimize_ops::page_size_of(&prefs), 50);
+        debug_assert_eq!(
+            state.borrow().engine.items().map_or(0, |stored| stored.len()),
+            7,
+            "the reset never touches the vault's records"
+        );
+    }
+    dump(ui, state, "settings66.about-reset");
+
     close(ui);
     dump(ui, state, "settings17.closed");
+}
+
+/// ---- About (Task 5.12) -----------------------------------------------------
+
+/// "Copy diagnostics" (`Settings.tsx` L2088-2107): version, the vault's
+/// protection, the item count and the whole preferences record when pretty
+/// printed — deliberately *not* the TS's `userAgent`, which a native build
+/// has nothing true to report, and whose absence the JSON either way reads
+/// as oversight rather than omission. `prefs` carries no secret: every
+/// value in it is a dial the settings sheet itself shows.
+pub fn about_copy_report(ui: &MainWindow, state: &Shared) {
+    let (prefs, items, protection) = {
+        let guard = state.borrow();
+        (
+            items::prefs_from(guard.engine.preferences()),
+            guard.engine.items().map_or(0, |stored| stored.len()),
+            guard.engine.protection().ok().flatten(),
+        )
+    };
+    let report = serde_json::json!({
+        "app": "colax-native",
+        "version": env!("CARGO_PKG_VERSION"),
+        "platform": std::env::consts::OS,
+        "protection": match protection {
+            Some(colax_core::VaultProtection::Password) => "password",
+            Some(colax_core::VaultProtection::Device) => "device",
+            None => "none",
+        },
+        "itemCount": items,
+        "prefs": serde_json::to_value(&prefs).unwrap_or(serde_json::Value::Null),
+    });
+    let text = serde_json::to_string_pretty(&report).unwrap_or_default();
+    if crate::platform::copy_text(&text) {
+        crate::notice(ui, "Diagnostics copied");
+    } else {
+        crate::notice(ui, "The clipboard did not take the report");
+    }
+}
+
+/// "Reset settings" (`Settings.tsx` L2114-2118): the shipped preferences
+/// record, whole — the TS calls `set(DEFAULT_PREFERENCES)` with no confirm
+/// and no toast, and so does this. Logins, channels, alarms and the protection
+/// factor are all other records; only the look comes back to its defaults.
+pub fn about_reset(ui: &MainWindow, state: &Shared) {
+    write(ui, state, |prefs| {
+        *prefs = VaultPreferences::default();
+        true
+    });
 }
 
 /// Whether the preferences' stored sidebar tree names a channel — the

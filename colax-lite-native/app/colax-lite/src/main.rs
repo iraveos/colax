@@ -1184,6 +1184,10 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
         ui.set_settings_opt_group(1);
         return;
     }
+    if want == "settings-about" {
+        settings_ops::open(ui, state, "about");
+        return;
+    }
     // Background (Task 5.9): the panel itself, or the whole app wearing the
     // stored photo, which is what the panel's picture actually does.
     if want == "settings-background" {
@@ -6174,6 +6178,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_settings_opt_cache_clear(move || {
                 if let Some(ui) = weak.upgrade() {
                     optimize_ops::cache_clear(&ui, &st);
+                }
+            });
+            // ---- About (Task 5.12) -----------------------------------
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_about_copy_report(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::about_copy_report(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_about_reset(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::about_reset(&ui, &st);
                 }
             });
             let weak = ui.as_weak();

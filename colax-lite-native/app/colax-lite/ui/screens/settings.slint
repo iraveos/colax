@@ -1206,6 +1206,13 @@ export component Settings inherits Rectangle {
     // `VaultPreferences.backup_with_settings`.
     in-out property <bool> backup-with-settings: true;
 
+    // ---- About (Task 5.12) -------------------------------------------------
+    // The running stamp (platform and version, built in Rust — there is no
+    // build-time banner here to read).
+    in property <string> about-version: "";
+    callback about-copy-report();
+    callback about-reset();
+
     // ---- Optimize (Task 5.11) ---------------------------------------------
     // Every reading is pushed from the document by `optimize_ops::push_panel`;
     // nothing here keeps a state by itself except which sub-group and rename
@@ -3676,19 +3683,60 @@ export component Settings inherits Rectangle {
                             // Every panel not landed yet. The header already
                             // names the section and says what it is for, so
                             // the body only has to be honest about the wait.
-                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms" && root.active.id != "security" && root.active.id != "data" && root.active.id != "backup" && root.active.id != "background" && root.active.id != "channels" && root.active.id != "optimize") : Rectangle {
-                                // A constant width for the same reason as the
-                                // rows: `EmptyState` wraps its title, and a
-                                // wrapped height built on the panel's width
-                                // would close the loop again.
+                            // ---- About ----------------------------------------
+                            // Five skinny facts and one destructive button
+                            // (`Settings.tsx`'s last tab). The TS's
+                            // "Keyboard shortcuts" row is not here yet — the
+                            // rail's shortcut sheet it points at lands with
+                            // Phase 8 — so the panel ships with four.
+                            if (root.active.id == "about") : VerticalLayout {
                                 width: root.panel-w;
-                                height: 340px;
-                                preferred-width: root.panel-w;
-                                preferred-height: 340px;
+                                spacing: 0px;
 
-                                EmptyState {
-                                    title: "This panel arrives with the next task.";
-                                    hint: "";
+                                chip-row {
+                                    panel-w: root.panel-w;
+                                    label: "Version";
+                                    hint: "Colax — local-first password vault. The exact running build.";
+                                    chip-text: root.about-version;
+                                    accent: true;
+                                }
+
+                                chip-row {
+                                    panel-w: root.panel-w;
+                                    label: "Where your data goes";
+                                    hint: "Nowhere. There is no server and no network call.";
+                                    chip-text: "offline only";
+                                    accent: true;
+                                }
+
+                                btn-row {
+                                    panel-w: root.panel-w;
+                                    label: "Copy diagnostics";
+                                    hint: "Version, preferences and item counts. No secrets.";
+                                    button-text: "Copy report";
+                                    clicked => { root.about-copy-report(); }
+                                }
+
+                                // The one dangerous button the tab owns, and
+                                // the reason it lives beside the version
+                                // stamp: a reset takes the saved looks with
+                                // it, which the hint says out loud. The TS
+                                // fires it without a confirm, and so does
+                                // this.
+                                btn-row {
+                                    panel-w: root.panel-w;
+                                    label: "Reset preferences";
+                                    hint: "Keeps your logins, restores every setting to its default. Saved looks and profiles are settings too, and they go with it.";
+                                    button-text: "Reset settings";
+                                    button-kind: 3;
+                                    clicked => { root.about-reset(); }
+                                }
+
+                                chip-row {
+                                    panel-w: root.panel-w;
+                                    label: "Created by";
+                                    hint: "Behind every pixel of this vault.";
+                                    chip-text: "iraveos";
                                 }
                             }
                         }

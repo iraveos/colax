@@ -1085,6 +1085,10 @@ export component MainWindow inherits Window {
     in property <string> settings-opt-readout: "";
     in property <string> settings-opt-work: "—";
     in property <string> settings-opt-priv: "—";
+    // ---- The Settings window's About tab (Task 5.12) ------------------------
+    in property <string> settings-about-version: "";
+    callback settings-about-copy-report();
+    callback settings-about-reset();
     // ---- The Settings window's Background tab (Task 5.9) ------------------
     // The URL draft, the error line and the three dials. The two layer
     // properties are the app's own: the picture itself is decoded in Rust
@@ -2652,6 +2656,9 @@ export component MainWindow inherits Window {
             opt-readout: root.settings-opt-readout;
             opt-work: root.settings-opt-work;
             opt-priv: root.settings-opt-priv;
+            about-version: root.settings-about-version;
+            about-copy-report => { root.settings-about-copy-report(); }
+            about-reset => { root.settings-about-reset(); }
             bg-url <=> root.settings-bg-url;
             bg-error: root.settings-bg-error;
             bg-has-image: root.settings-bg-has-image;
