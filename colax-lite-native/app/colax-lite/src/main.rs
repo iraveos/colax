@@ -22,6 +22,7 @@ mod channels_ops;
 mod dashboard;
 mod history;
 mod items;
+mod menus;
 mod optimize_ops;
 mod platform;
 mod settings_ops;
@@ -1272,12 +1273,34 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
         return;
     }
 
+    if want == "menu-app" {
+        menus::open_app_menu(ui, state, 560.0, 300.0);
+        return;
+    }
+
     let id = state
         .borrow()
         .engine
         .items()
         .and_then(|items| items.first().map(|item| item.id.clone()));
     let Some(id) = id else { return };
+
+    // Task 8.1's shots: the item menu over the first card. Called directly
+    // (this runs before the callback wiring), at a point the shot has room
+    // around; `menu-item-open` also arms the row that owns a submenu so the
+    // cascade itself lands in one picture.
+    if want == "menu-item" || want == "menu-item-open" {
+        menus::open_item_menu(ui, state, &id, 620.0, 320.0);
+        if want == "menu-item-open" {
+            use slint::Model as _;
+            if let Some(row) = ui.get_menu_root_rows().row_data(7) {
+                if row.sub {
+                    menus::menu_hover(ui, state, 7);
+                }
+            }
+        }
+        return;
+    }
 
     // The editor's own generator is the second door to `passwordGenerator`:
     // a chip there is a write (ItemEditor.tsx L171), not a session switch, so
@@ -5647,6 +5670,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_copy_password(move |id| {
                 if let Some(ui) = weak.upgrade() {
                     copy_item_password(&ui, &st, &id);
+                }
+            });
+
+            // ---- Context menus (Task 8.1) -----------------------------
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_app_menu(move |x, y| {
+                if let Some(ui) = weak.upgrade() {
+                    menus::open_app_menu(&ui, &st, x, y);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_item_menu(move |id, x, y| {
+                if let Some(ui) = weak.upgrade() {
+                    menus::open_item_menu(&ui, &st, &id, x, y);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_menu_close(move || {
+                if let Some(ui) = weak.upgrade() {
+                    menus::close(&ui);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_menu_picked(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    menus::menu_picked(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_menu_key(move |text| {
+                if let Some(ui) = weak.upgrade() {
+                    menus::menu_key(&ui, &st, &text);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_menu_hover(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    menus::menu_hover(&ui, &st, index);
                 }
             });
 

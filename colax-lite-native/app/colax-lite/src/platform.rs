@@ -184,6 +184,34 @@ pub fn read_text() -> Option<String> {
     None
 }
 
+/// Hands a URL to the OS default handler (`openExternal`, platform.ts
+/// L19-23): inside Electron the shell routed `window.open` to the OS browser
+/// because a bare spawn would open a second app window over the unlocked
+/// vault; the native app has the same constraint and the same answer, so
+/// `ShellExecuteW("open")` is the whole story. `false` when Windows refuses,
+/// which the caller reports the same way a failed clipboard write does.
+pub fn open_url(url: &str) -> bool {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+
+    let mut wide_url: Vec<u16> = url.encode_utf16().collect();
+    wide_url.push(0);
+    let verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    let ok = unsafe {
+        let result = ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            wide_url.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0, // SW_HIDE is irrelevant for a browser window
+        );
+        // Anything above 32 is a successful launch; 32 and below are the
+        // error codes (SE_ERR_*, shellapi.h).
+        (result as isize) > 32
+    };
+    ok
+}
+
 /// The Win32 `OPENFILENAMEW`, x64 layout (`comdlg.h`; stable since 2000).
 ///
 /// Field-for-field with the C struct: the padding after the leading `DWORD`

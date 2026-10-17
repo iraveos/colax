@@ -16,11 +16,12 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow } from "models.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
 import { History } from "screens/history.slint";
+import { MenuLayer } from "menus.slint";
 import { Settings, HiddenRow, AlarmRow, DayChip } from "screens/settings.slint";
 import { ChannelEditor } from "screens/channel_editor.slint";
 
@@ -37,9 +38,21 @@ import { ChannelEditor } from "screens/channel_editor.slint";
 component card-face inherits Rectangle {
     in property <LoginCard> card;
     callback open(id: string);
+    callback menu-asked(id: string, x: float, y: float);
 
     face-touch := TouchArea {
         clicked => { root.open(root.card.id); }
+        // Grid and Orbit render through this face, so one right-click here
+        // covers both (`onItemMenu`, App.tsx L1813-1826).
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up
+                && e.button == PointerEventButton.right) {
+                root.menu-asked(root.card.id,
+                    (self.absolute-position.x + self.mouse-x) / 1px,
+                    (self.absolute-position.y + self.mouse-y) / 1px,
+                );
+            }
+        }
     }
 
     Rectangle {
@@ -145,6 +158,8 @@ component orbit-card inherits Rectangle {
     in property <length> ring-w;
     in property <length> ring-h;
     callback open(id: string);
+    // The face's right-click, passed on to whoever draws this ring.
+    callback menu-asked(id: string, x: float, y: float);
 
     // Depth as size rather than as a transform. `cos` is the depth axis, so
     // the card at the front of the ring is the big one and the ones behind
@@ -165,6 +180,7 @@ component orbit-card inherits Rectangle {
     card-face {
         card: root.card;
         open => { root.open(root.card.id); }
+        menu-asked(id, x, y) => { root.menu-asked(id, x, y); }
     }
 }
 
@@ -182,6 +198,7 @@ component list-row inherits Rectangle {
     callback open(id: string);
     callback copy(id: string);
     callback star(id: string);
+    callback menu-asked(id: string, x: float, y: float);
 
     property <bool> entered: false;
 
@@ -206,6 +223,17 @@ component list-row inherits Rectangle {
         // user discover a second click to edit is a web habit, not a
         // feature.
         clicked => { root.open(root.card.id); }
+        // Right-click asks for the item menu; List and Flow both draw this
+        // row (`onItemMenu`, App.tsx L1813-1826).
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up
+                && e.button == PointerEventButton.right) {
+                root.menu-asked(root.card.id,
+                    (self.absolute-position.x + self.mouse-x) / 1px,
+                    (self.absolute-position.y + self.mouse-y) / 1px,
+                );
+            }
+        }
     }
 
     HorizontalLayout {
@@ -508,7 +536,7 @@ component settings-item inherits Rectangle {
 // QuestionRow, QrCell, ...), and both need those types in the generated
 // module.
 export { Theme }
-export { Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow }
+export { Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, MenuRow }
 
 export component MainWindow inherits Window {
     title: "Colax Lite";
@@ -755,6 +783,39 @@ export component MainWindow inherits Window {
     // pref's own whitelist before it writes.
     callback rail-picked(position: string);
     callback labels-picked(labels: string);
+    // ---- Context menus (Task 8.1) ----------------------------------------
+    // `context-menu.tsx` as one overlay: the trees are built in Rust
+    // (`menus.rs`), the placement maths and the cascade live in the overlay
+    // below (they read the window size), and the keyboard walks the rows
+    // through `menu-key`, whose "next selectable row" needs the model and so
+    // also lives in Rust. Rows report presses with the id they carry --
+    // `menu-picked` dispatches on it -- and hovers with the row index, which
+    // is what arms or closes a submenu (the TS's onSubmenuToggle).
+    in property <bool> menu-open: false;
+    in property <[MenuRow]> menu-root-rows;
+    in property <float> menu-x: 0.0;
+    in property <float> menu-y: 0.0;
+    in property <float> menu-root-h: 0.0;
+    in property <int> menu-active-root: -1;
+    in property <bool> menu-sub-open: false;
+    in property <[MenuRow]> menu-sub-rows;
+    in property <float> menu-sub-y: 0.0;
+    in property <float> menu-sub-h: 0.0;
+    in property <bool> menu-sub-heading: false;
+    in property <int> menu-active-sub: -1;
+    // The login a card menu acts on, and whether its password is shared:
+    // the item menu's rows read it, its submenu re-reads the record.
+    in property <string> menu-item-target: "";
+    in property <bool> menu-item-note: false;
+    callback menu-close();
+    callback menu-picked(id: string);
+    callback menu-key(text: string);
+    callback menu-hover(index: int);
+    // Openers, called from the surfaces beneath the overlay: the vault's
+    // empty space asks for the app menu, a card's right-click for its item
+    // menu. Coordinates are window-logical pixels.
+    callback app-menu(x: float, y: float);
+    callback item-menu(id: string, x: float, y: float);
     // ---- The dashboard (Task 7.1) -----------------------------------------
     // The Command Center replaces the whole content pane when its channel is
     // active — toolbar and grid included, as the TS dashboard does. Rust
@@ -1559,12 +1620,37 @@ export component MainWindow inherits Window {
                     copy(value, label, item-id) => { root.history-copy(value, label, item-id); }
                     forget(id) => { root.history-forget(id); }
                 }
-                if (!root.show-dashboard && !root.show-history) : VerticalLayout {
-                    padding-top: 26px;
-                    padding-bottom: 16px;
-                    padding-left: 30px;
-                    padding-right: 34px;
-                    spacing: 14px;
+                if (!root.show-dashboard && !root.show-history) : Rectangle {
+                    // Right-click on empty space asks for the app menu
+                    // (context-menu.tsx + App.tsx L2054-2121): this touch sits
+                    // *behind* everything in this pane, so a right-click on a
+                    // card lands on the card's own touch and the app menu is
+                    // left with genuinely empty space. The dashboard and the
+                    // History channel have their own panes and their own
+                    // surfaces; the dashboard's background follows in its own
+                    // pass.
+                    menu-bg := TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.up
+                                && e.button == PointerEventButton.right) {
+                                root.app-menu(
+                                    (self.absolute-position.x + self.mouse-x) / 1px,
+                                    (self.absolute-position.y + self.mouse-y) / 1px,
+                                );
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        width: parent.width;
+                        height: parent.height;
+                        padding-top: 26px;
+                        padding-bottom: 16px;
+                        padding-left: 30px;
+                        padding-right: 34px;
+                        spacing: 14px;
 
                     // Title left, actions right: `space-between` keeps both at
                     // their own width and spends the slack between them, which
@@ -1796,6 +1882,7 @@ export component MainWindow inherits Window {
                                 open => { root.open-editor(card.id); }
                                 copy => { root.copy-password(card.id); }
                                 star => { root.toggle-favorite(card.id); }
+                                menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                             }
                         }
                     }
@@ -1816,6 +1903,7 @@ export component MainWindow inherits Window {
                             open => { root.open-editor(card.id); }
                             copy => { root.copy-password(card.id); }
                             star => { root.toggle-favorite(card.id); }
+                            menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                         }
                     }
 
@@ -1844,6 +1932,7 @@ export component MainWindow inherits Window {
                                 card-face {
                                     card: card;
                                     open => { root.open-editor(card.id); }
+                                    menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                                 }
                             }
                         }
@@ -1866,6 +1955,7 @@ export component MainWindow inherits Window {
                             ring-w: parent.width;
                             ring-h: parent.height;
                             open => { root.open-editor(card.id); }
+                            menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                         }
 
                         for card[i] in root.cards : orbit-card {
@@ -1875,6 +1965,7 @@ export component MainWindow inherits Window {
                             ring-w: parent.width;
                             ring-h: parent.height;
                             open => { root.open-editor(card.id); }
+                            menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                         }
                     }
 
@@ -1924,6 +2015,82 @@ export component MainWindow inherits Window {
                     }
                 }
             }
+
+            // ---- Context menus (Task 8.1) ---------------------------------
+            // The backdrop eats presses on anything else, closes on wheel,
+            // and the FocusScope that owns the keyboard sits between it and
+            // the layers. One submenu level, because no menu this port ships
+            // is deeper (context-menu.tsx allows many; depth is a property of
+            // the trees in menus.rs, not of this overlay).
+            if (root.menu-open) : Rectangle {
+                width: root.width;
+                height: root.height;
+                z: 40;
+
+                // Placement maths, the TS's `placeRoot`: flip back inside the
+                // window when the point would clip.
+                property <length> mx: root.menu-x * 1px;
+                property <length> my: root.menu-y * 1px;
+                property <length> rw: 232px;
+                property <length> sw: 224px;
+                property <length> root-x: (mx + rw + 8px > root.width)
+                    ? Math.max(8px, mx - rw - 8px) : mx;
+                property <length> root-y: (my + root.menu-root-h * 1px + 8px > root.height)
+                    ? Math.max(8px, root.height - root.menu-root-h * 1px - 8px) : my;
+                // `placeSubmenu`: to the right of the owning row, flipped to
+                // the left when it would clip, its first selectable row lined
+                // up with the row that owns it.
+                property <length> sub-x: (root-x + rw - 6px + sw + 8px > root.width)
+                    ? Math.max(8px, root-x - sw + 6px) : (root-x + rw - 6px);
+                property <length> sub-y-raw: root-y + root.menu-sub-y * 1px
+                    - (root.menu-sub-heading ? 26px : 0px);
+                property <length> sub-y: (sub-y-raw + root.menu-sub-h * 1px + 8px > root.height)
+                    ? Math.max(8px, root.height - root.menu-sub-h * 1px - 8px) : sub-y-raw;
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.menu-close(); }
+                    // Wheel closes, as the TS's outside-wheel does.
+                    scroll-event(e) => {
+                        root.menu-close();
+                        return accept;
+                    }
+                }
+
+                keys := FocusScope {
+                    width: parent.width;
+                    height: parent.height;
+                    init => { self.focus(); }
+                    key-pressed(e) => {
+                        root.menu-key(e.text);
+                        return accept;
+                    }
+                }
+
+                MenuLayer {
+                    x: root-x;
+                    y: root-y;
+                    rows: root.menu-root-rows;
+                    h: root.menu-root-h;
+                    active: root.menu-active-root;
+                    w: rw;
+                    picked(id, i) => { root.menu-picked(id); }
+                    hovered(i) => { root.menu-hover(i); }
+                }
+
+                if (root.menu-sub-open) : MenuLayer {
+                    x: sub-x;
+                    y: sub-y;
+                    rows: root.menu-sub-rows;
+                    h: root.menu-sub-h;
+                    active: root.menu-active-sub;
+                    w: sw;
+                    picked(id, i) => { root.menu-picked(id); }
+                    hovered(i) => { root.menu-hover(i); }
+                }
+            }
+        }
 
             // ---- The sort menu -------------------------------------------
             // Drops under its button and floats over the columns, so the

@@ -172,6 +172,25 @@ export struct OptProfileRow {
     active: bool,
 }
 
+/// One row of a context menu (Task 8.1): `MenuItem` in context-menu.tsx,
+/// flattened for the wire. `kind` picks the row shape -- 0 a selectable item,
+/// 1 a separator, 2 a non-interactive heading inside a submenu. `id` names the
+/// action (`menu-picked` dispatches on it), `shortcut` is the right-aligned
+/// hint, and the four flags are exactly the TS's: `sub` draws the arrow and
+/// arms the submenu, `checked` the tick, `danger` red, `disabled` grey. The
+/// TS's per-row icons are not ported yet -- the renderer has no icon column
+/// (see menus.rs) -- so the rows read on their labels alone.
+export struct MenuRow {
+    id: string,
+    label: string,
+    shortcut: string,
+    kind: int,
+    sub: bool,
+    disabled: bool,
+    danger: bool,
+    checked: bool,
+}
+
 /// One login, ready to render. Built in Rust from a `VaultItem`, so the
 /// plaintext password is *not* here: `masked-password` is dots, and reveal
 /// asks the engine by id (Task 3.6 / Phase 6's SecurityGate).

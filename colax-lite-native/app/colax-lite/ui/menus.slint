@@ -1,0 +1,140 @@
+// ---- Context menus (Task 8.1) -------------------------------------------
+// One layer of the cascading menu (`MenuLayer` in context-menu.tsx, L110-276):
+// the root, or a submenu anchored to its owning row. What arrives is a
+// Rust-built rows model (`src/menus.rs`), the row the keyboard has marked,
+// and the layer's precomputed height (16px of padding plus each row's fixed
+// share -- 34px item, 26px heading, 9px separator -- so placement never has
+// to measure); what leaves is a press or a hover. The cascade placement, the
+// backdrop and the keyboard live in the overlay in main.slint; the trees and
+// the actions live in Rust.
+//
+// Sizes are the TS's own: a root menu is 232px wide, a submenu 224px
+// (MENU_WIDTH / SUBMENU_WIDTH).
+
+import { Theme } from "theme.slint";
+import { MenuRow } from "models.slint";
+
+export component MenuLayer inherits Rectangle {
+    in property <[MenuRow]> rows;
+    in property <int> active: -1;
+    in property <float> h: 0.0;
+    in property <length> w: 232px;
+    callback picked(id: string, index: int);
+    callback hovered(index: int);
+
+    width: root.w;
+    height: root.h * 1px;
+    border-radius: Theme.radius-md;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: 22px;
+    drop-shadow-color: #00000070;
+    clip: true;
+
+    VerticalLayout {
+        padding-top: 8px;
+        padding-bottom: 8px;
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 0px;
+
+        for row[i] in rows : Rectangle {
+            height: row.kind == 1 ? 9px : (row.kind == 2 ? 26px : 34px);
+            border-radius: row.kind == 0 ? 6px : 0px;
+            // The highlight is the keyboard's mark and the pointer's hover
+            // at once -- a disabled row never lights (the TS's
+            // `aria-disabled` rows dodge hover too), the truth a menu walking
+            // with the arrows needs rows that hold still.
+            background: row.kind == 0 && !row.disabled
+                && (i == active || row-hot.has-hover) ? Theme.row-hover : #00000000;
+
+            if (row.kind == 1) : Rectangle {
+                x: 10px;
+                y: 4px;
+                width: parent.width - 20px;
+                height: 1px;
+                background: Theme.hairline;
+            }
+
+            if (row.kind == 2) : HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+
+                Text {
+                    height: parent.height;
+                    text: row.label;
+                    color: Theme.faint;
+                    font-size: 11.5px;
+                    font-weight: 700;
+                    letter-spacing: 1px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            row-hot := TouchArea {
+                changed has-hover => {
+                    if (row.kind == 0 && !row.disabled) {
+                        root.hovered(i);
+                    }
+                }
+                clicked => {
+                    if (row.kind == 0 && !row.disabled) {
+                        root.picked(row.id, i);
+                    }
+                }
+            }
+
+            if (row.kind == 0) : HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 8px;
+
+                // The tick column exists even for unticked rows, at fixed
+                // width, so labels of mixed rows line up the way the TS's
+                // icon column keeps them.
+                Text {
+                    width: 15px;
+                    height: parent.height;
+                    text: row.checked ? "✓" : "";
+                    color: Theme.accent;
+                    font-size: 12.5px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    height: parent.height;
+                    horizontal-stretch: 1;
+                    text: row.label;
+                    color: row.disabled ? Theme.faint
+                        : (row.danger ? Theme.danger : Theme.text);
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Text {
+                    height: parent.height;
+                    text: row.shortcut;
+                    color: Theme.faint;
+                    font-size: 11.5px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                }
+
+                Text {
+                    width: 7px;
+                    height: parent.height;
+                    text: row.sub ? "›" : "";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
