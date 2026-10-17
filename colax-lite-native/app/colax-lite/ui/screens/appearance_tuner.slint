@@ -1,0 +1,299 @@
+// The appearance tuner (Task 8.4).
+//
+// Port of the `AppearancePanel` in `src/ui/AppearancePanel.tsx`: a right-edge
+// slide-over, deliberately translucent, that retunes one view's card geometry
+// while the cards change under it. There is no backdrop and no OK button --
+// every drag writes straight through to preferences -- so a click anywhere
+// off the panel (or the ×) dismisses it.
+//
+// The accent section is the same four swatches Settings › Appearance draws,
+// from the same chips Rust builds, so the two pickers cannot drift.
+
+import { Theme } from "../theme.slint";
+import { Btn, Slider } from "../widgets.slint";
+import { AccentChip } from "../models.slint";
+
+// One labelled slider with a live read-out, the shape of the TS `Slider`
+// helper (AppearancePanel.tsx L34-80): label and value on one line, the track
+// under them, an optional hint below.
+component tuner-row inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in-out property <float> value: 0;
+    in property <string> suffix: "";
+    callback changed(float);
+
+    height: root.hint == "" ? 58px : 78px;
+    VerticalLayout {
+        spacing: 4px;
+
+        HorizontalLayout {
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: "{Math.round(root.value * 100) / 100}{root.suffix}";
+                color: Theme.faint;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+        }
+
+        Slider {
+            minimum: root.minimum;
+            maximum: root.maximum;
+            step: root.step;
+            value <=> root.value;
+            label: "";
+            formatted: "";
+            changed(v) => { root.changed(v); }
+        }
+
+        if (root.hint != "") : Text {
+            text: root.hint;
+            color: Theme.faint;
+            font-size: 11.5px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component AppearanceTuner inherits Rectangle {
+    // The view being tuned, its name for the prose ("Flow", "Orbit", ...), and
+    // whether it is the ring (whose second dial is an aspect, not a height).
+    in property <string> view: "animated";
+    in property <string> view-label: "Flow";
+    in property <bool> orbit: false;
+    // The live values, two-way so a drag writes them straight back.
+    in-out property <float> scale: 1;
+    in-out property <float> width-value: 560;
+    in-out property <float> min-height-value: 132;
+    in-out property <float> aspect-value: 1;
+    in-out property <float> radius-value: 14;
+    in property <string> accent: "slate";
+    in property <[AccentChip]> accents;
+
+    callback size-changed(field: string, value: float);
+    callback accent-picked(id: string);
+    callback reset();
+    callback closed();
+
+    // The whole window is a dismissal target; the panel is declared after it,
+    // so the panel sits on top and takes its own clicks (Slint paints siblings
+    // in declaration order).
+    outside := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.closed(); }
+    }
+
+    panel := Rectangle {
+        x: root.width - self.width;
+        width: min(340px, root.width);
+        height: root.height;
+        background: Theme.resolved-theme == "light" ? #f4f7fbd9 : #0e1219d9;
+        drop-shadow-color: Theme.resolved-theme == "light" ? #22304a33 : #02040a99;
+        drop-shadow-blur: 28px;
+        drop-shadow-offset-x: -14px;
+
+        // The CSS's left hairline (`.tuner`), a separate 1px so it does not
+        // scale with the panel.
+        Rectangle {
+            x: 0;
+            width: 1px;
+            height: parent.height;
+            background: Theme.border;
+        }
+
+        VerticalLayout {
+            padding-top: 18px;
+            padding-bottom: 18px;
+            padding-left: 20px;
+            padding-right: 20px;
+            spacing: 14px;
+
+            // ---- Header -------------------------------------------------
+            HorizontalLayout {
+                spacing: 10px;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text {
+                        text: "Card appearance";
+                        color: Theme.text;
+                        font-size: 16px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: "Changes apply as you drag. Tuned per view, so {root.view-label} keeps its own settings.";
+                        color: Theme.faint;
+                        font-size: 11.5px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                close-hit := Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 8px;
+                    background: close-touch.has-hover ? #ffffff14 : #00000000;
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: "✕";
+                        color: Theme.muted;
+                        font-size: 15px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    close-touch := TouchArea {
+                        clicked => { root.closed(); }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.hairline; }
+
+            // ---- Size ---------------------------------------------------
+            Text {
+                text: "SIZE";
+                color: Theme.faint;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1.4px;
+            }
+
+            tuner-row {
+                label: "Scale";
+                hint: "Scales the whole card, text included.";
+                minimum: 0.6;
+                maximum: 1.6;
+                step: 0.05;
+                value <=> root.scale;
+                suffix: "×";
+                changed(v) => { root.size-changed("scale", v); }
+            }
+
+            tuner-row {
+                label: root.view == "basic" ? "Maximum width" : "Width";
+                hint: root.view == "basic"
+                    ? "The measure of the list. Text gets harder to read past about 100 characters."
+                    : root.orbit
+                        ? "How much of the ring is visible. Wider cards mean fewer in view at once."
+                        : "How wide each card is allowed to grow.";
+                minimum: root.orbit ? 220 : 280;
+                maximum: root.orbit ? 520 : 1200;
+                step: 10;
+                value <=> root.width-value;
+                suffix: "px";
+                changed(v) => { root.size-changed("width", v); }
+            }
+
+            if (root.orbit) : tuner-row {
+                label: "Height";
+                hint: "A multiple of the width. Taller suits a photo, squarer suits a title.";
+                minimum: 0.6;
+                maximum: 2.2;
+                step: 0.05;
+                value <=> root.aspect-value;
+                suffix: "×";
+                changed(v) => { root.size-changed("aspect", v); }
+            }
+
+            if (!root.orbit) : tuner-row {
+                label: "Minimum height";
+                hint: "A floor, not a cap: a card with a photo or a long title still grows past it.";
+                minimum: root.view == "basic" ? 40 : 60;
+                maximum: root.view == "basic" ? 220 : 400;
+                step: 4;
+                value <=> root.min-height-value;
+                suffix: "px";
+                changed(v) => { root.size-changed("minHeight", v); }
+            }
+
+            tuner-row {
+                label: "Corner radius";
+                minimum: 0;
+                maximum: 48;
+                step: 1;
+                value <=> root.radius-value;
+                suffix: "px";
+                changed(v) => { root.size-changed("radius", v); }
+            }
+
+            Rectangle { height: 1px; background: Theme.hairline; }
+
+            // ---- Accent -------------------------------------------------
+            Text {
+                text: "ACCENT";
+                color: Theme.faint;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1.4px;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                for chip in root.accents : Rectangle {
+                    horizontal-stretch: 1;
+                    height: 38px;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: root.accent == chip.id ? Theme.border-strong : #00000000;
+                    background: root.accent == chip.id
+                        ? Theme.plate
+                        : (chip-touch.has-hover ? #ffffff0d : #00000000);
+                    chip-touch := TouchArea {
+                        clicked => { root.accent-picked(chip.id); }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: center;
+
+                        Rectangle {
+                            width: 16px;
+                            height: 16px;
+                            border-radius: 8px;
+                            background: @linear-gradient(135deg, chip.from, chip.to);
+                        }
+
+                        Text {
+                            text: chip.label;
+                            color: root.accent == chip.id ? Theme.text : Theme.muted;
+                            font-size: 12.5px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            Text {
+                text: "Applies to the whole app and is remembered.";
+                color: Theme.faint;
+                font-size: 11.5px;
+                wrap: word-wrap;
+            }
+
+            Rectangle { vertical-stretch: 1; height: 1px; }
+
+            Btn {
+                label: "Reset {root.view-label} to defaults";
+                kind: 1;
+                width: parent.width;
+                clicked => { root.reset(); }
+            }
+        }
+    }
+}

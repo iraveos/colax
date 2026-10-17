@@ -18,6 +18,7 @@ import { Theme } from "theme.slint";
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
 import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow, ShortcutRow } from "models.slint";
 import { ShortcutsSheet } from "screens/shortcuts.slint";
+import { AppearanceTuner } from "screens/appearance_tuner.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
@@ -38,6 +39,10 @@ import { ChannelEditor } from "screens/channel_editor.slint";
 // enough to survive a grid cell and deep enough to still be a card.
 component card-face inherits Rectangle {
     in property <LoginCard> card;
+    // Task 8.4: the active view's geometry, pushed by `tuner::push`. The grid
+    // controls the cell; the card scales its own text and furniture inside it.
+    in property <float> scale: 1;
+    in property <length> radius: Theme.radius-md;
     callback open(id: string);
     callback menu-asked(id: string, x: float, y: float);
 
@@ -59,27 +64,27 @@ component card-face inherits Rectangle {
     Rectangle {
         width: parent.width;
         height: parent.height;
-        border-radius: Theme.radius-md;
+        border-radius: root.radius;
         background: root.card.selected ? Theme.accent-soft
             : (face-touch.has-hover ? Theme.row-hover : Theme.field);
         border-width: 1px;
         border-color: root.card.selected ? Theme.border-focus : Theme.border;
 
         VerticalLayout {
-            padding-top: 12px;
-            padding-bottom: 10px;
-            padding-left: 12px;
-            padding-right: 12px;
-            spacing: 5px;
+            padding-top: 12px * root.scale;
+            padding-bottom: 10px * root.scale;
+            padding-left: 12px * root.scale;
+            padding-right: 12px * root.scale;
+            spacing: 5px * root.scale;
 
             HorizontalLayout {
-                spacing: 9px;
+                spacing: 9px * root.scale;
 
                 Rectangle {
-                    width: 34px;
-                    height: 34px;
+                    width: 34px * root.scale;
+                    height: 34px * root.scale;
                     vertical-stretch: 0;
-                    border-radius: 9px;
+                    border-radius: 9px * root.scale;
                     background: root.card.tile;
 
                     if (!root.card.has-image) : Text {
@@ -87,7 +92,7 @@ component card-face inherits Rectangle {
                         height: parent.height;
                         text: root.card.initial;
                         color: #ffffff;
-                        font-size: 14px;
+                        font-size: 14px * root.scale;
                         font-weight: 700;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -102,12 +107,12 @@ component card-face inherits Rectangle {
                 }
 
                 VerticalLayout {
-                    spacing: 2px;
+                    spacing: 2px * root.scale;
 
                     Text {
                         text: root.card.label;
                         color: Theme.text;
-                        font-size: 13.5px;
+                        font-size: 13.5px * root.scale;
                         font-weight: 600;
                         overflow: elide;
                         vertical-alignment: bottom;
@@ -118,14 +123,14 @@ component card-face inherits Rectangle {
                             ? (root.card.hostname == "" ? "(no username)" : root.card.hostname)
                             : root.card.username;
                         color: Theme.muted;
-                        font-size: 11.5px;
+                        font-size: 11.5px * root.scale;
                         overflow: elide;
                     }
                 }
             }
 
             if (root.card.badges.length > 0) : HorizontalLayout {
-                spacing: 5px;
+                spacing: 5px * root.scale;
                 alignment: start;
 
                 for badge in root.card.badges : BadgeBox {
@@ -139,7 +144,7 @@ component card-face inherits Rectangle {
             if (root.card.modified-note != "") : Text {
                 text: root.card.modified-note;
                 color: Theme.faint;
-                font-size: 11px;
+                font-size: 11px * root.scale;
                 overflow: elide;
             }
         }
@@ -158,6 +163,13 @@ component orbit-card inherits Rectangle {
     // The ring's box, handed in: a component's root has no `parent` to ask.
     in property <length> ring-w;
     in property <length> ring-h;
+    // Task 8.4: the ring card's own geometry. `base-w` is the front card's
+    // width (the one at `depth == 1`); `aspect` is the height as a multiple of
+    // the width (`Settings.tsx` L159 prints it that way).
+    in property <length> base-w: 340px;
+    in property <float> aspect: 1.35;
+    in property <length> radius: 20px;
+    in property <float> scale: 1;
     callback open(id: string);
     // The face's right-click, passed on to whoever draws this ring.
     callback menu-asked(id: string, x: float, y: float);
@@ -168,8 +180,8 @@ component orbit-card inherits Rectangle {
     // keeps the face's own text at its own size and lands in the same
     // picture. The trig wants an *angle*, hence `* 1deg` on the float.
     property <float> depth: (Math.cos(root.angle * 1deg) + 1.0) / 2.0;
-    property <length> card-w: 190px + 62px * root.depth;
-    property <length> card-h: 118px + 36px * root.depth;
+    property <length> card-w: root.base-w * root.scale * (0.62 + 0.38 * root.depth);
+    property <length> card-h: root.card-w * root.aspect;
 
     visible: root.show;
     width: root.card-w;
@@ -180,6 +192,8 @@ component orbit-card inherits Rectangle {
 
     card-face {
         card: root.card;
+        scale: root.scale;
+        radius: root.radius;
         open => { root.open(root.card.id); }
         menu-asked(id, x, y) => { root.menu-asked(id, x, y); }
     }
@@ -196,6 +210,11 @@ component list-row inherits Rectangle {
     in property <bool> show-urls: true;
     in property <bool> animated: false;
     in property <int> index: 0;
+    // Task 8.4: the active view's geometry. Flow and List share this row, so
+    // both read the same three values.
+    in property <float> scale: 1;
+    in property <length> floor-h: 86px;
+    in property <length> radius: Theme.radius-md;
     callback open(id: string);
     callback copy(id: string);
     callback star(id: string);
@@ -203,8 +222,8 @@ component list-row inherits Rectangle {
 
     property <bool> entered: false;
 
-    height: 86px;
-    border-radius: Theme.radius-md;
+    height: max(root.floor-h, 86px * root.scale);
+    border-radius: root.radius;
     background: root.card.selected ? Theme.accent-soft
         : (card-touch.has-hover ? Theme.row-hover : #00000000);
     border-width: root.card.selected ? 1px : 0px;
@@ -238,14 +257,14 @@ component list-row inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 14px;
+        padding-left: 12px * root.scale;
+        padding-right: 12px * root.scale;
+        spacing: 14px * root.scale;
 
         Rectangle {
-            width: 44px;
-            height: 44px;
-            border-radius: 12px;
+            width: 44px * root.scale;
+            height: 44px * root.scale;
+            border-radius: 12px * root.scale;
             background: root.card.tile;
 
             if (!root.card.has-image) : Text {
@@ -253,7 +272,7 @@ component list-row inherits Rectangle {
                 height: parent.height;
                 text: root.card.initial;
                 color: #ffffff;
-                font-size: 17px;
+                font-size: 17px * root.scale;
                 font-weight: 700;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -268,14 +287,14 @@ component list-row inherits Rectangle {
         }
 
         VerticalLayout {
-            spacing: 3px;
+            spacing: 3px * root.scale;
             vertical-stretch: 1;
 
             // Badges sit above the title, not beside the username: a login
             // with three of them would otherwise push the name out of the
             // card (the reason `HealthBadges` got its own row in views.tsx).
             if (root.card.badges.length > 0) : HorizontalLayout {
-                spacing: 6px;
+                spacing: 6px * root.scale;
                 // Left-aligned at the badges' own widths: the default
                 // stretch would spread three chips evenly across the card.
                 alignment: start;
@@ -287,12 +306,12 @@ component list-row inherits Rectangle {
             }
 
             HorizontalLayout {
-                spacing: 8px;
+                spacing: 8px * root.scale;
 
                 Text {
                     text: root.card.label;
                     color: Theme.text;
-                    font-size: 14.5px;
+                    font-size: 14.5px * root.scale;
                     font-weight: 600;
                     overflow: elide;
                     vertical-alignment: center;
@@ -301,14 +320,14 @@ component list-row inherits Rectangle {
                 if (root.card.favorite) : Text {
                     text: "★";
                     color: Theme.warn;
-                    font-size: 12px;
+                    font-size: 12px * root.scale;
                     vertical-alignment: center;
                 }
 
                 if (root.card.needs-attention) : Text {
                     text: "!";
                     color: Theme.danger;
-                    font-size: 12px;
+                    font-size: 12px * root.scale;
                     font-weight: 800;
                     vertical-alignment: center;
                 }
@@ -319,14 +338,14 @@ component list-row inherits Rectangle {
                     ? (root.card.hostname == "" ? "(no username)" : root.card.hostname)
                     : root.card.username;
                 color: Theme.muted;
-                font-size: 12.5px;
+                font-size: 12.5px * root.scale;
                 overflow: elide;
             }
 
             if (root.card.modified-note != "") : Text {
                 text: root.card.modified-note;
                 color: Theme.faint;
-                font-size: 11.5px;
+                font-size: 11.5px * root.scale;
                 overflow: elide;
             }
         }
@@ -334,23 +353,23 @@ component list-row inherits Rectangle {
         Rectangle { horizontal-stretch: 1; width: 1px; }
 
         VerticalLayout {
-            spacing: 2px;
+            spacing: 2px * root.scale;
             alignment: center;
 
             if (root.show-urls && root.card.hostname != "") : Text {
-                width: 200px;
+                width: 200px * root.scale;
                 text: root.card.hostname;
                 color: Theme.faint;
-                font-size: 12.5px;
+                font-size: 12.5px * root.scale;
                 horizontal-alignment: right;
                 overflow: elide;
             }
 
             Text {
-                width: 200px;
+                width: 200px * root.scale;
                 text: root.card.masked-password;
                 color: Theme.muted;
-                font-size: 13px;
+                font-size: 13px * root.scale;
                 horizontal-alignment: right;
                 letter-spacing: 1px;
             }
@@ -359,7 +378,7 @@ component list-row inherits Rectangle {
         Btn {
             label: "Copy";
             kind: 1;
-            h: 32px;
+            h: 32px * root.scale;
             enabled: !root.busy;
             clicked => { root.copy(root.card.id); }
         }
@@ -833,6 +852,33 @@ export component MainWindow inherits Window {
     // rides down to the one field and it focuses its own TextInput.
     in-out property <int> search-focus-tick: 0;
     callback shortcuts-closed();
+    // ---- The appearance tuner (Task 8.4) ----------------------------------
+    // The active view's card geometry, resolved by `tuner.rs` and read by the
+    // three card shapes: Flow/List rows, the Grid cell, the Orbit ring card.
+    // `card-surface` is the card's own tint, the rest is size.
+    in property <float> card-scale: 1;
+    in property <length> card-width: 560px;
+    in property <length> card-min-height: 132px;
+    in property <float> card-aspect: 1;
+    in property <length> card-radius: 14px;
+    in property <float> card-surface: 1;
+    // The right-edge slide-over itself. Two-way on the five dials so a drag
+    // writes straight back; the rest is read-only.
+    in-out property <bool> show-tuner: false;
+    in property <string> tuner-view: "animated";
+    in property <string> tuner-view-label: "Flow";
+    in property <bool> tuner-orbit: false;
+    in-out property <float> tuner-scale: 1;
+    in-out property <float> tuner-width: 560;
+    in-out property <float> tuner-min-height: 132;
+    in-out property <float> tuner-aspect: 1;
+    in-out property <float> tuner-radius: 14;
+    in property <string> tuner-accent: "slate";
+    in property <[AccentChip]> tuner-accents;
+    callback tuner-size-changed(field: string, value: float);
+    callback tuner-accent-picked(id: string);
+    callback tuner-reset();
+    callback tuner-closed();
     // ---- The dashboard (Task 7.1) -----------------------------------------
     // The Command Center replaces the whole content pane when its channel is
     // active — toolbar and grid included, as the TS dashboard does. Rust
@@ -1917,6 +1963,11 @@ export component MainWindow inherits Window {
 
                         for card in root.cards : VerticalLayout {
                             spacing: 2px;
+                            // Task 8.4: cap the measure and centre it, the
+                            // `list-scale` max-width + `margin-inline: auto`
+                            // pair (app.css L214).
+                            padding-left: max(0px, (parent.width - root.card-width * root.card-scale) / 2);
+                            padding-right: max(0px, (parent.width - root.card-width * root.card-scale) / 2);
 
                             if (card.group != "") : Rectangle {
                                 height: 28px;
@@ -1939,6 +1990,9 @@ export component MainWindow inherits Window {
                                 card: card;
                                 busy: root.busy;
                                 show-urls: root.show-urls;
+                                scale: root.card-scale;
+                                floor-h: root.card-min-height;
+                                radius: root.card-radius;
                                 open => { root.open-editor(card.id); }
                                 copy => { root.copy-password(card.id); }
                                 star => { root.toggle-favorite(card.id); }
@@ -1954,16 +2008,26 @@ export component MainWindow inherits Window {
                     if (root.vault-view == "animated" && root.cards.length > 0) : ListView {
                         vertical-stretch: 1;
 
-                        for card[i] in root.cards : list-row {
-                            card: card;
-                            index: i;
-                            animated: root.motion > 0.0;
-                            busy: root.busy;
-                            show-urls: root.show-urls;
-                            open => { root.open-editor(card.id); }
-                            copy => { root.copy-password(card.id); }
-                            star => { root.toggle-favorite(card.id); }
-                            menu-asked(id, x, y) => { root.item-menu(id, x, y); }
+                        for card[i] in root.cards : HorizontalLayout {
+                            // Task 8.4: the same capped, centred measure List
+                            // uses (`flow-scale .rb-animated-list__row`, L229).
+                            padding-left: max(0px, (parent.width - root.card-width * root.card-scale) / 2);
+                            padding-right: max(0px, (parent.width - root.card-width * root.card-scale) / 2);
+
+                            list-row {
+                                card: card;
+                                index: i;
+                                animated: root.motion > 0.0;
+                                busy: root.busy;
+                                show-urls: root.show-urls;
+                                scale: root.card-scale;
+                                floor-h: root.card-min-height;
+                                radius: root.card-radius;
+                                open => { root.open-editor(card.id); }
+                                copy => { root.copy-password(card.id); }
+                                star => { root.toggle-favorite(card.id); }
+                                menu-asked(id, x, y) => { root.item-menu(id, x, y); }
+                            }
                         }
                     }
 
@@ -1976,7 +2040,11 @@ export component MainWindow inherits Window {
 
                         grid-body := Rectangle {
                             width: parent.width;
-                            height: Math.ceil((root.cards.length * 1.0) / root.grid-cols) * 134px;
+                            // Task 8.4: the row's floor is the view's minimum
+                            // height, so a card with more in it grows the row
+                            // rather than clipping (`--card-min-height`).
+                            property <length> row-h: max(root.card-min-height, 124px * root.card-scale);
+                            height: Math.ceil((root.cards.length * 1.0) / root.grid-cols) * (row-h + 10px);
 
                             init => { root.vault-relayout(grid-body.width / 1px); }
                             changed width => { root.vault-relayout(grid-body.width / 1px); }
@@ -1984,13 +2052,15 @@ export component MainWindow inherits Window {
                             for card[i] in root.cards : Rectangle {
                                 property <length> cw: (parent.width - (root.grid-cols - 1) * 10px) / root.grid-cols;
                                 width: cw;
-                                height: 124px;
+                                height: row-h;
                                 // Column: how many whole rows this cell sits past.
                                 x: (i - Math.floor(i / root.grid-cols) * root.grid-cols) * (cw + 10px);
-                                y: Math.floor(i / root.grid-cols) * 134px;
+                                y: Math.floor(i / root.grid-cols) * (row-h + 10px);
 
                                 card-face {
                                     card: card;
+                                    scale: root.card-scale;
+                                    radius: root.card-radius;
                                     open => { root.open-editor(card.id); }
                                     menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                                 }
@@ -2014,6 +2084,10 @@ export component MainWindow inherits Window {
                             show: Math.cos((root.orbit-angle + i * (360.0 / Math.max(root.cards.length, 1))) * 1deg) < 0.0;
                             ring-w: parent.width;
                             ring-h: parent.height;
+                            base-w: root.card-width;
+                            aspect: root.card-aspect;
+                            radius: root.card-radius;
+                            scale: root.card-scale;
                             open => { root.open-editor(card.id); }
                             menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                         }
@@ -2024,6 +2098,10 @@ export component MainWindow inherits Window {
                             show: Math.cos((root.orbit-angle + i * (360.0 / Math.max(root.cards.length, 1))) * 1deg) >= 0.0;
                             ring-w: parent.width;
                             ring-h: parent.height;
+                            base-w: root.card-width;
+                            aspect: root.card-aspect;
+                            radius: root.card-radius;
+                            scale: root.card-scale;
                             open => { root.open-editor(card.id); }
                             menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                         }
@@ -3029,6 +3107,28 @@ export component MainWindow inherits Window {
             mail-account-picked(id) => { root.channel-ed-mail-account-picked(id); }
         }
 
+        // The appearance tuner (Task 8.4): a translucent slide-over, *not* a
+        // modal -- the cards stay visible down the left so a drag can be
+        // judged as it happens. Mounted above the shell but below the sheet,
+        // which is the one overlay that outranks it.
+        if (root.show-tuner) : AppearanceTuner {
+            z: 60;
+            view: root.tuner-view;
+            view-label: root.tuner-view-label;
+            orbit: root.tuner-orbit;
+            scale <=> root.tuner-scale;
+            width-value <=> root.tuner-width;
+            min-height-value <=> root.tuner-min-height;
+            aspect-value <=> root.tuner-aspect;
+            radius-value <=> root.tuner-radius;
+            accent: root.tuner-accent;
+            accents: root.tuner-accents;
+            size-changed(field, value) => { root.tuner-size-changed(field, value); }
+            accent-picked(id) => { root.tuner-accent-picked(id); }
+            reset => { root.tuner-reset(); }
+            closed => { root.tuner-closed(); }
+        }
+
         // The shortcuts sheet (Task 8.2), the last overlay so `?` can be
         // answered from anywhere: Escape closes it through the window's key
         // scope below it.
@@ -3051,6 +3151,7 @@ export component MainWindow inherits Window {
     changed gate-open => { if (!root.gate-open) { shortcut-scope.focus(); } }
     changed channel-ed-open => { if (!root.channel-ed-open) { shortcut-scope.focus(); } }
     changed show-shortcuts => { if (!root.show-shortcuts) { shortcut-scope.focus(); } }
+    changed show-tuner => { if (!root.show-tuner) { shortcut-scope.focus(); } }
 }
 
 // The tray is its own top-level component: Slint's SystemTrayIcon has no

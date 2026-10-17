@@ -27,6 +27,7 @@ mod optimize_ops;
 mod platform;
 mod settings_ops;
 mod shortcuts;
+mod tuner;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -618,12 +619,22 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     ui.set_rail_compact(prefs.compact_sidebar || prefs.sidebar_labels == "icon");
     ui.set_motion(prefs.motion as f32);
     let vault_width = state.borrow().vault_width;
-    ui.set_grid_cols(grid_cols_for(vault_width));
+    // Task 8.4: the grid's own width preference is the cell's floor, so the
+    // tuner moves the column count with it (`cardSize.grid`, scaled).
+    let grid = prefs
+        .card_size
+        .get("grid")
+        .copied()
+        .unwrap_or_else(|| colax_core::default_card_size("grid"));
+    ui.set_grid_cols(grid_cols_for(vault_width, grid.width * grid.scale));
     ui.set_sort_options(ModelRc::new(VecModel::from(items::sort_options())));
     // The app's own background layer rides the same derivation: it is the
     // preference's photo, or the active channel's, and both are read from the
     // same guard that produced the rails above.
     push_background(ui, state);
+    // The active view's card geometry (Task 8.4) rides the same refresh: a
+    // view switch, a size write and a Reset all land here.
+    tuner::push(ui, state);
 }
 
 /// The picture behind every screen, and its wash.
@@ -680,8 +691,8 @@ fn push_background(ui: &MainWindow, state: &Shared) {
 /// How many grid cells fit across a given content width. Below ~220px a cell
 /// stops reading as a card, which is the floor the tag cloud packs its pills
 /// against too -- one number for "smaller than this is not a thing any more".
-fn grid_cols_for(width: f64) -> i32 {
-    ((width / 230.0) as i32).clamp(2, 8)
+fn grid_cols_for(width: f64, target: f64) -> i32 {
+    ((width / target.max(120.0)) as i32).clamp(2, 8)
 }
 
 /// The view switcher. `view` is a preference like any other, so it leaves
@@ -728,13 +739,19 @@ fn sort_picked(ui: &MainWindow, state: &Shared, sort: &str) {
 
 /// The grid reports its width and the column count is the answer. A width
 /// outside anything a window can hold is a stale value from an earlier
-/// layout pass, not a choice, and is ignored.
+/// layout pass, not a choice, and is ignored. `target` is the cell's floor --
+/// the grid view's own card width (Task 8.4), so the tuner reflows the grid.
 fn vault_relayout(ui: &MainWindow, state: &Shared, width: f32) {
     if !(240.0..=20000.0).contains(&width) {
         return;
     }
+    let grid = items::prefs_from(state.borrow().engine.preferences())
+        .card_size
+        .get("grid")
+        .copied()
+        .unwrap_or_else(|| colax_core::default_card_size("grid"));
     state.borrow_mut().vault_width = width as f64;
-    ui.set_grid_cols(grid_cols_for(width as f64));
+    ui.set_grid_cols(grid_cols_for(width as f64, grid.width * grid.scale));
 }
 
 /// Where the rail docks. Same contract as the other dials: the id is checked
@@ -1066,6 +1083,27 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
             move || {
                 if let Some(ui) = weak.upgrade() {
                     dev_keys(&ui, &st);
+                }
+            },
+        );
+        std::mem::forget(timer);
+        return;
+    }
+
+    // ...and `COLAX_DEV_TUNER` walks the appearance tuner (Task 8.4): it opens
+    // it from the menu, drives each dial through `tuner::size_changed` (a dev
+    // walk cannot drag a slider), and reads back the stored geometry and the
+    // window scalars it produced.
+    if std::env::var_os("COLAX_DEV_TUNER").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_tuner(&ui, &st);
                 }
             },
         );
@@ -2426,6 +2464,139 @@ fn dev_keys(ui: &MainWindow, state: &Shared) {
     // 11. `L` locks the vault -- last, so the dump survives it.
     let took = shortcuts::key(ui, state, "l", false, false, false);
     dev_note("keys11.lock", &format!("took={took} scr={}", screen()));
+}
+
+/// Debug-only: walk the appearance tuner (Task 8.4) the way a hand would --
+/// open it from the menu, drag each dial, reset, and read back *both* halves
+/// of the wire: the geometry stored in preferences and the scalars the window
+/// actually holds, which is what the cards draw from. `COLAX_DEV_TUNER=1`.
+#[cfg(debug_assertions)]
+fn dev_tuner(ui: &MainWindow, state: &Shared) {
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    let stored = |view: &str| {
+        items::prefs_from(state.borrow().engine.preferences())
+            .card_size
+            .get(view)
+            .copied()
+            .unwrap_or_else(|| colax_core::default_card_size(view))
+    };
+    // The scalars on the window, which is the only place the cards can read
+    // them: a pref that never reaches here draws nothing.
+    let pushed = || {
+        format!(
+            "card(scale={} w={} minH={} aspect={} r={})",
+            ui.get_card_scale(),
+            ui.get_card_width(),
+            ui.get_card_min_height(),
+            ui.get_card_aspect(),
+            ui.get_card_radius(),
+        )
+    };
+
+    // 1. Closed to start, and the `Card size` submenu is on the background
+    //    menu: the door the TS opens the tuner through.
+    crate::menus::open_app_menu(ui, state, 10.0, 10.0);
+    let has_row = ui
+        .get_menu_root_rows()
+        .iter()
+        .any(|row| row.id.as_str() == "app.cardSize");
+    dev_note(
+        "tuner01.menu",
+        &format!("row={has_row} tuner={} view={}", ui.get_show_tuner(), ui.get_vault_view()),
+    );
+
+    // 2. Dispatching the submenu's Flow row opens the tuner on Flow, showing
+    //    the shipped 560/132/14 and no aspect dial.
+    crate::menus::menu_picked(ui, state, "app.cardSize:animated");
+    dev_note(
+        "tuner02.flow",
+        &format!(
+            "open={} view={} orbit={} tuner(scale={} w={} minH={}) {}",
+            ui.get_show_tuner(),
+            ui.get_vault_view(),
+            ui.get_tuner_orbit(),
+            ui.get_tuner_scale(),
+            ui.get_tuner_width(),
+            ui.get_tuner_min_height(),
+            pushed(),
+        ),
+    );
+
+    // 3. Dragging Scale stores the snapped value and pushes it: 1.37 lands on
+    //    the 0.05 step at 1.35.
+    tuner::size_changed(ui, state, "scale", 1.37);
+    dev_note(
+        "tuner03.scale",
+        &format!("stored={} {}", stored("animated").scale, pushed()),
+    );
+
+    // 4. Width, rounded to the slider's 10px step.
+    tuner::size_changed(ui, state, "width", 703.0);
+    dev_note(
+        "tuner04.width",
+        &format!("stored={} {}", stored("animated").width, pushed()),
+    );
+
+    // 5. Radius, clamped to the slider's 0-48 ceiling.
+    tuner::size_changed(ui, state, "radius", 90.0);
+    dev_note(
+        "tuner05.radius",
+        &format!("stored={} {}", stored("animated").radius, pushed()),
+    );
+
+    // 6. Reset puts Flow back to its shipped numbers, and the window follows.
+    tuner::reset(ui, state);
+    dev_note(
+        "tuner06.reset",
+        &format!(
+            "scale={} w={} r={} {}",
+            stored("animated").scale,
+            stored("animated").width,
+            stored("animated").radius,
+            pushed(),
+        ),
+    );
+
+    // 7. The same submenu row for Orbit re-scopes the tuner: it is still the
+    //    same panel, but the view (and so the numbers) changed under it, and
+    //    the aspect dial is the one it now shows.
+    crate::menus::menu_picked(ui, state, "app.cardSize:carousel");
+    dev_note(
+        "tuner07.orbit",
+        &format!(
+            "open={} view={} orbit={} w={} aspect={}",
+            ui.get_show_tuner(),
+            ui.get_vault_view(),
+            ui.get_tuner_orbit(),
+            ui.get_tuner_width(),
+            ui.get_tuner_aspect(),
+        ),
+    );
+
+    // 8. Orbit's own dial: aspect is a plain multiplier, stored as written.
+    tuner::size_changed(ui, state, "aspect", 1.8);
+    dev_note(
+        "tuner08.aspect",
+        &format!("stored={} aspect={}", stored("carousel").aspect, ui.get_card_aspect()),
+    );
+
+    // 9. An accent swatch writes the app-wide accent.
+    tuner::accent_picked(ui, state, "clay");
+    let accent = items::prefs_from(state.borrow().engine.preferences()).accent;
+    dev_note(
+        "tuner09.accent",
+        &format!("stored={accent} shown={}", ui.get_tuner_accent()),
+    );
+
+    // 10. While the tuner is open the Alt-jump is refused (the TS blocks the
+    //     channel shortcut but not the bare keys), and Escape dismisses it.
+    let alt_refused = !shortcuts::key(ui, state, "2", false, false, true);
+    let esc = shortcuts::key(ui, state, "\u{1b}", false, false, false);
+    dev_note(
+        "tuner10.close",
+        &format!("alt_refused={alt_refused} esc={esc} open={}", ui.get_show_tuner()),
+    );
 }
 
 /// Debug-only: dock the rail four ways, label it three, and take it off the
@@ -6048,6 +6219,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_shortcuts_closed(move || {
                 if let Some(ui) = weak.upgrade() {
                     ui.set_show_shortcuts(false);
+                }
+            });
+
+            // The appearance tuner (Task 8.4): every dial is a plain preference
+            // write, so these four are thin -- the rule that decides what each
+            // one may store lives in `tuner.rs`, next to the ranges the panel
+            // draws.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_tuner_size_changed(move |field, value| {
+                if let Some(ui) = weak.upgrade() {
+                    tuner::size_changed(&ui, &st, &field, value);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_tuner_accent_picked(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    tuner::accent_picked(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_tuner_reset(move || {
+                if let Some(ui) = weak.upgrade() {
+                    tuner::reset(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_tuner_closed(move || {
+                if let Some(ui) = weak.upgrade() {
+                    tuner::close(&ui);
                 }
             });
 

@@ -224,6 +224,7 @@ pub fn open_app_menu(ui: &MainWindow, state: &Shared, x: f32, y: f32) {
     rows.push(sub("app.view", "Switch view", false));
     rows.push(sub("app.sort", "Sort by", false));
     rows.push(sub("app.appearance", "Appearance", false));
+    rows.push(sub("app.cardSize", "Card size", false));
     rows.push(sep());
     rows.push(item("app.settings", "Settings", "", false, false, false));
     rows.push(item("app.hidden", "Show hidden items\u{2026}", "", false, false, false));
@@ -327,12 +328,13 @@ pub fn open_item_menu(ui: &MainWindow, state: &Shared, id: &str, x: f32, y: f32)
     rows.push(item("item.edit", "Edit login", "", false, false, false));
     rows.push(sub("item.open", "Open", !has(&one.url)));
     rows.push(sep());
+    // The per-view "Card size" submenu (`cardSizeMenu`), the same one the
+    // background menu carries: it opens the Appearance tuner on a chosen view.
+    rows.push(sub("item.cardSize", "Card size", false));
+    rows.push(sep());
     rows.push(item("item.delete", "Delete login", "", false, false, true));
 
     ui.set_menu_item_target(id.into());
-    // The per-view "Card size" submenu (cardSizeMenu) opens the Appearance
-    // tuner, Task 8.4; its row lands there, not here guessing at sliders
-    // that do not exist yet.
     ui.set_menu_item_note(reused);
     set_root(ui, rows, x, y);
 }
@@ -385,6 +387,30 @@ fn sub_rows(ui: &MainWindow, state: &Shared, key: &str) -> Option<(Vec<MenuRow>,
                     sort_label(id),
                     "",
                     prefs.sort == id,
+                    false,
+                    false,
+                ));
+            }
+        }
+        // The per-view card geometry (Task 8.4): the row the TS's
+        // `cardSizeMenu` draws. Picking a view opens the Appearance tuner
+        // already scoped to it, and the active view carries the tick -- the
+        // tuner edits whichever view is on screen.
+        "app.cardSize" | "item.cardSize" => {
+            head = true;
+            rows.push(heading("Card size"));
+            let owner = if key.starts_with("item") { "item" } else { "app" };
+            for (id, label) in [
+                ("animated", "Flow"),
+                ("carousel", "Orbit"),
+                ("basic", "List"),
+                ("grid", "Grid"),
+            ] {
+                rows.push(item(
+                    format!("{owner}.cardSize:{id}").as_str(),
+                    label,
+                    "",
+                    prefs.view == id,
                     false,
                     false,
                 ));
@@ -682,6 +708,18 @@ pub fn close(ui: &MainWindow) {
 // ---- The actions (the TS's onSelect bodies) ------------------------------
 
 fn picked(ui: &MainWindow, state: &Shared, id: &str) {
+    // `Card size ▸ <view>` (Task 8.4) is the one row both menus carry under
+    // two owners, and it opens the Appearance tuner scoped to the view rather
+    // than writing a preference itself.
+    for owner in ["app.", "item."] {
+        if let Some(view) = id
+            .strip_prefix(owner)
+            .and_then(|rest| rest.strip_prefix("cardSize:"))
+        {
+            crate::tuner::open(ui, state, Some(view));
+            return;
+        }
+    }
     if let Some(tail) = id.strip_prefix("app.") {
         if let Some(view) = tail.strip_prefix("view:") {
             ops::pref_string(ui, state, "view", view);

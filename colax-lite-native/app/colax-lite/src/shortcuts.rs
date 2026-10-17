@@ -70,6 +70,14 @@ pub fn key(ui: &MainWindow, state: &Shared, text: &str, ctrl: bool, shift: bool,
             close_sheet(ui);
             return true;
         }
+        // The appearance tuner (Task 8.4) is a slide-over, not a modal, so
+        // Escape dismissing it is the native courtesy the TS achieves only
+        // with an outside click; leaving it open with no key to close it
+        // would be a native trap.
+        if ui.get_show_tuner() {
+            crate::tuner::close(ui);
+            return true;
+        }
         if ui.get_screen() == Screen::Editor {
             crate::editor_cancel(ui, state);
             return true;
@@ -104,6 +112,13 @@ pub fn key(ui: &MainWindow, state: &Shared, text: &str, ctrl: bool, shift: bool,
         // Alt+1..9 jumps to the first nine visible rail channels (App.tsx
         // L2879-2909); bare digits belong to the dock, which Alt keeps clear
         // of. The TS handler does not test Shift, so neither does this.
+        //
+        // The tuner is the one thing that blocks this jump and not the bare
+        // keys: `openTuner` leaves `useHotkeys` live but the Alt effect
+        // tests `.tuner` (App.tsx L2842), the same split this mirrors.
+        if ui.get_show_tuner() {
+            return false;
+        }
         if let Some(n) = digit(text) {
             let target = rail_ids(ui, state);
             if let Some(id) = target.get(n as usize - 1) {

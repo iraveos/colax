@@ -114,6 +114,77 @@ impl Default for PasswordGenerator {
     }
 }
 
+/// One view's card geometry (`CardSizePrefs`, storage.ts L68-89). Tuned per
+/// view, because the four presentations are shaped differently: Flow and List
+/// stay fluid inside a width cap, Orbit is a fixed width times an aspect, and
+/// Grid reflows to whatever fits, so its width is the widest a cell may grow.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CardSize {
+    /// Overall scale, 0.6 to 1.6, text included.
+    pub scale: f64,
+    /// Card width in px, a cap for the fluid views and the ring's front width
+    /// for Orbit.
+    pub width: f64,
+    /// Floor on the card's height, for Flow and List.
+    pub min_height: f64,
+    /// Orbit only: height as a multiple of the width.
+    pub aspect: f64,
+    /// How opaque the card's own surface is, 0 to 1.
+    pub surface: f64,
+    /// Corner radius in px.
+    pub radius: f64,
+}
+
+impl Default for CardSize {
+    /// Flow's numbers, which are also `DEFAULT_CARD_SIZE.animated`
+    /// (storage.ts L92).
+    fn default() -> Self {
+        Self { scale: 1.0, width: 560.0, min_height: 132.0, aspect: 1.0, surface: 1.0, radius: 14.0 }
+    }
+}
+
+/// The four views that carry their own card geometry, in the order the TS
+/// normaliser walks them (storage.ts L1336).
+pub const CARD_SIZE_VIEWS: [&str; 4] = ["animated", "carousel", "basic", "grid"];
+
+/// One view's shipped card geometry (`DEFAULT_CARD_SIZE`, storage.ts L91-100).
+pub fn default_card_size(view: &str) -> CardSize {
+    match view {
+        // Orbit is a fixed width x aspect card because its ring geometry is
+        // computed from the card width (storage.ts L94).
+        "carousel" => CardSize { width: 340.0, min_height: 0.0, aspect: 1.35, radius: 20.0, ..CardSize::default() },
+        "basic" => CardSize { width: 900.0, min_height: 64.0, ..CardSize::default() },
+        "grid" => CardSize { width: 340.0, min_height: 96.0, ..CardSize::default() },
+        _ => CardSize::default(),
+    }
+}
+
+/// `cardSize` as stored (storage.ts L1333-1352): every view is present, each
+/// field clamped on its own so a partially-written record cannot leave a view
+/// with a zero width or a NaN radius.
+pub fn normalise_card_size(stored: Option<&Value>) -> BTreeMap<String, CardSize> {
+    let map = stored.and_then(Value::as_object);
+    let mut out = BTreeMap::new();
+    for view in CARD_SIZE_VIEWS {
+        let fallback = default_card_size(view);
+        let raw = map.and_then(|m| m.get(view)).and_then(Value::as_object);
+        let field = |key: &str, dflt: f64| num(raw.and_then(|m| m.get(key)), dflt);
+        out.insert(
+            view.to_string(),
+            CardSize {
+                scale: clamp(field("scale", fallback.scale), 0.6, 1.6),
+                width: clamp(field("width", fallback.width), 180.0, 1200.0).round(),
+                min_height: clamp(field("minHeight", fallback.min_height), 0.0, 480.0).round(),
+                aspect: clamp(field("aspect", fallback.aspect), 0.5, 3.0),
+                surface: clamp(field("surface", fallback.surface), 0.0, 1.0),
+                radius: clamp(field("radius", fallback.radius), 0.0, 48.0).round(),
+            },
+        );
+    }
+    out
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VaultPreferences {
@@ -131,6 +202,9 @@ pub struct VaultPreferences {
     pub density: String,
     pub roundness: f64,
     pub card_depth: f64,
+    /// Per-view card geometry (`cardSize`, storage.ts L534). Always carries the
+    /// four views; `default_card_size` seeds the ones a stored record omits.
+    pub card_size: BTreeMap<String, CardSize>,
     pub reduce_transparency: bool,
     pub high_contrast: bool,
     pub background_image: String,
@@ -343,6 +417,7 @@ impl Default for VaultPreferences {
             density: "comfortable".into(),
             roundness: 1.0,
             card_depth: 0.4,
+            card_size: normalise_card_size(None),
             reduce_transparency: false,
             high_contrast: true,
             background_image: String::new(),
@@ -457,6 +532,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.density     = one_of(o.get("density").unwrap_or(&Value::Null), &["compact","comfortable","spacious"], "comfortable");
     out.roundness   = clamp(get_f64!("roundness", 1.0), 0.6, 1.4);
     out.card_depth  = clamp(get_f64!("cardDepth", 0.4), 0.0, 1.0);
+    out.card_size   = normalise_card_size(o.get("cardSize"));
     out.reduce_transparency = get_bool!("reduceTransparency", false);
     out.high_contrast       = get_bool!("highContrast", true);
     if let Some(v) = o.get("backgroundImage") { out.background_image = v.as_str().unwrap_or("").to_string(); }
@@ -637,8 +713,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // absorb everything we didn't model
     let mut extra = serde_json::Map::new();
     let known = ["theme","accent","textScale","motion","motionSpeed","ambient","density","roundness",
-        "cardDepth","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",
-        "backgroundBlur","backgroundDim","microMotion","mailInlineImages","disableSpellcheck",
+        "cardDepth","cardSize","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",        "backgroundBlur","backgroundDim","microMotion","mailInlineImages","disableSpellcheck",
         "optimizeProfiles","optimizeSnapshot","activeOptimizeProfile","view","sort","showUrls","sidebarPosition","sidebarLabels",
         "compactSidebar","showSidebar","vaultSecurity",
         "showLetterGroups","autoTagDomain","showUnassignedChannel","autoTagChannel",
@@ -940,6 +1015,41 @@ mod tests {
         assert_eq!(p.sidebar_position, "left");
         assert_eq!(p.sidebar_labels, "both");
         assert_eq!(p.vault_security, LoginSecurity::default());
+    }
+
+    #[test]
+    fn card_size_defaults_and_clamps_per_view() {
+        let p = normalise_preferences(&json!({}));
+        // All four views are always present, each with its shipped geometry.
+        assert_eq!(p.card_size.len(), 4);
+        assert_eq!(p.card_size["animated"], CardSize { scale: 1.0, width: 560.0, min_height: 132.0, aspect: 1.0, surface: 1.0, radius: 14.0 });
+        assert_eq!(p.card_size["carousel"].width, 340.0);
+        assert_eq!(p.card_size["carousel"].aspect, 1.35);
+        assert_eq!(p.card_size["carousel"].min_height, 0.0);
+        assert_eq!(p.card_size["carousel"].radius, 20.0);
+        assert_eq!(p.card_size["basic"].width, 900.0);
+        assert_eq!(p.card_size["grid"].min_height, 96.0);
+
+        // A partial, out-of-range record: each field clamps on its own, and a
+        // view the record omits keeps its default.
+        let q = normalise_preferences(&json!({
+            "cardSize": {
+                "animated": { "scale": 9.0, "width": 10.0, "minHeight": -5.0, "radius": 999.0, "aspect": 0.1, "surface": 2.0 },
+                "grid": { "width": 640.4 }
+            }
+        }));
+        assert_eq!(q.card_size["animated"].scale, 1.6);
+        assert_eq!(q.card_size["animated"].width, 180.0);
+        assert_eq!(q.card_size["animated"].min_height, 0.0);
+        assert_eq!(q.card_size["animated"].radius, 48.0);
+        assert_eq!(q.card_size["animated"].aspect, 0.5);
+        assert_eq!(q.card_size["animated"].surface, 1.0);
+        assert_eq!(q.card_size["grid"].width, 640.0); // rounded
+        assert_eq!(q.card_size["basic"].width, 900.0); // untouched
+
+        // A hand-edited string where a number belongs falls back, not zero.
+        let r = normalise_preferences(&json!({ "cardSize": { "basic": { "width": "wide" } } }));
+        assert_eq!(r.card_size["basic"].width, 900.0);
     }
 
     #[test]
