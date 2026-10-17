@@ -117,6 +117,22 @@ export interface Folder {
   backgroundDim: number;
   /** Whether the user has collapsed it in the sidebar. */
   collapsed: boolean;
+  /**
+   * Main tags: applied to every channel in the folder, and inherited by any
+   * login created while the folder is open. A channel's own tags narrow this
+   * set further rather than replacing it.
+   */
+  tagIds: string[];
+  /**
+   * Alternate tags: apply only to child channels that have no tags of their
+   * own. They are the folder's fallback filing, so an untagged channel still
+   * belongs to the folder's subject instead of showing the whole vault.
+   */
+  altTagIds: string[];
+  /** Free-form notes, shown from the folder's notes button in the workspace. */
+  notes: string;
+  /** Right-clicking the notes button hides it; this remembers that choice. */
+  notesHidden: boolean;
   /** Optional second factor required to browse the channels inside. */
   security: LoginSecurity;
 }
@@ -143,8 +159,49 @@ export function createFolder(name: string, patch: Partial<Folder> = {}): Folder 
     backgroundBlur: DEFAULT_BACKGROUND_LOOK.blur,
     backgroundDim: DEFAULT_BACKGROUND_LOOK.dim,
     collapsed: false,
+    tagIds: [],
+    altTagIds: [],
+    notes: '',
+    notesHidden: false,
     security: EMPTY_SECURITY,
     ...patch,
+  };
+}
+
+/**
+ * The tags a channel stands for once its parent folder is taken into account.
+ *
+ * The folder's main tags always apply. The alternate tags are only a fallback:
+ * a channel that already carries tags keeps them (plus the main ones), so
+ * choosing tags on a channel overrides the folder's default rather than
+ * fighting with it. Outside a folder this is just the channel's own tags.
+ */
+export function effectiveChannelTagIds(
+  channel: Pick<Channel, 'tagIds'>,
+  folder?: Pick<Folder, 'tagIds' | 'altTagIds'> | null,
+): string[] {
+  if (!folder) return channel.tagIds;
+  const inherited = channel.tagIds.length > 0 ? channel.tagIds : folder.altTagIds;
+  return [...new Set([...folder.tagIds, ...inherited])];
+}
+
+/**
+ * The properties a channel created inside a folder starts with: the folder's
+ * look and its main tags. Copying them is what makes "new channel in this
+ * folder" start as a member of the folder instead of a blank row that has to
+ * be re-tagged by hand.
+ */
+export function channelSeedFromFolder(folder: Folder): Partial<Channel> {
+  return {
+    tagIds: [...folder.tagIds],
+    // 'folder' is a folder-only glyph; the nearest channel glyph is layers.
+    icon: folder.icon === 'folder' ? 'layers' : folder.icon,
+    hue: folder.hue,
+    accent: folder.accent,
+    backgroundImage: folder.backgroundImage,
+    backgroundOpacity: folder.backgroundOpacity,
+    backgroundBlur: folder.backgroundBlur,
+    backgroundDim: folder.backgroundDim,
   };
 }
 
@@ -417,6 +474,16 @@ export function normaliseFolders(stored: Folder[] | undefined): Folder[] {
       backgroundImage: typeof raw.backgroundImage === 'string' ? raw.backgroundImage : '',
       ...normaliseBackgroundLook(raw),
       collapsed: Boolean(raw.collapsed),
+      // Both tag sets are id lists, deduplicated and shape-checked so a
+      // hand-edited record cannot write a non-string into a filter.
+      tagIds: Array.isArray(raw.tagIds)
+        ? [...new Set(raw.tagIds.filter((tag): tag is string => typeof tag === 'string'))]
+        : [],
+      altTagIds: Array.isArray(raw.altTagIds)
+        ? [...new Set(raw.altTagIds.filter((tag): tag is string => typeof tag === 'string'))]
+        : [],
+      notes: typeof raw.notes === 'string' ? raw.notes : '',
+      notesHidden: raw.notesHidden === true,
       // Shared helper — this used to rebuild the block inline without
       // passcode, silently unprotecting passcode-only folders on reload.
       security: normaliseSecurity(raw.security),
@@ -548,7 +615,12 @@ function pickFreeHue(existing: Tag[]): number {
  * `weak` is derived rather than stored: it means a reused password, or one that
  * has not been changed in a long time.
  */
-export function applyChannel(channel: Channel, items: VaultItem[], staleAfterDays = 180): VaultItem[] {
+export function applyChannel(
+  channel: Channel,
+  items: VaultItem[],
+  staleAfterDays = 180,
+  folder?: Pick<Folder, 'tagIds' | 'altTagIds'> | null,
+): VaultItem[] {
   let list: VaultItem[];
 
   switch (channel.kind) {
@@ -599,8 +671,11 @@ export function applyChannel(channel: Channel, items: VaultItem[], staleAfterDay
       list = items;
   }
 
-  if (channel.tagIds.length === 0) return list;
-  const wanted = new Set(channel.tagIds);
+  // A channel inside a folder is narrowed by the folder's tags as well; see
+  // effectiveChannelTagIds for why the folder's alternate tags are a fallback.
+  const filterTags = effectiveChannelTagIds(channel, folder);
+  if (filterTags.length === 0) return list;
+  const wanted = new Set(filterTags);
   return list.filter((item) => item.tags.some((tagId) => wanted.has(tagId)));
 }
 

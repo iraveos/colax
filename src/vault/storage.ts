@@ -23,6 +23,7 @@ import {
 } from './channels.ts';
 import { EMPTY_SECURITY, normaliseSecurity, type LoginSecurity } from '../crypto/security.ts';
 import { MAIL_PROVIDERS, providerById, providerForAddress } from '../lib/mail-providers.ts';
+import { normaliseMailOAuth, type MailAuthKind, type MailOAuth } from '../lib/oauth.ts';
 import {
   normaliseOptimizeProfiles,
   readStyle,
@@ -191,14 +192,24 @@ export const DEFAULT_DOCK_SLOTS: DockSlotConfig[] = [
 ];
 
 /**
- * One connected mailbox. An app password, from Google Account > Security,
- * never sent anywhere but mail.google.com. Each account polls on its own
- * cadence; messages merge newest-first wherever they render.
+ * One connected mailbox. Either an app password (Google Account > Security,
+ * never sent anywhere but the mail host) or an OAuth2 sign-in with the
+ * user's own client id — both authenticate the same IMAP reading below.
+ * Each account polls on its own cadence; messages merge newest-first
+ * wherever they render.
  */
 export interface GmailAccount {
   id: string;
   address: string;
   appPassword: string;
+  /**
+   * How this mailbox signs in. Absent (or 'app-password') means the stored
+   * app password; 'oauth' means the record in `oauth` holds the client
+   * config and tokens, and `appPassword` is empty.
+   */
+  auth?: MailAuthKind;
+  /** OAuth2 client config and tokens. Only meaningful when auth is 'oauth'. */
+  oauth?: MailOAuth;
   enabled: boolean;
   /** How often to re-poll, in seconds. 0 means manual only (no timer). */
   refreshSeconds: number;
@@ -685,6 +696,19 @@ export interface VaultPreferences {
    */
   manualOrder: string[];
   /**
+   * Per-channel and per-folder drag orders, keyed by the sidebar id (`all`,
+   * `ch_…`, or `folder:fd_…`). The global list above is the fallback and the
+   * order `All logins` uses, so an existing vault keeps its arrangement; a
+   * channel the user has never dragged follows it too, and the first drop in
+   * that channel seeds its own list from what is on screen.
+   *
+   * Stored separately because one global order made arranging a folder's
+   * logins rearrange every other view: the same ids appeared in a different
+   * place the moment you came back. This is what "put it back how I left it"
+   * means when each channel is a different workspace.
+   */
+  manualOrderByScope: Record<string, string[]>;
+  /**
    * Shows the channel rail at all. Off hides the entire sidebar; a button in
    * the topbar brings it back, so this can never strand Settings.
    */
@@ -899,6 +923,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   hiddenFolders: [],
   hiddenButtons: [],
   manualOrder: [],
+  manualOrderByScope: {},
   showNewChannelButton: true,
   showCompactButton: true,
   showNewLoginButton: true,
@@ -1074,10 +1099,27 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     : [];
   merged.hiddenButtons = Array.isArray(merged.hiddenButtons)
     ? [...new Set(merged.hiddenButtons.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+        // The labelled Copy button was removed from the cards because it only
+        // appeared on some of them. A stored hide entry for it would otherwise
+        // sit in Settings › Hidden as a row that hides nothing.
+        .filter((id) => id !== 'card-copy')
     : [];
   merged.manualOrder = Array.isArray(merged.manualOrder)
     ? [...new Set(merged.manualOrder.filter((id): id is string => typeof id === 'string' && id.length > 0))]
     : [];
+  // Per-scope orders: same validation, one list at a time. A malformed entry
+  // is dropped rather than repaired into an empty list, so the fallback (the
+  // global order) applies instead of a scope silently losing its arrangement.
+  {
+    const raw = (merged.manualOrderByScope ?? {}) as Record<string, unknown>;
+    const clean: Record<string, string[]> = {};
+    for (const [scope, list] of Object.entries(raw)) {
+      if (!scope || !Array.isArray(list)) continue;
+      const ids = [...new Set(list.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+      if (ids.length > 0) clean[scope] = ids;
+    }
+    merged.manualOrderByScope = clean;
+  }
   merged.showNewChannelButton = Boolean(merged.showNewChannelButton);
   merged.showCompactButton = Boolean(merged.showCompactButton);
   // Visibility switches default to shown: a missing key must never hide a
@@ -1156,10 +1198,23 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
           : (providerForAddress(address)?.id ?? MAIL_PROVIDERS[0]!.id);
       const rawPort = record.port;
       const preset = providerById(provider);
+      // Sign-in kind. A usable oauth *config* (client id + both URLs) is
+      // enough to keep the account on the OAuth path — tokens may not exist
+      // yet, because the mailbox is saved before the browser flow finishes,
+      // so a sign-in that failed still leaves a Reconnect-able account
+      // instead of degrading to a password field the user never filled.
+      // Only a record whose config cannot drive a sign-in at all falls back
+      // to the old path rather than locking the mailbox out entirely.
+      const oauth = normaliseMailOAuth(record.oauth);
+      const auth: MailAuthKind = oauth ? 'oauth' : 'app-password';
       clean.push({
         id: typeof record.id === 'string' && record.id ? record.id : newGmailAccountId(),
         address,
-        appPassword,
+        // An OAuth mailbox never carries a password; a password mailbox never
+        // carries tokens. The two credentials are alternatives, not layers.
+        appPassword: auth === 'oauth' ? '' : appPassword,
+        auth,
+        ...(oauth ? { oauth } : {}),
         enabled: record.enabled !== false,
         refreshSeconds: cadence,
         provider,

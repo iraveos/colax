@@ -71,7 +71,12 @@ export interface BulkEdit {
   notes?: string;
   favorite?: boolean;
   needsAttention?: boolean;
+  /** Replaces every selected login's tags with this exact set. */
   tags?: string[];
+  /** Adds these tags to each selected login, keeping the rest. */
+  tagsAdd?: string[];
+  /** Removes these tags from each selected login, keeping the rest. */
+  tagsRemove?: string[];
   accentHue?: number | null;
   backgroundImage?: string;
   /** Replaces each login's whole security block. Only set by the security panel. */
@@ -123,9 +128,23 @@ export function diffBulkEdit(item: VaultItem, edit: BulkEdit): Partial<VaultItem
     patch.needsAttention = edit.needsAttention;
     dirty = true;
   }
+  // Two ways to touch tags. `tags` is a replacement; `tagsAdd`/`tagsRemove`
+  // edit around what a login already has, which is what a multi-selection
+  // needs: adding "work" to three logins must not delete the personal tag one
+  // of them happened to carry.
   if (edit.tags !== UNTOUCHED && !sameTags(edit.tags, item.tags)) {
     patch.tags = [...edit.tags];
     dirty = true;
+  } else if (edit.tagsAdd !== UNTOUCHED || edit.tagsRemove !== UNTOUCHED) {
+    const remove = new Set(edit.tagsRemove ?? []);
+    const next = item.tags.filter((id) => !remove.has(id));
+    for (const id of edit.tagsAdd ?? []) {
+      if (!next.includes(id)) next.push(id);
+    }
+    if (!sameTags(next, item.tags)) {
+      patch.tags = next;
+      dirty = true;
+    }
   }
   if (edit.accentHue !== UNTOUCHED && edit.accentHue !== item.accentHue) {
     patch.accentHue = edit.accentHue;
@@ -228,7 +247,13 @@ export function commonSecurity(items: readonly VaultItem[]): LoginSecurity | nul
 export function bulkMenu(options: {
   items: readonly VaultItem[];
   onShare: () => void;
-  onEditFields: () => void;
+  /**
+   * Opens the bulk editor on one field. Takes the field because a menu whose
+   * four entries all opened the Title form was worse than no menu: choosing
+   * Tags edited titles, and the tags screen looked broken because it never
+   * opened.
+   */
+  onEditFields: (field: 'title' | 'notes' | 'tags' | 'theme') => void;
   onEditSecurity: () => void;
   onDelete: () => void;
   onSelectAll: () => void;
@@ -265,10 +290,10 @@ export function bulkMenu(options: {
       label: `Edit ${noun}`,
       icon: options.icon.edit,
       items: [
-        { kind: 'item', label: 'Title', onSelect: options.onEditFields },
-        { kind: 'item', label: 'Notes', onSelect: options.onEditFields },
-        { kind: 'item', label: 'Tags', onSelect: options.onEditFields },
-        { kind: 'item', label: 'Theme', onSelect: options.onEditFields },
+        { kind: 'item', label: 'Title', onSelect: () => options.onEditFields('title') },
+        { kind: 'item', label: 'Notes', onSelect: () => options.onEditFields('notes') },
+        { kind: 'item', label: 'Tags', onSelect: () => options.onEditFields('tags') },
+        { kind: 'item', label: 'Theme', onSelect: () => options.onEditFields('theme') },
         { kind: 'separator' },
         { kind: 'item', label: 'Security', icon: options.icon.shield, onSelect: options.onEditSecurity },
       ],

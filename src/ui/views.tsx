@@ -875,20 +875,11 @@ export function AnimatedListView({
               {mailFor(item, mailScope, gmailAccounts) ? (
                   <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
               ) : null}
-              {item.password && !gone('card-copy') ? (
-                <button
-                  type="button"
-                  className="btn btn--secondary btn--sm"
-                  {...hideAttrs('card-copy', 'Copy button')}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onCopy(item.password, 'Password', item);
-                  }}
-                >
-                  <CopyIcon width="13" height="13" />
-                  Copy
-                </button>
-              ) : null}
+              {/* The labelled Copy button that used to live here is gone. It
+                  only rendered for a login with a password, so half the cards
+                  had it and half did not — which reads as a bug, not a state.
+                  Copying a password is still one click: the right-click menu,
+                  the dock, and the editor's own copy control. */}
             </div>
           </div>
         );
@@ -1127,7 +1118,6 @@ showTagChips,
   mailInlineImages,
   onCacheMail,
   onOpenExternal,
-  onCopy,
   onEdit,
   onSelect,
   onItemMenu,
@@ -1236,20 +1226,7 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
                     {mailFor(item, mailScope, gmailAccounts) ? (
                       <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
                     ) : null}
-                    {item.password && !gone('card-copy') ? (
-                      <button
-                        type="button"
-                        className="btn btn--secondary btn--sm"
-                        {...hideAttrs('card-copy', 'Copy button')}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onCopy(item.password, 'Password', item);
-                        }}
-                      >
-                        <CopyIcon width="13" height="13" />
-                        Copy
-                      </button>
-                    ) : null}
+                    {/* No labelled Copy button: see the note in Flow above. */}
                     {!gone('card-edit') ? (
                       <button
                         className="btn btn--icon"

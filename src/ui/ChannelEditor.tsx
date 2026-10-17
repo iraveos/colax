@@ -71,6 +71,8 @@ export function ChannelEditor({
   tags,
   itemCount,
   accounts,
+  seed,
+  onCreateTag,
   onSave,
   onAutosave,
   onDelete,
@@ -84,6 +86,14 @@ export function ChannelEditor({
   itemCount: number;
   /** Connected mailboxes, for the per-channel mail account picker. */
   accounts: GmailAccount[];
+  /**
+   * Starting values for a brand-new channel. Used by "New channel in this
+   * folder", which seeds the name-less draft with the folder's tags and look
+   * so the new row starts as a member of the folder rather than a blank one.
+   */
+  seed?: Partial<Channel>;
+  /** Creates and returns a tag, for the inline New tag control. */
+  onCreateTag?: (name: string) => Tag | null;
   onSave: (next: Channel) => void;
   /** Writes a change to an existing channel without announcing it. */
   onAutosave?: (next: Channel) => void;
@@ -91,7 +101,8 @@ export function ChannelEditor({
   onClose: () => void;
   onNotify: (message: string) => void;
 }) {
-  const [draft, setDraft] = useState<Channel>(() => channel ?? createChannel(''));
+  const [draft, setDraft] = useState<Channel>(() => channel ?? createChannel('', seed));
+  const [newTag, setNewTag] = useState('');
   const [imageUrl, setImageUrl] = useState(
     channel?.backgroundImage?.startsWith('http') ? channel.backgroundImage : '',
   );
@@ -112,6 +123,17 @@ export function ChannelEditor({
         ? draft.tagIds.filter((id) => id !== tagId)
         : [...draft.tagIds, tagId],
     });
+  }
+
+  /** Adds the typed tag without leaving the editor, or reuses its existing name. */
+  function addTag() {
+    const name = newTag.trim();
+    if (!name) return;
+    const existing = tags.find((tag) => tag.name.trim().toLowerCase() === name.toLowerCase());
+    const tag = existing ?? onCreateTag?.(name) ?? null;
+    if (!tag) return;
+    if (!draft.tagIds.includes(tag.id)) patch({ tagIds: [...draft.tagIds, tag.id] });
+    setNewTag('');
   }
 
   async function onPick(file: File | undefined) {
@@ -240,6 +262,28 @@ export function ChannelEditor({
             ))}
           </div>
         )}
+        <div className="field-row" style={{ marginTop: 'var(--space-2)' }}>
+          <input
+            className="input"
+            value={newTag}
+            placeholder="New tag name"
+            aria-label="New tag name"
+            onChange={(event) => setNewTag(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return;
+              event.preventDefault();
+              addTag();
+            }}
+          />
+          <button
+            type="button"
+            className="btn btn--secondary btn--sm"
+            disabled={!newTag.trim() || !onCreateTag}
+            onClick={addTag}
+          >
+            + Tag
+          </button>
+        </div>
         <p className="field__hint">
           {draft.tagIds.length === 0
             ? 'No tag filter — this channel shows everything the filter above returns.'

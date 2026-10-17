@@ -8,6 +8,7 @@ import {
   normaliseChannels,
   normaliseSidebar,
   groupChannelsIntoFolder,
+  channelSeedFromFolder,
   moveChannelToFolder,
   moveManualOrder,
   selectableIds,
@@ -17,6 +18,7 @@ import {
   type Channel,
   type Folder,
   type SidebarEntry,
+  type Tag,
 } from '../vault/channels.ts';
 import {
   DEFAULT_DOCK_SLOTS,
@@ -26,7 +28,7 @@ import {
   mergeMailCache,
   newDockId,
 } from '../vault/storage.ts';
-import { captureToDraft, findSimilarTag, mailboxOwnedBy, mailboxUsable, planMailLinkedOnly, suggestTagsForDraft, tagIdsForDraft } from '../vault/site-intel.ts';
+import { captureToDraft, findSimilarTag, mailboxOwnedBy, mailboxUsable, planMailLinkedOnly, tagIdsForDraft } from '../vault/site-intel.ts';
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
 import { FolderEditor } from './FolderEditor.tsx';
@@ -162,6 +164,26 @@ export function App() {
 
   const [activeId, setActiveId] = useState('all');
   const [query, setQuery] = useState('');
+  /** Tags chosen from the search bar's tag picker; any of them matches. */
+  const [tagFilters, setTagFilters] = useState<string[]>([]);
+  const [tagPickerOpen, setTagPickerOpen] = useState(false);
+  const [tagPickerQuery, setTagPickerQuery] = useState('');
+  /** Whether the open folder's notes are expanded. Per visit, not persisted. */
+  const [notesOpen, setNotesOpen] = useState(false);
+  useEffect(() => {
+    setNotesOpen(false);
+  }, [activeId]);
+  // The tag picker closes on a click anywhere outside it, the way a popover
+  // should; leaving it open behind the next click would swallow that click.
+  useEffect(() => {
+    if (!tagPickerOpen) return;
+    const onDown = (event: MouseEvent) => {
+      if (tagPicker.current?.contains(event.target as Node)) return;
+      setTagPickerOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [tagPickerOpen]);
   /** Search covers the active channel; 'all' widens it to the whole vault. */
   const [searchScope, setSearchScope] = useState<'channel' | 'all'>('channel');
   // A new channel is a new scope: searching the whole vault must not leak
@@ -212,6 +234,11 @@ export function App() {
   // computed, and a paste has to read the *current* selection, not the one from
   // the render that first installed the watcher.
   const focusedTagsRef = useRef<readonly string[]>([]);
+  // Whether a folder (rather than a channel) is open, mirrored into a ref for
+  // the same reason as the tags: the paste and clipboard paths are wired up
+  // before the sidebar tree is computed. A login that arrives in a folder is
+  // filed by the folder, never by a provider guess from its address.
+  const folderOpenRef = useRef(false);
   // The bulk menu itself, for the same reason: the window listener reads it but
   // must not depend on it.
   const selectionMenuRef = useRef<MenuItem[]>([]);
@@ -237,6 +264,7 @@ export function App() {
     setShowSettings(true);
   }, []);
   const search = useRef<HTMLInputElement>(null);
+  const tagPicker = useRef<HTMLDivElement>(null);
   const view = vault.prefs.view;
   const prefs = vault.prefs;
 
@@ -252,11 +280,11 @@ export function App() {
       // come first, then whatever the login's own address and site suggest. With
       // neither, the login is left untagged and waits in Unassigned, as before.
       const { tagIds, catalogue } = tagIdsForDraft(creds, focusedTagsRef.current, prefs.tags, {
-        autoTag: prefs.autoTagDomain,
+        autoTag: prefs.autoTagDomain && !folderOpenRef.current,
       });
       void (async () => {
         if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
-        await vault.mutate(() =>
+        const created = await vault.mutate(() =>
           vault.service.addItem({
             // A clipboard block that carried a title keeps it; otherwise the
             // local part of the address is a better guess than "Clipboard login".
@@ -268,6 +296,7 @@ export function App() {
             tags: tagIds,
           }),
         );
+        appendToOrder([created.id]);
         notify('Saved credentials from the clipboard');
       })();
     },
@@ -367,8 +396,9 @@ export function App() {
         }
       }
 
-      await vault.mutate(() => vault.service.addItem({ ...draft, tags: tagIds }));
+      const created = await vault.mutate(() => vault.service.addItem({ ...draft, tags: tagIds }));
       await vault.updatePrefs({ tags: catalogue, channels });
+      appendToOrder([created.id]);
       notify(`Saved ${draft.title}`);
     },
     [notify, prefs.autoTagChannel, prefs.channels, prefs.tags, vault],
@@ -466,6 +496,46 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     return channelLookup.find((channel) => channel.id === activeId) ?? channelLookup.find((c) => c.kind === 'all') ?? channels[0]!;
   }, [channelLookup, activeId, activeFolder, channels]);
 
+  /** The workspace whose drag order applies: a folder, a channel, or all. */
+  const scopeKey = activeFolder ? `folder:${activeFolder.id}` : activeId;
+
+  /**
+   * The folder a channel is being created in — the one explicitly chosen from
+   * a folder's menu, or the folder that is open. Null at the root.
+   */
+  const pendingChannelFolder = useMemo(() => {
+    const id = newChannelFolder ?? activeFolder?.id ?? null;
+    return id ? folders.find((folder) => folder.id === id) ?? null : null;
+  }, [newChannelFolder, activeFolder, folders]);
+
+  /** Starting tags and look for a new channel, copied from that folder. */
+  const channelSeed = useMemo(
+    () => (pendingChannelFolder ? channelSeedFromFolder(pendingChannelFolder) : undefined),
+    [pendingChannelFolder],
+  );
+
+  /**
+   * Records freshly added logins at the end of the current workspace's order.
+   * New logins used to land wherever the alphabetical tie-break put them (and,
+   * inside a scope with no order of its own, in the middle of the list). This
+   * pins them to the bottom of the page the user just added to.
+   */
+  const appendToOrder = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      const base = prefs.manualOrderByScope[scopeKey] ?? prefs.manualOrder;
+      const nextScope = [...base];
+      for (const id of ids) if (!nextScope.includes(id)) nextScope.push(id);
+      const nextGlobal = [...prefs.manualOrder];
+      for (const id of ids) if (!nextGlobal.includes(id)) nextGlobal.push(id);
+      void vault.updatePrefs({
+        manualOrder: nextGlobal,
+        manualOrderByScope: { ...prefs.manualOrderByScope, [scopeKey]: nextScope },
+      });
+    },
+    [prefs.manualOrder, prefs.manualOrderByScope, scopeKey, vault],
+  );
+
   /**
    * The tags the open channel — or, for a folder, its channels — stands for.
    *
@@ -477,6 +547,12 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
    */
   const focusedTagIds = useMemo(() => {
     if (activeFolder) {
+      // A folder files by its own tags first. Its main and alternate sets are
+      // what a login created here belongs to; the old union-of-children rule
+      // was what put a login under "Google" while it was pasted into a work
+      // folder whose channels had no tags at all.
+      const own = [...new Set([...activeFolder.tagIds, ...activeFolder.altTagIds])];
+      if (own.length > 0) return own;
       const entry = sidebarBase.find((row) => row.kind === 'folder' && row.id === activeFolder.id);
       const ids = new Set<string>();
       if (entry && entry.kind === 'folder') {
@@ -492,6 +568,7 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     return activeChannel?.tagIds ?? [];
   }, [activeFolder, activeChannel, sidebarBase, channelLookup]);
   focusedTagsRef.current = focusedTagIds;
+  folderOpenRef.current = Boolean(activeFolder);
 
   /** The Dashboard row, so the reused-password notice can lead there. */
   const dashboardChannelId = useMemo(
@@ -825,7 +902,9 @@ const visible = useMemo(() => {
           if (child.kind !== 'channel') continue;
           const channel = channelLookup.find((candidate) => candidate.id === child.id);
           if (!channel) continue;
-          for (const item of applyChannel(channel, vault.items, staleDays)) {
+          // Folder tags narrow each child channel too: main tags always, and
+          // alternate tags only for a child that has no tags of its own.
+          for (const item of applyChannel(channel, vault.items, staleDays, activeFolder)) {
             if (!seen.has(item.id)) {
               seen.add(item.id);
               list.push(item);
@@ -837,12 +916,17 @@ const visible = useMemo(() => {
       // Channel-scoped (and folder-scoped above): the channel filters first,
       // the text query filters second. Searching the whole vault is what the
       // explicit "entire vault" scope is for.
-      list = applyChannel(activeChannel!, vault.items, staleDays);
+      const parent = getParentFolderForChannel(activeChannel!.id);
+      list = applyChannel(activeChannel!, vault.items, staleDays, parent);
     }
 
-    // The drag order, as an index map. Ids never dragged stay after every
-    // placed id in title order, so new logins need no bookkeeping.
-    const manualIndex = new Map(prefs.manualOrder.map((id, index) => [id, index] as const));
+    // The drag order, as an index map. Each workspace has its own list, so
+    // arranging one channel does not rearrange another; a workspace with no
+    // list of its own follows the global order, which is what an existing
+    // vault already has. Ids never dragged stay after every placed id in
+    // title order, so new logins need no bookkeeping.
+    const orderForScope = prefs.manualOrderByScope[scopeKey] ?? prefs.manualOrder;
+    const manualIndex = new Map(orderForScope.map((id, index) => [id, index] as const));
     // One row per login, no matter the source: a duplicated id would render
     // the same login twice (two identical React keys), which reads as ghost
     // duplication in every view.
@@ -877,13 +961,41 @@ const visible = useMemo(() => {
       }
     });
 
-    if (!needle) return sorted;
-    return sorted.filter((item) =>
-      [item.title, item.username, item.url, item.notes].some((field) =>
+    // Tags chosen from the search bar. Applied before the text query so the two
+    // narrow together: a picked tag plus a typed word is "that tag AND this
+    // text", which is what the two controls sitting in one bar imply.
+    const tagged = tagFilters.length === 0
+      ? sorted
+      : sorted.filter((item) => tagFilters.some((id) => item.tags.includes(id)));
+
+    if (!needle) return tagged;
+    // Tag names count as searchable text too, so typing "work" finds a login
+    // carrying that tag even when its title and username say nothing about it.
+    const tagNames = (item: VaultItem) =>
+      item.tags.map((id) => prefs.tags.find((tag) => tag.id === id)?.name ?? '').join(' ');
+    return tagged.filter((item) =>
+      [item.title, item.username, item.url, item.notes, tagNames(item)].some((field) =>
         (field ?? '').toLowerCase().includes(needle),
       ),
     );
-  }, [vault.items, activeChannel, activeFolder, sidebarBase, channelLookup, query, searchScope, prefs.sort, prefs.pinFavorites, prefs.manualOrder, staleDays]);
+  }, [
+    vault.items,
+    activeChannel,
+    activeFolder,
+    sidebarBase,
+    channelLookup,
+    getParentFolderForChannel,
+    query,
+    searchScope,
+    prefs.sort,
+    prefs.pinFavorites,
+    prefs.manualOrder,
+    prefs.manualOrderByScope,
+    prefs.tags,
+    scopeKey,
+    tagFilters,
+    staleDays,
+  ]);
 
 
 
@@ -901,18 +1013,26 @@ const visible = useMemo(() => {
       const byTitle = [...vault.items]
         .sort((a, b) => (a.title || '~').toLowerCase().localeCompare((b.title || '~').toLowerCase()))
         .map((item) => item.id);
-      const next = moveManualOrder(prefs.manualOrder, flatIds, byTitle, loginId, toIndex);
+      const current = prefs.manualOrderByScope[scopeKey] ?? prefs.manualOrder;
+      const next = moveManualOrder(current, flatIds, byTitle, loginId, toIndex);
       const firstManual = prefs.sort !== 'manual';
       // A drop that changes nothing (onto itself, or before its own successor)
       // saves nothing — least of all a toast claiming something happened.
-      if (!firstManual && next.join('\n') === prefs.manualOrder.join('\n')) return;
+      if (!firstManual && next.join('\n') === current.join('\n')) return;
       void vault
-        .updatePrefs({ manualOrder: next, ...(firstManual ? { sort: 'manual' as const } : {}) })
+        .updatePrefs({
+          manualOrderByScope: { ...prefs.manualOrderByScope, [scopeKey]: next },
+          // The all-logins order doubles as the fallback every other scope
+          // follows, so keeping it in step with a drop made there is what lets
+          // a brand-new channel open in the arrangement the user knows.
+          ...(scopeKey === 'all' ? { manualOrder: next } : {}),
+          ...(firstManual ? { sort: 'manual' as const } : {}),
+        })
         .then(() => {
           if (firstManual) notify('Custom order saved — sorting switched to Custom');
         });
     },
-    [vault, notify, prefs.manualOrder, prefs.sort, vault.items],
+    [vault, notify, prefs.manualOrder, prefs.manualOrderByScope, prefs.sort, scopeKey, vault.items],
   );
 
   /* ---- Channel editing -------------------------------------------------- */
@@ -928,11 +1048,15 @@ const visible = useMemo(() => {
       const nextChannels = exists
         ? channels.map((channel) => (channel.id === next.id ? next : channel))
         : [...channels, next];
-      // A new channel appears at the end of the sidebar tree.
+      // A new channel appears at the end of the sidebar tree — or inside the
+      // folder it was created from. The folder menu sets `newChannelFolder`;
+      // creating one while a folder is open implies the same thing, which is
+      // what makes "new channel" inside a folder land in that folder.
       let nextSidebar = exists ? sidebarBase : [...sidebarBase, { kind: 'channel', id: next.id } as SidebarEntry];
-      if (!exists && newChannelFolder) {
-        nextSidebar = moveChannelToFolder(nextSidebar, next.id, newChannelFolder);
-        setNewChannelFolder(null);
+      const targetFolder = newChannelFolder ?? activeFolder?.id ?? null;
+      if (!exists && targetFolder) {
+        nextSidebar = moveChannelToFolder(nextSidebar, next.id, targetFolder);
+        if (newChannelFolder) setNewChannelFolder(null);
       }
       void vault.updatePrefs({ channels: nextChannels, sidebar: nextSidebar });
       if (!exists) {
@@ -942,7 +1066,7 @@ const visible = useMemo(() => {
         notify(`Channel "${next.name}" updated`);
       }
     },
-    [channels, vault, notify, sidebarBase, newChannelFolder],
+    [channels, vault, notify, sidebarBase, newChannelFolder, activeFolder],
   );
 
   const saveChannel = useCallback((next: Channel) => writeChannel(next, true), [writeChannel]);
@@ -1419,9 +1543,23 @@ const visible = useMemo(() => {
       },
       {
         kind: 'item',
-        label: 'Edit folder…',
-        icon: <EditIcon />,
+        label: 'Edit tags & notes…',
+        icon: <TagIcon />,
         onSelect: () => setEditingFolder(folder.id),
+      },
+      {
+        kind: 'item',
+        label: folder.notesHidden ? 'Show notes button' : 'Hide notes button',
+        icon: <EyeOffIcon />,
+        disabled: !folder.notes.trim(),
+        onSelect: () => {
+          void vault.updatePrefs({
+            folders: folders.map((entry) =>
+              entry.id === folder.id ? { ...entry, notesHidden: !entry.notesHidden } : entry,
+            ),
+          });
+          notify(folder.notesHidden ? 'Notes button shown' : 'Notes button hidden — the notes are still saved');
+        },
       },
       {
         kind: 'item',
@@ -2196,8 +2334,9 @@ label: 'Settings',
         }
         void vault
           .mutate(async () => {
+            const ids: string[] = [];
             for (const creds of fresh) {
-              await vault.service.addItem({
+              const added = await vault.service.addItem({
                 title: creds.title?.trim() || creds.username.split('@')[0] || 'Pasted login',
                 username: creds.username,
                 password: creds.password,
@@ -2205,15 +2344,18 @@ label: 'Settings',
                 notes: creds.notes ?? '',
                 tags: pasteTags,
               });
+              ids.push(added.id);
             }
+            return ids;
           })
-          .then(() =>
+          .then((ids) => {
+            appendToOrder(ids);
             notify(
               fresh.length === 1
                 ? `Created login in ${where}`
                 : `Created ${fresh.length} logins in ${where}`,
-            ),
-          );
+            );
+          });
         return;
       }
       const creds = detectClipboard(text);
@@ -2237,11 +2379,14 @@ label: 'Settings',
             tags: pasteTags,
           }),
         )
-        .then(() => notify(`Created login in ${where}`));
+        .then((added) => {
+          appendToOrder([added.id]);
+          notify(`Created login in ${where}`);
+        });
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [vault, notify, activeChannel, activeFolder, sidebarBase, channelLookup, prefs.tags]);
+  }, [vault, notify, activeChannel, activeFolder, sidebarBase, channelLookup, prefs.tags, appendToOrder]);
 
   useViewShortcuts((next) => void vault.updatePrefs({ view: next }));
 
@@ -2702,6 +2847,29 @@ label: 'Settings',
     await copy(text, selectedItems.length === 1 ? 'Login' : `${selectedItems.length} logins`);
   }, [copy, selectedItems]);
 
+  /**
+   * Creates a tag from wherever one is being picked — a bulk edit, a channel
+   * or a folder — and returns it so the caller can select it immediately.
+   *
+   * Exact names only: this is an explicit "make this tag" action, so unlike
+   * the automatic suggestion path it must not adopt a merely similar existing
+   * tag. A name that already exists is returned as-is rather than duplicated.
+   */
+  const createTagNow = useCallback(
+    (name: string): Tag | null => {
+      const trimmed = name.trim();
+      if (!trimmed) return null;
+      const existing = prefs.tags.find(
+        (tag) => tag.name.trim().toLowerCase() === trimmed.toLowerCase(),
+      );
+      if (existing) return existing;
+      const created = createTag(trimmed, prefs.tags);
+      void vault.updatePrefs({ tags: [...prefs.tags, created] });
+      return created;
+    },
+    [prefs.tags, vault],
+  );
+
   const applySelectionEdit = useCallback(
     async (edit: BulkEdit) => {
       const target = selectedItems;
@@ -2723,7 +2891,10 @@ label: 'Settings',
         items: selectedItems,
         icon: { share: <ShareIcon />, edit: <EditIcon />, shield: <ShieldIcon />, trash: <TrashIcon />, all: <CheckIcon /> },
         onShare: () => void shareSelection(),
-        onEditFields: () => setBulkField('title'),
+        // The field travels with the menu entry now. Before this, all four
+        // entries opened the Title form, so choosing Tags or Theme looked like
+        // a broken dialog rather than the wrong one.
+        onEditFields: (field) => setBulkField(field),
         // Deliberately concrete actions rather than a bulk security form. Every
         // entry names one field and does one thing, so there is no state in
         // which a factor could be carried across from one login to another by
@@ -2985,33 +3156,118 @@ onCreate={vault.create}
 
             {/* Search sits alone in the centre column. */}
             <div className="topbar__centre">
-              <div className="search">
-                <SearchIcon className="search__icon" width="15" height="15" />
-                <input
-                  ref={search}
-                  className="search__input"
-                  type="text"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search logins"
-                  aria-label="Search logins"
-                />
-                {query ? (
-                  <button
-                    className="search__clear"
-                    aria-label="Clear search"
-                    onClick={() => {
-                      setQuery('');
-                      search.current?.focus();
-                    }}
-                  >
-                    <XIcon width="14" height="14" />
-                  </button>
-                ) : (
-                  <span className="search__kbd">
-                    <span className="kbd">/</span>
-                  </span>
-                )}
+              <div className="search-cluster" ref={tagPicker}>
+                <div className="search">
+                  <SearchIcon className="search__icon" width="15" height="15" />
+                  <input
+                    ref={search}
+                    className="search__input"
+                    type="text"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="Search logins or tags"
+                    aria-label="Search logins or tags"
+                  />
+                  {query ? (
+                    <button
+                      className="search__clear"
+                      aria-label="Clear search"
+                      onClick={() => {
+                        setQuery('');
+                        search.current?.focus();
+                      }}
+                    >
+                      <XIcon width="14" height="14" />
+                    </button>
+                  ) : (
+                    <span className="search__kbd">
+                      <span className="kbd">/</span>
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="search__tagbtn"
+                  aria-label="Filter by tags"
+                  aria-expanded={tagPickerOpen}
+                  data-on={tagFilters.length > 0 || tagPickerOpen || undefined}
+                  title="Filter by tags"
+                  onClick={() => setTagPickerOpen((open) => !open)}
+                >
+                  <TagIcon width="14" height="14" />
+                  {tagFilters.length > 0 ? <span className="search__tagcount">{tagFilters.length}</span> : null}
+                </button>
+
+                {tagPickerOpen ? (
+                  <div className="tag-picker" role="dialog" aria-label="Filter by tags">
+                    <input
+                      className="input tag-picker__search"
+                      value={tagPickerQuery}
+                      autoFocus
+                      placeholder="Find a tag or type a new one…"
+                      aria-label="Find a tag or type a new one"
+                      onChange={(event) => setTagPickerQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') return;
+                        event.preventDefault();
+                        const name = tagPickerQuery.trim();
+                        if (!name) return;
+                        const existing = prefs.tags.find(
+                          (tag) => tag.name.trim().toLowerCase() === name.toLowerCase(),
+                        );
+                        const tag = existing ?? createTagNow(name);
+                        if (!tag) return;
+                        setTagFilters((current) =>
+                          current.includes(tag.id) ? current : [...current, tag.id],
+                        );
+                        setTagPickerQuery('');
+                      }}
+                    />
+                    <div className="tag-picker__list">
+                      {prefs.tags.length === 0 ? (
+                        <p className="field__hint">No tags yet — type a name to create one.</p>
+                      ) : null}
+                      {prefs.tags
+                        .filter((tag) =>
+                          tagPickerQuery.trim()
+                            ? tag.name.toLowerCase().includes(tagPickerQuery.trim().toLowerCase())
+                            : true,
+                        )
+                        .map((tag) => {
+                          const on = tagFilters.includes(tag.id);
+                          return (
+                            <button
+                              key={tag.id}
+                              type="button"
+                              className="tag-chip"
+                              aria-pressed={on}
+                              style={{ ['--tag-h' as string]: String(tag.hue) }}
+                              onClick={() =>
+                                setTagFilters((current) =>
+                                  on ? current.filter((id) => id !== tag.id) : [...current, tag.id],
+                                )
+                              }
+                            >
+                              <span className="tag-chip__dot" />
+                              {tag.name}
+                            </button>
+                          );
+                        })}
+                    </div>
+                    <div className="tag-picker__foot">
+                      <span className="field__hint" style={{ margin: 0 }}>
+                        {tagFilters.length === 0
+                          ? 'Pick any tag to narrow the list'
+                          : `${tagFilters.length} tag${tagFilters.length === 1 ? '' : 's'} on`}
+                      </span>
+                      {tagFilters.length > 0 ? (
+                        <button type="button" className="btn btn--quiet btn--sm" onClick={() => setTagFilters([])}>
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
               </div>
               {query.trim() && searchScope === 'all' ? (
                 <button
@@ -3079,6 +3335,55 @@ onCreate={vault.create}
                 : undefined),
             }}
           >
+            {/* The folder's notes live behind one small pill, not a permanent
+                panel: they are reference material, not part of the list. The
+                panel sits in the flow when open, so the list moves down to
+                make room instead of being covered. Right-click files the pill
+                away; the folder menu and editor bring it back. */}
+            {activeFolder && !folderLocked && !activeFolder.notesHidden && activeFolder.notes.trim() ? (
+              <div className="folder-notes">
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm folder-notes__toggle"
+                  aria-expanded={notesOpen}
+                  title={notesOpen ? 'Collapse notes' : 'Show folder notes (right-click to hide this button)'}
+                  onClick={() => setNotesOpen((open) => !open)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setNotesOpen(false);
+                    void vault.updatePrefs({
+                      folders: folders.map((entry) =>
+                        entry.id === activeFolder.id ? { ...entry, notesHidden: true } : entry,
+                      ),
+                    });
+                    notify('Notes button hidden — right-click the folder to show it again');
+                  }}
+                >
+                  <TagIcon width="14" height="14" />
+                  Notes
+                </button>
+                {notesOpen ? (
+                  <div className="folder-notes__panel">
+                    <div className="folder-notes__head">
+                      <span>
+                        {activeFolder.name} · notes
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn--quiet btn--icon"
+                        aria-label="Collapse notes"
+                        onClick={() => setNotesOpen(false)}
+                      >
+                        <XIcon width="14" height="14" />
+                      </button>
+                    </div>
+                    <div className="folder-notes__body">{activeFolder.notes}</div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {folderLocked && activeFolder ? (
               <SecurityGate
                 security={activeFolder.security}
@@ -3219,6 +3524,7 @@ onCreate={vault.create}
           items={selectedItems}
           field={bulkField}
           tags={prefs.tags}
+          onCreateTag={createTagNow}
           onApply={(edit) => void applySelectionEdit(edit)}
           onCancel={() => setBulkField(null)}
           onNotify={notify}
@@ -3237,33 +3543,38 @@ onCreate={vault.create}
               let catalogue = prefs.tags;
               const planned = entries.map((entry) => {
                 const { tagIds, catalogue: next } = tagIdsForDraft(entry, focusedTagIds, catalogue, {
-                  autoTag: prefs.autoTagDomain,
+                  // Bulk-added logins follow the same rule as single ones: in a
+                  // folder they take the folder's tags, not a provider guess.
+                  autoTag: prefs.autoTagDomain && !activeFolder,
                 });
                 catalogue = next;
                 return { entry, tagIds };
               });
-              const created = catalogue !== prefs.tags;
-              if (created) await vault.updatePrefs({ tags: catalogue });
-              const added = await vault.mutate(async () => {
+              const addedTags = catalogue !== prefs.tags;
+              if (addedTags) await vault.updatePrefs({ tags: catalogue });
+              const created = await vault.mutate(async () => {
                 const saved = new Set(vault.items.map((item) => item.username.trim().toLowerCase()).filter(Boolean));
-                let count = 0;
+                const ids: string[] = [];
                 for (const { entry, tagIds } of planned) {
                   // Re-checked at write time, so an address saved while the
                   // dialog was open still cannot duplicate.
                   if (saved.has(entry.username.toLowerCase())) continue;
                   saved.add(entry.username.toLowerCase());
-                  await vault.service.addItem({
+                  const added = await vault.service.addItem({
                     title: entry.username.split('@')[0] || entry.username,
                     username: entry.username,
                     password: entry.password,
                     tags: tagIds,
                   });
-                  count += 1;
+                  ids.push(added.id);
                 }
-                return count;
+                return ids;
               });
+              // New logins go to the bottom of the workspace they were added
+              // to, so a bulk paste reads in the order it was pasted.
+              appendToOrder(created);
               notify(
-                (added === 1 ? 'Added 1 login' : `Added ${added} logins`) +
+                (created.length === 1 ? 'Added 1 login' : `Added ${created.length} logins`) +
                   (planned.some((row) => row.tagIds.length > 0) ? ' — tagged by what they are for' : ''),
               );
             })();
@@ -3413,6 +3724,8 @@ onCreate={vault.create}
         <FolderEditor
           key={editingFolder}
           folder={editingFolder === 'new' ? null : folders.find((entry) => entry.id === editingFolder) ?? null}
+          tags={prefs.tags}
+          onCreateTag={createTagNow}
           onSave={saveFolder}
           onAutosave={autosaveFolder}
           onDelete={deleteFolder}
@@ -3436,11 +3749,11 @@ onCreate={vault.create}
                   // Same rule as the auto-save path: the open channel or folder
                   // supplies the tags, the login's own address adds any it earns.
                   const { tagIds, catalogue } = tagIdsForDraft(clipPending, focusedTagIds, prefs.tags, {
-                    autoTag: prefs.autoTagDomain,
+                    autoTag: prefs.autoTagDomain && !activeFolder,
                   });
                   void (async () => {
                     if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
-                    await vault.mutate(() =>
+                    const created = await vault.mutate(() =>
                       vault.service.addItem({
                         title: clipPending.title?.trim() || clipPending.username.split('@')[0] || 'Clipboard login',
                         username: clipPending.username,
@@ -3450,6 +3763,7 @@ onCreate={vault.create}
                         tags: tagIds,
                       }),
                     );
+                    appendToOrder([created.id]);
                     notify('Saved from the clipboard');
                   })();
                   dismissClip();
@@ -3536,6 +3850,8 @@ onCreate={vault.create}
           key={editingChannel}
           channel={editingChannel === 'new' ? null : channels.find((entry) => entry.id === editingChannel) ?? null}
           tags={prefs.tags}
+          seed={channelSeed}
+          onCreateTag={createTagNow}
           accounts={prefs.gmailAccounts}
           itemCount={
             editingChannel === 'new'
@@ -3589,26 +3905,18 @@ onCreate={vault.create}
           }}
           onSave={async (draft) => {
             if (editing === 'new') {
-              // Auto-tag the new login from its website and email provider.
-              if (prefs.autoTagDomain) {
-                let catalogue = prefs.tags;
-                for (const suggestion of suggestTagsForDraft(draft)) {
-                  const existing = findSimilarTag(suggestion.name, catalogue.map((tag) => ({ id: tag.id, name: tag.name })));
-                  let tagId: string;
-                  if (existing) {
-                    tagId = existing.id;
-                  } else {
-                    const created = createTag(suggestion.name, catalogue);
-                    catalogue = [...catalogue, created];
-                    tagId = created.id;
-                  }
-                  if (!(draft.tags ?? []).includes(tagId)) {
-                    draft = { ...draft, tags: [...(draft.tags ?? []), tagId] };
-                  }
-                }
-                if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
-              }
+              // Tags for a login created here. The open channel or folder is the
+              // context it belongs to, so its tags come first. Domain guesses
+              // are only added outside a folder: a login made in a folder must
+              // be filed by that folder, not by whichever provider happens to
+              // own the address.
+              const { tagIds, catalogue } = tagIdsForDraft(draft, focusedTagIds, prefs.tags, {
+                autoTag: prefs.autoTagDomain && !activeFolder,
+              });
+              if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
+              draft = { ...draft, tags: [...new Set([...(draft.tags ?? []), ...tagIds])] };
               const created = await vault.mutate(() => vault.service.addItem(draft));
+              appendToOrder([created.id]);
               touchLogin(created.id);
               notify('Login added');
             } else if (editing) {

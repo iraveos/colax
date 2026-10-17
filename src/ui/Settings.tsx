@@ -13,6 +13,12 @@ import {
   type VaultView,
 } from '../vault/storage.ts';
 import { downloadBackup, parseBackup, pickBackupFile } from '../vault/backup.ts';
+import {
+  downloadThemeBackup,
+  parseThemeBackup,
+  themeBackupFrom,
+  themeBackupPreferences,
+} from '../vault/theme-backup.ts';
 import { verifyBackupPassword, type BackupFile, type VaultService } from '../vault/vault-service.ts';
 import type { VaultProtection } from '../crypto/vault-crypto.ts';
 import { openVaultKey, PBKDF2_ITERATIONS, rewrapVaultKey } from '../crypto/vault-crypto.ts';
@@ -1520,6 +1526,54 @@ export function Settings(props: {
               <DownloadIcon width="14" height="14" />
               Export
             </button>
+          </Row>
+          <Row
+            label="Theme & layout backup"
+            hint="Appearance, background, card sizing, channels, folders, their tags and notes, the sidebar tree and bars — everything except logins. Importing replaces the current channels, folders, tags and look; your logins stay where they are. Safe to share, and the way to move a setup to another machine."
+          >
+            <div className="field-row" style={{ justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="btn btn--secondary"
+                onClick={() => {
+                  downloadThemeBackup(themeBackupFrom(prefs));
+                  onNotify('Theme backup downloaded');
+                }}
+              >
+                <DownloadIcon width="14" height="14" />
+                Export theme
+              </button>
+              <label className="btn btn--secondary">
+                <UploadIcon width="14" height="14" />
+                Import theme
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  className="sr-only"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    // Reset so importing the same file twice fires again.
+                    event.target.value = '';
+                    if (!file) return;
+                    void file
+                      .text()
+                      .then((text) => {
+                        const backup = parseThemeBackup(text);
+                        set(themeBackupPreferences(backup));
+                        onNotify(
+                          `Theme imported${backup.label ? ` from “${backup.label}”` : ''} — look, folders, tags and the sidebar are in place`,
+                        );
+                      })
+                      .catch((cause: unknown) =>
+                        onNotify(
+                          cause instanceof Error ? cause.message : 'That theme backup could not be read',
+                          'error',
+                        ),
+                      );
+                  }}
+                />
+              </label>
+            </div>
           </Row>
           <Row label="Restore from backup" hint="Replaces everything currently in this vault.">
             <button

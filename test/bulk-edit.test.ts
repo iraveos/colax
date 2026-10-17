@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { diffBulkEdit, countAffected, commonSecurity, type BulkEdit } from '../src/ui/bulk-edit.ts';
+import { bulkMenu, diffBulkEdit, countAffected, commonSecurity, type BulkEdit } from '../src/ui/bulk-edit.ts';
 import { formatLoginForClipboard, formatLoginsForClipboard } from '../src/ui/login-format.ts';
 import { emptyItem, type VaultItem } from '../src/vault/types.ts';
 import { EMPTY_SECURITY } from '../src/crypto/security.ts';
@@ -189,4 +189,44 @@ test('a login with nothing set formats to nothing', () => {
     formatLoginForClipboard({ title: '   ', username: '', password: '', url: '', notes: '' }),
     '',
   );
+});
+
+test('adding a tag keeps the tags each login already had', () => {
+  // The old tags panel wrote one set onto everyone, so giving three logins a
+  // shared "work" tag could delete the personal tag one of them carried.
+  const withPersonal = item({ tags: ['tg_personal'] });
+  const bare = item({ id: 'i2' });
+  assert.deepEqual(diffBulkEdit(withPersonal, { tagsAdd: ['tg_work'], tagsRemove: [] })?.tags, [
+    'tg_personal',
+    'tg_work',
+  ]);
+  assert.deepEqual(diffBulkEdit(bare, { tagsAdd: ['tg_work'], tagsRemove: [] })?.tags, ['tg_work']);
+});
+
+test('removing a tag leaves the login its other tags', () => {
+  const it = item({ tags: ['tg_a', 'tg_b'] });
+  assert.deepEqual(diffBulkEdit(it, { tagsRemove: ['tg_a'], tagsAdd: [] })?.tags, ['tg_b']);
+  // A tag that is not there is a no-op, so nothing is written and updatedAt
+  // stays honest.
+  assert.equal(diffBulkEdit(item({ tags: ['tg_b'] }), { tagsRemove: ['tg_a'], tagsAdd: [] }), undefined);
+});
+
+test('the bulk menu opens the field it names', () => {
+  const opened: string[] = [];
+  const menu = bulkMenu({
+    items: [item({ title: 'A' }), item({ id: 'i2', title: 'B' })],
+    onShare: () => {},
+    onEditFields: (field) => opened.push(field),
+    onEditSecurity: () => {},
+    onDelete: () => {},
+    onSelectAll: () => {},
+    onClear: () => {},
+    icon: { share: null, edit: null, shield: null, trash: null, all: null },
+  });
+  const editMenu = menu.find((entry) => entry.kind === 'submenu' && entry.label.startsWith('Edit'));
+  assert.ok(editMenu && editMenu.kind === 'submenu');
+  for (const entry of editMenu.items) {
+    if (entry.kind === 'item' && ['Title', 'Notes', 'Tags', 'Theme'].includes(entry.label)) entry.onSelect?.();
+  }
+  assert.deepEqual(opened, ['title', 'notes', 'tags', 'theme']);
 });

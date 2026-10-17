@@ -288,7 +288,6 @@ export type ChromeElementId =
  * Unknown ids fall back to the raw id, so a button added later still reads.
  */
 export const HIDDEN_BUTTON_LABELS: Record<string, string> = {
-  'card-copy': 'Copy button',
   'card-edit': 'Edit button',
   'card-reveal': 'Reveal button',
   'card-menu': 'More-actions button',

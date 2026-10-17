@@ -1,9 +1,16 @@
 import { useRef, useState } from 'react';
-import { CHANNEL_ACCENTS, CHANNEL_ICONS, createFolder, type ChannelAccent, type Folder } from '../vault/channels.ts';
+import {
+  CHANNEL_ACCENTS,
+  CHANNEL_ICONS,
+  createFolder,
+  type ChannelAccent,
+  type Folder,
+  type Tag,
+} from '../vault/channels.ts';
 import { MAX_APP_BACKGROUND_BYTES } from '../vault/types.ts';
 import { readImageFile } from './card-art.ts';
 import { useDraftAutoSave } from './hooks.ts';
-import { Modal } from './primitives.tsx';
+import { Modal, Toggle } from './primitives.tsx';
 import { SecurityForm } from './SecurityForm.tsx';
 import {
   CloudIcon,
@@ -44,6 +51,8 @@ const ACCENT_HUES: Record<string, number> = { slate: 212, sage: 152, dusk: 268, 
  */
 export function FolderEditor({
   folder,
+  tags,
+  onCreateTag,
   onSave,
   onAutosave,
   onDelete,
@@ -52,6 +61,10 @@ export function FolderEditor({
 }: {
   /** null means "create a new folder". */
   folder: Folder | null;
+  /** The tag catalogue, for the main and alternate tag pickers. */
+  tags: Tag[];
+  /** Creates and returns a tag, for the inline New tag control. */
+  onCreateTag?: (name: string) => Tag | null;
   onSave: (next: Folder) => void;
   /** Writes a change to an existing folder without announcing it. */
   onAutosave?: (next: Folder) => void;
@@ -62,10 +75,44 @@ export function FolderEditor({
   const [draft, setDraft] = useState<Folder>(() => folder ?? createFolder(''));
   const [imageUrl, setImageUrl] = useState(folder?.backgroundImage?.startsWith('http') ? folder.backgroundImage : '');
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<'appearance' | 'security'>('appearance');
+  const [tab, setTab] = useState<'appearance' | 'tags' | 'security'>('appearance');
+  const [newTag, setNewTag] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const patch = (next: Partial<Folder>) => setDraft((current) => ({ ...current, ...next }));
+
+  function toggleTag(key: 'tagIds' | 'altTagIds', tagId: string) {
+    const current = draft[key];
+    patch({
+      [key]: current.includes(tagId) ? current.filter((id) => id !== tagId) : [...current, tagId],
+    });
+  }
+
+  /** Creates the typed tag (or reuses the existing name) and picks it as a main tag. */
+  function addTag() {
+    const name = newTag.trim();
+    if (!name) return;
+    const existing = tags.find((tag) => tag.name.trim().toLowerCase() === name.toLowerCase());
+    const tag = existing ?? onCreateTag?.(name) ?? null;
+    if (!tag) return;
+    if (!draft.tagIds.includes(tag.id)) patch({ tagIds: [...draft.tagIds, tag.id] });
+    setNewTag('');
+  }
+
+  /** One click from the folder's tags into its alternate set, and back. */
+  function moveTag(tagId: string) {
+    if (draft.tagIds.includes(tagId)) {
+      patch({
+        tagIds: draft.tagIds.filter((id) => id !== tagId),
+        altTagIds: draft.altTagIds.includes(tagId) ? draft.altTagIds : [...draft.altTagIds, tagId],
+      });
+    } else {
+      patch({
+        altTagIds: draft.altTagIds.filter((id) => id !== tagId),
+        tagIds: draft.tagIds.includes(tagId) ? draft.tagIds : [...draft.tagIds, tagId],
+      });
+    }
+  }
 
   // Only an existing, named folder autosaves: a half-typed new one would
   // otherwise create itself the moment a letter was pressed.
@@ -147,6 +194,9 @@ export function FolderEditor({
         <div className="segmented">
           <button className="segmented__option" aria-pressed={tab === 'appearance'} onClick={() => setTab('appearance')}>
             Appearance
+          </button>
+          <button className="segmented__option" aria-pressed={tab === 'tags'} onClick={() => setTab('tags')}>
+            Tags &amp; notes
           </button>
           <button className="segmented__option" aria-pressed={tab === 'security'} onClick={() => setTab('security')}>
             Security
@@ -278,9 +328,124 @@ export function FolderEditor({
             ) : null}
           </div>
         </>
+      ) : tab === 'tags' ? (
+        <>
+          <div className="field">
+            <span className="field__label">Main tags</span>
+            <p className="field__hint" style={{ marginTop: 0 }}>
+              These apply to every channel in this folder, and are given to any login created while the
+              folder is open.
+            </p>
+            <TagCloud tags={tags} selected={draft.tagIds} onToggle={(id) => toggleTag('tagIds', id)} />
+          </div>
+
+          <div className="field">
+            <span className="field__label">Alternate tags</span>
+            <p className="field__hint" style={{ marginTop: 0 }}>
+              Used only by channels that have no tags of their own — the folder&apos;s fallback filing.
+            </p>
+            <TagCloud tags={tags} selected={draft.altTagIds} onToggle={(id) => toggleTag('altTagIds', id)} />
+          </div>
+
+          <div className="field-row" style={{ marginBottom: 'var(--space-3)' }}>
+            <input
+              className="input"
+              value={newTag}
+              placeholder="New tag name"
+              aria-label="New tag name"
+              onChange={(event) => setNewTag(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                addTag();
+              }}
+            />
+            <button type="button" className="btn btn--secondary btn--sm" disabled={!newTag.trim() || !onCreateTag} onClick={addTag}>
+              + Tag
+            </button>
+          </div>
+
+          {tags.length > 0 ? (
+            <div className="field">
+              <span className="field__label">Move a tag between the two sets</span>
+              <div className="tag-cloud">
+                {tags.map((tag) => {
+                  const main = draft.tagIds.includes(tag.id);
+                  const alt = draft.altTagIds.includes(tag.id);
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      className="tag-chip"
+                      style={{ ['--tag-h' as string]: String(tag.hue) }}
+                      title={main ? 'Main — click to make it alternate' : alt ? 'Alternate — click to make it main' : 'Unused — click to make it main'}
+                      onClick={() => moveTag(tag.id)}
+                    >
+                      <span className="tag-chip__dot" />
+                      {tag.name}
+                      <span style={{ opacity: 0.6, fontSize: 10 }}>{main ? 'main' : alt ? 'alt' : '—'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="field">
+            <label className="field__label" htmlFor="folder-notes">
+              Notes
+            </label>
+            <textarea
+              id="folder-notes"
+              className="input"
+              rows={5}
+              value={draft.notes}
+              placeholder="What lives in this folder, rules, links, anything worth keeping visible…"
+              onChange={(event) => patch({ notes: event.target.value })}
+            />
+            <p className="field__hint">
+              Notes appear from a small button in this folder&apos;s workspace. Right-click that button to hide it.
+            </p>
+            <Toggle
+              label="Show the notes button in this folder"
+              checked={!draft.notesHidden}
+              onChange={(shown) => patch({ notesHidden: !shown })}
+            />
+          </div>
+        </>
       ) : (
         <SecurityForm security={draft.security} onChange={(security) => patch({ security })} onNotify={onNotify} label={draft.name || 'folder'} />
       )}
     </Modal>
+  );
+}
+
+/** A plain multi-select cloud of the vault's tags. */
+function TagCloud({
+  tags,
+  selected,
+  onToggle,
+}: {
+  tags: Tag[];
+  selected: string[];
+  onToggle: (tagId: string) => void;
+}) {
+  if (tags.length === 0) return <p className="field__hint">No tags yet — create one below.</p>;
+  return (
+    <div className="tag-cloud">
+      {tags.map((tag) => (
+        <button
+          key={tag.id}
+          type="button"
+          className="tag-chip"
+          aria-pressed={selected.includes(tag.id)}
+          style={{ ['--tag-h' as string]: String(tag.hue) }}
+          onClick={() => onToggle(tag.id)}
+        >
+          <span className="tag-chip__dot" />
+          {tag.name}
+        </button>
+      ))}
+    </div>
   );
 }
