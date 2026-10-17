@@ -44,20 +44,88 @@ component card-face inherits Rectangle {
     // controls the cell; the card scales its own text and furniture inside it.
     in property <float> scale: 1;
     in property <length> radius: Theme.radius-md;
+    // Task 8.5: only the Grid reorders. Orbit draws the same face but its
+    // cards are a ring, where "before/after" means nothing.
+    in property <bool> reorderable: false;
+    in property <int> index: 0;
     callback open(id: string);
     callback menu-asked(id: string, x: float, y: float);
+    callback reorder-start(index: int, px: float, py: float, x: float, y: float, w: float, h: float);
+    callback reorder-move(px: float, py: float);
+    callback reorder-end(commit: bool);
+
+    // Press-and-hold state (`useLoginReorder`, views.tsx L196-253): a 120ms
+    // hold arms, an 8px move before it elapses means an ordinary gesture.
+    property <bool> held: false;
+    property <bool> armed: false;
+    property <bool> dragging: false;
+    property <float> press-x: 0;
+    property <float> press-y: 0;
+    property <bool> swallow: false;
+
+    reorder-hold := Timer {
+        interval: 120ms;
+        running: root.held && !root.armed && !root.dragging;
+        triggered => { root.armed = true; }
+    }
 
     face-touch := TouchArea {
-        clicked => { root.open(root.card.id); }
+        clicked => { if (!root.swallow) { root.open(root.card.id); } }
         // Grid and Orbit render through this face, so one right-click here
         // covers both (`onItemMenu`, App.tsx L1813-1826).
         pointer-event(e) => {
-            if (e.kind == PointerEventKind.up
-                && e.button == PointerEventButton.right) {
-                root.menu-asked(root.card.id,
-                    (self.absolute-position.x + self.mouse-x) / 1px,
-                    (self.absolute-position.y + self.mouse-y) / 1px,
-                );
+            if (e.kind == PointerEventKind.down) {
+                if (e.button == PointerEventButton.left && root.reorderable) {
+                    root.swallow = false;
+                    root.held = true;
+                    root.armed = false;
+                    root.dragging = false;
+                    root.press-x = self.mouse-x / 1px;
+                    root.press-y = self.mouse-y / 1px;
+                }
+            }
+            if (e.kind == PointerEventKind.move && root.reorderable) {
+                if (root.held && !root.armed && !root.dragging
+                    && Math.sqrt(
+                        (self.mouse-x / 1px - root.press-x) * (self.mouse-x / 1px - root.press-x)
+                        + (self.mouse-y / 1px - root.press-y) * (self.mouse-y / 1px - root.press-y)) > 8) {
+                    // Moved before the hold elapsed: never a drag.
+                    root.held = false;
+                }
+                if (root.held && root.armed && !root.dragging) {
+                    root.dragging = true;
+                    root.reorder-start(root.index,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px,
+                        self.absolute-position.x / 1px,
+                        self.absolute-position.y / 1px,
+                        self.width / 1px,
+                        self.height / 1px);
+                }
+                if (root.dragging) {
+                    root.reorder-move(
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+            }
+            if (e.kind == PointerEventKind.up) {
+                if (root.dragging) { root.swallow = true; root.reorder-end(true); }
+                else if (root.armed) { root.reorder-end(false); }
+                root.held = false;
+                root.armed = false;
+                root.dragging = false;
+                if (e.button == PointerEventButton.right) {
+                    root.menu-asked(root.card.id,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px,
+                    );
+                }
+            }
+            if (e.kind == PointerEventKind.cancel) {
+                if (root.dragging) { root.reorder-end(false); }
+                root.held = false;
+                root.armed = false;
+                root.dragging = false;
             }
         }
     }
@@ -70,6 +138,7 @@ component card-face inherits Rectangle {
             : (face-touch.has-hover ? Theme.row-hover : Theme.field);
         border-width: 1px;
         border-color: root.card.selected ? Theme.border-focus : Theme.border;
+        opacity: root.dragging ? 0.4 : 1.0;
 
         VerticalLayout {
             padding-top: 12px * root.scale;
@@ -220,8 +289,26 @@ component list-row inherits Rectangle {
     callback copy(id: string);
     callback star(id: string);
     callback menu-asked(id: string, x: float, y: float);
+    // Task 8.5: press-and-hold drag. The row reports the pointer and its own
+    // rectangle; Rust answers with the slot and draws the insertion bar.
+    callback reorder-start(index: int, px: float, py: float, x: float, y: float, w: float, h: float);
+    callback reorder-move(px: float, py: float);
+    callback reorder-end(commit: bool);
 
     property <bool> entered: false;
+    // The same 120ms / 8px gesture the grid uses (views.tsx L196-385).
+    property <bool> held: false;
+    property <bool> armed: false;
+    property <bool> dragging: false;
+    property <float> press-x: 0;
+    property <float> press-y: 0;
+    property <bool> swallow: false;
+
+    reorder-hold := Timer {
+        interval: 120ms;
+        running: root.held && !root.armed && !root.dragging;
+        triggered => { root.armed = true; }
+    }
 
     height: max(root.floor-h, 86px * root.scale);
     border-radius: root.radius;
@@ -229,7 +316,7 @@ component list-row inherits Rectangle {
         : (card-touch.has-hover ? Theme.row-hover : #00000000);
     border-width: root.card.selected ? 1px : 0px;
     border-color: root.card.selected ? Theme.border-focus : #00000000;
-    opacity: root.animated && !root.entered ? 0.0 : 1.0;
+    opacity: root.animated && !root.entered ? 0.0 : (root.dragging ? 0.4 : 1.0);
     animate opacity {
         duration: 280ms;
         easing: ease-out;
@@ -242,17 +329,64 @@ component list-row inherits Rectangle {
         // (single-click only selects), but a native list has no context
         // menu and no selection state doing anything yet -- making the
         // user discover a second click to edit is a web habit, not a
-        // feature.
-        clicked => { root.open(root.card.id); }
+        // feature. A click that follows a drop is swallowed instead
+        // (`suppressClick`, views.tsx L248-253).
+        clicked => { if (!root.swallow) { root.open(root.card.id); } }
         // Right-click asks for the item menu; List and Flow both draw this
         // row (`onItemMenu`, App.tsx L1813-1826).
         pointer-event(e) => {
-            if (e.kind == PointerEventKind.up
-                && e.button == PointerEventButton.right) {
-                root.menu-asked(root.card.id,
-                    (self.absolute-position.x + self.mouse-x) / 1px,
-                    (self.absolute-position.y + self.mouse-y) / 1px,
-                );
+            if (e.kind == PointerEventKind.down) {
+                if (e.button == PointerEventButton.left) {
+                    root.swallow = false;
+                    root.held = true;
+                    root.armed = false;
+                    root.dragging = false;
+                    root.press-x = self.mouse-x / 1px;
+                    root.press-y = self.mouse-y / 1px;
+                }
+            }
+            if (e.kind == PointerEventKind.move) {
+                if (root.held && !root.armed && !root.dragging
+                    && Math.sqrt(
+                        (self.mouse-x / 1px - root.press-x) * (self.mouse-x / 1px - root.press-x)
+                        + (self.mouse-y / 1px - root.press-y) * (self.mouse-y / 1px - root.press-y)) > 8) {
+                    // Moved before the hold elapsed: never a drag.
+                    root.held = false;
+                }
+                if (root.held && root.armed && !root.dragging) {
+                    root.dragging = true;
+                    root.reorder-start(root.index,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px,
+                        self.absolute-position.x / 1px,
+                        self.absolute-position.y / 1px,
+                        self.width / 1px,
+                        self.height / 1px);
+                }
+                if (root.dragging) {
+                    root.reorder-move(
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+            }
+            if (e.kind == PointerEventKind.up) {
+                if (root.dragging) { root.swallow = true; root.reorder-end(true); }
+                else if (root.armed) { root.reorder-end(false); }
+                root.held = false;
+                root.armed = false;
+                root.dragging = false;
+                if (e.button == PointerEventButton.right) {
+                    root.menu-asked(root.card.id,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px,
+                    );
+                }
+            }
+            if (e.kind == PointerEventKind.cancel) {
+                if (root.dragging) { root.reorder-end(false); }
+                root.held = false;
+                root.armed = false;
+                root.dragging = false;
             }
         }
     }
@@ -886,6 +1020,17 @@ export component MainWindow inherits Window {
     // in Rust on every refresh (`dock.rs::push`).
     in property <[DockBarRow]> dock-bars;
     in property <[DockManagerRow]> dock-rows;
+    // Drag-reorder (Task 8.5): the insertion bar, in window coordinates where
+    // the dragged row reported its own rectangle, and the three reports the
+    // row makes.
+    in property <bool> reorder-drop-visible: false;
+    in property <float> reorder-drop-x: 0;
+    in property <float> reorder-drop-y: 0;
+    in property <float> reorder-drop-w: 0;
+    in property <float> reorder-drop-h: 0;
+    callback reorder-start(index: int, px: float, py: float, x: float, y: float, w: float, h: float);
+    callback reorder-move(px: float, py: float);
+    callback reorder-end(commit: bool);
     // A dock key recording is armed (Task 8.3): the Settings modal's own scope
     // hands the next key over rather than treating it as a tab jump.
     in property <bool> dock-recording: false;
@@ -1986,7 +2131,7 @@ export component MainWindow inherits Window {
                     if (root.vault-view == "basic" && root.cards.length > 0) : ListView {
                         vertical-stretch: 1;
 
-                        for card in root.cards : VerticalLayout {
+                        for card[i] in root.cards : VerticalLayout {
                             spacing: 2px;
                             // Task 8.4: cap the measure and centre it, the
                             // `list-scale` max-width + `margin-inline: auto`
@@ -2013,11 +2158,17 @@ export component MainWindow inherits Window {
 
                             list-row {
                                 card: card;
+                                index: i;
                                 busy: root.busy;
                                 show-urls: root.show-urls;
                                 scale: root.card-scale;
                                 floor-h: root.card-min-height;
                                 radius: root.card-radius;
+                                reorder-start(index, px, py, x, y, w, h) => {
+                                    root.reorder-start(index, px, py, x, y, w, h);
+                                }
+                                reorder-move(px, py) => { root.reorder-move(px, py); }
+                                reorder-end(commit) => { root.reorder-end(commit); }
                                 open => { root.open-editor(card.id); }
                                 copy => { root.copy-password(card.id); }
                                 star => { root.toggle-favorite(card.id); }
@@ -2048,6 +2199,11 @@ export component MainWindow inherits Window {
                                 scale: root.card-scale;
                                 floor-h: root.card-min-height;
                                 radius: root.card-radius;
+                                reorder-start(index, px, py, x, y, w, h) => {
+                                    root.reorder-start(index, px, py, x, y, w, h);
+                                }
+                                reorder-move(px, py) => { root.reorder-move(px, py); }
+                                reorder-end(commit) => { root.reorder-end(commit); }
                                 open => { root.open-editor(card.id); }
                                 copy => { root.copy-password(card.id); }
                                 star => { root.toggle-favorite(card.id); }
@@ -2055,8 +2211,6 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
-
-                    // Grid: cells sized by Rust's answer to the width this
                     // block reports (`vault-relayout`), the tag cloud's
                     // arrangement reused because Slint still has no wrapping
                     // grid and its integer maths is still not worth having.
@@ -2084,8 +2238,15 @@ export component MainWindow inherits Window {
 
                                 card-face {
                                     card: card;
+                                    index: i;
+                                    reorderable: true;
                                     scale: root.card-scale;
                                     radius: root.card-radius;
+                                    reorder-start(index, px, py, x, y, w, h) => {
+                                        root.reorder-start(index, px, py, x, y, w, h);
+                                    }
+                                    reorder-move(px, py) => { root.reorder-move(px, py); }
+                                    reorder-end(commit) => { root.reorder-end(commit); }
                                     open => { root.open-editor(card.id); }
                                     menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                                 }
@@ -2837,6 +2998,19 @@ export component MainWindow inherits Window {
             bar-menu(dock-id, x, y) => { root.dock-bar-menu(dock-id, x, y); }
             slot-menu(dock-id, slot-id, x, y) => { root.dock-slot-menu(dock-id, slot-id, x, y); }
             moved(dock-id, edge, fx, fy) => { root.dock-moved(dock-id, edge, fx, fy); }
+        }
+
+        // The drag's insertion bar (Task 8.5): a bright line where the card
+        // will land. It is a sibling of the lists, drawn at window
+        // coordinates, so no list can clip it and no card can paint over it.
+        if (root.reorder-drop-visible) : Rectangle {
+            z: 35;
+            x: root.reorder-drop-x * 1px;
+            y: root.reorder-drop-y * 1px;
+            width: root.reorder-drop-w * 1px;
+            height: root.reorder-drop-h * 1px;
+            border-radius: 1px;
+            background: Theme.accent;
         }
 
         // -- The SecurityGate ------------------------------------------------

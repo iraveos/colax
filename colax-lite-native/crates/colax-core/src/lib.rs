@@ -21,6 +21,7 @@ pub mod health;
 pub mod history;
 pub mod model;
 pub mod optimize;
+pub mod order;
 pub mod prefs;
 pub mod security;
 pub mod storage;
@@ -57,6 +58,7 @@ pub use optimize::{
     OptimizeStyle, BALANCED_STYLE, FULL_DETAIL_STYLE, MAX_OPTIMIZE_PROFILES, MAX_SAVINGS_STYLE,
     OPTIMISATIONS, OPTIMISATION_COUNT, SLOW_MAIL_SECONDS,
 };
+pub use order::move_manual_order;
 pub use prefs::{
     create_tag, default_card_size, ensure_default_tags, new_alarm_id, new_tag_id,
     normalise_alarms, normalise_generator, normalise_preferences, normalise_tags,

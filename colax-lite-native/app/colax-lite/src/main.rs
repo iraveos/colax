@@ -26,6 +26,7 @@ mod items;
 mod menus;
 mod optimize_ops;
 mod platform;
+mod reorder;
 mod settings_ops;
 mod shortcuts;
 mod tuner;
@@ -463,6 +464,14 @@ struct AppState {
     /// holds this in React state; here it must outlive the menu that armed it,
     /// because the key arrives after that menu has closed.
     dock_key_target: Option<(String, usize)>,
+    /// A card drag in flight (Task 8.5): the pressed card's rectangle and the
+    /// view's packing, so a pointer position can be turned into a slot. Kept
+    /// here because the pointer outlives the row that started it -- the row
+    /// keeps receiving moves, but only Rust knows the whole view.
+    reorder_drag: Option<reorder::Drag>,
+    /// The slot the drag is aiming at: the target card index and whether the
+    /// drop lands after it. Committed by `reorder::finish`.
+    reorder_drop: Option<(usize, bool)>,
 }
 
 /// One undoable state: the whole item list and the raw preferences document,
@@ -1113,6 +1122,26 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
             move || {
                 if let Some(ui) = weak.upgrade() {
                     dev_docks(&ui, &st);
+                }
+            },
+        );
+        std::mem::forget(timer);
+        return;
+    }
+
+    // ...and `COLAX_DEV_REORDER` walks the drag-reorder engine (Task 8.5): it
+    // reports the pointer positions a row would, and reads back the slot, the
+    // insertion bar and the order the drop wrote.
+    if std::env::var_os("COLAX_DEV_REORDER").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_reorder(&ui, &st);
                 }
             },
         );
@@ -2712,7 +2741,149 @@ fn dev_docks(ui: &MainWindow, state: &Shared) {
     );
 }
 
+/// Debug-only: walk the drag-reorder engine (Task 8.5). A dev walk cannot
+/// press and hold a pointer, so the gesture's three reports are called where
+/// the row would call them -- with a rectangle standing in for the row it
+/// reported. What is checked is the half that has to be right: the slot the
+/// geometry resolves to, the bar drawn there, and the order a drop writes.
+/// `COLAX_DEV_REORDER=1`.
+#[cfg(debug_assertions)]
+fn dev_reorder(ui: &MainWindow, state: &Shared) {
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
 
+    let order = || {
+        ui.get_cards()
+            .iter()
+            .take(8)
+            .map(|card| card.label.to_string())
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    let sort = || {
+        items::prefs_from(state.borrow().engine.preferences())
+            .sort
+            .clone()
+    };
+    let manual = || {
+        items::prefs_from(state.borrow().engine.preferences())
+            .manual_order
+            .len()
+    };
+    // The stored order, by title: `GitHub` being pinned first means the drawn
+    // order cannot show a drop below it, so the saved list is the proof.
+    let stored_order = || {
+        let guard = state.borrow();
+        let prefs = items::prefs_from(guard.engine.preferences());
+        let items = guard.engine.items().unwrap_or_default();
+        prefs
+            .manual_order
+            .iter()
+            .map(|id| {
+                items
+                    .iter()
+                    .find(|item| item.id == *id)
+                    .map(|item| item.title.clone())
+                    .unwrap_or_else(|| id.clone())
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    let bar = || {
+        format!(
+            "vis={} {:.0},{:.0} {:.0}x{:.0} target={:?}",
+            ui.get_reorder_drop_visible(),
+            ui.get_reorder_drop_x(),
+            ui.get_reorder_drop_y(),
+            ui.get_reorder_drop_w(),
+            ui.get_reorder_drop_h(),
+            state.borrow().reorder_drop,
+        )
+    };
+
+    // 1. Grid: a 2-D drag one row down lands one `cols` further along. Index 1
+    // rather than 0: the seed's first card is a pinned favourite, and pinning
+    // outranks the manual order in the drawn list by design.
+    let _ = shortcuts::key(ui, state, "4", false, false, false);
+    let cols = ui.get_grid_cols().max(1) as usize;
+    dev_note(
+        "reorder01.grid-open",
+        &format!(
+            "view={} cols={} count={} sort={} order=[{}]",
+            ui.get_vault_view(),
+            cols,
+            ui.get_cards().row_count(),
+            sort(),
+            order(),
+        ),
+    );
+    let before = order();
+    reorder::begin(ui, state, 1, 100.0, 100.0, 100.0, 100.0, 200.0, 124.0);
+    reorder::moved(ui, state, 100.0, 100.0 + 134.0);
+    dev_note(
+        "reorder02.grid-move",
+        &format!("cols={} bar=[{}]", cols, bar()),
+    );
+    reorder::finish(ui, state, true);
+    dev_note(
+        "reorder03.grid-drop",
+        &format!(
+            "sort={} manual={} stored=[{}] before=[{}] after=[{}]",
+            sort(),
+            manual(),
+            stored_order(),
+            before,
+            order(),
+        ),
+    );
+
+    // 2. List: a vertical drag two rows down. The list row is the same height
+    // for every card, so the pitch is the reported rectangle plus the 2px
+    // spacing; two pitches must land two rows on.
+    let _ = shortcuts::key(ui, state, "3", false, false, false);
+    let before = order();
+    reorder::begin(ui, state, 1, 100.0, 300.0, 100.0, 300.0, 420.0, 92.0);
+    reorder::moved(ui, state, 100.0, 300.0 + 188.0);
+    dev_note(
+        "reorder04.list-move",
+        &format!("sort={} bar=[{}]", sort(), bar()),
+    );
+    reorder::finish(ui, state, true);
+    dev_note(
+        "reorder05.list-drop",
+        &format!(
+            "sort={} stored=[{}] before=[{}] after=[{}]",
+            sort(),
+            stored_order(),
+            before,
+            order()
+        ),
+    );
+
+    // 3. A cancelled drag changes nothing and leaves no bar.
+    reorder::begin(ui, state, 1, 100.0, 300.0, 100.0, 300.0, 420.0, 92.0);
+    reorder::moved(ui, state, 100.0, 300.0 + 188.0);
+    reorder::finish(ui, state, false);
+    dev_note(
+        "reorder06.cancel",
+        &format!("bar=[{}] after=[{}]", bar(), order()),
+    );
+
+    // 4. Released over the card it lifted: no indicator, and no write (the
+    // sort stays Custom because step 1 already switched it).
+    let before = stored_order();
+    reorder::begin(ui, state, 1, 100.0, 300.0, 100.0, 300.0, 420.0, 92.0);
+    reorder::moved(ui, state, 100.0, 301.0);
+    reorder::finish(ui, state, true);
+    dev_note(
+        "reorder07.noop",
+        &format!("bar=[{}] before=[{}] after=[{}]", bar(), before, stored_order()),
+    );
+}
+
+/// Debug-only: walk the appearance tuner (Task 8.4) the way a hand would --
+/// open it from the menu, drag each dial, reset, and read back *both* halves
+/// of the wire: the geometry stored in preferences and the scalars the window
+/// actually holds, which is what the cards draw from. `COLAX_DEV_TUNER=1`.
 #[cfg(debug_assertions)]
 fn dev_tuner(ui: &MainWindow, state: &Shared) {
     let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
@@ -6062,7 +6233,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 channel_tag_editing: None,
                 channel_tag_hue: None,
                 channel_ed_width: 0.0,
-    dock_key_target: None,
+                dock_key_target: None,
+                reorder_drag: None,
+                reorder_drop: None,
             }));
             // Debug scratch profiles open straight into the vault with demo
             // content; everything else starts on the real startup screen.
@@ -6496,6 +6669,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_dock_key_captured(move |text| {
                 if let Some(ui) = weak.upgrade() {
                     dock::capture(&ui, &st, &text);
+                }
+            });
+
+            // Drag-reorder (Task 8.5). The row owns the gesture; the three
+            // reports carry the pointer and, at the start, the row's own
+            // rectangle, which is the only geometry Rust cannot derive.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_reorder_start(move |index, px, py, x, y, w, h| {
+                if let Some(ui) = weak.upgrade() {
+                    reorder::begin(
+                        &ui,
+                        &st,
+                        index.max(0) as usize,
+                        px,
+                        py,
+                        x,
+                        y,
+                        w,
+                        h,
+                    );
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_reorder_move(move |px, py| {
+                if let Some(ui) = weak.upgrade() {
+                    reorder::moved(&ui, &st, px, py);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_reorder_end(move |commit| {
+                if let Some(ui) = weak.upgrade() {
+                    reorder::finish(&ui, &st, commit);
                 }
             });
 
