@@ -67,7 +67,7 @@ fn accent_chips() -> Vec<AccentChip> {
 /// (`gmailAccounts`, storage.ts) — the mail engine that will model them is
 /// Phase 9, so until then they are read as the `{ id, address }` pairs the
 /// editor needs. A vault with none lists none, and the picker stays away.
-fn mail_accounts(prefs: &VaultPreferences) -> Vec<(String, String)> {
+pub(crate) fn mail_accounts(prefs: &VaultPreferences) -> Vec<(String, String)> {
     prefs
         .extra
         .get("gmailAccounts")
@@ -93,8 +93,17 @@ fn mail_accounts(prefs: &VaultPreferences) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-fn icon_options() -> Vec<IconOption> {
+/// The glyph for a stored icon key, for anything outside this module that
+/// draws a channel or folder icon (the dock's own slots, Task 8.3).
+pub(crate) fn glyph_for(key: &str) -> &'static str {
     CHANNEL_ICONS
+        .iter()
+        .position(|candidate| *candidate == key)
+        .and_then(|index| ICON_GLYPHS.get(index).copied())
+        .unwrap_or("◻")
+}
+
+fn icon_options() -> Vec<IconOption> {    CHANNEL_ICONS
         .iter()
         .zip(ICON_GLYPHS)
         .map(|(key, glyph)| IconOption {

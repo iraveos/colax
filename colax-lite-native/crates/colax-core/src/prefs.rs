@@ -13,6 +13,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::channels::{builtin_channels, normalise_channels, Channel};
+use crate::dock::{default_docks, normalise_docks, DockState};
 use crate::history::{normalise_history, HistoryEvent};
 use crate::model::{normalise_security, LoginSecurity};
 use crate::optimize::{normalise_optimize_profiles, read_style};
@@ -205,6 +206,12 @@ pub struct VaultPreferences {
     /// Per-view card geometry (`cardSize`, storage.ts L534). Always carries the
     /// four views; `default_card_size` seeds the ones a stored record omits.
     pub card_size: BTreeMap<String, CardSize>,
+    /// The quick-launch bars (`docks`, storage.ts L597). At least one always
+    /// exists; `normalise_docks` migrates the pre-multi-dock single bar in.
+    pub docks: Vec<DockState>,
+    /// Set once the Orbit slot repair has run over every stored bar, so it
+    /// never runs twice (storage.ts L604).
+    pub orbit_dock_restored: bool,
     pub reduce_transparency: bool,
     pub high_contrast: bool,
     pub background_image: String,
@@ -418,6 +425,8 @@ impl Default for VaultPreferences {
             roundness: 1.0,
             card_depth: 0.4,
             card_size: normalise_card_size(None),
+            docks: default_docks(),
+            orbit_dock_restored: true,
             reduce_transparency: false,
             high_contrast: true,
             background_image: String::new(),
@@ -533,6 +542,11 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.roundness   = clamp(get_f64!("roundness", 1.0), 0.6, 1.4);
     out.card_depth  = clamp(get_f64!("cardDepth", 0.4), 0.0, 1.0);
     out.card_size   = normalise_card_size(o.get("cardSize"));
+    // Quick-launch bars: the migration reads the *stored* record, not `out`,
+    // so a legacy single bar is not masked by the defaults backfilled above
+    // (storage.ts L1400-1405).
+    out.docks = normalise_docks(Some(raw));
+    out.orbit_dock_restored = true;
     out.reduce_transparency = get_bool!("reduceTransparency", false);
     out.high_contrast       = get_bool!("highContrast", true);
     if let Some(v) = o.get("backgroundImage") { out.background_image = v.as_str().unwrap_or("").to_string(); }
@@ -713,7 +727,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // absorb everything we didn't model
     let mut extra = serde_json::Map::new();
     let known = ["theme","accent","textScale","motion","motionSpeed","ambient","density","roundness",
-        "cardDepth","cardSize","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",        "backgroundBlur","backgroundDim","microMotion","mailInlineImages","disableSpellcheck",
+        "cardDepth","cardSize","docks","orbitDockRestored","dockEnabled","dockSlots","dockPos","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",        "backgroundBlur","backgroundDim","microMotion","mailInlineImages","disableSpellcheck",
         "optimizeProfiles","optimizeSnapshot","activeOptimizeProfile","view","sort","showUrls","sidebarPosition","sidebarLabels",
         "compactSidebar","showSidebar","vaultSecurity",
         "showLetterGroups","autoTagDomain","showUnassignedChannel","autoTagChannel",
@@ -1050,6 +1064,26 @@ mod tests {
         // A hand-edited string where a number belongs falls back, not zero.
         let r = normalise_preferences(&json!({ "cardSize": { "basic": { "width": "wide" } } }));
         assert_eq!(r.card_size["basic"].width, 900.0);
+    }
+
+    #[test]
+    fn docks_default_and_migrate() {
+        let p = normalise_preferences(&json!({}));
+        assert!(p.orbit_dock_restored);
+        assert_eq!(p.docks.len(), 1);
+        assert_eq!(p.docks[0].id, "main");
+        assert_eq!(p.docks[0].slots.len(), 5);
+
+        // A pre-multi-dock vault: the legacy keys migrate into the first bar
+        // and must not also survive in `extra` (the TS deletes them).
+        let q = normalise_preferences(&json!({
+            "dockSlots": [{ "kind": "view", "ref": "grid", "key": "1" }],
+            "dockEnabled": false,
+        }));
+        assert_eq!(q.docks[0].slots[0].target, "grid");
+        assert!(!q.docks[0].enabled);
+        assert!(q.extra.get("dockSlots").is_none());
+        assert!(q.extra.get("dockEnabled").is_none());
     }
 
     #[test]

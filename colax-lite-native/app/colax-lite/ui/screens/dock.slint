@@ -1,0 +1,316 @@
+// Quick-launch docks (Task 8.3).
+//
+// Port of `src/ui/Dock.tsx`: up to four bars floating over the vault, each
+// holding up to 24 jump slots. A slot is a view, a channel, a folder, a login,
+// the inbox, or a mailbox; pressing it jumps, and pressing its bare key jumps
+// without the pointer (the keys themselves are answered in `shortcuts.rs`).
+//
+// Free placement, edge snap: a press on the bar's chrome and it follows the
+// pointer live, release drops it exactly there (clamped on screen). Only the
+// *nearest edge* is derived, and it decides row-vs-column orientation, never
+// the spot -- every dock roams the whole screen (Dock.tsx L85-104). The live
+// position is local to this component during a drag and committed once, on the
+// drop: writing preferences every frame is what made the web backdrop flicker.
+//
+// Families (views / go / logins / mail) are drawn apart by a divider, and a
+// channel or folder slot carries its hue as a dot, so a bar of mixed slot
+// kinds still reads as groups rather than one undifferentiated row.
+
+import { Theme } from "../theme.slint";
+import { DockBarRow, DockSlotRow } from "../models.slint";
+
+// One slot button: a hue dot, the glyph (or the uploaded image), the label,
+// and the key it answers to. `.dock__slot` stacks glyph over label; on a
+// left/right bar the label hides and the slot reads as a row (app.css L395,
+// L381-382).
+component dock-slot inherits Rectangle {
+    in property <DockSlotRow> slot;
+    in property <bool> vertical: false;
+    callback pressed();
+    callback menu-asked(x: float, y: float);
+
+    // In a top/bottom bar the slot hugs its content (min 56px, app.css L395);
+    // on a side bar it is a fixed-width row whose label is dropped
+    // (app.css L381-382). `min-`/`max-` rather than `width` so the two
+    // orientations can share one component: a bare `width` would be a single
+    // value for both.
+    min-width: root.vertical ? 176px : 56px;
+    max-width: root.vertical ? 176px : 100000px;
+    min-height: root.vertical ? 34px : 52px;
+    max-height: root.vertical ? 34px : 52px;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: root.slot.active ? Theme.accent.with-alpha(0.45) : #00000000;
+    background: root.slot.active ? Theme.accent-soft
+        : (slot-touch.has-hover ? Theme.surface-hover : #00000000);
+
+    // The family boundary: a hairline in the gap before this slot, vertical on
+    // a top/bottom bar and horizontal on the sides (`.dock__div`).
+    if (root.slot.divider && !root.vertical) : Rectangle {
+        x: -1.5px;
+        y: 7px;
+        width: 1px;
+        height: root.height - 14px;
+        border-radius: 1px;
+        background: Theme.border-strong;
+    }
+    if (root.slot.divider && root.vertical) : Rectangle {
+        x: 7px;
+        y: -1.5px;
+        width: root.width - 14px;
+        height: 1px;
+        border-radius: 1px;
+        background: Theme.border-strong;
+    }
+
+    slot-touch := TouchArea {
+        clicked => { root.pressed(); }
+        // Right-click edits this slot without a detour through Settings
+        // (App.tsx `dockSlotMenu`, L2674-2764).
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.up
+                && e.button == PointerEventButton.right) {
+                root.menu-asked(
+                    (self.absolute-position.x + self.mouse-x) / 1px,
+                    (self.absolute-position.y + self.mouse-y) / 1px,
+                );
+            }
+        }
+    }
+
+    // The hue dot, pinned to the corner the way `.dock__dot` is.
+    if (root.slot.has-dot) : Rectangle {
+        x: 5px;
+        y: 5px;
+        width: 7px;
+        height: 7px;
+        border-radius: 4px;
+        background: root.slot.dot;
+    }
+
+    if (root.vertical) : HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        alignment: center;
+
+        if (root.slot.has-image) : Image {
+            width: 17px;
+            height: 17px;
+            source: root.slot.image;
+            image-fit: cover;
+        }
+        if (!root.slot.has-image) : Text {
+            text: root.slot.glyph;
+            color: root.slot.active ? Theme.accent-text : Theme.muted;
+            font-size: 15px;
+            vertical-alignment: center;
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.slot.label;
+            color: root.slot.active ? Theme.accent-text : Theme.muted;
+            font-size: 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Rectangle {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            background: Theme.plate;
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.slot.key;
+                color: Theme.faint;
+                font-size: 9.5px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    if (!root.vertical) : VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 7px;
+        padding-bottom: 6px;
+        spacing: 3px;
+        alignment: center;
+
+        if (root.slot.has-image) : Image {
+            width: 17px;
+            height: 17px;
+            source: root.slot.image;
+            image-fit: cover;
+        }
+        if (!root.slot.has-image) : Text {
+            text: root.slot.glyph;
+            color: root.slot.active ? Theme.accent-text : Theme.muted;
+            font-size: 16px;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: root.slot.label;
+            color: root.slot.active ? Theme.accent-text : Theme.muted;
+            font-size: 10px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// One stored bar. Positions itself from its placement fractions; a drag keeps
+// a local override until the drop commits it.
+component dock-bar inherits Rectangle {
+    in property <DockBarRow> bar;
+    in property <length> win-w: 1000px;
+    in property <length> win-h: 700px;
+
+    callback slot-pressed(dock-id: string, slot-id: string);
+    callback bar-menu(dock-id: string, x: float, y: float);
+    callback slot-menu(dock-id: string, slot-id: string, x: float, y: float);
+    callback moved(dock-id: string, edge: string, fx: float, fy: float);
+
+    // The live drag, local until the drop.
+    property <bool> arming: false;
+    property <bool> dragging: false;
+    property <float> from-x: 0;
+    property <float> from-y: 0;
+    property <float> live-fx: 0.5;
+    property <float> live-fy: 0.94;
+    property <string> live-edge: "bottom";
+
+    property <bool> vertical: root.shown-edge == "left" || root.shown-edge == "right";
+    property <float> shown-fx: root.dragging ? root.live-fx : root.bar.fx;
+    property <float> shown-fy: root.dragging ? root.live-fy : root.bar.fy;
+    property <string> shown-edge: root.dragging ? root.live-edge : root.bar.edge;
+
+    function clamp01(value: float) -> float {
+        return Math.min(0.94, Math.max(0.06, value));
+    }
+
+    // The nearest edge wins; a corner resolves to the nearer one rather than
+    // refusing (Dock.tsx `edgeAt`, L52-68). `x`, `y` are window fractions.
+    function edge-at(fx: float, fy: float) -> string {
+        if (fx <= fy && fx <= 1 - fx && fx <= 1 - fy) { return "left"; }
+        if (1 - fx <= fy && 1 - fx <= fx && 1 - fx <= 1 - fy) { return "right"; }
+        if (fy <= fx && fy <= 1 - fx && fy <= 1 - fy) { return "top"; }
+        return "bottom";
+    }
+
+    x: root.win-w * root.shown-fx - self.width / 2;
+    y: root.win-h * root.shown-fy - self.height / 2;
+    background: Theme.resolved-theme == "light" ? #f4f7fbcc : #0b0e14b8;
+    border-radius: Theme.radius-xl;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-color: #02040a80;
+    drop-shadow-blur: 22px;
+    drop-shadow-offset-y: 10px;
+
+    // The chrome: a press here (never on a slot) drags the bar. Declared before
+    // the slots so they sit on top and keep their own clicks (Dock.tsx L146-158).
+    bar-touch := TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.arming = true;
+                root.from-x = (self.absolute-position.x + self.mouse-x) / 1px;
+                root.from-y = (self.absolute-position.y + self.mouse-y) / 1px;
+            } else if (e.kind == PointerEventKind.move && root.arming) {
+                // Below the threshold this is still a click, not a drag.
+                if (!root.dragging
+                    && Math.sqrt(
+                        ((self.absolute-position.x + self.mouse-x) / 1px - root.from-x)
+                            * ((self.absolute-position.x + self.mouse-x) / 1px - root.from-x)
+                        + ((self.absolute-position.y + self.mouse-y) / 1px - root.from-y)
+                            * ((self.absolute-position.y + self.mouse-y) / 1px - root.from-y)) >= 6) {
+                    root.dragging = true;
+                }
+                if (root.dragging) {
+                    root.live-fx = root.clamp01(
+                        ((self.absolute-position.x + self.mouse-x) / 1px) / (root.win-w / 1px));
+                    root.live-fy = root.clamp01(
+                        ((self.absolute-position.y + self.mouse-y) / 1px) / (root.win-h / 1px));
+                    root.live-edge = root.edge-at(root.live-fx, root.live-fy);
+                }
+            } else if (e.kind == PointerEventKind.up) {
+                if (e.button == PointerEventButton.right && !root.dragging) {
+                    root.bar-menu(root.bar.id,
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+                // The one write of the whole gesture.
+                if (root.dragging) {
+                    root.moved(root.bar.id, root.live-edge, root.live-fx, root.live-fy);
+                }
+                root.dragging = false;
+                root.arming = false;
+            } else if (e.kind == PointerEventKind.cancel) {
+                // A cancelled drag never became a drop: fall back to what was
+                // already saved.
+                root.dragging = false;
+                root.arming = false;
+            }
+        }
+    }
+
+    if (root.vertical) : VerticalLayout {
+        padding: 6px;
+        spacing: 2px;
+        for entry in root.bar.slots : dock-slot {
+            slot: entry;
+            vertical: true;
+            pressed => { root.slot-pressed(root.bar.id, entry.id); }
+            menu-asked(x, y) => { root.slot-menu(root.bar.id, entry.id, x, y); }
+        }
+    }
+
+    if (!root.vertical) : HorizontalLayout {
+        padding: 6px;
+        spacing: 2px;
+        for entry in root.bar.slots : dock-slot {
+            slot: entry;
+            vertical: false;
+            pressed => { root.slot-pressed(root.bar.id, entry.id); }
+            menu-asked(x, y) => { root.slot-menu(root.bar.id, entry.id, x, y); }
+        }
+    }
+}
+
+// The layer the window mounts: one bar per stored dock, positioned by the bar
+// itself. No background and no TouchArea of its own, so a click that misses a
+// bar reaches the shell underneath.
+export component DockLayer inherits Rectangle {
+    in property <[DockBarRow]> bars;
+    // The window's own box, handed in by the mount: a component root cannot
+    // read `parent`, and the bar's free placement is a fraction of exactly
+    // this rectangle.
+    in property <length> win-w: 1000px;
+    in property <length> win-h: 700px;
+
+    callback slot-pressed(dock-id: string, slot-id: string);
+    callback bar-menu(dock-id: string, x: float, y: float);
+    callback slot-menu(dock-id: string, slot-id: string, x: float, y: float);
+    callback moved(dock-id: string, edge: string, fx: float, fy: float);
+
+    width: root.win-w;
+    height: root.win-h;
+
+    for bar in root.bars : dock-bar {
+        bar: bar;
+        win-w: root.win-w;
+        win-h: root.win-h;
+        slot-pressed(dock-id, slot-id) => { root.slot-pressed(dock-id, slot-id); }
+        bar-menu(dock-id, x, y) => { root.bar-menu(dock-id, x, y); }
+        slot-menu(dock-id, slot-id, x, y) => { root.slot-menu(dock-id, slot-id, x, y); }
+        moved(dock-id, edge, fx, fy) => { root.moved(dock-id, edge, fx, fy); }
+    }
+}

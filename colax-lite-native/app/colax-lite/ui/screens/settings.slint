@@ -18,7 +18,7 @@ import { Theme } from "../theme.slint";
 import {
     Alert, Slider, Toggle, EmptyState, IconButton, Btn, Field, Chip, Label, Modal
 } from "../widgets.slint";
-import { QuestionRow, QrCell, ChannelRow, TagRow, AccentChip, OptProfileRow } from "../models.slint";
+import { QuestionRow, QrCell, ChannelRow, TagRow, AccentChip, OptProfileRow, DockManagerRow } from "../models.slint";
 import { SecurityForm } from "security_form.slint";
 
 /// One entry of the rail. The order is the TS's `tabs` array
@@ -1011,6 +1011,182 @@ component tag-manager-row inherits VerticalLayout {
     }
 }
 
+/// One row of the dock manager (Task 8.3): a bar's header, or one of its
+/// slots. A slot whose target is gone draws faint and offers only Remove, so a
+/// deleted channel is visible and fixable rather than a silent gap
+/// (DockSettings.tsx L5-11). Reordering and rekeying live here too: the key is
+/// the Key button, and moving is a menu action on the slot.
+component dock-manager-row inherits Rectangle {
+    in property <DockManagerRow> entry;
+    callback toggle(bool);
+    callback remove-bar();
+    callback key();
+    callback menu(x: float, y: float);
+    callback remove-slot();
+    callback add-slot();
+
+    height: root.entry.kind == "dock" ? 48px : 40px;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: root.entry.missing ? Theme.border-strong : Theme.border;
+    background: root.entry.kind == "dock" ? Theme.surface : Theme.field;
+
+    if (root.entry.kind == "dock") : HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 6px;
+        spacing: 8px;
+        alignment: center;
+
+        Text {
+            text: root.entry.glyph;
+            color: Theme.faint;
+            font-size: 15px;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 1px;
+            alignment: center;
+            Text {
+                text: root.entry.title;
+                color: Theme.text;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            Text {
+                text: root.entry.enabled ? root.entry.hint : "{root.entry.hint} (hidden)";
+                color: Theme.faint;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+        Btn {
+            horizontal-stretch: 0;
+            label: root.entry.enabled ? "Hide" : "Show";
+            kind: 1;
+            h: 28px;
+            width: 62px;
+            clicked => { root.toggle(!root.entry.enabled); }
+        }
+        Btn {
+            horizontal-stretch: 0;
+            label: "Add slot";
+            kind: 1;
+            h: 28px;
+            width: 78px;
+            clicked => { root.add-slot(); }
+        }
+        IconButton {
+            icon: "×";
+            clicked => { root.remove-bar(); }
+        }
+    }
+
+    if (root.entry.kind == "slot") : HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 6px;
+        spacing: 8px;
+        alignment: center;
+
+        Rectangle {
+            horizontal-stretch: 0;
+            width: 26px;
+            height: 26px;
+            border-radius: Theme.radius-sm;
+            background: Theme.surface;
+
+            if (root.entry.has-dot) : Rectangle {
+                x: 4px;
+                y: 4px;
+                width: 7px;
+                height: 7px;
+                border-radius: 4px;
+                background: root.entry.dot;
+            }
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.entry.glyph;
+                color: root.entry.missing ? Theme.danger : Theme.muted;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 1px;
+            alignment: center;
+            Text {
+                text: root.entry.title;
+                color: root.entry.missing ? Theme.danger : Theme.text;
+                font-size: 12.5px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.entry.hint;
+                color: Theme.faint;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+        if (!root.entry.missing) : Rectangle {
+            horizontal-stretch: 0;
+            width: 20px;
+            height: 20px;
+            border-radius: 5px;
+            background: Theme.plate;
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.entry.key;
+                color: Theme.faint;
+                font-size: 10px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        if (!root.entry.missing) : Btn {
+            horizontal-stretch: 0;
+            label: "Key";
+            kind: 1;
+            h: 26px;
+            width: 50px;
+            clicked => { root.key(); }
+        }
+        slot-menu := Rectangle {
+            horizontal-stretch: 0;
+            width: 28px;
+            height: 28px;
+            border-radius: 7px;
+            background: slot-menu-touch.has-hover ? #ffffff1a : #ffffff0a;
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: "⋯";
+                color: Theme.muted;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            slot-menu-touch := TouchArea {
+                clicked => {
+                    root.menu(
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px,
+                    );
+                }
+            }
+        }
+        IconButton {
+            icon: "×";
+            clicked => { root.remove-slot(); }
+        }
+    }
+}
+
 export component Settings inherits Rectangle {
     // Which rail row is lit. Rust owns the id list and validates every jump
     // against it, so the index is all the window keeps — clamped before use
@@ -1075,6 +1251,21 @@ export component Settings inherits Rectangle {
     in-out property <bool> lay-pin-favorites: true;
     in-out property <bool> lay-floating-chrome: true;
     in-out property <bool> lay-hide-dividers: false;
+
+    // The Layout tab's dock manager (Task 8.3): one header row per bar, then
+    // one row per slot, all built in Rust (`dock.rs::push`). The callbacks are
+    // keyed by the row's own dock/slot indices, because the model is rebuilt on
+    // every refresh and only the indices survive a write.
+    in property <[DockManagerRow]> dock-rows: [];
+    in property <bool> dock-recording: false;
+    callback dock-key(text: string);
+    callback dock-toggle(index: int, enabled: bool);
+    callback dock-remove(index: int);
+    callback dock-slot-key(index: int, slot: int);
+    callback dock-slot-menu(index: int, slot: int, x: float, y: float);
+    callback dock-slot-remove(index: int, slot: int);
+    callback dock-add-slot(index: int);
+    callback dock-add();
 
     // The Hidden tab is derived in Rust — it is a reading of the switches
     // above plus the three hidden lists — so it arrives as a model and is
@@ -1414,6 +1605,13 @@ export component Settings inherits Rectangle {
         init => { self.focus(); }
 
         key-pressed(event) => {
+            // A dock key recording (Task 8.3) owns the keyboard while it is
+            // armed, even here: the Layout tab's Key button starts it, and the
+            // very next key is the answer, not a tab jump.
+            if (root.dock-recording) {
+                root.dock-key(event.text);
+                return accept;
+            }
             if (event.text == Key.Escape) {
                 // A confirm sheet swallows the key first: Escape closes the
                 // dialog, not the whole window (the TS modal's own handler
@@ -1983,13 +2181,45 @@ export component Settings inherits Rectangle {
                                     picked(id) => { root.pref-string("sidebar-position", id); }
                                 }
 
-                                // Two rows of Settings.tsx are not here yet,
-                                // because the things they describe are not:
-                                // "Card size" opens a per-view tuner (a modal
-                                // of its own) and "Quick-launch docks" edits
-                                // a bar's slots. Both arrive with their
-                                // runtimes, as panels rather than as switches
-                                // that write a number nothing reads.
+                                // The quick-launch docks (Task 8.3). Every bar,
+                                // then its slots. The bar's own right-click
+                                // menu reaches the same operations from where
+                                // the bar actually is, which is usually what
+                                // you want; this is the place you can see all
+                                // of them at once.
+                                Rectangle { height: 4px; background: #00000000; }
+
+                                Text {
+                                    text: "QUICK-LAUNCH DOCKS";
+                                    color: Theme.faint;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    letter-spacing: 1.4px;
+                                }
+
+                                Text {
+                                    text: "Bars float over the vault, one keypress from anywhere. Drag a bar to move it — the nearest edge decides whether it lies flat or stands up. Right-click a bar for position and Hide, or a slot to rekey it.";
+                                    color: Theme.faint;
+                                    font-size: 11.5px;
+                                    wrap: word-wrap;
+                                }
+
+                                for entry in root.dock-rows : dock-manager-row {
+                                    entry: entry;
+                                    toggle(enabled) => { root.dock-toggle(entry.dock, enabled); }
+                                    remove-bar => { root.dock-remove(entry.dock); }
+                                    add-slot => { root.dock-add-slot(entry.dock); }
+                                    key => { root.dock-slot-key(entry.dock, entry.slot); }
+                                    menu(x, y) => { root.dock-slot-menu(entry.dock, entry.slot, x, y); }
+                                    remove-slot => { root.dock-slot-remove(entry.dock, entry.slot); }
+                                }
+
+                                Btn {
+                                    width: parent.width;
+                                    label: "Add a dock";
+                                    kind: 1;
+                                    clicked => { root.dock-add(); }
+                                }
 
                                 cards-row {
                                     panel-w: root.panel-w;

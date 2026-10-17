@@ -20,6 +20,7 @@ mod alarms;
 mod art;
 mod channels_ops;
 mod dashboard;
+mod dock;
 mod history;
 mod items;
 mod menus;
@@ -457,6 +458,11 @@ struct AppState {
     /// The width the editor's tag cloud last reported, so its rows can be
     /// packed for it on every push instead of only while it is on screen.
     channel_ed_width: f64,
+    /// A dock slot waiting for its key (Task 8.3): the bar id and slot index
+    /// the recorder was armed for, cleared by the next keypress. `KeyRecorder`
+    /// holds this in React state; here it must outlive the menu that armed it,
+    /// because the key arrives after that menu has closed.
+    dock_key_target: Option<(String, usize)>,
 }
 
 /// One undoable state: the whole item list and the raw preferences document,
@@ -635,6 +641,9 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     // The active view's card geometry (Task 8.4) rides the same refresh: a
     // view switch, a size write and a Reset all land here.
     tuner::push(ui, state);
+    // The quick-launch bars and the Layout tab's dock manager (Task 8.3) ride
+    // it too: a key write, a drag commit and a channel rename all land here.
+    dock::push(ui, state);
 }
 
 /// The picture behind every screen, and its wash.
@@ -1083,6 +1092,27 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
             move || {
                 if let Some(ui) = weak.upgrade() {
                     dev_keys(&ui, &st);
+                }
+            },
+        );
+        std::mem::forget(timer);
+        return;
+    }
+
+    // ...and `COLAX_DEV_DOCKS` walks the quick-launch docks (Task 8.3): it
+    // presses a slot's key, drags a bar onto an edge, opens the bar and slot
+    // menus, records a new key, adds a bar and hides one, writing back what
+    // the window and the preferences then hold.
+    if std::env::var_os("COLAX_DEV_DOCKS").is_some() {
+        let weak = ui.as_weak();
+        let st = state.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(400),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    dev_docks(&ui, &st);
                 }
             },
         );
@@ -2466,10 +2496,223 @@ fn dev_keys(ui: &MainWindow, state: &Shared) {
     dev_note("keys11.lock", &format!("took={took} scr={}", screen()));
 }
 
-/// Debug-only: walk the appearance tuner (Task 8.4) the way a hand would --
-/// open it from the menu, drag each dial, reset, and read back *both* halves
-/// of the wire: the geometry stored in preferences and the scalars the window
-/// actually holds, which is what the cards draw from. `COLAX_DEV_TUNER=1`.
+/// Debug-only: walk the quick-launch docks (Task 8.3) the way a hand would --
+/// read the bars the window holds, press a slot's key, drag a bar onto an
+/// edge, open the bar and slot menus, record a new key, add and hide a bar --
+/// and read back both halves of the wire: the bars Slint actually draws and
+/// the placement stored in preferences. `COLAX_DEV_DOCKS=1`.
+#[cfg(debug_assertions)]
+fn dev_docks(ui: &MainWindow, state: &Shared) {
+    let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
+
+    // The bars the window holds: id, edge, placement, then each slot's kind,
+    // label, glyph, key and its active/divider flags. A bar that never reached
+    // Slint draws nothing, so this is the only trustworthy reading.
+    let bars = || {
+        let mut text = String::new();
+        for bar in ui.get_dock_bars().iter() {
+            text.push_str(&format!(
+                "<{} {} {:.2}/{:.2}",
+                bar.id, bar.edge, bar.fx, bar.fy
+            ));
+            for slot in bar.slots.iter() {
+                text.push_str(&format!(
+                    " [{} {} {} k={} a={} d={}]",
+                    slot.kind, slot.label, slot.glyph, slot.key, slot.active, slot.divider
+                ));
+            }
+            text.push('>');
+        }
+        text
+    };
+    let rows = || {
+        let mut text = String::new();
+        for row in ui.get_dock_rows().iter() {
+            text.push_str(&format!(
+                "({} {}/{} {} k={} on={} miss={})",
+                row.kind, row.dock, row.slot, row.title, row.key, row.enabled, row.missing
+            ));
+        }
+        text
+    };
+    let stored = |dock_id: &str| {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        match prefs.docks.iter().find(|dock| dock.id == dock_id) {
+            Some(dock) => format!(
+                "{} {:.2}/{:.2} keys=[{}]",
+                dock::edge_name(dock.pos.edge),
+                dock.pos.fx,
+                dock.pos.fy,
+                dock
+                    .slots
+                    .iter()
+                    .map(|slot| slot.key.clone())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            None => "gone".to_string(),
+        }
+    };
+    let dock_ids = || {
+        items::prefs_from(state.borrow().engine.preferences())
+            .docks
+            .iter()
+            .map(|dock| dock.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let press = |key: &str| shortcuts::key(ui, state, key, false, false, false);
+
+    // 1. Where the walk opens: the shipped bar, five slots, keys 1-5.
+    dev_note(
+        "docks01.open",
+        &format!(
+            "view={} bars={} rows=[{}] {}",
+            ui.get_vault_view(),
+            ui.get_dock_bars().row_count(),
+            rows(),
+            bars(),
+        ),
+    );
+
+    // 2-3. A slot key jumps. `2` is Orbit, `1` is Flow; the second press
+    // proves the keys keep working after the view has moved under them.
+    let accepted = press("2");
+    dev_note(
+        "docks02.key2",
+        &format!("accept={} view={}", accepted, ui.get_vault_view()),
+    );
+    let accepted = press("1");
+    dev_note(
+        "docks03.key1",
+        &format!("accept={} view={}", accepted, ui.get_vault_view()),
+    );
+
+    // 4. A drag: the drop point becomes the stored placement, and the snapped
+    // edge decides the orientation.
+    let ids = dock_ids();
+    let first = ids.first().cloned().unwrap_or_default();
+    dock::pos_committed(ui, state, &first, "left", 0.05, 0.5);
+    dev_note(
+        "docks04.drag",
+        &format!("stored=[{}] drawn=[{}]", stored(&first), bars()),
+    );
+
+    // 5. The bar's own menu.
+    menus::open_dock_menu(ui, state, &first, 10.0, 10.0);
+    let menu: Vec<String> = ui
+        .get_menu_root_rows()
+        .iter()
+        .map(|row| row.id.to_string())
+        .collect();
+    dev_note("docks05.barmenu", &format!("rows=[{}]", menu.join(" ")));
+    menus::close(ui);
+
+    // 6. One slot's menu, named the way the bar's right-click names it.
+    let slot_id = "view:animated".to_string();
+    menus::open_dock_slot_menu(ui, state, &first, &slot_id, 10.0, 10.0);
+    let menu: Vec<String> = ui
+        .get_menu_root_rows()
+        .iter()
+        .map(|row| row.id.to_string())
+        .collect();
+    dev_note("docks06.slotmenu", &format!("rows=[{}]", menu.join(" ")));
+    // A menu suppresses bare keys, so it is closed (as a press on one of its
+    // rows would close it) before the keypress below is tried.
+    menus::close(ui);
+
+    // 7-8. Rekey slot 1 (Orbit) to `9` through the recorder, then press it:
+    // the view must move exactly as a stored key would.
+    dock::arm_key(ui, state, &first, 1);
+    let captured = dock::capture(ui, state, "9");
+    dev_note(
+        "docks07.rekey",
+        &format!("captured={} stored=[{}]", captured, stored(&first)),
+    );
+    let accepted = press("9");
+    dev_note(
+        "docks08.press9",
+        &format!(
+            "accept={} view={} notice=[{}]",
+            accepted,
+            ui.get_vault_view(),
+            ui.get_notice_text(),
+        ),
+    );
+
+    // 9. A new bar, then a hidden one: the count moves and the drawn layer
+    // follows.
+    dock::add_dock(ui, state);
+    dev_note(
+        "docks09.add",
+        &format!("docks={} bars={} rows=[{}]", dock_ids().len(), bars(), rows()),
+    );
+    dock::hide(ui, state, &first);
+    dev_note(
+        "docks10.hide",
+        &format!(
+            "docks={} bars={} notice=[{}]",
+            dock_ids().len(),
+            bars(),
+            ui.get_notice_text(),
+        ),
+    );
+
+    // 11. The Layout tab's Key button: the recorder is armed for the bar in
+    // Settings, and the Settings scope forwards the very next key through
+    // `dock-key` rather than treating it as a tab jump.
+    ui.invoke_open_settings("layout".into());
+    dock::arm_key(ui, state, &first, 2);
+    let recording = ui.get_dock_recording();
+    ui.invoke_dock_key_captured("8".into());
+    dev_note(
+        "docks11.settings-key",
+        &format!(
+            "armed={} after={} stored=[{}] view={}",
+            recording,
+            ui.get_dock_recording(),
+            stored(&first),
+            ui.get_vault_view(),
+        ),
+    );
+
+    // 12. The Hidden tab lists a hidden bar and brings it back: hiding takes
+    // away the bar you would unhide it from, so this is the only door.
+    let hidden = {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        let items = state
+            .borrow()
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
+        settings_ops::hidden_rows(&prefs, &items)
+            .iter()
+            .filter(|row| row.key == "dock")
+            .map(|row| format!("{}({})", row.label, row.id))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    settings_ops::restore(ui, state, "dock", &first);
+    dev_note(
+        "docks12.hidden",
+        &format!(
+            "listed=[{}] after-restore=[{}] bars={}",
+            hidden,
+            stored(&first),
+            ui.get_dock_bars().row_count(),
+        ),
+    );
+
+    // 13. "Show all" turns every bar back on in one write.
+    dock::hide(ui, state, &first);
+    settings_ops::restore_all(ui, state);
+    dev_note(
+        "docks13.show-all",
+        &format!("bars={} rows=[{}]", ui.get_dock_bars().row_count(), rows()),
+    );
+}
+
+
 #[cfg(debug_assertions)]
 fn dev_tuner(ui: &MainWindow, state: &Shared) {
     let _ = std::fs::remove_file(app_dir().join("dev-dump.txt"));
@@ -5819,6 +6062,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 channel_tag_editing: None,
                 channel_tag_hue: None,
                 channel_ed_width: 0.0,
+    dock_key_target: None,
             }));
             // Debug scratch profiles open straight into the vault with demo
             // content; everything else starts on the real startup screen.
@@ -6248,9 +6492,142 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
             let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_key_captured(move |text| {
+                if let Some(ui) = weak.upgrade() {
+                    dock::capture(&ui, &st, &text);
+                }
+            });
+
+            let weak = ui.as_weak();
             ui.on_tuner_closed(move || {
                 if let Some(ui) = weak.upgrade() {
                     tuner::close(&ui);
+                }
+            });
+
+            // The quick-launch docks (Task 8.3). The bar's four callbacks are
+            // thin forwarders into `dock.rs`; the manager's eight are the
+            // Layout tab's controls, keyed by index into `dock-rows`' own
+            // dock/slot numbers rather than by id, because the rows model is
+            // rebuilt on every refresh and only the indices survive a write.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_slot_pressed(move |dock_id, slot_id| {
+                if let Some(ui) = weak.upgrade() {
+                    dock::slot_pressed(&ui, &st, &dock_id, &slot_id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_bar_menu(move |dock_id, x, y| {
+                if let Some(ui) = weak.upgrade() {
+                    menus::open_dock_menu(&ui, &st, &dock_id, x, y);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_slot_menu(move |dock_id, slot_id, x, y| {
+                if let Some(ui) = weak.upgrade() {
+                    menus::open_dock_slot_menu(&ui, &st, &dock_id, &slot_id, x, y);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_moved(move |dock_id, edge, fx, fy| {
+                if let Some(ui) = weak.upgrade() {
+                    dock::pos_committed(&ui, &st, &dock_id, &edge, fx, fy);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_toggle(move |index, enabled| {
+                if let Some(ui) = weak.upgrade() {
+                    if let Some(id) = dock::dock_id_at(&st, index as usize) {
+                        dock::set_enabled(&ui, &st, &id, enabled);
+                    }
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_remove(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    if let Some(id) = dock::dock_id_at(&st, index as usize) {
+                        dock::remove_dock(&ui, &st, &id);
+                    }
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_pos(move |index, edge| {
+                if let Some(ui) = weak.upgrade() {
+                    if let Some(id) = dock::dock_id_at(&st, index as usize) {
+                        dock::set_pos(&ui, &st, &id, &edge);
+                    }
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_slot_key(move |index, slot| {
+                if let Some(ui) = weak.upgrade() {
+                    if let Some(id) = dock::dock_id_at(&st, index as usize) {
+                        dock::arm_key(&ui, &st, &id, slot as usize);
+                        crate::notice(&ui, "Press the key you want this slot to answer to…");
+                    }
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_slot_menu_at(move |index, slot, x, y| {
+                if let Some(ui) = weak.upgrade() {
+                    if let Some(id) = dock::dock_id_at(&st, index as usize) {
+                        menus::open_dock_slot_menu_at(&ui, &st, &id, slot as usize, x, y);
+                    }
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_slot_remove(move |index, slot| {
+                if let Some(ui) = weak.upgrade() {
+                    if let Some(id) = dock::dock_id_at(&st, index as usize) {
+                        dock::remove_slot(&ui, &st, &id, slot as usize);
+                    }
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_slot_move(move |index, slot, delta| {
+                if let Some(ui) = weak.upgrade() {
+                    if let Some(id) = dock::dock_id_at(&st, index as usize) {
+                        dock::move_slot(&ui, &st, &id, slot as usize, delta);
+                    }
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_add_slot(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    if let Some(id) = dock::dock_id_at(&st, index as usize) {
+                        // The picker opens beside the bar it edits, which is
+                        // the only anchor the Layout tab and the bar share.
+                        let scale = ui.window().scale_factor();
+                        let size = ui.window().size();
+                        let (fx, fy) = dock::bar_anchor(&st, &id);
+                        menus::open_dock_add_menu(
+                            &ui,
+                            &st,
+                            &id,
+                            fx * size.width as f32 / scale,
+                            fy * size.height as f32 / scale,
+                        );
+                    }
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_dock_add(move || {
+                if let Some(ui) = weak.upgrade() {
+                    dock::add_dock(&ui, &st);
                 }
             });
 

@@ -345,6 +345,374 @@ pub fn open_item_menu(ui: &MainWindow, state: &Shared, id: &str, x: f32, y: f32)
 // whether the submenu's first row is a heading -- the placement maths needs
 // to know, so its first selectable row can line up with the owner.
 
+// ---- The dock menus (Task 8.3) ------------------------------------------
+// `dockMenu` (App.tsx L2766-2847) and `dockSlotMenu` (L2674-2764): the bar's
+// own menu -- position, configure, new, duplicate, hide, add a slot -- and one
+// slot's menu, which edits whatever the slot jumps to without a detour through
+// Settings.
+
+/// The resolved `kind:ref` id a stored slot answers to, the same string the
+/// bar's model carries (`buildDockSlots` L2510).
+fn slot_id_of(slot: &colax_core::DockSlotConfig) -> String {
+    let kind = crate::dock::kind_name_of(slot.kind);
+    format!(
+        "{}:{}",
+        kind,
+        if slot.target.is_empty() { kind } else { slot.target.as_str() }
+    )
+}
+
+/// The index of a slot named by its resolved id, for the bar's right-click.
+fn slot_index_by_id(state: &Shared, dock_id: &str, slot_id: &str) -> Option<usize> {
+    let prefs = items::prefs_from(state.borrow().engine.preferences());
+    prefs
+        .docks
+        .iter()
+        .find(|dock| dock.id == dock_id)
+        .and_then(|dock| {
+            dock.slots
+                .iter()
+                .position(|slot| slot_id_of(slot) == slot_id)
+        })
+}
+
+/// The `ref` a stored slot points at, for the "Edit …" rows.
+fn slot_target(state: &Shared, dock_id: &str, slot: i32) -> Option<String> {
+    let prefs = items::prefs_from(state.borrow().engine.preferences());
+    prefs
+        .docks
+        .iter()
+        .find(|dock| dock.id == dock_id)
+        .and_then(|dock| dock.slots.get(slot.max(0) as usize))
+        .map(|slot| slot.target.clone())
+}
+
+/// The bar's own menu.
+pub fn open_dock_menu(ui: &MainWindow, state: &Shared, dock_id: &str, x: f32, y: f32) {
+    let prefs = items::prefs_from(state.borrow().engine.preferences());
+    if !prefs.docks.iter().any(|dock| dock.id == dock_id) {
+        return;
+    }
+    let mut rows = Vec::new();
+    rows.push(sub(format!("dock.pos:{dock_id}").as_str(), "Dock position", false));
+    rows.push(item(
+        format!("dock.configure:{dock_id}").as_str(),
+        "Configure dock\u{2026}",
+        "",
+        false,
+        false,
+        false,
+    ));
+    if prefs.docks.len() < colax_core::MAX_DOCKS {
+        rows.push(item(
+            format!("dock.new:{dock_id}").as_str(),
+            "New dock",
+            "",
+            false,
+            false,
+            false,
+        ));
+        rows.push(item(
+            format!("dock.duplicate:{dock_id}").as_str(),
+            "Duplicate this dock",
+            "",
+            false,
+            false,
+            false,
+        ));
+    }
+    rows.push(item(
+        format!("dock.add-slot:{dock_id}").as_str(),
+        "Add a slot\u{2026}",
+        "",
+        false,
+        false,
+        false,
+    ));
+    rows.push(sep());
+    rows.push(item(
+        format!("dock.hide:{dock_id}").as_str(),
+        "Hide this dock",
+        "",
+        false,
+        false,
+        false,
+    ));
+    set_root(ui, rows, x, y);
+}
+
+/// The slot picker (`DockSettings.tsx`'s add rows, gathered): the four views,
+/// the inbox, then every channel, folder, login and mailbox the document holds.
+pub fn open_dock_add_menu(ui: &MainWindow, state: &Shared, dock_id: &str, x: f32, y: f32) {
+    let (prefs, items) = {
+        let guard = state.borrow();
+        (
+            items::prefs_from(guard.engine.preferences()),
+            guard.engine.items().map(|items| items.to_vec()).unwrap_or_default(),
+        )
+    };
+    let mut rows = Vec::new();
+    rows.push(heading("Views"));
+    for (id, label, _) in [
+        ("animated", "Flow", ""),
+        ("carousel", "Orbit", ""),
+        ("basic", "List", ""),
+        ("grid", "Grid", ""),
+    ] {
+        rows.push(item(
+            format!("dockAdd:{dock_id}:view:{id}").as_str(),
+            label,
+            "",
+            false,
+            false,
+            false,
+        ));
+    }
+    rows.push(item(
+        format!("dockAdd:{dock_id}:inbox:").as_str(),
+        "Inbox",
+        "",
+        false,
+        false,
+        false,
+    ));
+    if !prefs.channels.is_empty() {
+        rows.push(heading("Channels"));
+        for channel in prefs.channels.iter().take(24) {
+            rows.push(item(
+                format!("dockAdd:{dock_id}:channel:{}", channel.id).as_str(),
+                channel.name.as_str(),
+                "",
+                false,
+                false,
+                false,
+            ));
+        }
+    }
+    let folders = crate::dock::folder_list(&prefs);
+    if !folders.is_empty() {
+        rows.push(heading("Folders"));
+        for folder in folders.iter().take(24) {
+            rows.push(item(
+                format!("dockAdd:{dock_id}:folder:{}", folder.0).as_str(),
+                folder.1.as_str(),
+                "",
+                false,
+                false,
+                false,
+            ));
+        }
+    }
+    if !items.is_empty() {
+        rows.push(heading("Logins"));
+        for one in items.iter().take(24) {
+            let label = if !one.title.is_empty() {
+                one.title.clone()
+            } else if !one.username.is_empty() {
+                one.username.clone()
+            } else {
+                "Login".to_string()
+            };
+            rows.push(item(
+                format!("dockAdd:{dock_id}:login:{}", one.id).as_str(),
+                label.as_str(),
+                "",
+                false,
+                false,
+                false,
+            ));
+        }
+    }
+    let mailboxes = crate::channels_ops::mail_accounts(&prefs);
+    if !mailboxes.is_empty() {
+        rows.push(heading("Mailboxes"));
+        for (id, address) in mailboxes.iter().take(24) {
+            rows.push(item(
+                format!("dockAdd:{dock_id}:mailbox:{id}").as_str(),
+                if address.is_empty() { "Mailbox" } else { address.as_str() },
+                "",
+                false,
+                false,
+                false,
+            ));
+        }
+    }
+    set_root(ui, rows, x, y);
+}
+
+/// Right-click on a slot, named by its resolved id.
+pub fn open_dock_slot_menu(ui: &MainWindow, state: &Shared, dock_id: &str, slot_id: &str, x: f32, y: f32) {
+    if let Some(index) = slot_index_by_id(state, dock_id, slot_id) {
+        open_dock_slot_menu_at(ui, state, dock_id, index, x, y);
+    }
+}
+
+/// Right-click on a slot, named by index (the manager's own affordance).
+pub fn open_dock_slot_menu_at(
+    ui: &MainWindow,
+    state: &Shared,
+    dock_id: &str,
+    slot_index: usize,
+    x: f32,
+    y: f32,
+) {
+    let (prefs, items) = {
+        let guard = state.borrow();
+        (
+            items::prefs_from(guard.engine.preferences()),
+            guard.engine.items().map(|items| items.to_vec()).unwrap_or_default(),
+        )
+    };
+    let Some(slot) = prefs
+        .docks
+        .iter()
+        .find(|dock| dock.id == dock_id)
+        .and_then(|dock| dock.slots.get(slot_index))
+        .cloned()
+    else {
+        return;
+    };
+
+    let mut rows = Vec::new();
+    match slot.kind {
+        colax_core::DockSlotKind::Login => {
+            let found = items.iter().find(|item| item.id == slot.target);
+            match found {
+                Some(login) => {
+                    let label = if !login.title.is_empty() {
+                        login.title.clone()
+                    } else if !login.username.is_empty() {
+                        login.username.clone()
+                    } else {
+                        "login".to_string()
+                    };
+                    rows.push(item(
+                        format!("dockSlot.edit-login:{dock_id}:{slot_index}").as_str(),
+                        format!("Edit {label}").as_str(),
+                        "",
+                        false,
+                        false,
+                        false,
+                    ));
+                }
+                None => rows.push(item("", "Login deleted", "", false, true, false)),
+            }
+            rows.push(sep());
+            rows.push(sub(
+                format!("dockSlot.action:{dock_id}:{slot_index}").as_str(),
+                "Login action",
+                false,
+            ));
+        }
+        colax_core::DockSlotKind::Channel => {
+            let found = prefs.channels.iter().find(|channel| channel.id == slot.target);
+            match found {
+                Some(channel) => rows.push(item(
+                    format!("dockSlot.edit-channel:{dock_id}:{slot_index}").as_str(),
+                    format!("Edit {}", channel.name).as_str(),
+                    "",
+                    false,
+                    false,
+                    false,
+                )),
+                None => rows.push(item("", "Channel deleted", "", false, true, false)),
+            }
+        }
+        colax_core::DockSlotKind::Folder => {
+            let found = crate::dock::folder_list(&prefs)
+                .into_iter()
+                .find(|(id, _)| *id == slot.target);
+            match found {
+                Some((_, name)) => rows.push(item(
+                    format!("dockSlot.edit-folder:{dock_id}:{slot_index}").as_str(),
+                    format!("Edit {name}").as_str(),
+                    "",
+                    false,
+                    false,
+                    false,
+                )),
+                None => rows.push(item("", "Folder deleted", "", false, true, false)),
+            }
+        }
+        colax_core::DockSlotKind::Mailbox => {
+            let address = crate::channels_ops::mail_accounts(&prefs)
+                .into_iter()
+                .find(|(id, _)| *id == slot.target)
+                .map(|(_, address)| address);
+            match address {
+                Some(address) => rows.push(item(
+                    format!("dockSlot.open-mailbox:{dock_id}:{slot_index}").as_str(),
+                    format!("Open {}", if address.is_empty() { "mailbox".to_string() } else { address }).as_str(),
+                    "",
+                    false,
+                    false,
+                    false,
+                )),
+                None => rows.push(item("", "Mailbox disconnected", "", false, true, false)),
+            }
+        }
+        _ => {}
+    }
+
+    rows.push(item(
+        format!("dockSlot.key:{dock_id}:{slot_index}").as_str(),
+        "Set key\u{2026}",
+        "",
+        false,
+        false,
+        false,
+    ));
+    rows.push(item(
+        format!("dockSlot.left:{dock_id}:{slot_index}").as_str(),
+        "Move left",
+        "",
+        false,
+        slot_index == 0,
+        false,
+    ));
+    let last = prefs
+        .docks
+        .iter()
+        .find(|dock| dock.id == dock_id)
+        .map(|dock| dock.slots.len())
+        .unwrap_or(0);
+    rows.push(item(
+        format!("dockSlot.right:{dock_id}:{slot_index}").as_str(),
+        "Move right",
+        "",
+        false,
+        slot_index + 1 >= last,
+        false,
+    ));
+    rows.push(item(
+        format!("dockSlot.remove:{dock_id}:{slot_index}").as_str(),
+        "Remove slot",
+        "",
+        false,
+        false,
+        true,
+    ));
+    rows.push(sep());
+    rows.push(item(
+        format!("dock.configure:{dock_id}").as_str(),
+        "Customize this bar\u{2026}",
+        "",
+        false,
+        false,
+        false,
+    ));
+    rows.push(item(
+        format!("dock.hidden:{dock_id}").as_str(),
+        "Show hidden items\u{2026}",
+        "",
+        false,
+        false,
+        false,
+    ));
+
+    set_root(ui, rows, x, y);
+}
+
 fn sub_rows(ui: &MainWindow, state: &Shared, key: &str) -> Option<(Vec<MenuRow>, bool)> {
     let prefs = items::prefs_from(state.borrow().engine.preferences());
     let mut rows: Vec<MenuRow> = Vec::new();
@@ -488,6 +856,60 @@ fn sub_rows(ui: &MainWindow, state: &Shared, key: &str) -> Option<(Vec<MenuRow>,
                     "",
                     false,
                     true,
+                    false,
+                ));
+            }
+        }
+        // `Dock position ▸` (Task 8.3): the four canonical spots, with the
+        // bar's current edge ticked (`dockMenu`, App.tsx L2770-2787).
+        key if key.starts_with("dock.pos:") => {
+            let dock_id = &key["dock.pos:".len()..];
+            head = true;
+            rows.push(heading("Dock position"));
+            let current = prefs
+                .docks
+                .iter()
+                .find(|dock| dock.id == dock_id)
+                .map(|dock| crate::dock::edge_name(dock.pos.edge))
+                .unwrap_or("bottom");
+            for edge in ["bottom", "top", "left", "right"] {
+                rows.push(item(
+                    format!("dockPos:{dock_id}:{edge}").as_str(),
+                    crate::dock::edge_label(crate::dock::parse_edge(edge)),
+                    "",
+                    current == edge,
+                    false,
+                    false,
+                ));
+            }
+        }
+        // `Login action ▸`: what pressing a login slot does (DockSettings.tsx
+        // `DOCK_LOGIN_ACTIONS`, L119).
+        key if key.starts_with("dockSlot.action:") => {
+            let rest = &key["dockSlot.action:".len()..];
+            let (dock_id, slot) = rest.rsplit_once(':').unwrap_or((rest, "0"));
+            head = true;
+            rows.push(heading("Login action"));
+            let current = prefs
+                .docks
+                .iter()
+                .find(|dock| dock.id == dock_id)
+                .and_then(|dock| dock.slots.get(slot.parse::<usize>().unwrap_or(0)))
+                .and_then(|slot| slot.action)
+                .unwrap_or(colax_core::DockLoginAction::Both);
+            for (id, label) in [
+                ("password", "Copy password"),
+                ("email", "Copy email"),
+                ("both", "Copy login"),
+                ("edit", "Edit login"),
+                ("messages", "Show messages"),
+            ] {
+                rows.push(item(
+                    format!("dockAction:{dock_id}:{slot}:{id}").as_str(),
+                    label,
+                    "",
+                    crate::dock::action_matches(current, id),
+                    false,
                     false,
                 ));
             }
@@ -720,6 +1142,95 @@ fn picked(ui: &MainWindow, state: &Shared, id: &str) {
             return;
         }
     }
+    // The dock menus (Task 8.3). One prefix for the bar, one for its slots,
+    // one for the slot picker; each parses `id:index` suffixes rather than
+    // trusting a row's label back.
+    if let Some(rest) = id.strip_prefix("dockPos:") {
+        if let Some((dock_id, edge)) = rest.rsplit_once(':') {
+            crate::dock::set_pos(ui, state, dock_id, edge);
+        }
+        return;
+    }
+    if let Some(rest) = id.strip_prefix("dock.configure:") {
+        let _ = rest;
+        ui.invoke_open_settings("layout".into());
+        return;
+    }
+    if let Some(rest) = id.strip_prefix("dock.hidden:") {
+        let _ = rest;
+        ui.invoke_open_settings("hidden".into());
+        return;
+    }
+    if let Some(rest) = id.strip_prefix("dock.new:") {
+        let _ = rest;
+        crate::dock::add_dock(ui, state);
+        return;
+    }
+    if let Some(rest) = id.strip_prefix("dock.duplicate:") {
+        crate::dock::duplicate_dock(ui, state, rest);
+        return;
+    }
+    if let Some(rest) = id.strip_prefix("dock.hide:") {
+        crate::dock::hide(ui, state, rest);
+        return;
+    }
+    if let Some(rest) = id.strip_prefix("dock.add-slot:") {
+        // A second root menu replaces this one, anchored where it was.
+        open_dock_add_menu(ui, state, rest, ui.get_menu_x(), ui.get_menu_y());
+        return;
+    }
+    if let Some(rest) = id.strip_prefix("dockAdd:") {
+        let parts: Vec<&str> = rest.splitn(3, ':').collect();
+        if let [dock_id, kind, target] = parts.as_slice() {
+            if let Some(kind) = crate::dock::slot_kind_of(&format!("{kind}:")) {
+                crate::dock::add_slot(ui, state, dock_id, kind, target);
+            }
+        }
+        return;
+    }
+    if let Some(rest) = id.strip_prefix("dockSlot.") {
+        let (what, tail) = rest.split_once(':').unwrap_or((rest, ""));
+        let (dock_id, slot) = tail.rsplit_once(':').unwrap_or((tail, "0"));
+        let slot: i32 = slot.parse().unwrap_or(0);
+        match what {
+            "edit-login" => {
+                if let Some(target) = slot_target(state, dock_id, slot) {
+                    open_editor(ui, state, target.as_str());
+                }
+            }
+            "edit-channel" => {
+                if let Some(target) = slot_target(state, dock_id, slot) {
+                    crate::channels_ops::open(ui, state, target.as_str());
+                }
+            }
+            "edit-folder" => {
+                // Folder editing belongs to the rail's own tree, which is not
+                // built yet; send the user where it will live rather than
+                // leaving a dead row.
+                ui.invoke_open_settings("layout".into());
+            }
+            "open-mailbox" => {
+                crate::notice(ui, "Mailbox windows arrive with the mail engine.");
+            }
+            "key" => {
+                crate::dock::arm_key(ui, state, dock_id, slot.max(0) as usize);
+                crate::notice(ui, "Press the key you want this slot to answer to\u{2026}");
+            }
+            "left" => crate::dock::move_slot(ui, state, dock_id, slot.max(0) as usize, -1),
+            "right" => crate::dock::move_slot(ui, state, dock_id, slot.max(0) as usize, 1),
+            "remove" => crate::dock::remove_slot(ui, state, dock_id, slot.max(0) as usize),
+            _ => {}
+        }
+        return;
+    }
+    if let Some(rest) = id.strip_prefix("dockAction:") {
+        let parts: Vec<&str> = rest.splitn(3, ':').collect();
+        if let [dock_id, slot, action] = parts.as_slice() {
+            crate::dock::set_slot_action(ui, state, dock_id, slot.parse().unwrap_or(0), action);
+        }
+        return;
+    }
+
     if let Some(tail) = id.strip_prefix("app.") {
         if let Some(view) = tail.strip_prefix("view:") {
             ops::pref_string(ui, state, "view", view);

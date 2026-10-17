@@ -16,9 +16,10 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow, ShortcutRow } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow, ShortcutRow, DockBarRow, DockManagerRow } from "models.slint";
 import { ShortcutsSheet } from "screens/shortcuts.slint";
 import { AppearanceTuner } from "screens/appearance_tuner.slint";
+import { DockLayer } from "screens/dock.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
@@ -879,6 +880,30 @@ export component MainWindow inherits Window {
     callback tuner-accent-picked(id: string);
     callback tuner-reset();
     callback tuner-closed();
+    // ---- Quick-launch docks (Task 8.3) ------------------------------------
+    // `dock-bars` is what the layer draws: every enabled bar, positioned by its
+    // own placement. `dock-rows` is the Layout tab's manager. Both are rebuilt
+    // in Rust on every refresh (`dock.rs::push`).
+    in property <[DockBarRow]> dock-bars;
+    in property <[DockManagerRow]> dock-rows;
+    // A dock key recording is armed (Task 8.3): the Settings modal's own scope
+    // hands the next key over rather than treating it as a tab jump.
+    in property <bool> dock-recording: false;
+    callback dock-key-captured(text: string);
+    callback dock-slot-pressed(dock-id: string, slot-id: string);
+    callback dock-bar-menu(dock-id: string, x: float, y: float);
+    callback dock-slot-menu(dock-id: string, slot-id: string, x: float, y: float);
+    callback dock-moved(dock-id: string, edge: string, fx: float, fy: float);
+    // The manager's own controls, keyed by bar and slot index.
+    callback dock-toggle(index: int, enabled: bool);
+    callback dock-remove(index: int);
+    callback dock-pos(index: int, edge: string);
+    callback dock-slot-key(index: int, slot: int);
+    callback dock-slot-menu-at(index: int, slot: int, x: float, y: float);
+    callback dock-slot-remove(index: int, slot: int);
+    callback dock-slot-move(index: int, slot: int, delta: int);
+    callback dock-add-slot(index: int);
+    callback dock-add();
     // ---- The dashboard (Task 7.1) -----------------------------------------
     // The Command Center replaces the whole content pane when its channel is
     // active — toolbar and grid included, as the TS dashboard does. Rust
@@ -2798,6 +2823,22 @@ export component MainWindow inherits Window {
     } // VerticalLayout
     } // shortcut-scope
 
+        // -- The quick-launch docks (Task 8.3) -------------------------------
+        // Sibling of the shell, a later element so it floats over the cards;
+        // below the gate (50), the tuner (60) and the sheet (70), so a modal
+        // still outranks a bar. An empty layer takes no pointer events, so a
+        // click that misses a bar reaches the shell underneath.
+        if (root.dock-bars.length > 0) : DockLayer {
+            z: 30;
+            bars: root.dock-bars;
+            win-w: root.width;
+            win-h: root.height;
+            slot-pressed(dock-id, slot-id) => { root.dock-slot-pressed(dock-id, slot-id); }
+            bar-menu(dock-id, x, y) => { root.dock-bar-menu(dock-id, x, y); }
+            slot-menu(dock-id, slot-id, x, y) => { root.dock-slot-menu(dock-id, slot-id, x, y); }
+            moved(dock-id, edge, fx, fy) => { root.dock-moved(dock-id, edge, fx, fy); }
+        }
+
         // -- The SecurityGate ------------------------------------------------
         // One panel, whichever flow opened it: the vault's own factor the
         // moment it is unlocked, a secured login before its editor opens, the
@@ -2865,6 +2906,18 @@ export component MainWindow inherits Window {
             lay-floating-chrome <=> root.settings-lay-floating-chrome;
             lay-hide-dividers <=> root.settings-lay-hide-dividers;
             hidden-rows: root.settings-hidden-rows;
+            // The Layout tab's dock manager (Task 8.3) reads the same model
+            // the bars draw from, so the two cannot disagree mid-edit.
+            dock-rows: root.dock-rows;
+            dock-recording: root.dock-recording;
+            dock-key(text) => { root.dock-key-captured(text); }
+            dock-toggle(index, enabled) => { root.dock-toggle(index, enabled); }
+            dock-remove(index) => { root.dock-remove(index); }
+            dock-add-slot(index) => { root.dock-add-slot(index); }
+            dock-slot-key(index, slot) => { root.dock-slot-key(index, slot); }
+            dock-slot-menu(index, slot, x, y) => { root.dock-slot-menu-at(index, slot, x, y); }
+            dock-slot-remove(index, slot) => { root.dock-slot-remove(index, slot); }
+            dock-add => { root.dock-add(); }
             desk-launch-at-login <=> root.settings-desk-launch-at-login;
             desk-tray <=> root.settings-desk-tray;
             desk-close-to-tray <=> root.settings-desk-close-to-tray;

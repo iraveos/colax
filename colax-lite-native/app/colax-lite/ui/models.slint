@@ -424,3 +424,52 @@ export struct HistoryData {
     has-events: bool,    // Clear log stays live while the log has entries,
                          // even when the query filters every row away
 }
+
+// ---- Docks (Task 8.3) ----------------------------------------------------
+// One resolved slot of a quick-launch bar, read off its `kind:ref` id the way
+// `buildDockSlots` does (App.tsx L2505-2620). A slot whose target no longer
+// exists is simply absent here, so a deleted channel leaves a gap rather than
+// a dead button.
+export struct DockSlotRow {
+    id: string,          // `${kind}:${ref || kind}`
+    kind: string,        // view | channel | folder | login | inbox | mailbox
+    label: string,       // slot label, else the target's own name
+    hint: string,        // "Folder: Work", the username, or the action hint
+    glyph: string,       // the port's text-glyph stand-in for the Lucide icon
+    dot: color,          // the channel/folder hue, resolved in Rust
+    has-dot: bool,       // false for views, inbox and logins
+    key: string,         // the bare key that jumps here, as the badge shows it
+    active: bool,        // the view/channel/login this slot points at is showing
+    family: string,      // views | go | logins | mail -- decides the divider
+    divider: bool,       // a family boundary falls *before* this slot
+    has-image: bool,     // an uploaded/remote icon overrides the glyph
+    image: image,
+}
+
+// One stored bar with its slots resolved, plus the placement the bar is drawn
+// at. `edge` decides row-vs-column; fx/fy are viewport fractions, 0-1.
+export struct DockBarRow {
+    id: string,
+    edge: string,        // bottom | top | left | right
+    fx: float,
+    fy: float,
+    slots: [DockSlotRow],
+}
+
+// One row of the Layout tab's dock manager. A flat list rather than a nested
+// model, because Slint cannot group a model after the fact; `kind` says which
+// shape the row is. `dock`/`slot` are the indices a click writes back.
+export struct DockManagerRow {
+    kind: string,        // dock | slot
+    dock: int,
+    slot: int,           // -1 on a dock header
+    id: string,          // the slot's `kind:ref` id, else the dock id
+    title: string,       // "Dock 1", or the slot's label
+    hint: string,        // the slot's target/action hint, or the bar's spot
+    glyph: string,
+    dot: color,
+    has-dot: bool,
+    key: string,
+    enabled: bool,       // dock headers only
+    missing: bool,       // the slot's target is gone -- Remove is all that works
+}

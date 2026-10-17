@@ -14,6 +14,7 @@
 pub mod bytes;
 pub mod channels;
 pub mod crypto;
+pub mod dock;
 pub mod engine;
 pub mod error;
 pub mod health;
@@ -35,6 +36,11 @@ pub use crypto::{
     PBKDF2_ITERATIONS, VAULT_FORMAT_VERSION,
 };
 pub use engine::{new_item_id, verify_backup_password, VaultEngine};
+pub use dock::{
+    default_dock_slots, default_docks, free_dock_spot, new_dock_id, normalise_dock_pos,
+    normalise_dock_slots, normalise_docks, DockLoginAction, DockPlacement, DockPosition,
+    DockSlotConfig, DockSlotKind, DockState, DOCK_LOGIN_ACTIONS, MAX_DOCKS, MAX_DOCK_SLOTS,
+};
 pub use error::VaultError;
 pub use health::{find_weak_items, is_stale, pattern_stem};
 pub use history::{

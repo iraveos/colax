@@ -65,6 +65,15 @@ fn rows() -> Vec<ShortcutRow> {
 /// -- closing this sheet and cancelling the editor -- are the TS `escape`
 /// entry, which is reachable from more than the vault screen.
 pub fn key(ui: &MainWindow, state: &Shared, text: &str, ctrl: bool, shift: bool, alt: bool) -> bool {
+    // A dock key recording (Task 8.3) is armed from a menu, which then closes,
+    // so the next key arrives here. It is answered before everything else --
+    // including Escape and the vault guard -- because while a recording is
+    // armed *every* key is the answer, and letting a stray `v` switch a view
+    // mid-recording is exactly the accident the guard exists to prevent.
+    if crate::dock::capturing(state) {
+        return crate::dock::capture(ui, state, text);
+    }
+
     if text == ESC || text == "Escape" {
         if ui.get_show_shortcuts() {
             close_sheet(ui);
@@ -185,7 +194,23 @@ pub fn key(ui: &MainWindow, state: &Shared, text: &str, ctrl: bool, shift: bool,
             open_sheet(ui);
             true
         }
-        _ => false,
+        // Bare dock keys (Task 8.3) come last, so a built-in key wins a
+        // collision exactly as `useHotkeys` (registered first) wins over the
+        // dock's own listener. Modifiers are excluded outright: a chord belongs
+        // to the global hotkeys, and mixing the two systems on one key is how a
+        // shortcut gets claimed twice (`useDockShortcuts`, Dock.tsx L293-310).
+        _ => {
+            if ctrl || alt || text.chars().count() != 1 {
+                return false;
+            }
+            match crate::dock::key_target(state, text) {
+                Some((dock_id, slot_id)) => {
+                    crate::dock::slot_pressed(ui, state, &dock_id, &slot_id);
+                    true
+                }
+                None => false,
+            }
+        }
     }
 }
 

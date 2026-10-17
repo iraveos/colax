@@ -72,9 +72,9 @@ const HIDDEN_BUTTON_LABELS: [(&str, &str); 6] = [
 ///
 /// A hidden channel is named and counted from the catalogue and the logins
 /// (`channel?.name || 'Channel'`, `${count} logins inside`) — the TS's own
-/// fallback when its catalogue misses. One of the TS's groups is not built
-/// yet and says so by being absent: the quick-launch docks (their runtime
-/// has not landed).
+/// fallback when its catalogue misses. The quick-launch bars join as a "Docks"
+/// group: hiding one takes away the bar you would unhide it from, so this is
+/// the only door back (Settings.tsx L1001-1010).
 pub fn hidden_rows(prefs: &VaultPreferences, items: &[VaultItem]) -> Vec<HiddenRow> {
     // (key, id, group, label, detail) — an empty id marks a switch.
     let mut rows: Vec<(String, String, &'static str, String, String)> = Vec::new();
@@ -134,6 +134,29 @@ pub fn hidden_rows(prefs: &VaultPreferences, items: &[VaultItem]) -> Vec<HiddenR
             .map(|(_, label)| (*label).to_string())
             .unwrap_or_else(|| id.clone());
         push("button", id, "Login cards", label, "Hidden on every card".into());
+    }
+    // The quick-launch bars (Task 8.3). A hidden bar is restored from here
+    // because hiding takes away the bar you would otherwise unhide it from
+    // (Settings.tsx L1001-1010).
+    for (index, dock) in prefs.docks.iter().enumerate() {
+        if !dock.enabled {
+            push(
+                "dock",
+                dock.id.as_str(),
+                "Docks",
+                if prefs.docks.len() > 1 {
+                    format!("Dock {}", index + 1)
+                } else {
+                    "Quick-launch dock".to_string()
+                },
+                format!(
+                    "{} slot{} on the {} edge",
+                    dock.slots.len(),
+                    if dock.slots.len() == 1 { "" } else { "s" },
+                    crate::dock::edge_name(dock.pos.edge),
+                ),
+            );
+        }
     }
 
     let mut out = Vec::with_capacity(rows.len());
@@ -1463,6 +1486,13 @@ pub fn restore(ui: &MainWindow, state: &Shared, key: &str, id: &str) {
         return;
     }
     write(ui, state, |prefs| {
+        if key == "dock" {
+            if let Some(dock) = prefs.docks.iter_mut().find(|dock| dock.id == id) {
+                dock.enabled = true;
+                return true;
+            }
+            return false;
+        }
         let list = match key {
             "button" => &mut prefs.hidden_buttons,
             "channel" => &mut prefs.hidden_channels,
@@ -1475,8 +1505,8 @@ pub fn restore(ui: &MainWindow, state: &Shared, key: &str, id: &str) {
 }
 
 /// "Show all N": one write, every switch back on and the three lists empty
-/// — the single `set({...})` at Settings.tsx L1118. The docks' `enabled`
-/// flags join it when the docks runtime lands; there are none to name yet.
+/// — the single `set({...})` at Settings.tsx L1118 — plus every dock's
+/// `enabled` flag, which the TS turns on in the same object.
 pub fn restore_all(ui: &MainWindow, state: &Shared) {
     write(ui, state, |prefs| {
         prefs.show_new_login_button = true;
@@ -1491,6 +1521,9 @@ pub fn restore_all(ui: &MainWindow, state: &Shared) {
         prefs.hidden_channels.clear();
         prefs.hidden_folders.clear();
         prefs.hidden_buttons.clear();
+        for dock in prefs.docks.iter_mut() {
+            dock.enabled = true;
+        }
         true
     });
 }
