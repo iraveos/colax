@@ -856,6 +856,7 @@ export component MainWindow inherits Window {
     callback settings-data-restore-cancel();
     callback settings-data-restore-edit();
     callback settings-data-restore-submit();
+    callback settings-backup-with-settings-toggled();
     // Background (Task 5.9): the field's own edits and the two buttons beside
     // it. The sliders ride the generic `settings-pref-float` above.
     callback settings-bg-url-edited();
@@ -1031,6 +1032,9 @@ export component MainWindow inherits Window {
     in property <bool> settings-data-restore-busy: false;
     in property <bool> settings-data-restore-ready: false;
     in property <string> settings-backup-hint;
+    // Native-only: whether an export carries the app's settings too (Task
+    // 5.10+). Bound to the Backup tab's switch.
+    in-out property <bool> settings-backup-with-settings: true;
     // ---- The Settings window's Background tab (Task 5.9) ------------------
     // The URL draft, the error line and the three dials. The two layer
     // properties are the app's own: the picture itself is decoded in Rust
@@ -2572,6 +2576,7 @@ export component MainWindow inherits Window {
             data-restore-busy: root.settings-data-restore-busy;
             data-restore-ready: root.settings-data-restore-ready;
             backup-hint: root.settings-backup-hint;
+            backup-with-settings <=> root.settings-backup-with-settings;
             bg-url <=> root.settings-bg-url;
             bg-error: root.settings-bg-error;
             bg-has-image: root.settings-bg-has-image;
@@ -2621,6 +2626,7 @@ export component MainWindow inherits Window {
             data-protect-confirm => { root.settings-data-protect-confirm(); }
             backup-export => { root.settings-backup-export(); }
             backup-restore-pick => { root.settings-backup-restore-pick(); }
+            backup-with-settings-toggled => { root.settings-backup-with-settings-toggled(); }
             data-restore-cancel => { root.settings-data-restore-cancel(); }
             data-restore-edit => { root.settings-data-restore-edit(); }
             data-restore-submit => { root.settings-data-restore-submit(); }

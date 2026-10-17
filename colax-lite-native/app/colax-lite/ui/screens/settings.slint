@@ -1195,6 +1195,12 @@ export component Settings inherits Rectangle {
     // both already composed the way the TS template composes them.
     in property <string> backup-hint; 
 
+    // Native-only, and the one thing in this sheet with no TS counterpart:
+    // whether an export carries the app's own settings — theme, folders,
+    // channels, tags, alarms — beside the vault and its logins. See
+    // `VaultPreferences.backup_with_settings`.
+    in-out property <bool> backup-with-settings: true;
+
     // ---- Background (Task 5.9) --------------------------------------------
     // The URL draft is the window's own field, exactly as `BackgroundSection`'s
     // `url` state is the component's: typing does not write the preference
@@ -1268,6 +1274,7 @@ export component Settings inherits Rectangle {
     callback data-protect-confirm();
     callback backup-export();
     callback backup-restore-pick();
+    callback backup-with-settings-toggled();
     callback data-restore-cancel();
     callback data-restore-edit();
     // Background: the field's own edits, and the two buttons beside it. The
@@ -3013,6 +3020,21 @@ export component Settings inherits Rectangle {
                             if (root.active.id == "backup") : VerticalLayout {
                                 width: root.panel-w;
                                 spacing: 0px;
+
+                                // Native-only: the TS backup is the vault and
+                                // its logins, full stop, and a restore of one
+                                // leaves the device's own settings alone. This
+                                // app writes its preferences into the same file
+                                // (they live in it on disk), so the switch is
+                                // the honest choice between "the same file the
+                                // web build makes" and "everything".
+                                toggle-row {
+                                    panel-w: root.panel-w;
+                                    label: "Include settings and layout";
+                                    hint: "The theme, folders, channels, tags, alarms and every other setting travel with the backup. Off, the file carries the vault and its logins only — restoring it leaves this device's settings as they are.";
+                                    checked <=> root.backup-with-settings;
+                                    toggled => { root.backup-with-settings-toggled(); }
+                                }
 
                                 btn-row {
                                     panel-w: root.panel-w;

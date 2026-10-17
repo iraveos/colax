@@ -339,6 +339,8 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     ui.set_settings_sec_confirm_export(prefs.confirm_before_export);
     ui.set_settings_sec_confirm_deletes(prefs.confirm_deletes);
     ui.set_settings_sec_copy_toasts(prefs.copy_toasts);
+    // The Backup tab's one switch (native-only; see `VaultPreferences`).
+    ui.set_settings_backup_with_settings(prefs.backup_with_settings);
     // `PBKDF2_ITERATIONS.toLocaleString()` (Settings.tsx L1298): the commas
     // are put in here because Slint has no number formatter.
     ui.set_settings_sec_kdf(
@@ -648,6 +650,9 @@ fn bool_key(prefs: &mut VaultPreferences, key: &str, value: bool) -> bool {
         "autoTagReused" => &mut prefs.auto_tag_reused,
         "maskEmails" => &mut prefs.mask_emails,
         "confirmBeforeExport" => &mut prefs.confirm_before_export,
+        // Native-only, so it is the one key here with no TS counterpart: the
+        // Backup tab's "Include settings and layout" switch.
+        "backupWithSettings" => &mut prefs.backup_with_settings,
         "confirmDeletes" => &mut prefs.confirm_deletes,
         "copyToasts" => &mut prefs.copy_toasts,
         _ => return false,
@@ -1711,6 +1716,19 @@ pub fn backup_export(ui: &MainWindow, state: &Shared) {
     export_backup_file(ui, state, None);
 }
 
+/// Settings › Backup's "Include settings and layout": whether an export
+/// carries the app's own preferences beside the vault. The write is the
+/// ordinary pref path, so the switch survives a restart and travels in the
+/// very blob it governs.
+pub fn backup_with_settings_toggled(ui: &MainWindow, state: &Shared) -> bool {
+    pref_bool(
+        ui,
+        state,
+        "backupWithSettings",
+        ui.get_settings_backup_with_settings(),
+    )
+}
+
 /// The score gate's input: every keystroke in the protect sheet rescores
 /// through the same `estimate_strength` the vault's password fields use, and
 /// the Export button lights at 2 (Settings.tsx L2197).
@@ -1732,19 +1750,8 @@ pub fn data_protect_confirm(ui: &MainWindow, state: &Shared) {
 /// the sheet), pick a path, write, and say so. The pre-filled name is the
 /// TS's `backupFilename()` (src/vault/backup.ts L27).
 fn export_backup_file(ui: &MainWindow, state: &Shared, password: Option<&str>) {
-    let document = {
-        let guard = state.borrow();
-        match password {
-            Some(password) => guard.engine.export_backup_json_with_password(password),
-            None => guard.engine.export_backup_json(),
-        }
-    };
-    let document = match document {
-        Ok(document) => document,
-        Err(_) => {
-            ui.set_error_text("The backup could not be written.".into());
-            return;
-        }
+    let Some(document) = export_backup_text(ui, state, password) else {
+        return;
     };
     let name = format!(
         "colax-vault-backup-{}.json",
@@ -1759,6 +1766,28 @@ fn export_backup_file(ui: &MainWindow, state: &Shared, password: Option<&str>) {
     }
     ui.set_settings_data_protect_open(false);
     crate::notice(ui, "Encrypted backup downloaded");
+}
+
+/// The document the two export paths produce, without the save dialog, so a
+/// dump run can hold the file and check what the "Include settings and
+/// layout" switch did to it. `None` when the vault will not serialize, with
+/// the window's error line already set.
+fn export_backup_text(ui: &MainWindow, state: &Shared, password: Option<&str>) -> Option<String> {
+    let document = {
+        let guard = state.borrow();
+        // The switch is read here rather than pushed to the window: the file
+        // is the only thing it changes, and this is the one place that writes
+        // one.
+        let include = items::prefs_from(guard.engine.preferences()).backup_with_settings;
+        guard.engine.export_backup_json_with(include, password)
+    };
+    match document {
+        Ok(document) => Some(document),
+        Err(_) => {
+            ui.set_error_text("The backup could not be written.".into());
+            None
+        }
+    }
 }
 
 /// Settings › Backup's "Restore": open a backup file and show the sheet.
@@ -2443,6 +2472,73 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
     );
     dump(ui, state, "settings48.new-deleted");
 
+    // The Backup tab's one native-only switch. This port writes its own
+    // settings into the export (they live in the same file on disk); the web
+    // build's backup is the vault and its logins, full stop, and its restore
+    // leaves the device's settings alone. The switch is the choice, and the
+    // two files below are held in memory the way `export_backup_text` hands
+    // one to the save dialog -- every file picker is the one thing a dump run
+    // cannot click.
+    tab_picked(ui, 9); // Ctrl+10 -> backup
+    debug_assert!(
+        ui.get_settings_backup_with_settings(),
+        "the switch ships on: a backup that dropped the look would be worse"
+    );
+    let with_settings = export_backup_text(ui, state, None).expect("the vault serializes");
+    debug_assert!(with_settings.contains("\"preferences\""));
+    debug_assert!(
+        with_settings.contains("\"channels\""),
+        "the rail travels with the settings"
+    );
+
+    // Off: the file the web build writes. The vault and its logins are all
+    // there and the settings key is not — not null, not empty, absent, so the
+    // TS parser never sees a field it does not know.
+    ui.set_settings_backup_with_settings(false);
+    backup_with_settings_toggled(ui, state);
+    debug_assert!(!items::prefs_from(state.borrow().engine.preferences()).backup_with_settings);
+    let lean = export_backup_text(ui, state, None).expect("the vault serializes");
+    debug_assert!(!lean.contains("preferences"));
+    let lean_items = colax_core::parse_backup(&lean)
+        .expect("the lean file still parses")
+        .items
+        .len();
+    debug_assert_eq!(
+        lean_items,
+        state.borrow().engine.items().map_or(0, |items| items.len()),
+        "the logins are all in it"
+    );
+    dump(ui, state, "settings49.backup-lean");
+
+    // One setting changed *after* the file was taken, so the two restores
+    // below can be told apart by what they did to the settings rather than by
+    // the logins, which both carry.
+    pref_string(ui, state, "accent", "dusk");
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences()).accent,
+        "dusk"
+    );
+
+    backup_restore_from_text(ui, state, "walk-lean.json", &lean);
+    ui.set_settings_data_restore_password("".into());
+    crate::settings_data_restore_submit(ui, state, tray);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences()).accent,
+        "dusk",
+        "a file without the blob leaves this device's own settings alone"
+    );
+    dump(ui, state, "settings50.backup-lean-restored");
+
+    backup_restore_from_text(ui, state, "walk-backup.json", &with_settings);
+    ui.set_settings_data_restore_password("".into());
+    crate::settings_data_restore_submit(ui, state, tray);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences()).accent,
+        "clay",
+        "a file with the blob puts the settings it carries back"
+    );
+    dump(ui, state, "settings51.backup-restored");
+
     close(ui);
     dump(ui, state, "settings17.closed");
 }
@@ -2573,7 +2669,7 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         }
     };
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}] data=[{} {} {} {} {} {} {} {}] chan=[{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}] bg=[{} {} {} {}] app=[{} {} {}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{},{}] store=[{},{},{},{},{},{}] data=[{} {} {} {} {} {} {} {}] chan=[{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}] bg=[{} {} {} {}] app=[{} {} {}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -2658,6 +2754,9 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         prefs.text_scale,
         prefs.accent,
         prefs.high_contrast,
+        // The Backup tab's switch, as the document holds it: the walk's
+        // lean/full export block turns it off and on again.
+        prefs.backup_with_settings as i32,
         prefs.view,
         prefs.sort,
         prefs.sidebar_labels,

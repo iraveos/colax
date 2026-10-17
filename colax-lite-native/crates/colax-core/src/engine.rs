@@ -396,6 +396,15 @@ impl VaultEngine {
 
     /// Ciphertext-only snapshot for backup. Safe to write to disk as-is.
     pub fn export_backup(&self) -> Result<BackupFile, VaultError> {
+        self.build_backup(true)
+    }
+
+    /// The same snapshot with the app's own settings left out: the vault and
+    /// its logins only, which is the file the web build writes. `false` here
+    /// is what Settings › Backup's "Include settings and layout" switch turns
+    /// off; a backup without the blob restores over a device's own settings
+    /// rather than replacing them (see `restore_backup`).
+    pub fn build_backup(&self, include_preferences: bool) -> Result<BackupFile, VaultError> {
         Ok(BackupFile {
             format: crate::storage::BACKUP_FORMAT.into(),
             version: crate::storage::BACKUP_VERSION,
@@ -404,7 +413,7 @@ impl VaultEngine {
             items: self.stored.clone(),
             // Preferences ride along in the backup: the TS build writes them,
             // and dropping them here made a restore lose the user's theme.
-            preferences: Some(self.preferences.clone()),
+            preferences: include_preferences.then(|| self.preferences.clone()),
         })
     }
 
@@ -450,21 +459,37 @@ impl VaultEngine {
 
     /// The document as a pretty JSON string (what the export UI writes).
     pub fn export_backup_json(&self) -> Result<String, VaultError> {
-        serialize_backup(&self.export_backup()?)
+        self.export_backup_json_with(true, None)
     }
 
-    /// The same document, its header re-wrapped under `password` so the file
-    /// is protected rather than relying on this device's protection. The
-    /// vault key itself never changes, so every item ciphertext stays valid
-    /// — the settings sheet's "Protect this backup" export.
+    /// The export UI's one entry point: whether the settings blob travels,
+    /// and whether the file is re-wrapped under a password first.
+    ///
+    /// `password` re-wraps the header so the file is protected rather than
+    /// relying on this device's protection. The vault key itself never
+    /// changes, so every item ciphertext stays valid — the settings sheet's
+    /// "Protect this backup" export.
     ///
     /// The TS export re-opens the backup's own header with an empty password
     /// first, which works for a device vault but fails once a vault password
     /// is set; the session handle does the same job in both cases.
-    pub fn export_backup_json_with_password(&self, password: &str) -> Result<String, VaultError> {
-        let mut backup = self.export_backup()?;
-        backup.header = rewrap_vault_key(self.require_handle()?, password, self.kdf_iterations)?;
+    pub fn export_backup_json_with(
+        &self,
+        include_preferences: bool,
+        password: Option<&str>,
+    ) -> Result<String, VaultError> {
+        let mut backup = self.build_backup(include_preferences)?;
+        if let Some(password) = password {
+            backup.header = rewrap_vault_key(self.require_handle()?, password, self.kdf_iterations)?;
+        }
         serialize_backup(&backup)
+    }
+
+    /// The same document, its header re-wrapped under `password`. Kept for
+    /// the callers that always want the settings to travel (the walk, the
+    /// tests) and for the reading order of the two flags.
+    pub fn export_backup_json_with_password(&self, password: &str) -> Result<String, VaultError> {
+        self.export_backup_json_with(true, Some(password))
     }
 }
 

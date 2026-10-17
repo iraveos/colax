@@ -6026,6 +6026,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             let weak = ui.as_weak();
             let st = state.clone();
+            ui.on_settings_backup_with_settings_toggled(move || {
+                if let Some(ui) = weak.upgrade() {
+                    settings_ops::backup_with_settings_toggled(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
             ui.on_settings_data_restore_cancel(move || {
                 if let Some(ui) = weak.upgrade() {
                     settings_ops::data_restore_cancel(&ui, &st);

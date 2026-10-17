@@ -407,6 +407,58 @@ fn a_passwordless_backup_restores_without_a_password() {
 }
 
 #[test]
+fn an_export_can_leave_the_settings_behind() {
+    let mut source = fast(temp_storage("backup-settings"));
+    source.create(None).unwrap();
+    source
+        .add_item(&json!({ "title": "One", "password": "alpha" }))
+        .unwrap();
+    source
+        .save_preferences(json!({ "theme": "dark", "accent": "clay" }))
+        .unwrap();
+
+    // With the settings travelling, the blob is in the file and carries the
+    // document's own preferences.
+    let with = source.export_backup_json_with(true, None).unwrap();
+    assert!(with.contains("\"preferences\""));
+    assert!(with.contains("\"theme\": \"dark\""));
+    // The plain export is the same file: the switch defaults to on, so the
+    // no-argument call carries the blob too. (Only `exportedAt` can differ
+    // between the two calls, which is why this reads the key and not the
+    // whole string.)
+    assert!(source.export_backup_json().unwrap().contains("\"preferences\""));
+
+    // Without them the key is absent entirely -- not null, not empty. That is
+    // the file the web build writes, and its `parseBackup` never looks for it.
+    let without = source.export_backup_json_with(false, None).unwrap();
+    assert!(!without.contains("preferences"));
+
+    // A file with no blob restores the vault over this device's own settings
+    // rather than replacing them...
+    let mut target = fast(temp_storage("backup-settings-target"));
+    target.create(None).unwrap();
+    target
+        .save_preferences(json!({ "theme": "light", "accent": "sage" }))
+        .unwrap();
+    let stripped = parse_backup(&without).unwrap();
+    assert!(stripped.preferences.is_none());
+    target.restore_backup(&stripped, None, None).unwrap();
+    assert_eq!(
+        target.preferences().get("theme").and_then(|v| v.as_str()),
+        Some("light")
+    );
+    assert_eq!(target.items().unwrap()[0].title, "One");
+
+    // ...and one with the blob replaces them, which is the point of the switch.
+    let full = parse_backup(&with).unwrap();
+    target.restore_backup(&full, None, None).unwrap();
+    assert_eq!(
+        target.preferences().get("theme").and_then(|v| v.as_str()),
+        Some("dark")
+    );
+}
+
+#[test]
 fn a_protected_export_unlocks_with_the_export_password_alone() {
     let mut source = fast(temp_storage("backup-protected-export"));
     source.create(None).unwrap();

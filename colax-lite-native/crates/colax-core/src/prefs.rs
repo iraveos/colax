@@ -215,6 +215,14 @@ pub struct VaultPreferences {
     /// Ask for a password to protect an exported backup (`confirmBeforeExport`,
     /// storage.ts L822 — shipped off, so the plain export stays one press).
     pub confirm_before_export: bool,
+    /// Whether an export carries the app's own settings as well as the vault:
+    /// the theme, the folders, the channels, the tags, the alarms and every
+    /// other preference. Native-only — the TS export never wrote the
+    /// `preferences` blob and its `parseBackup` never reads it, so a file with
+    /// this off is the file the web build would have written, and one with it
+    /// on still imports there. Shipped on: a backup that quietly dropped the
+    /// user's look would be the worse default.
+    pub backup_with_settings: bool,
     // Activity (Task 7.1).
     /// Copy/edit counts per login id (`usage`, storage.ts L613): the
     /// dashboard's "most used" and "recent account activity" read this.
@@ -319,6 +327,7 @@ impl Default for VaultPreferences {
             email_check_days: 90,
             confirm_deletes: true,
             confirm_before_export: false,
+            backup_with_settings: true,
             usage: BTreeMap::new(),
             history: Vec::new(),
             alarms: Vec::new(),
@@ -421,6 +430,10 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.pin_favorites = truthy(o.get("pinFavorites"), true);
     out.confirm_deletes = truthy(o.get("confirmDeletes"), true);
     out.confirm_before_export = truthy(o.get("confirmBeforeExport"), false);
+    // Native-only, so there is no TS normaliser line to mirror: absent keeps
+    // the shipped `true`, and any stored value reads the way JS `Boolean()`
+    // reads it, like every other switch here.
+    out.backup_with_settings = truthy(o.get("backupWithSettings"), true);
     // The list is deduplicated and emptied of anything that is not a non-empty
     // id, so a hand-edited record cannot put nulls in the drag order.
     out.manual_order = id_list(o.get("manualOrder"));
@@ -576,7 +589,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "showSettingsButton","showHideSidebarButton","floatingChrome","hideDividers",
         "hiddenChannels","hiddenFolders","hiddenButtons",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
-        "pinFavorites","manualOrder","passwordAgeDays","emailAgeDays","emailCheckDays","confirmDeletes","confirmBeforeExport","tags","channels","autoLockMinutes",
+        "pinFavorites","manualOrder","passwordAgeDays","emailAgeDays","emailCheckDays","confirmDeletes","confirmBeforeExport","backupWithSettings","tags","channels","autoLockMinutes",
         "passwordGenerator",
         "clearClipboardSeconds","clearClipboardOnLock","clipboardCapture","clipboardAutoSave","copyToasts","maskEmails","warnOnReuse","autoTagReused","usage","history","alarms"];
     for (k,v) in o.iter() {
