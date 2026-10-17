@@ -16,7 +16,7 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow } from "models.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
@@ -857,6 +857,27 @@ export component MainWindow inherits Window {
     callback settings-data-restore-edit();
     callback settings-data-restore-submit();
     callback settings-backup-with-settings-toggled();
+    // Optimize (Task 5.11): the presets, the compound rows, the saved
+    // profiles and the two untyped mail dials. The plain switches ride the
+    // generic `settings-pref-bool`/`-string` above.
+    callback settings-opt-balanced();
+    callback settings-opt-max();
+    callback settings-opt-restore();
+    callback settings-opt-motion-toggled();
+    callback settings-opt-ambient-toggled();
+    callback settings-opt-cards-toggled();
+    callback settings-opt-background-removed();
+    callback settings-opt-save-profile();
+    callback settings-opt-apply-profile(id: string);
+    callback settings-opt-rename-start(id: string);
+    callback settings-opt-rename-commit(id: string);
+    callback settings-opt-rename-cancel();
+    callback settings-opt-overwrite(id: string);
+    callback settings-opt-delete-profile(id: string);
+    callback settings-opt-measure();
+    callback settings-opt-mail-toggled();
+    callback settings-opt-page-picked(id: string);
+    callback settings-opt-cache-clear();
     // Background (Task 5.9): the field's own edits and the two buttons beside
     // it. The sliders ride the generic `settings-pref-float` above.
     callback settings-bg-url-edited();
@@ -1035,6 +1056,35 @@ export component MainWindow inherits Window {
     // Native-only: whether an export carries the app's settings too (Task
     // 5.10+). Bound to the Backup tab's switch.
     in-out property <bool> settings-backup-with-settings: true;
+    // ---- The Settings window's Optimize tab (Task 5.11) -------------------
+    // Same shape as the Backup block: pushed readings in, edits out. The
+    // counter, the locked rows and the profile rows are derived from the
+    // document on every refresh.
+    in-out property <int> settings-opt-group: 0;
+    in property <int> settings-opt-count-on: 0;
+    in property <bool> settings-opt-snapshotted: false;
+    in-out property <string> settings-opt-active-profile: "";
+    in-out property <bool> settings-opt-motion-off: false;
+    in-out property <bool> settings-opt-micro: true;
+    in-out property <bool> settings-opt-ambient-off: false;
+    in-out property <bool> settings-opt-transparency: false;
+    in property <bool> settings-opt-compact: false;
+    in-out property <bool> settings-opt-flat: false;
+    in-out property <bool> settings-opt-no-picture: true;
+    in-out property <bool> settings-opt-mail-on: true;
+    in-out property <bool> settings-opt-mail-locked: false;
+    in-out property <bool> settings-opt-mail-images: true;
+    in-out property <string> settings-opt-page-size: "50";
+    in property <bool> settings-opt-cache-empty: true;
+    in-out property <bool> settings-opt-spellcheck: false;
+    in property <[OptProfileRow]> settings-opt-profiles;
+    in-out property <bool> settings-opt-can-save: true;
+    in-out property <string> settings-opt-name: "";
+    in-out property <string> settings-opt-renamer: "";
+    in-out property <string> settings-opt-rename: "";
+    in property <string> settings-opt-readout: "";
+    in property <string> settings-opt-work: "—";
+    in property <string> settings-opt-priv: "—";
     // ---- The Settings window's Background tab (Task 5.9) ------------------
     // The URL draft, the error line and the three dials. The two layer
     // properties are the app's own: the picture itself is decoded in Rust
@@ -2577,6 +2627,31 @@ export component MainWindow inherits Window {
             data-restore-ready: root.settings-data-restore-ready;
             backup-hint: root.settings-backup-hint;
             backup-with-settings <=> root.settings-backup-with-settings;
+            opt-group <=> root.settings-opt-group;
+            opt-count-on: root.settings-opt-count-on;
+            opt-snapshotted: root.settings-opt-snapshotted;
+            opt-active-profile <=> root.settings-opt-active-profile;
+            opt-motion-off <=> root.settings-opt-motion-off;
+            opt-micro <=> root.settings-opt-micro;
+            opt-ambient-off <=> root.settings-opt-ambient-off;
+            opt-transparency <=> root.settings-opt-transparency;
+            opt-compact: root.settings-opt-compact;
+            opt-flat <=> root.settings-opt-flat;
+            opt-no-picture <=> root.settings-opt-no-picture;
+            opt-mail-on <=> root.settings-opt-mail-on;
+            opt-mail-locked <=> root.settings-opt-mail-locked;
+            opt-mail-images <=> root.settings-opt-mail-images;
+            opt-page-size <=> root.settings-opt-page-size;
+            opt-cache-empty: root.settings-opt-cache-empty;
+            opt-spellcheck <=> root.settings-opt-spellcheck;
+            opt-profiles: root.settings-opt-profiles;
+            opt-can-save <=> root.settings-opt-can-save;
+            opt-name <=> root.settings-opt-name;
+            opt-renamer <=> root.settings-opt-renamer;
+            opt-rename <=> root.settings-opt-rename;
+            opt-readout: root.settings-opt-readout;
+            opt-work: root.settings-opt-work;
+            opt-priv: root.settings-opt-priv;
             bg-url <=> root.settings-bg-url;
             bg-error: root.settings-bg-error;
             bg-has-image: root.settings-bg-has-image;
@@ -2627,6 +2702,24 @@ export component MainWindow inherits Window {
             backup-export => { root.settings-backup-export(); }
             backup-restore-pick => { root.settings-backup-restore-pick(); }
             backup-with-settings-toggled => { root.settings-backup-with-settings-toggled(); }
+            opt-balanced => { root.settings-opt-balanced(); }
+            opt-max => { root.settings-opt-max(); }
+            opt-restore => { root.settings-opt-restore(); }
+            opt-motion-toggled => { root.settings-opt-motion-toggled(); }
+            opt-ambient-toggled => { root.settings-opt-ambient-toggled(); }
+            opt-cards-toggled => { root.settings-opt-cards-toggled(); }
+            opt-background-removed => { root.settings-opt-background-removed(); }
+            opt-save-profile => { root.settings-opt-save-profile(); }
+            opt-apply-profile(id) => { root.settings-opt-apply-profile(id); }
+            opt-rename-start(id) => { root.settings-opt-rename-start(id); }
+            opt-rename-commit(id) => { root.settings-opt-rename-commit(id); }
+            opt-rename-cancel => { root.settings-opt-rename-cancel(); }
+            opt-overwrite(id) => { root.settings-opt-overwrite(id); }
+            opt-delete-profile(id) => { root.settings-opt-delete-profile(id); }
+            opt-measure => { root.settings-opt-measure(); }
+            opt-mail-toggled => { root.settings-opt-mail-toggled(); }
+            opt-page-picked(id) => { root.settings-opt-page-picked(id); }
+            opt-cache-clear => { root.settings-opt-cache-clear(); }
             data-restore-cancel => { root.settings-data-restore-cancel(); }
             data-restore-edit => { root.settings-data-restore-edit(); }
             data-restore-submit => { root.settings-data-restore-submit(); }

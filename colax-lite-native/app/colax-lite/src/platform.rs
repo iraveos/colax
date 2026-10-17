@@ -13,6 +13,60 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// The process's own memory, for Settings › Optimize's "What it costs right
+/// now" (Settings.tsx `useEfficiency`). There is exactly one process — the
+/// TS's totals needed a browser engine's tree around it — so these two
+/// readings *are* the whole story, and the per-process breakdown the TS shows
+/// has no rows to list.
+pub struct MemorySnapshot {
+    /// Working set: what the system currently has resident, the "task
+    /// manager" number.
+    pub working_set: u64,
+    /// Private bytes (`PrivateUsage`): memory unique to this process, the
+    /// honest "how heavy is this app" figure.
+    pub private_bytes: u64,
+}
+
+/// Reads the running process via `GetProcessMemoryInfo`. `None` when the OS
+/// will not say, which the metric row prints as an em dash rather than a zero
+/// — a zero is a legal reading, "no reading" is not one.
+pub fn memory_snapshot() -> Option<MemorySnapshot> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        PageFaultCount: 0,
+        PeakWorkingSetSize: 0,
+        WorkingSetSize: 0,
+        QuotaPeakPagedPoolUsage: 0,
+        QuotaPagedPoolUsage: 0,
+        QuotaPeakNonPagedPoolUsage: 0,
+        QuotaNonPagedPoolUsage: 0,
+        PagefileUsage: 0,
+        PeakPagefileUsage: 0,
+        PrivateUsage: 0,
+    };
+    let ok = unsafe {
+        // The EX counters are the base counters plus one trailing field, the
+        // layout the API has kept since the EX struct was introduced.
+        let base = &mut counters as *mut PROCESS_MEMORY_COUNTERS_EX
+            as *mut windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS;
+        GetProcessMemoryInfo(GetCurrentProcess(), base, counters.cb)
+    };
+    if ok == 0 {
+        return None;
+    }
+    // Windows reports sizes as usize; a number that large is a failed call
+    // anyway, so the cast keeps the type the UI reads.
+    Some(MemorySnapshot {
+        working_set: counters.WorkingSetSize as u64,
+        private_bytes: counters.PrivateUsage.max(0) as u64,
+    })
+}
+
 /// Puts UTF-16 text on the system clipboard.
 ///
 /// Retries a few times because another process can hold the clipboard open

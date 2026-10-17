@@ -906,7 +906,9 @@ pub fn mask_email(value: &str) -> String {
 /// "12 Oct" — the short date the sparkline columns and their tooltips read.
 /// The TS used the locale's own short month; the native build ships one
 /// deterministic English set so two machines never disagree in a screenshot.
-fn short_date(ms: i64) -> String {
+// The Optimize tab's "saved {date}" reads the same calendar day the TS's
+// `toLocaleDateString` printed.
+pub(crate) fn short_date(ms: i64) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

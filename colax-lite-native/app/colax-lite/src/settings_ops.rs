@@ -362,6 +362,10 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     // both are rebuilt from the catalogue and the logins on every push, so a
     // count can never go stale behind the panel that shows it.
     crate::channels_ops::push_manager(ui, state);
+    // The Optimize tab: every reading is derived from the document, so the
+    // same refresh keeps the counter, the locked rows and the profiles
+    // honest.
+    crate::optimize_ops::push_panel(ui, state);
 }
 
 /// The four accent chips the Appearance grid and the channel editor's Theme
@@ -655,6 +659,11 @@ fn bool_key(prefs: &mut VaultPreferences, key: &str, value: bool) -> bool {
         "backupWithSettings" => &mut prefs.backup_with_settings,
         "confirmDeletes" => &mut prefs.confirm_deletes,
         "copyToasts" => &mut prefs.copy_toasts,
+        // The Optimize tab's three plain switches (Settings.tsx L1852,
+        // L1875, L1984); "reduceTransparency" is already above.
+        "microMotion" => &mut prefs.micro_motion,
+        "mailInlineImages" => &mut prefs.mail_inline_images,
+        "disableSpellcheck" => &mut prefs.disable_spellcheck,
         _ => return false,
     };
     *slot = value;
@@ -2539,6 +2548,207 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
     );
     dump(ui, state, "settings51.backup-restored");
 
+    // ---- Optimize (Task 5.11) --------------------------------------------
+    // The tab starts on the General group: two locked savings (no picture to
+    // repaint, no mailbox polling), no profiles and no snapshot, and the
+    // counter reads what the switches say rather than a number of its own.
+    tab_picked(ui, 11); // Ctrl+12
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert!(prefs.optimize_profiles.is_empty());
+        debug_assert!(prefs.optimize_snapshot.is_none());
+        debug_assert_eq!(ui.get_settings_opt_count_on(), 2);
+    }
+    dump(ui, state, "settings52.optimize-defaults");
+
+    // A save always takes a name from the box, and the box is seeded: the
+    // empty name survives as the TS's own fallback.
+    ui.set_settings_opt_name("Evening focus".into());
+    crate::optimize_ops::save_profile(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(prefs.optimize_profiles.len(), 1);
+        debug_assert_eq!(prefs.active_optimize_profile, "Evening focus");
+        debug_assert!(prefs.optimize_snapshot.is_none(), "a save is not a trade-away");
+    }
+    dump(ui, state, "settings53.optimize-saved");
+
+    // A duplicate name (case-insensitively, as the TS compared) is refused
+    // with the box left exactly as the user typed it.
+    ui.set_settings_opt_name("evening FOCUS".into());
+    crate::optimize_ops::save_profile(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(prefs.optimize_profiles.len(), 1);
+    }
+    debug_assert_eq!(
+        ui.get_settings_opt_name(),
+        "evening FOCUS",
+        "the box keeps what was typed; the toast carries the refusal"
+    );
+    dump(ui, state, "settings54.optimize-dup");
+
+    // Measure again is a real read of the process, never an empty string.
+    crate::optimize_ops::measure(ui);
+    debug_assert!(!ui.get_settings_opt_work().is_empty());
+
+    // Maximum savings: the counter reaches its own total, the tick is cleared
+    // (a preset is not a saved profile), and the *first* trade-away records
+    // what was there before it.
+    crate::optimize_ops::preset_max(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(ui.get_settings_opt_count_on(), 10);
+        debug_assert!(prefs.optimize_snapshot.is_some());
+        debug_assert!(
+            colax_core::same_style(
+                prefs.optimize_snapshot.as_ref().expect("recorded"),
+                &prefs.optimize_profiles[0].style,
+            ),
+            "the snapshot is the full-detail look the save stored"
+        );
+        debug_assert_eq!(prefs.active_optimize_profile, "");
+    }
+    dump(ui, state, "settings55.optimize-max");
+
+    // Restore my look: the snapshot goes back in every field it owns and the
+    // record clears; the saved profile is untouched.
+    crate::optimize_ops::restore(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(ui.get_settings_opt_count_on(), 2);
+        debug_assert!(prefs.optimize_snapshot.is_none());
+        debug_assert_eq!(prefs.motion, 1.0);
+        debug_assert_eq!(prefs.motion_speed, 2.0);
+        debug_assert_eq!(prefs.optimize_profiles[0].name, "Evening focus");
+    }
+    dump(ui, state, "settings56.optimize-restored");
+
+    // Applying the saved profile: it is already what is on screen, so no
+    // trade-away, but the tick lands on it.
+    let profile_id = {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        prefs.optimize_profiles[0].id.clone()
+    };
+    crate::optimize_ops::apply_profile(ui, state, &profile_id);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences()).active_optimize_profile,
+        "Evening focus"
+    );
+
+    // Rename: a fresh name, the tick follows it, and the active record is the
+    // one that moved rather than a second lookup.
+    ui.set_settings_opt_rename("Late focus".into());
+    crate::optimize_ops::rename_commit(ui, state, &profile_id);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(prefs.optimize_profiles[0].name, "Late focus");
+        debug_assert_eq!(prefs.active_optimize_profile, "Late focus");
+    }
+    dump(ui, state, "settings57.optimize-renamed");
+
+    // Overwrite points the profile at the look on screen now (same style, new
+    // stamp), and delete takes the active name with it.
+    crate::optimize_ops::overwrite_profile(ui, state, &profile_id);
+    crate::optimize_ops::delete_profile(ui, state, &profile_id);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert!(prefs.optimize_profiles.is_empty());
+        debug_assert_eq!(prefs.active_optimize_profile, "");
+    }
+    dump(ui, state, "settings58.optimize-deleted");
+
+    // The Look group's plain switch rides the generic bool key. It is counted
+    // as its own saving, so the counter moves with it.
+    pref_bool(ui, state, "microMotion", false);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences()).micro_motion,
+        false
+    );
+    debug_assert_eq!(ui.get_settings_opt_count_on(), 3);
+    dump(ui, state, "settings59.optimize-micro");
+    pref_bool(ui, state, "microMotion", true);
+
+    // Reduce motion is the compound row: off returns to full motion *at the
+    // shipped pace* (speed 1 would hand back a slow app), and the second
+    // toggle proves the pair, not just the slider.
+    ui.set_settings_opt_motion_off(true);
+    crate::optimize_ops::motion_toggled(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(prefs.motion, 0.0);
+        debug_assert_eq!(prefs.motion_speed, 1.0);
+    }
+    ui.set_settings_opt_motion_off(false);
+    crate::optimize_ops::motion_toggled(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(prefs.motion, 1.0);
+        debug_assert_eq!(prefs.motion_speed, 2.0);
+    }
+
+    // Quiet the background and flat cards are also compounds. They are
+    // plain rows, though: the TS records the look only at `applyStyle` — the
+    // presets and a profile's Apply — so a row toggle records no snapshot
+    // even when it lowers the counter's reading.
+    ui.set_settings_opt_ambient_off(true);
+    crate::optimize_ops::ambient_toggled(ui, state);
+    ui.set_settings_opt_flat(true);
+    crate::optimize_ops::cards_toggled(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(prefs.ambient, 0.0);
+        debug_assert_eq!(prefs.card_depth, 0.0);
+        debug_assert_eq!(ui.get_settings_opt_count_on(), 4);
+        debug_assert!(
+            prefs.optimize_snapshot.is_none(),
+            "row toggles trade without recording"
+        );
+    }
+    dump(ui, state, "settings60.optimize-compounds");
+
+    // Restore clears the trade and puts back the shipped dials — from the
+    // shipped full-detail look, since no snapshot was ever recorded. It is
+    // the same handler the buttons under the presets use.
+    crate::optimize_ops::restore(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert!(prefs.optimize_snapshot.is_none());
+        debug_assert_eq!(prefs.ambient, 1.0);
+        debug_assert_eq!(prefs.card_depth, 0.4);
+        debug_assert_eq!(prefs.motion, 1.0);
+        debug_assert_eq!(prefs.micro_motion, true);
+    }
+
+    // The Speed group's switch is stored and counted, with the editor text
+    // that would consume it still ahead.
+    pref_bool(ui, state, "disableSpellcheck", true);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences()).disable_spellcheck,
+        true
+    );
+    dump(ui, state, "settings61.optimize-spellcheck");
+    pref_bool(ui, state, "disableSpellcheck", false);
+
+    // The Messages group's two untyped dials: one of the three page sizes
+    // into `extra`, and the cache clear that empties what the walk's normal
+    // flow never filled.
+    crate::optimize_ops::page_size_picked(ui, state, "25");
+    crate::optimize_ops::cache_clear(ui, state);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        debug_assert_eq!(crate::optimize_ops::page_size_of(&prefs), 25);
+        debug_assert!(prefs.extra.get("mailCache").is_some_and(|c| c.is_object()));
+    }
+    dump(ui, state, "settings62.optimize-messages");
+
+    // Inline images ride the plain key as well, and the count moves with
+    // them; back on before the close, so the document ships at full detail.
+    pref_bool(ui, state, "mailInlineImages", false);
+    debug_assert_eq!(ui.get_settings_opt_count_on(), 3);
+    dump(ui, state, "settings63.optimize-images");
+    pref_bool(ui, state, "mailInlineImages", true);
+
     close(ui);
     dump(ui, state, "settings17.closed");
 }
@@ -2669,7 +2879,7 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         }
     };
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{},{}] store=[{},{},{},{},{},{}] data=[{} {} {} {} {} {} {} {}] chan=[{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}] bg=[{} {} {} {}] app=[{} {} {}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{},{}] store=[{},{},{},{},{},{}] data=[{} {} {} {} {} {} {} {}] chan=[{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}] bg=[{} {} {} {}] app=[{} {} {}] opt=[{},{},{},{},{},{},{}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -2801,6 +3011,18 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         ui.get_app_bg().size().width,
         ui.get_app_bg_opacity(),
         ui.get_app_bg_dim(),
+        // The Optimize tab: the counter's own reading, the saved profiles and
+        // the active name, then the three store-side Optimize keys with the
+        // untyped page size. A counter that disagreed with the switches it
+        // counted was the trap the TS module was written to close, so the
+        // number and the rows are printed side by side.
+        ui.get_settings_opt_count_on(),
+        prefs.optimize_profiles.len() as i32,
+        prefs.active_optimize_profile.as_str(),
+        prefs.micro_motion as i32,
+        prefs.disable_spellcheck as i32,
+        prefs.mail_inline_images as i32,
+        crate::optimize_ops::page_size_of(&prefs),
     );
     let path = crate::app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();

@@ -160,6 +160,18 @@ export struct IconOption {
     glyph: string,
 }
 
+/// One row of Settings › Optimize's saved profiles: which look it is, when
+/// it was taken (`new Date(createdAt).toLocaleDateString()`, built in Rust
+/// the way the history groups spell dates), and whether it is the look on
+/// screen — the tick. The rename draft is the window's own property, so the
+/// row asks nothing of the model while it is being retyped.
+export struct OptProfileRow {
+    id: string,
+    name: string,
+    meta: string,
+    active: bool,
+}
+
 /// One login, ready to render. Built in Rust from a `VaultItem`, so the
 /// plaintext password is *not* here: `masked-password` is dots, and reveal
 /// asks the engine by id (Task 3.6 / Phase 6's SecurityGate).

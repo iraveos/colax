@@ -22,6 +22,7 @@ mod channels_ops;
 mod dashboard;
 mod history;
 mod items;
+mod optimize_ops;
 mod platform;
 mod settings_ops;
 
@@ -1162,6 +1163,25 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
     }
     if want == "settings-backup" {
         settings_ops::open(ui, state, "backup");
+        return;
+    }
+    // Optimize (Task 5.11): the General group as a shot — one profile saved
+    // through the panel's own save box, so the rows the walkthrough pinned
+    // are on screen too — and the Look group drawn mid-trade, so the two
+    // compound rows show checked states.
+    if want == "settings-optimize" {
+        settings_ops::open(ui, state, "optimize");
+        ui.set_settings_opt_name("Evening focus".into());
+        optimize_ops::save_profile(ui, state);
+        return;
+    }
+    if want == "settings-optimize-look" {
+        settings_ops::open(ui, state, "optimize");
+        ui.set_settings_opt_ambient_off(true);
+        optimize_ops::ambient_toggled(ui, state);
+        ui.set_settings_opt_motion_off(true);
+        optimize_ops::motion_toggled(ui, state);
+        ui.set_settings_opt_group(1);
         return;
     }
     // Background (Task 5.9): the panel itself, or the whole app wearing the
@@ -6029,6 +6049,131 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_settings_backup_with_settings_toggled(move || {
                 if let Some(ui) = weak.upgrade() {
                     settings_ops::backup_with_settings_toggled(&ui, &st);
+                }
+            });
+            // ---- Optimize (Task 5.11) --------------------------------
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_balanced(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::preset_balanced(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_max(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::preset_max(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_restore(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::restore(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_motion_toggled(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::motion_toggled(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_ambient_toggled(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::ambient_toggled(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_cards_toggled(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::cards_toggled(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_background_removed(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::background_removed(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_save_profile(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::save_profile(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_apply_profile(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::apply_profile(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_rename_start(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::rename_start(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_rename_commit(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::rename_commit(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_settings_opt_rename_cancel(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::rename_cancel(&ui);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_overwrite(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::overwrite_profile(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_delete_profile(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::delete_profile(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_settings_opt_measure(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::measure(&ui);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_mail_toggled(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::mail_toggled(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_page_picked(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::page_size_picked(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_opt_cache_clear(move || {
+                if let Some(ui) = weak.upgrade() {
+                    optimize_ops::cache_clear(&ui, &st);
                 }
             });
             let weak = ui.as_weak();
