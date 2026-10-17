@@ -19,6 +19,7 @@ pub mod error;
 pub mod health;
 pub mod history;
 pub mod model;
+pub mod optimize;
 pub mod prefs;
 pub mod security;
 pub mod storage;
@@ -43,6 +44,12 @@ pub use history::{
 pub use model::{
     empty_item, is_secured, is_weak_password, normalise_item, normalise_security, normalize_url,
     security_level, stale_days_for, LoginSecurity, StoredItem, VaultItem,
+};
+pub use optimize::{
+    apply_style, clean_profile_name, new_optimize_profile_id, normalise_optimize_profiles,
+    optimisations_on, read_style, same_style, snapshot_style, style_from_prefs, OptimizeProfile,
+    OptimizeStyle, BALANCED_STYLE, FULL_DETAIL_STYLE, MAX_OPTIMIZE_PROFILES, MAX_SAVINGS_STYLE,
+    OPTIMISATIONS, OPTIMISATION_COUNT, SLOW_MAIL_SECONDS,
 };
 pub use prefs::{
     create_tag, ensure_default_tags, new_alarm_id, new_tag_id, normalise_alarms,

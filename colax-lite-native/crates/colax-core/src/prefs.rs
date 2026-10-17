@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use crate::channels::{builtin_channels, normalise_channels, Channel};
 use crate::history::{normalise_history, HistoryEvent};
 use crate::model::{normalise_security, LoginSecurity};
+use crate::optimize::{normalise_optimize_profiles, read_style};
 
 /// One entry of the global tag catalogue: logins reference these by id rather
 /// than by name, so renaming or recolouring one here changes every login that
@@ -121,6 +122,11 @@ pub struct VaultPreferences {
     pub text_scale: f64,
     pub motion: f64,
     pub motion_speed: f64,
+    /// The small transitions on buttons, chips, tabs, rows and badges
+    /// (`microMotion`, storage.ts L496, normalised L1292 as `!== false` —
+    /// the masking rule again). Counted as its own optimisation, because
+    /// these are the only animations left when `motion` is off.
+    pub micro_motion: bool,
     pub ambient: f64,
     pub density: String,
     pub roundness: f64,
@@ -131,6 +137,31 @@ pub struct VaultPreferences {
     pub background_opacity: f64,
     pub background_blur: f64,
     pub background_dim: f64,
+    // Optimize (Task 1.10): the fields a saved profile stores. Every one is a
+    // real, existing preference — nothing here is a parallel "performance
+    // mode" flag, so applying a profile cannot leave the app in a state the
+    // rest of it does not already understand.
+    /// Whether opening an HTML message also fetches its inline images
+    /// (`mailInlineImages`, storage.ts L742, normalised L1233 as `!== false`).
+    /// The mail reader that consumes it is Phase 9; the switch and the count
+    /// it feeds are the Optimize panel's.
+    pub mail_inline_images: bool,
+    /// Switches the spellchecker off (`disableSpellcheck`, storage.ts L527,
+    /// read back as `Boolean(...)`). Desktop-only in the TS too — a browser
+    /// page has no dictionary of its own. The mail phase consumes it.
+    pub disable_spellcheck: bool,
+    /// Saved looks (`optimizeProfiles`, storage.ts L510): a whole style under
+    /// a name, newest first, at most twelve of them.
+    pub optimize_profiles: Vec<crate::optimize::OptimizeProfile>,
+    /// What the look was before the first trade-away (`optimizeSnapshot`,
+    /// storage.ts L516), so "Restore my look" can undo the presets exactly —
+    /// background picture, sliders and mail cadence included.
+    pub optimize_snapshot: Option<crate::optimize::OptimizeStyle>,
+    /// The saved profile now in force (`activeOptimizeProfile`, storage.ts
+    /// L521) — or "" when the look on screen is not one of the saved ones.
+    /// Normalised to "" unless it names a profile that exists, so the tick
+    /// cannot lie.
+    pub active_optimize_profile: String,
     pub view: String,
     pub sort: String,
     pub show_urls: bool,
@@ -307,6 +338,7 @@ impl Default for VaultPreferences {
             text_scale: 100.0,
             motion: 1.0,
             motion_speed: 2.0,
+            micro_motion: true,
             ambient: 1.0,
             density: "comfortable".into(),
             roundness: 1.0,
@@ -317,6 +349,11 @@ impl Default for VaultPreferences {
             background_opacity: 0.35,
             background_blur: 0.0,
             background_dim: 0.25,
+            mail_inline_images: true,
+            disable_spellcheck: false,
+            optimize_profiles: Vec::new(),
+            optimize_snapshot: None,
+            active_optimize_profile: String::new(),
             view: "animated".into(),
             sort: "title".into(),
             show_urls: true,
@@ -413,6 +450,9 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.text_scale  = clamp(get_f64!("textScale", 100.0), 85.0, 130.0);
     out.motion      = clamp(get_f64!("motion", 1.0), 0.0, 1.0);
     out.motion_speed= clamp(get_f64!("motionSpeed", 2.0), 1.0, 2.0);
+    // `merged.microMotion = merged.microMotion !== false` (L1292): anything
+    // but an explicit false leaves the micro-animations on.
+    out.micro_motion = o.get("microMotion").and_then(Value::as_bool) != Some(false);
     out.ambient     = clamp(get_f64!("ambient", 1.0), 0.0, 1.0);
     out.density     = one_of(o.get("density").unwrap_or(&Value::Null), &["compact","comfortable","spacious"], "comfortable");
     out.roundness   = clamp(get_f64!("roundness", 1.0), 0.6, 1.4);
@@ -423,6 +463,23 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.background_opacity = num(o.get("backgroundOpacity"), 0.35);
     out.background_blur    = num(o.get("backgroundBlur"), 0.0);
     out.background_dim     = num(o.get("backgroundDim"), 0.25);
+    // Optimize (Task 1.10): the profile fields, read the way the TS
+    // normaliser reads them (L1233 / L1424-1430).
+    out.mail_inline_images = o.get("mailInlineImages").and_then(Value::as_bool) != Some(false);
+    out.disable_spellcheck = truthy(o.get("disableSpellcheck"), false);
+    out.optimize_profiles =
+        normalise_optimize_profiles(o.get("optimizeProfiles").unwrap_or(&Value::Null));
+    out.optimize_snapshot =
+        read_style(o.get("optimizeSnapshot").unwrap_or(&Value::Null));
+    // The active name must point at a profile that exists, or the tick lies.
+    out.active_optimize_profile = match o.get("activeOptimizeProfile").and_then(Value::as_str) {
+        Some(name)
+            if out.optimize_profiles.iter().any(|profile| profile.name == name) =>
+        {
+            name.to_string()
+        }
+        _ => String::new(),
+    };
     out.view = one_of(o.get("view").unwrap_or(&Value::Null), &["animated","carousel","basic","grid"], "animated");
     out.sort = one_of(o.get("sort").unwrap_or(&Value::Null), &["title","recent","oldest","strength","username","manual"], "title");
     out.show_urls = get_bool!("showUrls", true);
@@ -581,7 +638,8 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     let mut extra = serde_json::Map::new();
     let known = ["theme","accent","textScale","motion","motionSpeed","ambient","density","roundness",
         "cardDepth","reduceTransparency","highContrast","backgroundImage","backgroundOpacity",
-        "backgroundBlur","backgroundDim","view","sort","showUrls","sidebarPosition","sidebarLabels",
+        "backgroundBlur","backgroundDim","microMotion","mailInlineImages","disableSpellcheck",
+        "optimizeProfiles","optimizeSnapshot","activeOptimizeProfile","view","sort","showUrls","sidebarPosition","sidebarLabels",
         "compactSidebar","showSidebar","vaultSecurity",
         "showLetterGroups","autoTagDomain","showUnassignedChannel","autoTagChannel",
         "showOrbitLabels","showHealthBadges","showShortcuts","showLockButton",
