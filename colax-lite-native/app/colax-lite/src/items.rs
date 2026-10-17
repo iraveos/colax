@@ -411,10 +411,25 @@ fn letter_of(card: &LoginCard) -> char {
 ///
 /// Counts are over the *filtered* set (a tag-narrowed channel counts what it
 /// shows), computed against every item — not against the current query.
+///
+/// The catalogue is the document's, not the shipped seven: a channel added
+/// in Settings › Channels is a real row the moment it is saved, and one
+/// whose eye is off is not a row at all. The TS walks `prefs.sidebar` for
+/// the order and the nesting (folders, drag order — Phase 8); until that is
+/// modelled, the catalogue's own order is the rail's, which is how
+/// `normaliseChannels` leaves it: stored order first, shipped rows appended.
 pub fn build_sidebar(items: &[VaultItem], selected: &str, prefs: &VaultPreferences) -> Vec<SidebarRow> {
     let stale_days = prefs.password_age_days;
     let mut rows = Vec::new();
-    for channel in builtin_channels() {
+    let channels = if prefs.channels.is_empty() {
+        builtin_channels()
+    } else {
+        prefs.channels.clone()
+    };
+    for channel in channels {
+        if prefs.hidden_channels.iter().any(|id| id == &channel.id) {
+            continue;
+        }
         // A hairline before the three summary screens: they are a different
         // kind of thing from the filtered lists above them, and the rail is
         // the only place that can say so.
@@ -460,9 +475,16 @@ fn separator_row() -> SidebarRow {
 }
 
 /// The channel currently selected, falling back to `all` for anything that
-/// is not a real channel id (a first run, or a stale stored selection).
-pub fn channel_by_id(id: &str) -> Channel {
-    builtin_channels()
+/// is not a real channel id (a first run, or a stale stored selection) — the
+/// catalogue in preferences, so a channel the user made is a real row and a
+/// deleted one falls back rather than showing a blank pane.
+pub fn channel_by_id(prefs: &VaultPreferences, id: &str) -> Channel {
+    let catalogue = if prefs.channels.is_empty() {
+        builtin_channels()
+    } else {
+        prefs.channels.clone()
+    };
+    catalogue
         .into_iter()
         .find(|c| c.id == id)
         .unwrap_or_else(|| Channel {
@@ -590,7 +612,7 @@ mod tests {
 
     #[test]
     fn letter_headers_belong_to_the_list_view_and_the_by_name_sort() {
-        let all = channel_by_id("all");
+        let all = channel_by_id(&VaultPreferences::default(), "all");
         let items = vec![
             item("1", "Mango"),
             item("2", "apple"),
@@ -762,7 +784,7 @@ mod tests {
 
     #[test]
     fn an_unknown_channel_selection_falls_back_to_all() {
-        let channel = channel_by_id("does-not-exist");
+        let channel = channel_by_id(&VaultPreferences::default(), "does-not-exist");
         assert_eq!(channel.id, "all");
         assert_eq!(channel.kind, ChannelKind::All);
     }
@@ -782,12 +804,12 @@ mod tests {
         let items = vec![bank, mail];
 
         let prefs = VaultPreferences::default();
-        let all = channel_by_id("all");
+        let all = channel_by_id(&prefs, "all");
         assert_eq!(build_cards(&items, &all, &prefs, "").len(), 2);
         // Query narrows the channel's output.
         assert_eq!(build_cards(&items, &all, &prefs, "bank").len(), 1);
 
-        let favs = channel_by_id("favorites");
+        let favs = channel_by_id(&prefs, "favorites");
         let cards = build_cards(&items, &favs, &prefs, "");
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].label, "Mail");

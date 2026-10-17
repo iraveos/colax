@@ -16,9 +16,9 @@
 // `pref-*`, and Rust's saved answer flows back down the same chain.
 import { Theme } from "../theme.slint";
 import {
-    Alert, Slider, Toggle, EmptyState, IconButton, Btn, Field, Chip, Label
+    Alert, Slider, Toggle, EmptyState, IconButton, Btn, Field, Chip, Label, Modal
 } from "../widgets.slint";
-import { QuestionRow, QrCell } from "../models.slint";
+import { QuestionRow, QrCell, ChannelRow, TagRow, AccentChip } from "../models.slint";
 import { SecurityForm } from "security_form.slint";
 
 /// One entry of the rail. The order is the TS's `tabs` array
@@ -30,17 +30,6 @@ struct Tab {
     label: string,
     hint: string,
     num: string,
-}
-
-/// One accent chip in the Appearance grid. Built in Rust from the same
-/// `accent_hues` table that paints the app (ADR-2), because Slint has no
-/// `hsl()` builtin and the TS gradient `hsl(from 40% 56%)` has to be
-/// resolved somewhere that can do the maths.
-export struct AccentChip {
-    id: string,
-    label: string,
-    from: color,
-    to: color,
 }
 
 /// One row of the Hidden tab. `heading` is set on the first row of each
@@ -775,94 +764,243 @@ component chip-row inherits Rectangle {
     }
 }
 
-// The confirm sheets the Data and Backup tabs open: the TS's `<Modal>`
-// (primitives.tsx L6; `.overlay`/`.modal` in app.css L726-737). Drawn over
-// the whole window rather than inside the panel, so the dimmed backdrop
-// covers the app the way the settings sheet's own does.
-//
-// The body is `@children`, the way `card` hosts its content in
-// dashboard.slint; the caller supplies its rows and its footer row last,
-// because Slint carries one children slot and a separate footer would need
-// a second. The plate is a plain Rectangle on purpose: a background over
-// the backdrop's TouchArea is what keeps a click on the dialog from
-// reaching it (verified against the settings sheet's own backdrop).
-component modal inherits Rectangle {
-    in property <string> title;
-    callback closed();
+// The confirm sheets the Data and Backup tabs open, and the shared channel
+// editor Settings › Channels opens, all wear `Modal` from widgets.slint
+// (`<Modal>` in primitives.tsx L6; `.overlay`/`.modal` in app.css L726-737).
+// It was a local component here until the editor — which is opened from the
+// rail as well as from a panel — needed the same shell; one wash and one
+// plate cannot drift.
 
-    // No width/height binding: a plain child fills its parent by default,
-    // and `parent` is not an accessible id from a component's own root
-    // anyway. The plate below does the centring off this root's size.
+/// The small `built-in` / `hidden` badge on a channel row
+/// (`.tag-manager__badge`). A plain rectangle rather than a widget: it is
+/// four words in the whole app, and `Chip` carries a hue and a hover it has
+/// no use for.
+component row-badge inherits Rectangle {
+    in property <string> label;
 
-    // `.overlay`'s dim wash, on the root so every pixel the dialog does not
-    // cover is dimmed: app.css L726's `#05060b9e`, or the light theme's
-    // `#3d568f4d`. Slint rectangles have no `backdrop-filter`, so the 4px
-    // blur the CSS puts behind the wash is the one part not drawn.
-    background: Theme.resolved-theme == "light" ? #3d568f4d : #05060b9e;
+    height: 15px;
+    width: badge-text.preferred-width + 12px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 5px;
+    background: #ffffff14;
 
-    // In the TS a click closes only when it lands on the backdrop itself
-    // (`e.target === e.currentTarget`); here the plate above intercepts
-    // everything inside the dialog.
-    backdrop := TouchArea {
-        clicked => { root.closed(); }
-    }
-
-    plate := Rectangle {
-        width: min(540px, parent.width - 60px);
-        x: (parent.width - self.width) / 2;
+    badge-text := Text {
+        x: 6px;
         y: (parent.height - self.height) / 2;
-        height: column.preferred-height;
-        border-radius: Theme.radius-xl;
-        border-width: 1px;
-        border-color: Theme.border;
-        background: Theme.bg;
-        clip: true;
-        drop-shadow-color: #00000066;
-        drop-shadow-blur: 40px;
-        drop-shadow-offset-y: 14px;
+        text: root.label;
+        color: Theme.faint;
+        font-size: 9.5px;
+        font-weight: 600;
+    }
+}
 
-        column := VerticalLayout {
-            // `.modal__header`: title, close button.
+/// One row of Settings › Channels (`ChannelManager.tsx` L115-150): the dot in
+/// the channel's colour, the name (a way into the shared editor) with its
+/// badges, the count and what the filter is, the eye, and the pencil. Both
+/// icon buttons are the TS's `.btn--icon` pair and do the same thing as the
+/// name; the eye is the one that is not obvious, so the glyphs are the two
+/// the Hidden tab already uses — `◉` shown, `⊘` hidden.
+component chan-row inherits Rectangle {
+    // Not `row`: that is a deprecated built-in property on every element, so
+    // Slint refuses to override it. `entry` is the row's own data.
+    in property <ChannelRow> entry;
+    callback open(id: string);
+    callback toggle(id: string);
+
+    height: 40px;
+    border-radius: Theme.radius-sm;
+    background: chan-hover.has-hover ? Theme.row-hover : #00000000;
+
+    chan-hover := TouchArea {}
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 6px;
+        spacing: 10px;
+
+        Rectangle {
+            horizontal-stretch: 0;
+            width: 10px;
+            height: 10px;
+            border-radius: 5px;
+            background: root.entry.hue;
+            // A hidden channel's dot dims with its name, so the eye's state
+            // reads off the row itself.
+            opacity: root.entry.hidden ? 0.4 : 1.0;
+        }
+
+        chan-name := TouchArea {
+            horizontal-stretch: 1;
+            clicked => { root.open(root.entry.id); }
+
             HorizontalLayout {
-                padding-top: 16px;
-                padding-bottom: 14px;
-                padding-left: 22px;
-                padding-right: 16px;
-                spacing: 12px;
+                spacing: 8px;
 
                 Text {
-                    horizontal-stretch: 1;
-                    text: root.title;
-                    color: Theme.text;
-                    font-size: 17px;
-                    font-weight: 600;
+                    text: root.entry.name;
+                    color: root.entry.hidden ? Theme.muted : Theme.text;
+                    font-size: 13px;
+                    font-weight: 500;
                     vertical-alignment: center;
-                    min-height: 27px;
+                    overflow: elide;
                 }
-
-                IconButton {
-                    horizontal-stretch: 0;
-                    icon: "×";
-                    clicked => { root.closed(); }
+                if (root.entry.builtin) : row-badge { label: "built-in"; }
+                if (root.entry.hidden) : row-badge { label: "hidden"; }
+                // The count and the filter sit at the row's far end, the way
+                // the TS's `.tag-manager__count` does.
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: root.entry.detail;
+                    color: Theme.faint;
+                    font-size: 11.5px;
+                    vertical-alignment: center;
                 }
             }
+        }
 
-            // `.modal__header`'s border-bottom.
+        IconButton {
+            horizontal-stretch: 0;
+            icon: root.entry.hidden ? "⊘" : "◉";
+            clicked => { root.toggle(root.entry.id); }
+        }
+
+        IconButton {
+            horizontal-stretch: 0;
+            icon: "✎";
+            clicked => { root.open(root.entry.id); }
+        }
+    }
+}
+
+/// One tag of Settings › Channels (`ChannelManager.tsx` L219-281): the dot,
+/// the name (or the box renaming it), the swatch (or the range recolouring
+/// it), how many channels watch it, and the delete button.
+///
+/// The hue range is a row of its own *below* the tag rather than inline: the
+/// TS's bare `<input type=range>` is 16px tall and Slint's `Slider` carries a
+/// 44px shell with a label row, which would stretch the tag's own row under
+/// it. Same control, same range 0..359, one line down.
+component tag-manager-row inherits VerticalLayout {
+    // See `chan-row` for why this is `entry` and not `row`.
+    in property <TagRow> entry;
+    // The name being retyped and the hue being dragged. Both are the row's
+    // own in-out properties, seeded from the model: a repeated row cannot
+    // write back into a model, and `Field`/`Slider` need somewhere to type
+    // or drag. The callbacks carry the new values up, so Rust never has to
+    // read a value Slint owns.
+    in-out property <string> rename-text: root.entry.name;
+    in-out property <float> hue-value: root.entry.hue-value;
+    callback rename-start(id: string);
+    callback renamed(id: string, name: string);
+    // Enter in the rename box: the name has already been written on every
+    // keystroke, this only puts the row back to showing it.
+    callback rename-done(id: string);
+    callback hue-toggle(id: string);
+    callback hue-changed(id: string, value: float);
+    callback delete(id: string);
+
+    spacing: 4px;
+    vertical-stretch: 0;
+
+    Rectangle {
+        height: 40px;
+        border-radius: Theme.radius-sm;
+        background: tag-hover.has-hover ? Theme.row-hover : #00000000;
+
+        tag-hover := TouchArea {}
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 6px;
+            spacing: 10px;
+
             Rectangle {
-                width: parent.width;
-                height: 1px;
-                background: Theme.hairline;
+                horizontal-stretch: 0;
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                background: root.entry.hue;
             }
 
-            // `.modal__body`: the caller's rows.
-            VerticalLayout {
-                padding-top: 18px;
-                padding-bottom: 6px;
-                padding-left: 22px;
-                padding-right: 22px;
-                spacing: 14px;
+            if (root.entry.editing) : VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                tag-field := Field {
+                    horizontal-stretch: 1;
+                    value <=> root.rename-text;
+                    autofocus: true;
+                    accepted => { root.renamed(root.entry.id, tag-field.value); root.rename-done(root.entry.id); }
+                    edited => { root.renamed(root.entry.id, tag-field.value); }
+                }
+            }
 
-                @children
+            if (!root.entry.editing) : VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                tag-name := TouchArea {
+                    clicked => { root.rename-start(root.entry.id); }
+                    Text {
+                        text: root.entry.name;
+                        color: Theme.text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            if (root.entry.hue-open) : Rectangle {
+                horizontal-stretch: 0;
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border-width: 2px;
+                border-color: Theme.border-strong;
+                background: root.entry.hue;
+            }
+            if (!root.entry.hue-open) : Rectangle {
+                horizontal-stretch: 0;
+                width: 18px;
+                height: 18px;
+                border-radius: 5px;
+                background: root.entry.hue;
+                TouchArea {
+                    clicked => { root.hue-toggle(root.entry.id); }
+                }
+            }
+
+            // The TS puts the count after the swatch, not before it.
+            Text {
+                horizontal-stretch: 0;
+                text: root.entry.usage;
+                color: Theme.faint;
+                font-size: 11.5px;
+                vertical-alignment: center;
+            }
+
+            IconButton {
+                horizontal-stretch: 0;
+                icon: "×";
+                clicked => { root.delete(root.entry.id); }
+            }
+        }
+    }
+
+    if (root.entry.hue-open) : Rectangle {
+        height: 40px;
+        Rectangle {
+            x: 18px;
+            width: parent.width - 18px;
+            height: parent.height;
+            Slider {
+                minimum: 0;
+                maximum: 359;
+                step: 1;
+                value <=> root.hue-value;
+                label: "";
+                formatted: "";
+                changed(v) => { root.hue-changed(root.entry.id, v); }
             }
         }
     }
@@ -1071,6 +1209,23 @@ export component Settings inherits Rectangle {
     in-out property <float> bg-blur: 0;
     in-out property <float> bg-dim: 0.25;
 
+    // ---- Channels (Task 5.10) ---------------------------------------------
+    // The catalogue as rows: every channel the document holds, shipped or
+    // made, with its count, its kind-or-tag detail, and whether its eye is
+    // off. `hidden` also picks the eye's own glyph.
+    in property <[ChannelRow]> chan-rows: [];
+    // Hide all and Show all are two conditions rather than two buttons always
+    // drawn: the TS shows Hide all while something is still visible and Show
+    // all while something is hidden.
+    in property <bool> chan-can-hide-all: false;
+    in property <bool> chan-can-show-all: false;
+    // The tag half: the catalogue with its usage text, the draft name in the
+    // add box, and whether that draft is worth adding (Rust trims; Slint has
+    // no `trim`).
+    in property <[TagRow]> chan-tag-rows: [];
+    in-out property <string> chan-tag-input;
+    in property <bool> chan-tag-can-add: false;
+
     callback closed();
     callback tab-picked(index: int);
     callback pref-string(key: string, value: string);
@@ -1121,6 +1276,22 @@ export component Settings inherits Rectangle {
     callback bg-url-edited();
     callback bg-upload();
     callback bg-remove();
+    // Channels: the panel's own twelve. The channel rows open the shared
+    // editor by id ("new" for a new one), the eye toggles one rail row, and
+    // the tag rows carry their own new name or hue up because a repeated row
+    // cannot write back into the model it was built from.
+    callback chan-edit(id: string);
+    callback chan-toggle-hidden(id: string);
+    callback chan-hide-all();
+    callback chan-show-all();
+    callback chan-tag-edited();
+    callback chan-tag-add();
+    callback chan-tag-rename-start(id: string);
+    callback chan-tag-renamed(id: string, name: string);
+    callback chan-tag-rename-done(id: string);
+    callback chan-tag-hue-toggle(id: string);
+    callback chan-tag-hue-changed(id: string, value: float);
+    callback chan-tag-delete(id: string);
     callback data-restore-submit();
 
     // The thirteen tabs of Settings.tsx L500, in order. Hints come from
@@ -2067,6 +2238,145 @@ export component Settings inherits Rectangle {
                                 }
                             }
 
+                            // ---- The channels panel (Task 5.10) ----------
+                            // `ChannelManager` (Settings.tsx L1180): every
+                            // channel as a row, then the tag catalogue underneath.
+                            // The row is the sidebar's own row - a dot in the
+                            // channel's colour, the name as a way into the
+                            // shared editor, the count and the filter, and the
+                            // eye that takes it off the rail without deleting it.
+                            if (root.active.id == "channels") : VerticalLayout {
+                                width: root.panel-w;
+                                spacing: 12px;
+                                vertical-stretch: 0;
+
+                                VerticalLayout {
+                                    width: root.panel-w;
+                                    spacing: 3px;
+                                    padding-top: 14px;
+                                    padding-bottom: 10px;
+
+                                    Text {
+                                        text: "Channels";
+                                        color: Theme.text;
+                                        font-size: 13.5px;
+                                        font-weight: 600;
+                                    }
+                                    Text {
+                                        // The TS hint also promises drag-to-
+                                        // reorder and a right-click menu on
+                                        // the rail, both of which arrive with
+                                        // the sidebar's own entries (Phase 8);
+                                        // this says what the panel does today.
+                                        text: "Every channel is editable - name, icon, colour, theme, image and tags. The eye hides one from the rail without deleting it.";
+                                        color: Theme.muted;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                        width: root.panel-w;
+                                    }
+                                }
+
+                                if (root.chan-rows.length == 0) : Alert {
+                                    info: true;
+                                    message: "No channels. Every vault has at least one - the fallback view - so this should not happen.";
+                                }
+
+                                for chan-row-entry in root.chan-rows : chan-row {
+                                    entry: chan-row-entry;
+                                    open(id) => { root.chan-edit(id); }
+                                    toggle(id) => { root.chan-toggle-hidden(id); }
+                                }
+
+                                HorizontalLayout {
+                                    width: root.panel-w;
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    Btn {
+                                        horizontal-stretch: 0;
+                                        label: "New channel";
+                                        kind: 1;
+                                        clicked => { root.chan-edit("new"); }
+                                    }
+
+                                    if (root.chan-can-hide-all) : Btn {
+                                        horizontal-stretch: 0;
+                                        label: "Hide all";
+                                        kind: 2;
+                                        clicked => { root.chan-hide-all(); }
+                                    }
+
+                                    if (root.chan-can-show-all) : Btn {
+                                        horizontal-stretch: 0;
+                                        label: "Show all";
+                                        kind: 2;
+                                        clicked => { root.chan-show-all(); }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: root.panel-w;
+                                    height: 1px;
+                                    background: Theme.hairline;
+                                }
+
+                                Text {
+                                    text: "Tags";
+                                    color: Theme.text;
+                                    font-size: 13.5px;
+                                    font-weight: 600;
+                                }
+
+                                // The add box, the way the login editor's is:
+                                // `chan-tag-input` is two-way, the Enter key and
+                                // the button both add, and Rust answers
+                                // `chan-tag-can-add` so a box of spaces cannot
+                                // become a tag. A row of its own height, with
+                                // the default alignment, so the field stretches
+                                // into the leftover width.
+                                Rectangle {
+                                    width: root.panel-w;
+                                    height: 44px;
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+
+                                        Field {
+                                            horizontal-stretch: 1;
+                                            placeholder: "New tag name";
+                                            autofocus: false;
+                                            value <=> root.chan-tag-input;
+                                            edited => { root.chan-tag-edited(); }
+                                            accepted => { root.chan-tag-add(); }
+                                        }
+
+                                        Btn {
+                                            horizontal-stretch: 0;
+                                            label: "Add";
+                                            kind: 1;
+                                            h: 44px;
+                                            enabled: root.chan-tag-can-add;
+                                            clicked => { root.chan-tag-add(); }
+                                        }
+                                    }
+                                }
+
+                                if (root.chan-tag-rows.length == 0) : Alert {
+                                    info: true;
+                                    message: "No tags yet. Create one above, or from a login's editor - then attach it to a channel and only logins carrying it will show there.";
+                                }
+
+                                for tag-entry in root.chan-tag-rows : tag-manager-row {
+                                    entry: tag-entry;
+                                    rename-start(id) => { root.chan-tag-rename-start(id); }
+                                    renamed(id, name) => { root.chan-tag-renamed(id, name); }
+                                    rename-done(id) => { root.chan-tag-rename-done(id); }
+                                    hue-toggle(id) => { root.chan-tag-hue-toggle(id); }
+                                    hue-changed(id, value) => { root.chan-tag-hue-changed(id, value); }
+                                    delete(id) => { root.chan-tag-delete(id); }
+                                }
+                            }
+
                             // ---- The desktop panel ------------------------
                             // The four switches of Settings.tsx L1551-1585. The
                             // TS renders this tab only inside the desktop shell:
@@ -2724,7 +3034,7 @@ export component Settings inherits Rectangle {
                             // Every panel not landed yet. The header already
                             // names the section and says what it is for, so
                             // the body only has to be honest about the wait.
-                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms" && root.active.id != "security" && root.active.id != "data" && root.active.id != "backup" && root.active.id != "background") : Rectangle {
+                            if (root.active.id != "appearance" && root.active.id != "layout" && root.active.id != "hidden" && root.active.id != "desktop" && root.active.id != "generator" && root.active.id != "alarms" && root.active.id != "security" && root.active.id != "data" && root.active.id != "backup" && root.active.id != "background" && root.active.id != "channels") : Rectangle {
                                 // A constant width for the same reason as the
                                 // rows: `EmptyState` wraps its title, and a
                                 // wrapped height built on the panel's width
@@ -2751,7 +3061,7 @@ export component Settings inherits Rectangle {
     // window's middle; the footer buttons share the width, the way
     // `.modal__footer .btn{flex:1}` stretches them.
 
-    if (root.data-protect-open) : modal {
+    if (root.data-protect-open) : Modal {
         title: "Protect this backup";
         closed => { root.data-protect-cancel(); }
 
@@ -2787,7 +3097,7 @@ export component Settings inherits Rectangle {
         }
     }
 
-    if (root.data-reset-open) : modal {
+    if (root.data-reset-open) : Modal {
         title: "Delete all data?";
         closed => { root.data-reset-cancel(); }
 
@@ -2812,7 +3122,7 @@ export component Settings inherits Rectangle {
         }
     }
 
-    if (root.data-restore-name != "") : modal {
+    if (root.data-restore-name != "") : Modal {
         title: "Restore from backup";
         closed => { root.data-restore-cancel(); }
 

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+use crate::channels::{builtin_channels, normalise_channels, Channel};
 use crate::history::{normalise_history, HistoryEvent};
 use crate::model::{normalise_security, LoginSecurity};
 
@@ -266,6 +267,11 @@ pub struct VaultPreferences {
     /// in storage.ts L1076 — so a vault opened here shows the same tags the
     /// web build would, without the user having created any.
     pub tags: Vec<Tag>,
+    /// The channel catalogue the rail is built from (`channels`,
+    /// storage.ts L1075 — `normaliseChannels`). Every row of the sidebar is
+    /// one of these, shipped or made; the order here *is* the rail's order
+    /// until the `sidebar` entries (folders, drag order) are modelled.
+    pub channels: Vec<Channel>,
     /// What the generator opens with (`passwordGenerator`, storage.ts L935).
     /// The editor's own panel writes this same object as its chips move, so
     /// Settings and the editor are two doors to one set of six fields.
@@ -326,6 +332,7 @@ impl Default for VaultPreferences {
             warn_on_reuse: true,
             auto_tag_reused: true,
             tags: Vec::new(),
+            channels: builtin_channels(),
             password_generator: PasswordGenerator::default(),
             sidebar_position: "left".into(),
             sidebar_labels: "both".into(),
@@ -551,6 +558,12 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     // seed of the same name.
     out.tags = ensure_default_tags(normalise_tags(o.get("tags")));
 
+    // The channel catalogue (`normaliseChannels`): the stored rows cleaned,
+    // the shipped ones that are missing appended, and `all` guaranteed. This
+    // is what the rail is built from, so a vault that has never seen Settings
+    // › Channels still has its seven shipped rows.
+    out.channels = normalise_channels(o.get("channels"));
+
     // absorb everything we didn't model
     let mut extra = serde_json::Map::new();
     let known = ["theme","accent","textScale","motion","motionSpeed","ambient","density","roundness",
@@ -563,7 +576,7 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
         "showSettingsButton","showHideSidebarButton","floatingChrome","hideDividers",
         "hiddenChannels","hiddenFolders","hiddenButtons",
         "trayEnabled","closeToTray","launchAtLogin","soundsMuted",
-        "pinFavorites","manualOrder","passwordAgeDays","emailAgeDays","emailCheckDays","confirmDeletes","confirmBeforeExport","tags","autoLockMinutes",
+        "pinFavorites","manualOrder","passwordAgeDays","emailAgeDays","emailCheckDays","confirmDeletes","confirmBeforeExport","tags","channels","autoLockMinutes",
         "passwordGenerator",
         "clearClipboardSeconds","clearClipboardOnLock","clipboardCapture","clipboardAutoSave","copyToasts","maskEmails","warnOnReuse","autoTagReused","usage","history","alarms"];
     for (k,v) in o.iter() {

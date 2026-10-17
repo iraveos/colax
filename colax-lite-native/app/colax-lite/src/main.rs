@@ -18,6 +18,7 @@
 mod appearance;
 mod alarms;
 mod art;
+mod channels_ops;
 mod dashboard;
 mod history;
 mod items;
@@ -423,6 +424,25 @@ struct AppState {
     /// every channel switch, so a push that would paint the same picture is
     /// skipped.
     background_pushed: Option<(String, f64, f64, f64)>,
+    /// The channel editor's draft (Task 5.10), if it is open. Kept whole here
+    /// rather than in Slint for the same reason the login editor's tags are:
+    /// `Add channel` must hand back exactly a `Channel`, and the tag ids it
+    /// narrows by have to be checked against the catalogue only Rust sees.
+    /// `channel_new` is the TS's `channel === null` — the Add flow, whose
+    /// footer is Cancel/Add channel rather than Delete/Done.
+    channel_draft: Option<colax_core::Channel>,
+    channel_new: bool,
+    /// The id of the stored channel being edited, so an autosave knows which
+    /// row to replace without trusting the draft's own id.
+    channel_editing: Option<String>,
+    /// Which tag's name is being retyped and which tag's colour range is
+    /// open. One at a time each, exactly as the panel's two `useState` ids
+    /// are, so a row can be rebuilt from the model without losing them.
+    channel_tag_editing: Option<String>,
+    channel_tag_hue: Option<String>,
+    /// The width the editor's tag cloud last reported, so its rows can be
+    /// packed for it on every push instead of only while it is on screen.
+    channel_ed_width: f64,
 }
 
 type Shared = Rc<RefCell<AppState>>;
@@ -465,7 +485,7 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     let channel_id = ui.get_active_channel().to_string();
     let guard = state.borrow();
     let prefs = items::prefs_from(guard.engine.preferences());
-    let channel = items::channel_by_id(&channel_id);
+    let channel = items::channel_by_id(&prefs, &channel_id);
     // The dashboard replaces the whole pane, and it reads every item — so
     // it is computed here, while the engine is already open, and applied
     // after the guard drops like everything else on this path.
@@ -599,7 +619,7 @@ fn push_background(ui: &MainWindow, state: &Shared) {
     let resolved = {
         let guard = state.borrow();
         let prefs = items::prefs_from(guard.engine.preferences());
-        let channel = items::channel_by_id(&ui.get_active_channel());
+        let channel = items::channel_by_id(&prefs, &ui.get_active_channel());
         crate::art::background_of(&prefs, Some(&channel))
     };
     if state.borrow().background_pushed.as_ref() == resolved.as_ref() {
@@ -1152,6 +1172,40 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
     }
     if want == "background-photo" {
         settings_ops::background_dev_photo(ui, state);
+        return;
+    }
+    // Channels (Task 5.10): the panel itself, the shared editor opened on a
+    // stored channel, and the editor's Add flow. `favorites` is the one the
+    // editor opens on — shipped, so its name and icon come from the document,
+    // and not `locked`, so the footer has its Delete.
+    if want == "settings-channels" {
+        settings_ops::open(ui, state, "channels");
+        return;
+    }
+    if want == "channel-editor" {
+        settings_ops::open(ui, state, "channels");
+        channels_ops::open(ui, state, "favorites");
+        return;
+    }
+    if want == "channel-new" {
+        settings_ops::open(ui, state, "channels");
+        channels_ops::open(ui, state, "new");
+        return;
+    }
+    // The editor's lower half — the Image section with its three dials, then
+    // Messages — which the window is too short to show at once. The draft is
+    // given a stored photo through the field's own rule, and the body is
+    // scrolled so a screenshot can see what the walk can only dump.
+    if want == "channel-editor-image" {
+        settings_ops::open(ui, state, "channels");
+        channels_ops::open(ui, state, "favorites");
+        ui.set_channel_ed_image_url("https://example.com/backdrop.jpg".into());
+        channels_ops::image_edited(ui, state);
+        channels_ops::image_float(ui, state, "opacity", 0.8);
+        channels_ops::image_float(ui, state, "blur", 7.0);
+        channels_ops::image_float(ui, state, "dim", 0.45);
+        // The content's offset is negative once scrolled down.
+        ui.set_channel_ed_scroll_y(-430.0);
         return;
     }
     // The three sheets 5.8 added, opened with their fields as a user would
@@ -5229,6 +5283,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 verified: HashSet::new(),
                 vault_verified: false,
                 background_pushed: None,
+                channel_draft: None,
+                channel_new: false,
+                channel_editing: None,
+                channel_tag_editing: None,
+                channel_tag_hue: None,
+                channel_ed_width: 0.0,
             }));
             // Debug scratch profiles open straight into the vault with demo
             // content; everything else starts on the real startup screen.
@@ -6007,6 +6067,205 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_settings_bg_remove(move || {
                 if let Some(ui) = weak.upgrade() {
                     settings_ops::background_remove(&ui, &st);
+                }
+            });
+            // Channels (Task 5.10): the panel's twelve, then the shared
+            // editor's own. Every one of them stages or patches a draft in
+            // `AppState` and then pushes the whole panel or form back, so a
+            // refused write settles on the widget that asked.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_edit(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::open(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_toggle_hidden(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::toggle_hidden(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_hide_all(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::hide_all(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_show_all(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::show_all(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            ui.on_settings_chan_tag_edited(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::tag_input_edited(&ui);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_tag_add(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::tag_add(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_tag_rename_start(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::tag_rename_start(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_tag_renamed(move |id, name| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::tag_renamed(&ui, &st, &id, &name);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_tag_rename_done(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::tag_rename_done(&ui, &st, id.as_str());
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_tag_hue_toggle(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::tag_hue_toggle(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_tag_hue_changed(move |id, value| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::tag_hue_changed(&ui, &st, &id, value as f64);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_settings_chan_tag_delete(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::tag_delete(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_closed(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::close(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_save(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::save(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_deleted(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::deleted(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_name_edited(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::name_edited(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_kind_picked(move |index| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::kind_picked(&ui, &st, index);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_tag_toggled(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::tag_toggled(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_tag_relayout(move |width| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::relayout(&ui, &st, width);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_icon_picked(move |key| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::icon_picked(&ui, &st, &key);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_hue_changed(move |value| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::hue_changed(&ui, &st, value as f64);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_accent_picked(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::accent_picked(&ui, &st, &id);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_image_edited(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::image_edited(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_image_upload(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::image_upload(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_image_remove(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::image_remove(&ui, &st);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_image_float(move |key, value| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::image_float(&ui, &st, &key, value as f64);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_show_mail_toggled(move |value| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::show_mail_toggled(&ui, &st, value);
+                }
+            });
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_ed_mail_account_picked(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::mail_account_picked(&ui, &st, &id);
                 }
             });
 

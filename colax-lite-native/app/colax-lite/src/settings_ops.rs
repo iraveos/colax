@@ -17,9 +17,9 @@ use crate::{
 use colax_core::model::{SecurityPasscode, SecurityQuestion, TotpSecret};
 use colax_core::totp::{extract_totp_secret, generate_totp_seed, otpauth_url, qr_matrix, verify_totp};
 use colax_core::{
-    answer_too_weak, estimate_strength, hash_answer, hash_passcode, passcode_too_weak,
-    security_level, verify_answer, verify_passcode, Alarm, AlarmSound, LoginSecurity,
-    VaultPreferences,
+    answer_too_weak, apply_channel, estimate_strength, hash_answer, hash_passcode,
+    passcode_too_weak, security_level, verify_answer, verify_passcode, Alarm, AlarmSound,
+    LoginSecurity, VaultItem, VaultPreferences,
 };
 use slint::ComponentHandle;
 
@@ -70,12 +70,12 @@ const HIDDEN_BUTTON_LABELS: [(&str, &str); 6] = [
 /// that heading — because Slint cannot group a model after the fact; a row
 /// with an empty heading belongs to the group above it.
 ///
-/// Two of the TS's groups are not built yet and say so by being absent: the
-/// quick-launch docks (their runtime has not landed) and the channel and
-/// folder names, which in the TS come from the channel catalogue — a hidden
-/// id still gets its row, under the same fallback name the TS uses when its
-/// own catalogue misses (`channel?.name || 'Channel'`).
-pub fn hidden_rows(prefs: &VaultPreferences) -> Vec<HiddenRow> {
+/// A hidden channel is named and counted from the catalogue and the logins
+/// (`channel?.name || 'Channel'`, `${count} logins inside`) — the TS's own
+/// fallback when its catalogue misses. One of the TS's groups is not built
+/// yet and says so by being absent: the quick-launch docks (their runtime
+/// has not landed).
+pub fn hidden_rows(prefs: &VaultPreferences, items: &[VaultItem]) -> Vec<HiddenRow> {
     // (key, id, group, label, detail) — an empty id marks a switch.
     let mut rows: Vec<(String, String, &'static str, String, String)> = Vec::new();
     let mut push = |key: &str, id: &str, group: &'static str, label: String, detail: String| {
@@ -110,7 +110,19 @@ pub fn hidden_rows(prefs: &VaultPreferences) -> Vec<HiddenRow> {
         push("showSidebar", "", "Sidebar", "Sidebar".into(), "Whole channel rail".into());
     }
     for id in &prefs.hidden_channels {
-        push("channel", id, "Sidebar", "Channel".into(), "Hidden from the sidebar".into());
+        let channel = prefs.channels.iter().find(|entry| entry.id == *id);
+        let count = channel
+            .map(|channel| apply_channel(channel, items, prefs.password_age_days as f64).len())
+            .unwrap_or(0);
+        push(
+            "channel",
+            id,
+            "Sidebar",
+            channel
+                .map(|channel| channel.name.clone())
+                .unwrap_or_else(|| "Channel".into()),
+            format!("{count} login{} inside", if count == 1 { "" } else { "s" }),
+        );
     }
     for id in &prefs.hidden_folders {
         push("folder", id, "Sidebar", "Folder".into(), "Hidden from the sidebar".into());
@@ -238,9 +250,18 @@ pub fn tab_picked(ui: &MainWindow, index: i32) {
 /// them in. Called on open and after every successful write, so a snap
 /// (117 -> 115) or a refusal settles on the widget that asked.
 pub fn refresh(ui: &MainWindow, state: &Shared) {
-    let prefs = {
+    let (prefs, logins) = {
         let guard = state.borrow();
-        items::prefs_from(guard.engine.preferences())
+        let prefs = items::prefs_from(guard.engine.preferences());
+        // The Hidden tab names a hidden channel and counts what is inside it,
+        // so it needs the logins as well as the catalogue — and only then, so
+        // the common refresh (nothing hidden) does not copy the vault.
+        let logins = if prefs.hidden_channels.is_empty() {
+            Vec::new()
+        } else {
+            guard.engine.items().map(|items| items.to_vec()).unwrap_or_default()
+        };
+        (prefs, logins)
     };
     ui.set_settings_ap_theme(prefs.theme.as_str().into());
     ui.set_settings_ap_accent(prefs.accent.as_str().into());
@@ -253,20 +274,7 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     ui.set_settings_ap_density(prefs.density.as_str().into());
     ui.set_settings_ap_reduce_transparency(prefs.reduce_transparency);
     ui.set_settings_ap_high_contrast(prefs.high_contrast);
-    ui.set_settings_accent_chips(slint::ModelRc::new(slint::VecModel::from(
-        ACCENTS
-            .iter()
-            .map(|(id, label)| {
-                let (from, to) = appearance::accent_chip(id);
-                AccentChip {
-                    id: (*id).into(),
-                    label: (*label).into(),
-                    from,
-                    to,
-                }
-            })
-            .collect::<Vec<_>>(),
-    )));
+    ui.set_settings_accent_chips(slint::ModelRc::new(slint::VecModel::from(accent_chips())));
     // The Layout tab's own dials: the four pickers and the eighteen chrome
     // switches, each read back out of the stored document so a refused or
     // re-read value settles on the widget that asked.
@@ -294,7 +302,7 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     // The Hidden tab is derived, not stored: the rows are rebuilt from the
     // switches above on every push, so the two tabs cannot disagree.
     ui.set_settings_hidden_rows(slint::ModelRc::new(slint::VecModel::from(hidden_rows(
-        &prefs,
+        &prefs, &logins,
     ))));
     // The Desktop tab. Its third row shows `closeToTray && trayEnabled`, the
     // TS's own expression (Settings.tsx L1573) -- with the tray off the row
@@ -348,6 +356,29 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
     push_data(ui, state);
     // The Background tab's three dials and its "is there a picture" flag.
     push_background_fields(ui, state);
+    // The Channels tab's rows and its tag catalogue — derived, not stored:
+    // both are rebuilt from the catalogue and the logins on every push, so a
+    // count can never go stale behind the panel that shows it.
+    crate::channels_ops::push_manager(ui, state);
+}
+
+/// The four accent chips the Appearance grid and the channel editor's Theme
+/// row both draw, in `ACCENTS` order. Built here rather than in either
+/// screen because Slint has no `hsl()` builtin and the TS gradient
+/// `hsl(from 40% 56%)` has to be resolved somewhere that can do the maths.
+pub fn accent_chips() -> Vec<AccentChip> {
+    ACCENTS
+        .iter()
+        .map(|(id, label)| {
+            let (from, to) = appearance::accent_chip(id);
+            AccentChip {
+                id: (*id).into(),
+                label: (*label).into(),
+                from,
+                to,
+            }
+        })
+        .collect()
 }
 
 /// One settings write, whichever dial made it. The closure owns the
@@ -360,11 +391,10 @@ pub fn refresh(ui: &MainWindow, state: &Shared) {
 /// labels, the view and the sort), and the TS has the same effect — a
 /// `set(partial)` re-renders the whole app, not just the window that made
 /// the edit.
-fn write<F>(ui: &MainWindow, state: &Shared, apply: F) -> bool
+pub(crate) fn write<F>(ui: &MainWindow, state: &Shared, apply: F) -> bool
 where
     F: FnOnce(&mut VaultPreferences) -> bool,
-{
-    let mut prefs = {
+{    let mut prefs = {
         let guard = state.borrow();
         items::prefs_from(guard.engine.preferences())
     };
@@ -384,7 +414,7 @@ where
 /// — the same `min`/`max`/`step` Settings.tsx hands each `<Slider>`, so a
 /// drag can never store an in-between value. The final round trip kills
 /// the float dust `0.85 / 0.05` leaves behind.
-fn snap(value: f64, min: f64, max: f64, step: f64) -> f64 {
+pub(crate) fn snap(value: f64, min: f64, max: f64, step: f64) -> f64 {
     let clamped = value.clamp(min, max);
     (((clamped / step).round() * step) * 1000.0).round() / 1000.0
 }
@@ -2163,8 +2193,276 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
     );
     dump(ui, state, "settings34.background-removed");
 
+    // The Channels tab (Task 5.10) and the shared editor. Every step drives
+    // the same function the panel's callback is wired to, so what the dump
+    // shows is what a click would have produced -- and each one is checked
+    // against the document, because the panel is a view of it.
+    tab_picked(ui, 4); // Ctrl+5 -> channels
+    dump(ui, state, "settings35.channels");
+
+    // The tag catalogue: a rename, an add, a duplicate refused, a recolour.
+    // The rename is live (Slint has no blur), so by the time the box closes
+    // the document already holds the new name.
+    //
+    // The rename lands on a *shipped* tag, which brings the catalogue's own
+    // trap with it: `ensureDefaultTags` re-seeds the three defaults whenever
+    // they are missing by name (storage.ts L1076), so the original comes back
+    // as a fourth row. The TS does exactly this; the walk pins it rather than
+    // tiptoeing around it, because a port that quietly avoided it would
+    // disagree with the document the web build reads.
+    let first_tag = items::prefs_from(state.borrow().engine.preferences())
+        .tags
+        .first()
+        .map(|tag| tag.id.clone())
+        .expect("the seed ships a tag catalogue");
+    crate::channels_ops::tag_rename_start(ui, state, &first_tag);
+    crate::channels_ops::tag_renamed(ui, state, &first_tag, "Work logins");
+    crate::channels_ops::tag_rename_done(ui, state, &first_tag);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences()).tags[0].name,
+        "Work logins",
+        "a rename lands in the catalogue"
+    );
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences())
+            .tags
+            .len(),
+        4,
+        "renaming a shipped tag makes the default come back"
+    );
+    dump(ui, state, "settings36.tag-renamed");
+
+    ui.set_settings_chan_tag_input("Billing".into());
+    crate::channels_ops::tag_input_edited(ui);
+    debug_assert!(ui.get_settings_chan_tag_can_add(), "a typed name can be added");
+    crate::channels_ops::tag_add(ui, state);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences()).tags.len(),
+        5,
+        "the add box mints one tag"
+    );
+    // The same name again, cased differently, is refused: the box keeps the
+    // text, the catalogue keeps five rows, and the toast says why.
+    ui.set_settings_chan_tag_input("billing".into());
+    crate::channels_ops::tag_add(ui, state);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences()).tags.len(),
+        5,
+        "a duplicate tag is refused"
+    );
+    dump(ui, state, "settings37.tag-added");
+
+    // A recolour: the swatch opens that row's range, the drag stores 300.
+    let billing = items::prefs_from(state.borrow().engine.preferences())
+        .tags
+        .iter()
+        .find(|tag| tag.name == "Billing")
+        .map(|tag| tag.id.clone())
+        .expect("the tag just added is in the catalogue");
+    crate::channels_ops::tag_hue_toggle(ui, state, &billing);
+    debug_assert!(
+        slint::Model::iter(&ui.get_settings_chan_tag_rows()).any(|row| row.hue_open),
+        "the swatch opens the range"
+    );
+    crate::channels_ops::tag_hue_changed(ui, state, &billing, 300.0);
+    debug_assert!(
+        (items::prefs_from(state.borrow().engine.preferences())
+            .tags
+            .iter()
+            .find(|tag| tag.id == billing)
+            .map(|tag| tag.hue)
+            .unwrap_or_default()
+            - 300.0)
+            .abs()
+            < 0.001,
+        "the range stores the hue"
+    );
+    dump(ui, state, "settings38.tag-hue");
+
+    // The eye takes one row off the rail; Hide all takes every one; Show all
+    // puts them back. The two bulk buttons are conditions, not constants:
+    // after Hide all there is nothing left to hide.
+    crate::channels_ops::toggle_hidden(ui, state, "mail");
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences())
+            .hidden_channels
+            .len(),
+        1,
+        "the eye hides exactly one channel"
+    );
+    debug_assert!(ui.get_settings_chan_can_show_all());
+    dump(ui, state, "settings39.hidden-one");
+    crate::channels_ops::hide_all(ui, state);
+    debug_assert!(
+        !ui.get_settings_chan_can_hide_all(),
+        "nothing is left to hide"
+    );
+    dump(ui, state, "settings40.hidden-all");
+    crate::channels_ops::show_all(ui, state);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences())
+            .hidden_channels
+            .len(),
+        0,
+        "Show all empties the list"
+    );
+    debug_assert!(!ui.get_settings_chan_can_show_all());
+    dump(ui, state, "settings41.shown-all");
+
+    // The shared editor on a stored channel. `favorites` is shipped, so its
+    // name and icon come from the document, and not `locked`, so the footer
+    // carries both Delete and Done.
+    crate::channels_ops::open(ui, state, "favorites");
+    debug_assert_eq!(ui.get_channel_ed_title().to_string(), "Edit Favorites");
+    debug_assert!(!ui.get_channel_ed_is_new() && ui.get_channel_ed_can_delete());
+    debug_assert_eq!(ui.get_channel_ed_kind_index(), 1, "Favorites is lit");
+    debug_assert_eq!(slint::Model::row_count(&ui.get_channel_ed_icons()), 10);
+    debug_assert_eq!(slint::Model::row_count(&ui.get_channel_ed_accents()), 4);
+    dump(ui, state, "settings42.editor");
+
+    // Every control, one at a time. An existing channel writes through on
+    // each move -- the autosave the TS debounces, which this port does not.
+    ui.set_channel_ed_name("Starred".into());
+    crate::channels_ops::name_edited(ui, state);
+    crate::channels_ops::kind_picked(ui, state, 2); // Needs attention
+    crate::channels_ops::tag_toggled(ui, state, &billing);
+    crate::channels_ops::icon_picked(ui, state, "star");
+    crate::channels_ops::hue_changed(ui, state, 300.0);
+    crate::channels_ops::accent_picked(ui, state, "dusk");
+    ui.set_channel_ed_image_url("https://example.com/backdrop.jpg".into());
+    crate::channels_ops::image_edited(ui, state);
+    crate::channels_ops::image_float(ui, state, "opacity", 0.8);
+    crate::channels_ops::image_float(ui, state, "blur", 7.0);
+    crate::channels_ops::image_float(ui, state, "dim", 0.45);
+    crate::channels_ops::show_mail_toggled(ui, state, false);
+    {
+        let prefs = items::prefs_from(state.borrow().engine.preferences());
+        let stored = prefs
+            .channels
+            .iter()
+            .find(|channel| channel.id == "favorites")
+            .expect("a shipped channel cannot vanish");
+        debug_assert_eq!(stored.name, "Starred");
+        debug_assert_eq!(stored.kind, colax_core::ChannelKind::Attention);
+        debug_assert_eq!(stored.tag_ids, vec![billing.clone()]);
+        debug_assert_eq!(stored.icon, "star");
+        debug_assert_eq!(stored.hue, 300);
+        debug_assert_eq!(stored.accent, colax_core::ChannelAccent::Dusk);
+        debug_assert_eq!(stored.background_image, "https://example.com/backdrop.jpg");
+        debug_assert!((stored.background_opacity - 0.8).abs() < 0.001);
+        debug_assert!((stored.background_blur - 7.0).abs() < 0.001);
+        debug_assert!((stored.background_dim - 0.45).abs() < 0.001);
+        debug_assert!(!stored.show_mail);
+    }
+    dump(ui, state, "settings43.editor-edited");
+
+    // A half-typed address never becomes the picture: the box keeps the
+    // text, the channel keeps the last good value, and the field is left
+    // alone rather than settled back under the user's cursor.
+    ui.set_channel_ed_image_url("not a url".into());
+    crate::channels_ops::image_edited(ui, state);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences())
+            .channels
+            .iter()
+            .find(|channel| channel.id == "favorites")
+            .map(|channel| channel.background_image.clone())
+            .unwrap_or_default(),
+        "https://example.com/backdrop.jpg",
+        "a non-http draft is not stored"
+    );
+    dump(ui, state, "settings44.editor-refused");
+
+    // Done only closes: nothing is written on the way out.
+    crate::channels_ops::close(ui, state);
+    debug_assert!(!ui.get_channel_ed_open());
+    dump(ui, state, "settings45.editor-closed");
+
+    // The Add flow. The draft starts on the literal "New channel" —
+    // `createChannel('')` names it that, which is why the TS's own
+    // placeholder is never seen — so a blank name has to be typed in before
+    // its guard can be reached; then a named one is added, given a sidebar
+    // entry and made the active view, and deleted again, which takes the
+    // entry out with it and falls back to `all`.
+    crate::channels_ops::open(ui, state, "new");
+    debug_assert!(ui.get_channel_ed_is_new() && !ui.get_channel_ed_can_delete());
+    debug_assert_eq!(ui.get_channel_ed_title().to_string(), "New channel");
+    debug_assert!(
+        ui.get_channel_ed_can_save(),
+        "a fresh draft is already named"
+    );
+    ui.set_channel_ed_name("   ".into());
+    crate::channels_ops::name_edited(ui, state);
+    debug_assert!(
+        !ui.get_channel_ed_can_save(),
+        "a box of spaces cannot be saved"
+    );
+    crate::channels_ops::save(ui, state);
+    debug_assert_eq!(ui.get_channel_ed_error().to_string(), "Give the channel a name.");
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences())
+            .channels
+            .len(),
+        7,
+        "a nameless channel is not added"
+    );
+    dump(ui, state, "settings46.new-refused");
+
+    ui.set_channel_ed_name("  Reading  ".into());
+    crate::channels_ops::name_edited(ui, state);
+    debug_assert!(ui.get_channel_ed_can_save());
+    crate::channels_ops::save(ui, state);
+    debug_assert!(!ui.get_channel_ed_open());
+    let added = items::prefs_from(state.borrow().engine.preferences())
+        .channels
+        .iter()
+        .find(|channel| channel.name == "Reading")
+        .map(|channel| channel.id.clone())
+        .expect("the trimmed name is stored");
+    debug_assert_eq!(ui.get_active_channel().to_string(), added);
+    debug_assert!(
+        sidebar_lists(state, &added),
+        "a new channel joins the stored sidebar tree"
+    );
+    dump(ui, state, "settings47.new-added");
+
+    crate::channels_ops::open(ui, state, &added);
+    debug_assert!(ui.get_channel_ed_can_delete(), "a made channel can go");
+    crate::channels_ops::deleted(ui, state);
+    debug_assert_eq!(
+        items::prefs_from(state.borrow().engine.preferences())
+            .channels
+            .len(),
+        7,
+        "Delete takes the channel out of the catalogue"
+    );
+    debug_assert_eq!(ui.get_active_channel().to_string(), "all");
+    debug_assert!(
+        !sidebar_lists(state, &added),
+        "Delete takes it out of the sidebar tree too"
+    );
+    dump(ui, state, "settings48.new-deleted");
+
     close(ui);
     dump(ui, state, "settings17.closed");
+}
+
+/// Whether the preferences' stored sidebar tree names a channel — the
+/// untyped `sidebar` array the panel keeps in step (`stripChannel` /
+/// `writeChannel` in the TS). Only the walk reads it.
+#[cfg(debug_assertions)]
+fn sidebar_lists(state: &Shared, id: &str) -> bool {
+    let prefs = items::prefs_from(state.borrow().engine.preferences());
+    prefs
+        .extra
+        .get("sidebar")
+        .and_then(|value| value.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.get("id").and_then(|v| v.as_str()) == Some(id))
+        })
+        .unwrap_or(false)
 }
 
 /// Dev-only: the walk's photo and the screenshot target's, in one step --
@@ -2275,7 +2573,7 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         }
     };
     let line = format!(
-        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}] data=[{} {} {} {} {} {} {} {}] bg=[{} {} {} {}] app=[{} {} {}]\n",
+        "{tag}: open={} tab={}({}) frame={}x{} panel={} theme=[{}] accent=[{}] density=[{}] motion={} speed={} ambient={} scale={} round={} depth={} reduce={} contrast={} chips={} lay=[{} {} {} {}] chrome={}{}{}{}{}{}{}{}{} hidden={} shell=[{} {} {} {}{}{}] desk=[{}{}{}{}] gen=[{} {} {} {} {} {}] alarms=[{} {} {} {}] sec=[{} {} {} {} {} {} {}{}{}{}{}{}{}{}{}] kdf=[{}] vsec=[{} {} {} {} {}] vsave=[{} {} {} {}] persisted=[{},{},{},{}] store=[{},{},{},{},{},{}] data=[{} {} {} {} {} {} {} {}] chan=[{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}] bg=[{} {} {} {}] app=[{} {} {}]\n",
         ui.get_settings_open(),
         index,
         tab,
@@ -2374,6 +2672,25 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
         (!ui.get_settings_data_restore_name().is_empty()) as i32,
         (!ui.get_settings_data_restore_error().is_empty()) as i32,
         ui.get_settings_data_restore_ready() as i32,
+        // The Channels tab (Task 5.10) and the editor: the panel's two
+        // models, how many rows are off the rail, and then the open modal --
+        // which flow, the draft's name, kind, selected tags, icon, hue,
+        // accent, whether it has a picture and where its mail comes from.
+        slint::Model::row_count(&ui.get_settings_chan_rows()),
+        slint::Model::row_count(&ui.get_settings_chan_tag_rows()),
+        prefs.hidden_channels.len(),
+        ui.get_channel_ed_open() as i32,
+        ui.get_channel_ed_is_new() as i32,
+        ui.get_channel_ed_name(),
+        ui.get_channel_ed_kind_index(),
+        selected_tag_count(&ui.get_channel_ed_tag_rows()),
+        ui.get_channel_ed_icon(),
+        ui.get_channel_ed_hue(),
+        ui.get_channel_ed_accent(),
+        ui.get_channel_ed_has_image() as i32,
+        ui.get_channel_ed_image_opacity(),
+        ui.get_channel_ed_show_mail() as i32,
+        slint::Model::row_count(&ui.get_channel_ed_account_ids()),
         // The Background tab as the window holds it -- the flag, the three
         // dials -- and then the app's own layer, which is the only proof
         // that a stored photo actually reached the screen: the size Slint
@@ -2390,6 +2707,23 @@ fn dump(ui: &MainWindow, state: &Shared, tag: &str) {
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&line);
     let _ = std::fs::write(path, existing);
+}
+
+/// How many tag chips the editor has lit, across the packed lines of its
+/// cloud. A model of models cannot be counted with one `row_count`, and the
+/// dump's `chan=` group wants the number rather than the shape.
+#[cfg(debug_assertions)]
+fn selected_tag_count(rows: &slint::ModelRc<slint::ModelRc<crate::PickTag>>) -> i32 {
+    use slint::Model;
+    let mut count = 0;
+    for line in rows.iter() {
+        for tag in line.iter() {
+            if tag.selected {
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 /// The other copy of the four shell flags: `shell.json` as it now stands on
@@ -2456,7 +2790,7 @@ mod tests {
         // out of the box, so the sidebar's shortcut sheet is the one row a
         // fresh vault lists (Settings.tsx L1030 does the same with `!`).
         let mut prefs = colax_core::normalise_preferences(&serde_json::json!({}));
-        let rows = hidden_rows(&prefs);
+        let rows = hidden_rows(&prefs, &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].label, "Shortcuts button");
         assert_eq!(rows[0].heading, "Sidebar (1)");
@@ -2468,7 +2802,7 @@ mod tests {
         prefs.show_new_login_button = false;
         prefs.show_sidebar = false;
         prefs.hidden_buttons = vec!["card-copy".into(), "mystery".into()];
-        let rows = hidden_rows(&prefs);
+        let rows = hidden_rows(&prefs, &[]);
 
         let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
         assert_eq!(

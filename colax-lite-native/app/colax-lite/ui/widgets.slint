@@ -609,3 +609,98 @@ export component Area inherits Rectangle {
     }
 }
 
+// The overlay a dialog sits on: a dim wash over the whole window, a plate
+// centred on it, a title with a close button, and the caller's rows as the
+// body. `.overlay` (app.css L726) plus `.modal__header` / `.modal__body`.
+//
+// The body is `@children` -- one slot, so a dialog that needs a footer puts
+// its own row last and the plate hugs it, since nothing here scrolls.
+//
+// Moved here from `settings.slint` when Settings › Channels' shared editor
+// needed the same shell: one wash, one plate, one hairline, so the two
+// cannot drift.
+export component Modal inherits Rectangle {
+    in property <string> title;
+    // The editor's own plate is wider than a settings sheet's: 780px in
+    // `ChannelEditor.tsx`'s `modal--wide`, against the sheets' 540px.
+    in property <bool> wide: false;
+    callback closed();
+
+    // No width/height binding: a plain child fills its parent by default,
+    // and `parent` is not an accessible id from a component's own root
+    // anyway. The plate below does the centring off this root's size.
+
+    // `.overlay`'s dim wash, on the root so every pixel the dialog does not
+    // cover is dimmed: app.css L726's `#05060b9e`, or the light theme's
+    // `#3d568f4d`. Slint rectangles have no `backdrop-filter`, so the 4px
+    // blur the CSS puts behind the wash is the one part not drawn.
+    background: Theme.resolved-theme == "light" ? #3d568f4d : #05060b9e;
+
+    // In the TS a click closes only when it lands on the backdrop itself
+    // (`e.target === e.currentTarget`); here the plate above intercepts
+    // everything inside the dialog.
+    backdrop := TouchArea {
+        clicked => { root.closed(); }
+    }
+
+    plate := Rectangle {
+        width: min(root.wide ? 780px : 540px, parent.width - 60px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        height: column.preferred-height;
+        border-radius: Theme.radius-xl;
+        border-width: 1px;
+        border-color: Theme.border;
+        background: Theme.bg;
+        clip: true;
+        drop-shadow-color: #00000066;
+        drop-shadow-blur: 40px;
+        drop-shadow-offset-y: 14px;
+
+        column := VerticalLayout {
+            // `.modal__header`: title, close button.
+            HorizontalLayout {
+                padding-top: 16px;
+                padding-bottom: 14px;
+                padding-left: 22px;
+                padding-right: 16px;
+                spacing: 12px;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.title;
+                    color: Theme.text;
+                    font-size: 17px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    min-height: 27px;
+                }
+
+                IconButton {
+                    horizontal-stretch: 0;
+                    icon: "×";
+                    clicked => { root.closed(); }
+                }
+            }
+
+            // `.modal__header`'s border-bottom.
+            Rectangle {
+                width: parent.width;
+                height: 1px;
+                background: Theme.hairline;
+            }
+
+            // `.modal__body`: the caller's rows.
+            VerticalLayout {
+                padding-top: 18px;
+                padding-bottom: 6px;
+                padding-left: 22px;
+                padding-right: 22px;
+                spacing: 14px;
+
+                @children
+            }
+        }
+    }
+}
+

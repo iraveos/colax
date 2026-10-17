@@ -16,12 +16,13 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption } from "models.slint";
 import { Editor } from "screens/editor.slint";
 import { SecurityGate } from "screens/security.slint";
 import { Dashboard } from "screens/dashboard.slint";
 import { History } from "screens/history.slint";
-import { Settings, AccentChip, HiddenRow, AlarmRow, DayChip } from "screens/settings.slint";
+import { Settings, HiddenRow, AlarmRow, DayChip } from "screens/settings.slint";
+import { ChannelEditor } from "screens/channel_editor.slint";
 
 // ---- The vault's four presentations -------------------------------------
 // `VIEW_OPTIONS` in ViewMenu.tsx: Flow, Orbit, List, Grid -- four cards with
@@ -860,6 +861,35 @@ export component MainWindow inherits Window {
     callback settings-bg-url-edited();
     callback settings-bg-upload();
     callback settings-bg-remove();
+    // Channels (Task 5.10): the panel's twelve and the shared editor's own.
+    callback settings-chan-edit(id: string);
+    callback settings-chan-toggle-hidden(id: string);
+    callback settings-chan-hide-all();
+    callback settings-chan-show-all();
+    callback settings-chan-tag-edited();
+    callback settings-chan-tag-add();
+    callback settings-chan-tag-rename-start(id: string);
+    callback settings-chan-tag-renamed(id: string, name: string);
+    callback settings-chan-tag-rename-done(id: string);
+    callback settings-chan-tag-hue-toggle(id: string);
+    callback settings-chan-tag-hue-changed(id: string, value: float);
+    callback settings-chan-tag-delete(id: string);
+    callback channel-ed-closed();
+    callback channel-ed-save();
+    callback channel-ed-deleted();
+    callback channel-ed-name-edited();
+    callback channel-ed-kind-picked(index: int);
+    callback channel-ed-tag-toggled(id: string);
+    callback channel-ed-tag-relayout(width: float);
+    callback channel-ed-icon-picked(key: string);
+    callback channel-ed-hue-changed(value: float);
+    callback channel-ed-accent-picked(id: string);
+    callback channel-ed-image-edited();
+    callback channel-ed-image-upload();
+    callback channel-ed-image-remove();
+    callback channel-ed-image-float(key: string, value: float);
+    callback channel-ed-show-mail-toggled(value: bool);
+    callback channel-ed-mail-account-picked(id: string);
     in-out property <bool> settings-open: false;
     in-out property <int> settings-tab-index: 0;
     // The modal's frame, in logical pixels, kept in step with the window by
@@ -1012,6 +1042,53 @@ export component MainWindow inherits Window {
     in-out property <float> settings-bg-opacity: 0.35;
     in-out property <float> settings-bg-blur: 0;
     in-out property <float> settings-bg-dim: 0.25;
+    // ---- The Settings window's Channels tab (Task 5.10) --------------------
+    // The catalogue as rows, the two Hide/Show-all conditions, the tag
+    // catalogue with its usage text, and the draft name in the add box.
+    in property <[ChannelRow]> settings-chan-rows;
+    in property <bool> settings-chan-can-hide-all: false;
+    in property <bool> settings-chan-can-show-all: false;
+    in property <[TagRow]> settings-chan-tag-rows;
+    in-out property <string> settings-chan-tag-input;
+    in property <bool> settings-chan-tag-can-add: false;
+    // ---- The shared channel editor (Task 5.10) ----------------------------
+    // One modal with two jobs: `channel-ed-is-new` is the flow "New channel"
+    // opens, otherwise it edits a real channel and writes as it goes. Every
+    // field is a view of the draft Rust holds, pushed back after each move,
+    // so a refused value settles on the widget that asked.
+    in property <bool> channel-ed-open: false;
+    in property <string> channel-ed-title: "New channel";
+    in property <bool> channel-ed-is-new: true;
+    in property <bool> channel-ed-can-delete: false;
+    in property <bool> channel-ed-can-save: false;
+    in-out property <string> channel-ed-name;
+    in property <string> channel-ed-error;
+    in property <color> channel-ed-dot: #3b82f6;
+    in property <string> channel-ed-preview-name: "Channel name";
+    in property <int> channel-ed-count: 0;
+    in property <int> channel-ed-kind-index: 0;
+    in property <[string]> channel-ed-kind-options;
+    in property <string> channel-ed-kind-hint;
+    in property <[[PickTag]]> channel-ed-tag-rows;
+    in property <bool> channel-ed-has-tags: false;
+    in property <string> channel-ed-tag-hint;
+    in property <[IconOption]> channel-ed-icons;
+    in property <string> channel-ed-icon: "layers";
+    in-out property <float> channel-ed-hue: 212;
+    in property <string> channel-ed-hue-label: "212°";
+    in property <[AccentChip]> channel-ed-accents;
+    in property <string> channel-ed-accent: "slate";
+    in-out property <string> channel-ed-image-url;
+    in property <bool> channel-ed-has-image: false;
+    in-out property <float> channel-ed-image-opacity: 0.35;
+    in-out property <float> channel-ed-image-blur: 0;
+    in-out property <float> channel-ed-image-dim: 0.25;
+    in-out property <bool> channel-ed-show-mail: true;
+    in property <bool> channel-ed-has-accounts: false;
+    in property <[string]> channel-ed-account-labels;
+    in property <[string]> channel-ed-account-ids;
+    in property <string> channel-ed-mail-account: "all";
+    in-out property <length> channel-ed-scroll-y: 0px;
     // The picture the window paints behind everything, and the wash over it.
     // Both are pushed by `push_background`: the preference's photo, or the
     // active channel's own, which carries its own three dials with it.
@@ -2501,6 +2578,12 @@ export component MainWindow inherits Window {
             bg-opacity <=> root.settings-bg-opacity;
             bg-blur <=> root.settings-bg-blur;
             bg-dim <=> root.settings-bg-dim;
+            chan-rows: root.settings-chan-rows;
+            chan-can-hide-all: root.settings-chan-can-hide-all;
+            chan-can-show-all: root.settings-chan-can-show-all;
+            chan-tag-rows: root.settings-chan-tag-rows;
+            chan-tag-input <=> root.settings-chan-tag-input;
+            chan-tag-can-add: root.settings-chan-tag-can-add;
             closed => { root.settings-closed(); }
             tab-picked(index) => { root.settings-tab-picked(index); }
             pref-string(key, value) => { root.settings-pref-string(key, value); }
@@ -2544,6 +2627,72 @@ export component MainWindow inherits Window {
             bg-url-edited => { root.settings-bg-url-edited(); }
             bg-upload => { root.settings-bg-upload(); }
             bg-remove => { root.settings-bg-remove(); }
+            chan-edit(id) => { root.settings-chan-edit(id); }
+            chan-toggle-hidden(id) => { root.settings-chan-toggle-hidden(id); }
+            chan-hide-all => { root.settings-chan-hide-all(); }
+            chan-show-all => { root.settings-chan-show-all(); }
+            chan-tag-edited => { root.settings-chan-tag-edited(); }
+            chan-tag-add => { root.settings-chan-tag-add(); }
+            chan-tag-rename-start(id) => { root.settings-chan-tag-rename-start(id); }
+            chan-tag-renamed(id, name) => { root.settings-chan-tag-renamed(id, name); }
+            chan-tag-rename-done(id) => { root.settings-chan-tag-rename-done(id); }
+            chan-tag-hue-toggle(id) => { root.settings-chan-tag-hue-toggle(id); }
+            chan-tag-hue-changed(id, value) => { root.settings-chan-tag-hue-changed(id, value); }
+            chan-tag-delete(id) => { root.settings-chan-tag-delete(id); }
+        }
+
+        // The shared channel editor (Task 5.10), over everything including
+        // Settings: the Channels panel opens it, and so will the rail.
+        if (root.channel-ed-open) : ChannelEditor {
+            z: 62;
+            title: root.channel-ed-title;
+            is-new: root.channel-ed-is-new;
+            can-delete: root.channel-ed-can-delete;
+            can-save: root.channel-ed-can-save;
+            name <=> root.channel-ed-name;
+            error: root.channel-ed-error;
+            dot-color: root.channel-ed-dot;
+            preview-name: root.channel-ed-preview-name;
+            preview-count: root.channel-ed-count;
+            kind-index: root.channel-ed-kind-index;
+            kind-options: root.channel-ed-kind-options;
+            kind-hint: root.channel-ed-kind-hint;
+            tag-rows: root.channel-ed-tag-rows;
+            has-tags: root.channel-ed-has-tags;
+            tag-hint: root.channel-ed-tag-hint;
+            icons: root.channel-ed-icons;
+            icon-key: root.channel-ed-icon;
+            hue-value <=> root.channel-ed-hue;
+            hue-label: root.channel-ed-hue-label;
+            accent-chips: root.channel-ed-accents;
+            accent: root.channel-ed-accent;
+            image-url <=> root.channel-ed-image-url;
+            has-image: root.channel-ed-has-image;
+            image-opacity <=> root.channel-ed-image-opacity;
+            image-blur <=> root.channel-ed-image-blur;
+            image-dim <=> root.channel-ed-image-dim;
+            show-mail <=> root.channel-ed-show-mail;
+            has-accounts: root.channel-ed-has-accounts;
+            account-labels: root.channel-ed-account-labels;
+            account-ids: root.channel-ed-account-ids;
+            mail-account: root.channel-ed-mail-account;
+            scroll-y <=> root.channel-ed-scroll-y;
+            closed => { root.channel-ed-closed(); }
+            save => { root.channel-ed-save(); }
+            deleted => { root.channel-ed-deleted(); }
+            name-edited => { root.channel-ed-name-edited(); }
+            kind-picked(index) => { root.channel-ed-kind-picked(index); }
+            tag-toggled(id) => { root.channel-ed-tag-toggled(id); }
+            tag-relayout(width) => { root.channel-ed-tag-relayout(width); }
+            icon-picked(key) => { root.channel-ed-icon-picked(key); }
+            hue-changed(value) => { root.channel-ed-hue-changed(value); }
+            accent-picked(id) => { root.channel-ed-accent-picked(id); }
+            image-edited => { root.channel-ed-image-edited(); }
+            image-upload => { root.channel-ed-image-upload(); }
+            image-remove => { root.channel-ed-image-remove(); }
+            image-float(key, value) => { root.channel-ed-image-float(key, value); }
+            show-mail-toggled(value) => { root.channel-ed-show-mail-toggled(value); }
+            mail-account-picked(id) => { root.channel-ed-mail-account-picked(id); }
         }
     }
 }

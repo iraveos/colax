@@ -70,6 +70,29 @@ pub enum ChannelAccent {
     Clay,
 }
 
+impl ChannelAccent {
+    /// The four names the editor's Theme row offers, and the only four a
+    /// stored channel may carry — `CHANNEL_ACCENTS.includes(accent)`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "slate" => Some(ChannelAccent::Slate),
+            "sage" => Some(ChannelAccent::Sage),
+            "dusk" => Some(ChannelAccent::Dusk),
+            "clay" => Some(ChannelAccent::Clay),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ChannelAccent::Slate => "slate",
+            ChannelAccent::Sage => "sage",
+            ChannelAccent::Dusk => "dusk",
+            ChannelAccent::Clay => "clay",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Channel {
@@ -159,6 +182,189 @@ pub fn builtin_channels() -> Vec<Channel> {
 pub const CHANNEL_ICONS: &[&str] = &[
     "inbox", "star", "flag", "shield", "layers", "key", "lock", "cloud", "grid", "clock",
 ];
+
+/// `newChannelId` (channels.ts L518): `ch_` plus the first eight hex
+/// characters of a random UUID, the same shape as `new_alarm_id`.
+pub fn new_channel_id() -> String {
+    let uuid = uuid::Uuid::new_v4().simple().to_string();
+    format!("ch_{}", &uuid[..8])
+}
+
+/// `createChannel(name)` (channels.ts L755): the draft a new channel starts
+/// from. The TS calls it with `''`, so the name lands on the literal
+/// "New channel" — which is why its "Work logins" placeholder is never seen
+/// — and everything else is the shipped default. The hue is random, so two
+/// new channels do not look alike; `builtin` and `locked` are false whatever
+/// the caller passed, because the TS strips both from the patch it accepts.
+pub fn create_channel(name: &str) -> Channel {
+    let trimmed = name.trim();
+    Channel {
+        id: new_channel_id(),
+        name: if trimmed.is_empty() {
+            "New channel".into()
+        } else {
+            trimmed.into()
+        },
+        kind: ChannelKind::All,
+        tag_ids: Vec::new(),
+        icon: "layers".into(),
+        hue: (rand::random::<u32>() % 360) as i32,
+        accent: ChannelAccent::Slate,
+        builtin: false,
+        locked: false,
+        ..Channel::default()
+    }
+}
+
+/// `normaliseBackgroundLook` (channels.ts L104): the three dials clamped to
+/// the range their own sliders offer, so a hand-edited file cannot paint a
+/// picture at 400% or blur it past the slider's top. A missing or
+/// non-finite value falls back to the shipped look.
+fn normalise_look(raw: &serde_json::Map<String, serde_json::Value>) -> (f64, f64, f64) {
+    let number = |key: &str, dflt: f64| -> f64 {
+        raw.get(key)
+            .and_then(serde_json::Value::as_f64)
+            .filter(|n| n.is_finite())
+            .unwrap_or(dflt)
+    };
+    let default = Channel::default();
+    (
+        number("backgroundOpacity", default.background_opacity).clamp(0.0, 1.0),
+        number("backgroundBlur", default.background_blur).clamp(0.0, 40.0),
+        number("backgroundDim", default.background_dim).clamp(0.0, 0.9),
+    )
+}
+
+/// `normaliseChannels` (channels.ts L648-752): the stored catalogue, cleaned,
+/// with the shipped rows that are missing appended and `all` guaranteed — so
+/// the shell always has a real view to fall back to.
+///
+/// The TS's three *adoption* passes (L698-737) are deliberately not ported:
+/// they rewrite a custom channel somebody had named "Dashboard"/"Mail"/
+/// "History" into the structural kind, which only matters for a document
+/// written before those kinds existed. The append loop below already
+/// guarantees exactly one row per kind, which is what the passes protect.
+pub fn normalise_channels(stored: Option<&serde_json::Value>) -> Vec<Channel> {
+    let Some(list) = stored.and_then(serde_json::Value::as_array) else {
+        return builtin_channels();
+    };
+    let presets = builtin_channels();
+    let mut out: Vec<Channel> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+
+    for raw in list {
+        let Some(obj) = raw.as_object() else { continue };
+        let id = obj
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if id.is_empty() || seen.iter().any(|known| known == id) {
+            continue;
+        }
+        seen.push(id.to_string());
+        let preset = presets.iter().find(|channel| channel.id == id);
+        let kind = obj
+            .get("kind")
+            .and_then(|value| serde_json::from_value::<ChannelKind>(value.clone()).ok())
+            .or_else(|| preset.map(|channel| channel.kind.clone()))
+            .unwrap_or(ChannelKind::All);
+        let name = obj
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .or_else(|| preset.map(|channel| channel.name.clone()))
+            .unwrap_or_else(|| "Channel".into());
+        let icon = obj
+            .get("icon")
+            .and_then(serde_json::Value::as_str)
+            .filter(|icon| !icon.is_empty())
+            .map(str::to_string)
+            .or_else(|| preset.map(|channel| channel.icon.clone()))
+            .unwrap_or_else(|| "layers".into());
+        let hue = obj
+            .get("hue")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|hue| hue.is_finite())
+            .map(|hue| ((hue % 360.0) + 360.0) % 360.0)
+            .unwrap_or(DEFAULT_CHANNEL_HUE as f64) as i32;
+        let accent = obj
+            .get("accent")
+            .and_then(|value| serde_json::from_value::<ChannelAccent>(value.clone()).ok())
+            .or_else(|| preset.map(|channel| channel.accent.clone()))
+            .unwrap_or(ChannelAccent::Slate);
+        let mut tag_ids: Vec<String> = Vec::new();
+        if let Some(list) = obj.get("tagIds").and_then(serde_json::Value::as_array) {
+            for value in list {
+                if let Some(tag) = value.as_str() {
+                    if !tag_ids.iter().any(|known| known == tag) {
+                        tag_ids.push(tag.to_string());
+                    }
+                }
+            }
+        }
+        let background_image = obj
+            .get("backgroundImage")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let (background_opacity, background_blur, background_dim) = normalise_look(obj);
+        let mail_account = obj
+            .get("mailAccount")
+            .and_then(serde_json::Value::as_str)
+            .filter(|account| !account.is_empty())
+            .unwrap_or("all")
+            .to_string();
+        out.push(Channel {
+            id: id.to_string(),
+            name,
+            kind: kind.clone(),
+            tag_ids,
+            icon,
+            hue,
+            accent,
+            background_image,
+            background_opacity,
+            background_blur,
+            background_dim,
+            // Fixed by id, so a hand-edited file cannot promote a channel.
+            builtin: preset.is_some(),
+            // The fallback view and the three summary screens are structural:
+            // there must always be one of each, so none can be deleted. They
+            // can still be renamed, recoloured, hidden and moved.
+            locked: id == "all"
+                || matches!(
+                    kind,
+                    ChannelKind::Dashboard | ChannelKind::Mail | ChannelKind::History
+                ),
+            show_mail: obj.get("showMail").and_then(serde_json::Value::as_bool) != Some(false),
+            mail_account,
+        });
+    }
+
+    for preset in &presets {
+        // A preset is only appended when nothing already plays its role.
+        if !seen.iter().any(|known| known == &preset.id)
+            && !out.iter().any(|channel| channel.kind == preset.kind)
+        {
+            out.push(Channel {
+                tag_ids: Vec::new(),
+                ..preset.clone()
+            });
+        }
+    }
+    if !out.iter().any(|channel| channel.kind == ChannelKind::All) {
+        out.insert(
+            0,
+            Channel {
+                tag_ids: Vec::new(),
+                ..presets[0].clone()
+            },
+        );
+    }
+    out
+}
 
 /// Passwords used by more than one login, keyed by password so callers can
 /// match on `item.password`.
@@ -394,5 +600,136 @@ mod tests {
             ..Channel::default()
         };
         assert!(apply_channel(&channel, &[blank], 180.0).is_empty());
+    }
+
+    /// `createChannel('')`: the literal name, the random hue, and the four
+    /// fields a caller may not promote.
+    #[test]
+    fn a_new_channel_is_the_ts_draft() {
+        let channel = create_channel("");
+        assert_eq!(channel.name, "New channel");
+        assert_eq!(channel.kind, ChannelKind::All);
+        assert_eq!(channel.icon, "layers");
+        assert_eq!(channel.accent, ChannelAccent::Slate);
+        assert!(channel.tag_ids.is_empty());
+        assert!((0..=359).contains(&channel.hue));
+        assert!(!channel.builtin && !channel.locked);
+        assert!(channel.background_image.is_empty());
+        assert_eq!(channel.background_opacity, 0.35);
+        assert_eq!(channel.background_blur, 0.0);
+        assert_eq!(channel.background_dim, 0.25);
+        assert!(channel.show_mail);
+        assert_eq!(channel.mail_account, "all");
+        // The id is `ch_` plus eight hex characters, and no two agree.
+        assert!(channel.id.starts_with("ch_"));
+        assert_eq!(channel.id.len(), 11);
+        assert!(channel.id[3..].chars().all(|c| c.is_ascii_hexdigit()));
+        let named = create_channel("  Work  ");
+        assert_eq!(named.name, "Work");
+        assert_ne!(named.id, channel.id);
+    }
+
+    /// A stored catalogue is cleaned, never trusted: an unknown kind reads as
+    /// the preset's (or `all`), a 400° hue wraps, a hostile `builtin` is
+    /// ignored, and the ids repeat only once.
+    #[test]
+    fn a_stored_catalogue_is_cleaned_and_completed() {
+        let stored = serde_json::json!([
+            { "id": "mine", "name": "  Work  ", "kind": "tags", "hue": 400,
+              "accent": "neon", "tagIds": ["a", "a", 7], "icon": "",
+              "backgroundOpacity": 9, "backgroundBlur": -4, "backgroundDim": "x",
+              "builtin": true, "showMail": false, "mailAccount": "" },
+            { "id": "mine", "name": "Second" },
+            { "id": "favorites", "name": "Stars", "kind": "favorites" },
+            { "id": "", "name": "Nameless" },
+        ]);
+        let channels = normalise_channels(Some(&stored));
+
+        let mine = channels.iter().find(|c| c.id == "mine").expect("kept");
+        assert_eq!(mine.name, "Work");
+        assert_eq!(mine.kind, ChannelKind::Tags);
+        assert_eq!(mine.hue, 40, "400 wraps into the circle");
+        assert_eq!(mine.accent, ChannelAccent::Slate);
+        assert_eq!(mine.tag_ids, vec!["a".to_string()]);
+        assert_eq!(mine.icon, "layers");
+        assert_eq!(mine.background_opacity, 1.0, "clamped to the slider");
+        assert_eq!(mine.background_blur, 0.0);
+        assert_eq!(mine.background_dim, 0.25, "a non-number falls back");
+        assert!(!mine.builtin, "a hand-edited flag cannot promote a channel");
+        assert!(!mine.show_mail);
+        assert_eq!(mine.mail_account, "all");
+        assert_eq!(
+            channels.iter().filter(|c| c.id == "mine").count(),
+            1,
+            "an id appears once"
+        );
+
+        // The stored row kept its name and its kind, and is still builtin.
+        let favorites = channels.iter().find(|c| c.id == "favorites").unwrap();
+        assert_eq!(favorites.name, "Stars");
+        assert!(favorites.builtin && !favorites.locked);
+
+        // Every shipped row is present, in its canonical order, and the
+        // structural three are locked.
+        for preset in builtin_channels() {
+            let got = channels
+                .iter()
+                .find(|c| c.id == preset.id)
+                .unwrap_or_else(|| panic!("{} is missing", preset.id));
+            assert_eq!(got.kind, preset.kind);
+        }
+        assert_eq!(channels[0].id, "mine", "the stored order is authoritative");
+        assert!(channels.iter().find(|c| c.id == "dashboard").unwrap().locked);
+        assert!(channels.iter().find(|c| c.id == "mail").unwrap().locked);
+        assert!(channels.iter().find(|c| c.id == "history").unwrap().locked);
+
+        // Nothing stored at all: exactly the shipped seven.
+        assert_eq!(normalise_channels(None), builtin_channels());
+        assert_eq!(normalise_channels(Some(&serde_json::json!("x"))).len(), 7);
+
+        // A document whose `all` row was somehow dropped gets one back.
+        let without_all = normalise_channels(Some(&serde_json::json!([
+            { "id": "mine", "name": "Work", "kind": "favorites" },
+        ])));
+        assert!(without_all.iter().any(|c| c.id == "all"));
+        assert_eq!(without_all[0].id, "mine");
+    }
+
+    /// A kind this build does not know reads as `all` — and a row that
+    /// already plays the fallback's role means no second `all` row.
+    #[test]
+    fn an_unknown_kind_falls_back_to_all() {
+        let channels = normalise_channels(Some(&serde_json::json!([
+            { "id": "mine", "name": "Work", "kind": "nonsense" },
+        ])));
+        assert_eq!(channels[0].kind, ChannelKind::All);
+        assert_eq!(
+            channels
+                .iter()
+                .filter(|c| c.kind == ChannelKind::All)
+                .count(),
+            1,
+            "the fallback view exists exactly once"
+        );
+    }
+
+    /// A custom channel may play the role of a structural screen only by
+    /// being the kind it is; the append loop must not add a second row that
+    /// shows the same thing.
+    #[test]
+    fn a_custom_channel_that_plays_a_role_is_not_duplicated() {
+        let stored = serde_json::json!([
+            { "id": "mine", "name": "Work", "kind": "dashboard" },
+        ]);
+        let channels = normalise_channels(Some(&stored));
+        assert_eq!(
+            channels.iter().filter(|c| c.kind == ChannelKind::Dashboard).count(),
+            1,
+            "no second Dashboard beside the user's"
+        );
+        // It is not *builtin* (that is fixed by id) but it is locked, because
+        // the role is what deletion is gated on.
+        let mine = channels.iter().find(|c| c.id == "mine").unwrap();
+        assert!(!mine.builtin && mine.locked);
     }
 }

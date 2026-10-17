@@ -104,6 +104,62 @@ export struct PickTag {
     selected: bool,
 }
 
+/// One accent chip in the Appearance grid, and the same four in the channel
+/// editor's Theme row. Built in Rust from the same `accent_hues` table that
+/// paints the app (ADR-2), because Slint has no `hsl()` builtin and the TS
+/// gradient `hsl(from 40% 56%)` has to be resolved somewhere that can do the
+/// maths.
+export struct AccentChip {
+    id: string,
+    label: string,
+    from: color,
+    to: color,
+}
+
+/// One row of Settings › Channels (ChannelManager.tsx L150-230): which channel,
+/// what it is called, the colour its dot wears, how many logins its filter
+/// returns, and the one-line detail under the name — the count followed by
+/// either its kind's name or the names of the tags it watches.
+///
+/// `builtin` draws the "built-in" badge, `hidden` drives the eye and the
+/// dimmed name; `locked` is what takes Delete off the shared editor, and it
+/// is the *role* rather than the badge that decides (the TS gates on
+/// `locked`, so a shipped Favorites can be deleted and a user's Dashboard
+/// cannot).
+export struct ChannelRow {
+    id: string,
+    name: string,
+    hue: color,
+    count: int,
+    detail: string,
+    builtin: bool,
+    hidden: bool,
+    locked: bool,
+}
+
+/// One row of the tags half of Settings › Channels: what the tag is called,
+/// its colour, how much of the vault uses it, and the two transient states
+/// the row itself owns — the name being edited in place, and the hue range
+/// being open. Both are one-at-a-time in the TS (a `click` opens, a `blur`
+/// commits), so Rust keeps the id that holds each and this row only asks.
+export struct TagRow {
+    id: string,
+    name: string,
+    hue: color,
+    hue-value: int,
+    usage: string,
+    editing: bool,
+    hue-open: bool,
+}
+
+/// One key of the channel editor's icon picker. Slint has no Lucide set, so
+/// the "icon" is a text glyph from the port's own alphabet — including
+/// `clock`, which the TS's own table has no entry for and draws as `layers`.
+export struct IconOption {
+    key: string,
+    glyph: string,
+}
+
 /// One login, ready to render. Built in Rust from a `VaultItem`, so the
 /// plaintext password is *not* here: `masked-password` is dots, and reveal
 /// asks the engine by id (Task 3.6 / Phase 6's SecurityGate).

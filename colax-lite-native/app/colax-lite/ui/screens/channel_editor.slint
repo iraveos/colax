@@ -1,0 +1,719 @@
+// The shared channel editor — `ChannelEditor.tsx`, all 469 lines of it.
+//
+// One modal, two jobs. `is-new` is the flow the Channels panel's "New
+// channel" button opens (`channel === null`): the footer is Cancel and Add
+// channel, nothing is written until Add, and the title is the literal "New
+// channel". Otherwise it edits a real channel (`Edit {name}`), every change
+// is written as it happens — the TS's `useDraftAutoSave`, minus its 350 ms
+// debounce, which this port drops everywhere — and the footer is Delete plus
+// a Done that only closes.
+//
+// It draws its own shell rather than wearing `Modal` from widgets.slint: the
+// form needs a scrolling body *and* a footer that stays put, and the shared
+// modal carries one `@children` slot, so its caller can have one or the
+// other. Same wash, same plate, same header — one extra row.
+//
+// Everything on screen is a view of the draft Rust holds: a control moves,
+// Rust stores it and pushes the whole form back, so a refused or re-rounded
+// value settles on the widget that asked, exactly like the settings dials.
+
+import { Theme } from "../theme.slint";
+import {
+    Btn, Field, Toggle, Slider, Segmented, Chip, Note, Label, IconButton
+} from "../widgets.slint";
+import { PickTag, IconOption, AccentChip } from "../models.slint";
+
+/// One row of the "Read mail from" picker: a radio dot and the mailbox's
+/// address. A `<select>` in the TS; a list here because a native select is a
+/// popup this port has no window for, and the account list is short.
+component account-row inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    callback picked();
+
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    background: account-touch.has-hover ? Theme.row-hover : #00000000;
+
+    account-touch := TouchArea {
+        clicked => { root.picked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 8px;
+
+        Rectangle {
+            horizontal-stretch: 0;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            border-width: 1.5px;
+            border-color: root.selected ? Theme.accent : Theme.border-strong;
+            background: root.selected ? Theme.accent : #00000000;
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: root.selected ? Theme.text : Theme.muted;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+export component ChannelEditor inherits Rectangle {
+    in property <string> title: "New channel";
+    in property <bool> is-new: true;
+    /// Delete is drawn only for an existing channel that is not `locked` —
+    /// the *role*, not the badge: a shipped Favorites can go, a user's
+    /// Dashboard cannot (the TS gates on `locked`).
+    in property <bool> can-delete: false;
+    /// Whether the name draft has anything in it: `draft.name.trim() != ""`
+    /// is Rust's, because Slint has no `trim` and a button that would accept
+    /// a box of spaces is worse than one that waits.
+    in property <bool> can-save: false;
+
+    /// The name draft. Two-way with the window the way the background URL
+    /// field is: typing holds the text, Rust reads it on `edited`.
+    in-out property <string> name;
+
+    in property <string> error;
+    in property <color> dot-color: Theme.accent;
+    in property <string> preview-name: "Channel name";
+    in property <int> preview-count: 0;
+
+    in property <int> kind-index: 0;
+    /// The four option labels, pushed from Rust so the index the control
+    /// reports always means the kind Rust maps it back to.
+    in property <[string]> kind-options;
+    in property <string> kind-hint;
+
+    in property <[[PickTag]]> tag-rows: [];
+    in property <bool> has-tags: false;
+    in property <string> tag-hint;
+
+    in property <[IconOption]> icons;
+    in property <string> icon-key: "layers";
+
+    in-out property <float> hue-value: 212;
+    in property <string> hue-label: "212°";
+
+    in property <[AccentChip]> accent-chips;
+    in property <string> accent: "slate";
+
+    in-out property <string> image-url;
+    in property <bool> has-image: false;
+    in-out property <float> image-opacity: 0.35;
+    in-out property <float> image-blur: 0;
+    in-out property <float> image-dim: 0.25;
+
+    in-out property <bool> show-mail: true;
+    in property <bool> has-accounts: false;
+    in property <[string]> account-labels: [];
+    in property <[string]> account-ids: [];
+    in property <string> mail-account: "all";
+
+    /// The body's scroll offset: the content's position relative to the
+    /// viewport, so it is negative once scrolled down. A real user drags it;
+    /// Rust drives it in the dev screens, so the lower half of the form
+    /// (Image with its three dials, then Messages) can be inspected on a
+    /// window too short to show the whole thing at once.
+    in-out property <length> scroll-y: 0px;
+
+    callback closed();
+    callback deleted();
+    /// The footer's Add channel, for a new channel only.
+    callback save();
+    callback name-edited();
+    callback kind-picked(index: int);
+    callback tag-toggled(id: string);
+    /// The cloud reports the width it was laid out at; the answer comes back
+    /// as `tag-rows` packed for it (Slint has no wrapping layout).
+    callback tag-relayout(width: float);
+    callback icon-picked(key: string);
+    callback hue-changed(value: float);
+    callback accent-picked(id: string);
+    callback image-edited();
+    callback image-upload();
+    callback image-remove();
+    callback image-float(key: string, value: float);
+    callback show-mail-toggled(value: bool);
+    callback mail-account-picked(id: string);
+
+    // `.overlay` (app.css L726): the same wash the settings sheet and the
+    // confirm dialogs wear.
+    background: Theme.resolved-theme == "light" ? #3d568f4d : #05060b9e;
+
+    backdrop := TouchArea {
+        clicked => { root.closed(); }
+    }
+
+    plate := Rectangle {
+        // `modal--wide`: 780px against the settings sheets' 540px.
+        width: min(780px, parent.width - 60px);
+        // The body's own measurement plus the header and the footer, capped a
+        // little inside the window: Rust pushes the dials, so the form is a
+        // view of the draft and its height only moves when the draft does.
+        // `parent` here is this component's root, which fills the window.
+        height: min(body.preferred-height + 152px, parent.height - 40px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: Theme.radius-xl;
+        border-width: 1px;
+        border-color: Theme.border;
+        background: Theme.bg;
+        clip: true;
+        drop-shadow-color: #00000066;
+        drop-shadow-blur: 40px;
+        drop-shadow-offset-y: 14px;
+
+        column := VerticalLayout {
+            // `.modal__header`.
+            HorizontalLayout {
+                padding-top: 16px;
+                padding-bottom: 14px;
+                padding-left: 22px;
+                padding-right: 16px;
+                spacing: 12px;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.title;
+                    color: Theme.text;
+                    font-size: 17px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    min-height: 27px;
+                    overflow: elide;
+                }
+
+                IconButton {
+                    horizontal-stretch: 0;
+                    icon: "×";
+                    clicked => { root.closed(); }
+                }
+            }
+
+            Rectangle {
+                width: parent.width;
+                height: 1px;
+                background: Theme.hairline;
+            }
+
+            // `.modal__body`, scrolling: the form is longer than any window
+            // this app ships in.
+            Flickable {
+                vertical-stretch: 1;
+                content-y <=> root.scroll-y;
+                content-width: body.width;
+                content-height: body.preferred-height;
+
+                body := VerticalLayout {
+                    // The body's width comes from the plate, not from the
+                    // Flickable: a scrollbar appears and disappears as the
+                    // form grows, and measuring the content against the
+                    // viewport would make the two depend on each other —
+                    // which Slint catches as a binding loop (through the
+                    // plate's height, which follows the body).
+                    width: plate.width - 44px;
+                    padding-top: 18px;
+                    padding-bottom: 18px;
+                    padding-left: 22px;
+                    padding-right: 22px;
+                    spacing: 14px;
+
+                    if (root.error != "") : Text {
+                        text: root.error;
+                        color: Theme.danger;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+
+                    // The live preview of the rail row. The TS writes its hue
+                    // into a `data-hue` attribute no rule matches, so its dot
+                    // never moves; here the dot *is* the draft's colour —
+                    // a preview that shows something.
+                    Rectangle {
+                        height: 40px;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        background: Theme.glass;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 10px;
+
+                            Rectangle {
+                                horizontal-stretch: 0;
+                                width: 12px;
+                                height: 12px;
+                                border-radius: 6px;
+                                background: root.dot-color;
+                            }
+
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.preview-name;
+                                color: Theme.text;
+                                font-size: 13.5px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            Text {
+                                horizontal-stretch: 0;
+                                text: "" + root.preview-count;
+                                color: Theme.faint;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // ---- Name ------------------------------------------
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Name"; }
+                        Rectangle {
+                            height: 44px;
+                            Field {
+                                placeholder: "Work logins";
+                                autofocus: false;
+                                value <=> root.name;
+                                edited => { root.name-edited(); }
+                            }
+                        }
+                    }
+
+                    // ---- Show ------------------------------------------
+                    // Four kinds, in the TS's order. The rest of the enum —
+                    // Tagged, Dashboard, Mail, Unassigned, History — is
+                    // structural or vestigial and has no option here, so a
+                    // channel can never be *turned into* one; the row's
+                    // `kind-hint` says what the chosen one means, which is
+                    // the TS's per-option `title`.
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Show"; }
+                        Rectangle {
+                            height: 36px;
+                            Segmented {
+                                options: root.kind-options;
+                                selected: root.kind-index;
+                                changed(i) => { root.kind-picked(i); }
+                            }
+                        }
+                        Text {
+                            text: root.kind-hint;
+                            color: Theme.faint;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // ---- Tags ------------------------------------------
+                    VerticalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 0;
+                        Label { text: "Tags"; }
+
+                        if (!root.has-tags) : Text {
+                            text: "No tags yet. Add them from a login's editor and they will appear here.";
+                            color: Theme.faint;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
+                        // The cloud, packed by Rust the way the login
+                        // editor's is: `init` asks for the first packing and
+                        // `changed width` for every one after it.
+                        if (root.tag-rows.length > 0) : cloud := Rectangle {
+                            height: root.tag-rows.length * 34px - 8px;
+                            vertical-stretch: 0;
+                            clip: true;
+
+                            init => { root.tag-relayout(cloud.width / 1px); }
+                            changed width => { root.tag-relayout(cloud.width / 1px); }
+
+                            for row[i] in root.tag-rows : HorizontalLayout {
+                                x: 0px;
+                                y: i * 34px;
+                                width: parent.width;
+                                height: 26px;
+                                spacing: 8px;
+                                vertical-stretch: 0;
+                                alignment: start;
+
+                                for tag in row : Chip {
+                                    label: tag.name;
+                                    hue: tag.hue;
+                                    selected: tag.selected;
+                                    clip: true;
+                                    toggled => { root.tag-toggled(tag.id); }
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: root.tag-hint;
+                            color: Theme.faint;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // ---- Icon ------------------------------------------
+                    VerticalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 0;
+                        Label { text: "Icon"; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            vertical-stretch: 0;
+                            for opt in root.icons : Rectangle {
+                                width: 36px;
+                                height: 36px;
+                                border-radius: Theme.radius-sm;
+                                border-width: 1px;
+                                border-color: root.icon-key == opt.key ? Theme.accent : Theme.border;
+                                background: root.icon-key == opt.key ? Theme.accent-soft : (icon-touch.has-hover ? #ffffff14 : #ffffff08);
+                                icon-touch := TouchArea {
+                                    clicked => { root.icon-picked(opt.key); }
+                                }
+                                Text {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    text: opt.glyph;
+                                    color: root.icon-key == opt.key ? Theme.accent : Theme.muted;
+                                    font-size: 15px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+
+                    // ---- Colour ----------------------------------------
+                    VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 0;
+                        Label { text: "Colour"; }
+                        Rectangle {
+                            height: 44px;
+                            Slider {
+                                minimum: 0;
+                                maximum: 359;
+                                step: 1;
+                                value <=> root.hue-value;
+                                label: "";
+                                formatted: root.hue-label;
+                                changed(v) => { root.hue-changed(v); }
+                            }
+                        }
+                    }
+
+                    // ---- Theme -----------------------------------------
+                    // `accent` is written and nothing reads it:
+                    // `applyChannelAppearance` in the TS ignores it, so
+                    // switching a channel's theme changes no pixel there
+                    // either. The chips are honest about what they *are* —
+                    // the channel's own accent — and the hint says where it
+                    // is meant to land.
+                    VerticalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 0;
+                        Label { text: "Theme"; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+                            for chip in root.accent-chips : Rectangle {
+                                horizontal-stretch: 0;
+                                width: accent-label.preferred-width + 44px;
+                                height: 34px;
+                                border-radius: Theme.radius-sm;
+                                border-width: 1px;
+                                border-color: root.accent == chip.id ? Theme.accent : Theme.border;
+                                background: root.accent == chip.id ? Theme.plate : #00000000;
+
+                                accent-touch := TouchArea {
+                                    clicked => { root.accent-picked(chip.id); }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        width: 14px;
+                                        height: 14px;
+                                        border-radius: 4px;
+                                        background: @linear-gradient(135deg, chip.from, chip.to);
+                                    }
+
+                                    accent-label := Text {
+                                        horizontal-stretch: 0;
+                                        text: chip.label;
+                                        color: root.accent == chip.id ? Theme.text : Theme.muted;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        Text {
+                            text: "Applied to the whole app while this channel is selected.";
+                            color: Theme.faint;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // ---- Image -----------------------------------------
+                    VerticalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 0;
+                        Label { text: "Image"; }
+
+                        // The URL box, the Upload button and the ✕ clear the
+                        // TS draws once something is set. A fixed 44px row
+                        // with the default alignment, so the field stretches
+                        // into the leftover width — `alignment: start` would
+                        // distribute it instead and collapse the field.
+                        Rectangle {
+                            height: 44px;
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                Field {
+                                    horizontal-stretch: 1;
+                                    placeholder: "https://example.com/photo.jpg";
+                                    autofocus: false;
+                                    value <=> root.image-url;
+                                    edited => { root.image-edited(); }
+                                }
+
+                                Btn {
+                                    horizontal-stretch: 0;
+                                    label: "Upload";
+                                    kind: 1;
+                                    h: 44px;
+                                    clicked => { root.image-upload(); }
+                                }
+
+                                if (root.has-image) : IconButton {
+                                    horizontal-stretch: 0;
+                                    icon: "×";
+                                    clicked => { root.image-remove(); }
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "A backdrop for this channel: it fills the app while the channel is selected, and paints this channel's own row in the rail.";
+                            color: Theme.faint;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
+                        if (root.has-image) : VerticalLayout {
+                            spacing: 8px;
+                            vertical-stretch: 0;
+
+                            Rectangle {
+                                height: 44px;
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    Text {
+                                        horizontal-stretch: 0;
+                                        width: 84px;
+                                        text: "Strength";
+                                        color: Theme.text;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        Slider {
+                                            minimum: 0;
+                                            maximum: 1;
+                                            step: 0.05;
+                                            value <=> root.image-opacity;
+                                            label: "";
+                                            formatted: Math.round(root.image-opacity * 100) + "%";
+                                            changed(v) => { root.image-float("opacity", v); }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 44px;
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    Text {
+                                        horizontal-stretch: 0;
+                                        width: 84px;
+                                        text: "Blur";
+                                        color: Theme.text;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        Slider {
+                                            minimum: 0;
+                                            maximum: 40;
+                                            step: 1;
+                                            value <=> root.image-blur;
+                                            label: "";
+                                            formatted: Math.round(root.image-blur) + "px";
+                                            changed(v) => { root.image-float("blur", v); }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 44px;
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    Text {
+                                        horizontal-stretch: 0;
+                                        width: 84px;
+                                        text: "Veil";
+                                        color: Theme.text;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        Slider {
+                                            minimum: 0;
+                                            maximum: 0.9;
+                                            step: 0.05;
+                                            value <=> root.image-dim;
+                                            label: "";
+                                            formatted: Math.round(root.image-dim * 100) + "%";
+                                            changed(v) => { root.image-float("dim", v); }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: "A veil over the picture keeps the login text readable on a bright photo. These are this channel's own values — they do not change the app-wide background.";
+                                color: Theme.faint;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // ---- Messages --------------------------------------
+                    VerticalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 0;
+                        Label { text: "Messages"; }
+                        Note {
+                            text: "Whether logins show their message expander while this channel is selected, and from which mailbox.";
+                        }
+
+                        Rectangle {
+                            height: 40px;
+                            Toggle {
+                                label: "Show messages in this channel";
+                                checked <=> root.show-mail;
+                                toggled => { root.show-mail-toggled(root.show-mail); }
+                            }
+                        }
+
+                        if (root.show-mail && root.has-accounts) : VerticalLayout {
+                            spacing: 4px;
+                            vertical-stretch: 0;
+                            Label { text: "Read mail from"; }
+
+                            account-row {
+                                label: "All connected mailboxes";
+                                selected: root.mail-account == "all";
+                                picked => { root.mail-account-picked("all"); }
+                            }
+
+                            for label[i] in root.account-labels : account-row {
+                                label: label;
+                                // A stale id the account list no longer holds
+                                // reads as "all", for display only — the TS
+                                // coerces the same way before rendering.
+                                selected: root.mail-account == root.account-ids[i];
+                                picked => { root.mail-account-picked(root.account-ids[i]); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                width: parent.width;
+                height: 1px;
+                background: Theme.hairline;
+            }
+
+            // `.modal__footer`: Delete at the far left, then the action.
+            HorizontalLayout {
+                padding-top: 14px;
+                padding-bottom: 16px;
+                padding-left: 22px;
+                padding-right: 22px;
+                spacing: 8px;
+
+                if (root.can-delete) : Btn {
+                    horizontal-stretch: 0;
+                    label: "Delete";
+                    kind: 3;
+                    clicked => { root.deleted(); }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                if (!root.is-new) : Btn {
+                    horizontal-stretch: 0;
+                    label: "Done";
+                    kind: 0;
+                    clicked => { root.closed(); }
+                }
+
+                if (root.is-new) : Btn {
+                    horizontal-stretch: 0;
+                    label: "Cancel";
+                    kind: 1;
+                    clicked => { root.closed(); }
+                }
+
+                if (root.is-new) : Btn {
+                    horizontal-stretch: 0;
+                    label: "Add channel";
+                    kind: 0;
+                    enabled: root.can-save;
+                    clicked => { root.save(); }
+                }
+            }
+        }
+    }
+}
