@@ -8,7 +8,12 @@
 
 pub mod oauth;
 pub mod providers;
+pub mod sanitize;
 pub mod text;
+
+pub use sanitize::{
+    bullet, is_empty, render, Block, BlockKind, Span, BLOCK_TAGS, DROP_CONTENT_TAGS, KEPT_ATTRS,
+};
 
 pub use oauth::{
     access_token_usable, build_authorize_url, has_oauth_tokens, is_http_url, new_code_verifier,
