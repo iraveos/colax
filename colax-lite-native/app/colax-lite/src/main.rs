@@ -510,6 +510,40 @@ fn lock_screen_for(engine: &VaultEngine) -> Screen {
     }
 }
 
+/// The two lines the card area shows when it has nothing to draw.
+///
+/// Port of `ViewEmptyState`'s `title`/`text` (`views.tsx:1607-1621`), in the
+/// TS's own order: a query that matched nothing outranks the channel's own
+/// empty state, so "nothing here yet" can never be mistaken for "your search
+/// found nothing". Only the two channels the TS names get their own copy
+/// (`favorites` and `weak`); every other channel -- the dashboard, the mail
+/// channel, a user's own channel -- reads the vault-empty line, exactly as the
+/// TS's shared fallback does.
+fn cards_empty_state(query: &str, channel_id: &str) -> (String, String) {
+    if !query.is_empty() {
+        return (
+            "No matches".to_string(),
+            format!("Nothing matches \"{query}\" here. Try a different search."),
+        );
+    }
+    if channel_id == "favorites" {
+        return (
+            "No favorites yet".to_string(),
+            "Star a login to pin it to the top of every view.".to_string(),
+        );
+    }
+    if channel_id == "weak" {
+        return (
+            "Nothing needs attention".to_string(),
+            "No reused or long-untouched passwords. Nice.".to_string(),
+        );
+    }
+    (
+        "Your vault is empty".to_string(),
+        "Add your first login and it will be encrypted on this device straight away.".to_string(),
+    )
+}
+
 /// Rebuilds the visible rows from the engine and the current query.
 ///
 /// Called after every screen change (the query box resets with it) and on
@@ -562,37 +596,13 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
         format!("{shown} of {total} {}", if total == 1 { "login" } else { "logins" })
     };
 
-    // The empty state names the *channel*, because "no matches" and "this
-    // view is empty" are different problems with different fixes.
-    let (empty_title, empty_hint) = if total == 0 {
-        (
-            "No logins yet",
-            "Use Import to bring your logins over from Colax Lite.",
-        )
-    } else if shown == 0 {
-        match channel.id.as_str() {
-            "all" => ("No logins yet", "Add one, or import from Colax Lite."),
-            "favorites" => (
-                "No favorites",
-                "Star a login to keep it one click away.",
-            ),
-            "attention" => (
-                "Nothing needs attention",
-                "Logins you flag will show up here.",
-            ),
-            "weak" => (
-                "No weak passwords",
-                "Everything here is unique, current and strong.",
-            ),
-            "history" => (
-                "No changes yet",
-                "Edits and restores are listed here once they happen.",
-            ),
-            _ => ("Nothing here yet", "This view has no logins in it."),
-        }
-    } else {
-        ("", "")
-    };
+    // The empty state, from the TS's `ViewEmptyState` (`views.tsx`
+    // L1607-1621). The order matters and is the TS's: a search that found
+    // nothing is a different problem from a view with nothing in it, and the
+    // first line has to say which one the user is looking at. The native
+    // search is vault-wide, so the TS's "Search entire vault" button has no
+    // scope to widen -- that is why the hint is advice, not an offer.
+    let (empty_title, empty_hint) = cards_empty_state(query.trim(), &channel.id);
 
     ui.set_cards(ModelRc::new(VecModel::from(cards)));
     ui.set_sidebar(ModelRc::new(VecModel::from(sidebar)));
@@ -3320,6 +3330,289 @@ fn dev_lock(ui: &MainWindow, state: &Shared) {
         );
         std::mem::forget(timer);
     }
+}
+
+/// The logins `--render-check` draws.
+///
+/// Deliberately not `demo_drafts`, which is `debug_assertions`-only: a release
+/// build has to be able to run the check without shipping the demo profile.
+/// Three logins are enough -- a favourite (the pinned card), a weak reused
+/// password (so the dashboard's issue ring has something to count) and a
+/// note-only login with no username -- because what is being checked is that
+/// each screen builds, not what it says.
+fn render_check_drafts() -> Vec<serde_json::Value> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let row = |title: &str, username: &str, url: &str, password: &str, extra: serde_json::Value| {
+        let mut draft = serde_json::json!({
+            "title": title,
+            "username": username,
+            "url": url,
+            "password": password,
+            // `add_item` spreads the draft over `emptyItem`, whose own stamps
+            // are "now", so every age the screens report comes from here.
+            "createdAt": now - 90 * 86_400_000i64,
+            "updatedAt": now - 86_400_000i64,
+            "passwordUpdatedAt": now - 86_400_000i64,
+            "usernameUpdatedAt": now - 86_400_000i64,
+        });
+        draft
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        draft
+    };
+
+    vec![
+        row(
+            "Favourite",
+            "iraveos@example.com",
+            "https://example.com",
+            "9x!Km2$vQpLz7Rw",
+            serde_json::json!({ "favorite": true, "showMail": true }),
+        ),
+        row(
+            "Weak",
+            "iraveos",
+            "https://weak.example.com",
+            "password",
+            serde_json::json!({ "tags": ["work"] }),
+        ),
+        row(
+            "Note only",
+            "",
+            "",
+            "zZ4#nQ8!tV2@wX6&",
+            serde_json::json!({ "notes": "The gate code is on the fridge." }),
+        ),
+    ]
+}
+
+/// `--render-check`: brings up every screen the app can show, in one process,
+/// against a throwaway vault, and reports.
+///
+/// This is not a pixel golden. A golden needs a screen capture and this
+/// environment cannot take one -- GDI's `CopyFromScreen` answers "The handle is
+/// invalid" -- so what is checked is the wire between Rust and the `.slint`
+/// files: every screen's models and scalars are built by the same code that
+/// builds them in anger, and Slint raises on a binding whose value does not
+/// type-check. A screen that comes up is a screen whose Rust half ran.
+///
+/// The profile is a scratch one: `main` points `COLAX_DEV_DIR` at a temp
+/// directory before anything reads `app_dir()`, so the real vault is never
+/// touched. Every step is synchronous, so no event loop is needed -- the check
+/// walks the screens and exits with 0 when they all came up.
+fn render_check(ui: &MainWindow, state: &Shared) -> i32 {
+    let mut lines: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+
+    // A vault with content, so no screen draws its empty state by accident.
+    let seeded = {
+        let mut guard = state.borrow_mut();
+        let before: Vec<VaultItem> = guard
+            .engine
+            .items()
+            .map(|items| items.to_vec())
+            .unwrap_or_default();
+        let result = (|| -> Result<(), VaultError> {
+            if !guard.engine.exists() {
+                guard.engine.create(None)?;
+            } else if !guard.engine.is_unlocked() {
+                guard.engine.unlock("")?;
+            }
+            if guard.engine.items().map(|items| items.is_empty()).unwrap_or(true) {
+                for draft in render_check_drafts() {
+                    guard.engine.add_item(&draft)?;
+                }
+            }
+            Ok(())
+        })();
+        (result, before)
+    };
+    let before = match seeded {
+        (Ok(()), before) => before,
+        (Err(err), _) => {
+            eprintln!("render-check: cannot open the scratch vault: {err}");
+            return 1;
+        }
+    };
+    record_history(ui, state, &before);
+    lines.push(format!(
+        "vault: {} logins",
+        state.borrow().engine.items().map(|items| items.len()).unwrap_or(0)
+    ));
+
+    // Every screen that is not the vault, in the order they can appear.
+    for screen in [
+        Screen::Error,
+        Screen::CreateChoose,
+        Screen::CreatePassword,
+        Screen::CreateConfirm,
+        Screen::UnlockPassword,
+        Screen::UnlockDevice,
+        Screen::ImportPassword,
+    ] {
+        goto(ui, state, screen);
+        let got = ui.get_screen();
+        if got != screen {
+            failures.push(format!("{screen:?}: the window holds {got:?}"));
+        }
+        lines.push(format!("{screen:?}"));
+    }
+
+    // The vault itself: the four presentations, then the search states.
+    goto(ui, state, Screen::Vault);
+    for view in ["animated", "carousel", "basic", "grid"] {
+        ui.set_vault_view(view.into());
+        refresh_items(ui, state);
+        let cards = ui.get_cards().row_count();
+        if cards == 0 {
+            failures.push(format!("view {view}: no cards"));
+        }
+        lines.push(format!(
+            "vault/{view}: {cards} cards, {} rail rows",
+            ui.get_sidebar().row_count()
+        ));
+    }
+    ui.set_search_text("zzzz-no-match".into());
+    refresh_items(ui, state);
+    let no_match_title = ui.get_cards_empty_title().to_string();
+    let no_match_hint = ui.get_cards_empty_hint().to_string();
+    if no_match_title != "No matches" {
+        failures.push(format!(
+            "search/no-match: titled {no_match_title:?}, expected \"No matches\""
+        ));
+    }
+    lines.push(format!(
+        "search/no-match: {} cards, {no_match_title:?} / {no_match_hint:?}",
+        ui.get_cards().row_count()
+    ));
+    ui.set_search_text("".into());
+    refresh_items(ui, state);
+    lines.push(format!(
+        "search/cleared: {} cards, titled {:?}",
+        ui.get_cards().row_count(),
+        ui.get_cards_empty_title()
+    ));
+
+    // Every destination the rail offers, the two built-ins included: the
+    // dashboard and the history are channels here, not screens.
+    for channel in colax_core::builtin_channels() {
+        ui.set_active_channel(channel.id.as_str().into());
+        refresh_items(ui, state);
+        lines.push(format!(
+            "channel/{}: {:?} dashboard={} history={}",
+            channel.id,
+            ui.get_channel_name(),
+            ui.get_show_dashboard(),
+            ui.get_show_history()
+        ));
+    }
+    let user_channels: Vec<String> = items::prefs_from(state.borrow().engine.preferences())
+        .channels
+        .iter()
+        .map(|channel| channel.id.clone())
+        .collect();
+    for id in user_channels {
+        ui.set_active_channel(id.as_str().into());
+        refresh_items(ui, state);
+        lines.push(format!("channel/{id}: {:?}", ui.get_channel_name()));
+    }
+
+    // Settings, every section and every tab: the dock manager lives in Layout.
+    for section in ["", "layout", "desktop", "generator", "alarms", "security"] {
+        settings_ops::open(ui, state, section);
+        lines.push(format!(
+            "settings/{section}: open={}",
+            ui.get_settings_open()
+        ));
+    }
+    for tab in 0..12 {
+        settings_ops::tab_picked(ui, tab);
+        settings_ops::refresh(ui, state);
+        lines.push(format!(
+            "settings/tab {tab}: index={}",
+            ui.get_settings_tab_index()
+        ));
+    }
+    dock::push(ui, state);
+    lines.push(format!(
+        "dock: {} bars, {} manager rows",
+        ui.get_dock_bars().row_count(),
+        ui.get_dock_rows().row_count()
+    ));
+
+    // The overlays: menus, the tuner and the shortcut sheet.
+    let first = ui.get_cards().row_data(0).map(|card| card.id.to_string());
+    if let Some(id) = &first {
+        menus::open_item_menu(ui, state, id, 12.0, 12.0);
+        lines.push(format!(
+            "menu/item: open={} rows={}",
+            ui.get_menu_open(),
+            ui.get_menu_root_rows().row_count()
+        ));
+        menus::close(ui);
+    } else {
+        failures.push("menu/item: no card to hang a menu on".to_string());
+    }
+    menus::open_app_menu(ui, state, 12.0, 12.0);
+    lines.push(format!(
+        "menu/app: open={} rows={}",
+        ui.get_menu_open(),
+        ui.get_menu_root_rows().row_count()
+    ));
+    menus::close(ui);
+    if let Some(dock_id) = ui.get_dock_bars().row_data(0).map(|bar| bar.id.to_string()) {
+        menus::open_dock_menu(ui, state, &dock_id, 12.0, 12.0);
+        lines.push(format!("menu/dock: open={}", ui.get_menu_open()));
+        menus::close(ui);
+        menus::open_dock_add_menu(ui, state, &dock_id, 12.0, 12.0);
+        lines.push(format!("menu/dock-add: open={}", ui.get_menu_open()));
+        menus::close(ui);
+    } else {
+        failures.push("menu/dock: no bar to hang a menu on".to_string());
+    }
+    tuner::open(ui, state, Some("grid"));
+    lines.push(format!("tuner: open={}", ui.get_show_tuner()));
+    tuner::close(ui);
+    shortcuts::open_sheet(ui);
+    lines.push(format!(
+        "shortcuts: open={} rows={}",
+        ui.get_show_shortcuts(),
+        ui.get_shortcut_rows().row_count()
+    ));
+    ui.set_show_shortcuts(false);
+
+    // The editor, on a real login.
+    if let Some(id) = &first {
+        open_editor(ui, state, id);
+        let opened = ui.get_screen() == Screen::Editor;
+        if !opened {
+            failures.push("editor: did not open".to_string());
+        }
+        lines.push(format!(
+            "editor: {}",
+            if opened { "open" } else { "missing" }
+        ));
+        editor_cancel(ui, state);
+    } else {
+        failures.push("editor: no card to edit".to_string());
+    }
+
+    for line in &lines {
+        println!("render-check: {line}");
+    }
+    for failure in &failures {
+        eprintln!("render-check: FAIL {failure}");
+    }
+    println!(
+        "render-check: {} checks, {} failures",
+        lines.len(),
+        failures.len()
+    );
+    if failures.is_empty() { 0 } else { 1 }
 }
 
 /// A spread of logins chosen to exercise the cards: a favorite, a stale one,
@@ -6180,6 +6473,20 @@ Entry point
 ========================================================================== */
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // `--render-check` (Task 9.7) sweeps every screen and exits with a report.
+    // It fills a vault, so it takes a scratch directory of its own unless the
+    // caller already pointed `COLAX_DEV_DIR` at one -- the real profile is
+    // never written to by the check.
+    if std::env::args().any(|arg| arg == "--render-check") {
+        if std::env::var_os("COLAX_DEV_DIR").is_none() {
+            let dir = std::env::temp_dir().join("colax-render-check");
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&dir);
+            std::env::set_var("COLAX_DEV_DIR", &dir);
+        }
+        std::env::set_var("COLAX_RENDER_CHECK", "1");
+    }
+
     let mut state_file = read_state();
 
     // Only ever re-affirmed at boot, never withdrawn: if no shell.json exists
@@ -6278,6 +6585,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if seeded {
                 dev_screen(&ui, &state, &tray.as_weak());
             }
+            // `--render-check` sweeps every screen here and exits; no event
+            // loop is involved, because every step it takes is synchronous.
+            if std::env::var_os("COLAX_RENDER_CHECK").is_some() {
+                let code = render_check(&ui, &state);
+                std::process::exit(code);
+            }
             Some(state)
         }
         Err(err) => {
@@ -6288,6 +6601,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
+
+    // `--render-check` needs somewhere to stand: without a vault every screen
+    // below would be reported as missing, which says nothing about the wire.
+    if app_state.is_none() && std::env::var_os("COLAX_RENDER_CHECK").is_some() {
+        eprintln!("render-check: the scratch vault could not be opened");
+        std::process::exit(1);
+    }
 
     // ---- Appearance ------------------------------------------------------
     // Preferences ride in the vault document, so they are known the moment it

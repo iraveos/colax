@@ -719,8 +719,10 @@ export component MainWindow inherits Window {
     // The rail label for the active channel, pushed with the models above
     // (a channel may be renamed, and "All logins" is only the default).
     in property <string> channel-name;
-    // Empty-state copy for the *channel*, not the query: a search with no
-    // hits is a different problem from an empty channel and says so.
+    // Empty-state copy, ordered by Rust (`cards_empty_state`, from
+    // ViewEmptyState in views.tsx): a search that found nothing comes first,
+    // then the two channels the TS names, then the vault-empty fallback. The
+    // choice is not made here because the *order* is the behaviour.
     in property <string> cards-empty-title;
     in property <string> cards-empty-hint;
     // `--showUrls`: the hostname column is a preference, not a constant.
@@ -2102,14 +2104,13 @@ export component MainWindow inherits Window {
                         alignment: center;
                         spacing: 6px;
 
-                        if (root.search-text != "") : EmptyState {
-                            title: "No matches";
-                            hint: "Nothing in this vault matches \"" + root.search-text + "\".";
-                            horizontal-stretch: 1;
-                            vertical-stretch: 1;
-                        }
-
-                        if (root.search-text == "") : EmptyState {
+                        // Both lines come from Rust (`cards_empty_state`, from
+                        // ViewEmptyState in views.tsx), which is where the
+                        // *order* lives: a query that found nothing outranks
+                        // the channel's own empty state, so this cannot be a
+                        // search-text test here -- that split is exactly how
+                        // the search's wording drifted from the spec before.
+                        EmptyState {
                             title: root.cards-empty-title;
                             hint: root.cards-empty-hint;
                             horizontal-stretch: 1;
