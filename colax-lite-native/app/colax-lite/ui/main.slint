@@ -15,7 +15,7 @@ import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
-import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
+import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter, IconButton } from "widgets.slint";
 import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow, ShortcutRow, DockBarRow, DockManagerRow, ListTab, ToastRow } from "models.slint";
 import { ShortcutsSheet } from "screens/shortcuts.slint";
 import { AppearanceTuner } from "screens/appearance_tuner.slint";
@@ -292,7 +292,17 @@ component list-row inherits Rectangle {
     in property <length> floor-h: 86px;
     in property <length> radius: Theme.radius-md;
     callback open(id: string);
-    callback copy(id: string);
+    // Two copy icons now ride the rows themselves (`card-copy-user` /
+    // `card-copy-pass` in views.tsx): the username's beside its text, the
+    // password's beside the mask. The labelled Copy button that used to hang
+    // off the row's foot is gone — it only rendered for a login with a
+    // password, so half the cards had it and half did not, which reads as a
+    // bug, not a state (views.tsx L907).
+    callback copy-user(id: string);
+    callback copy-pass(id: string);
+    // Hidden buttons (`hiddenButtons`): `gone('card-copy-user'/'card-copy-pass')`.
+    in property <bool> hide-copy-user: false;
+    in property <bool> hide-copy-pass: false;
     callback star(id: string);
     callback menu-asked(id: string, x: float, y: float);
     // Task 8.5: press-and-hold drag. The row reports the pointer and its own
@@ -483,13 +493,30 @@ component list-row inherits Rectangle {
                 }
             }
 
-            Text {
-                text: root.card.username == ""
-                    ? (root.card.hostname == "" ? "(no username)" : root.card.hostname)
-                    : root.card.username;
-                color: Theme.muted;
-                font-size: 12.5px * root.scale;
-                overflow: elide;
+            HorizontalLayout {
+                spacing: 6px * root.scale;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.card.username == ""
+                        ? (root.card.hostname == "" ? "(no username)" : root.card.hostname)
+                        : root.card.username;
+                    color: Theme.muted;
+                    font-size: 12.5px * root.scale;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+
+                // `card-copy-user` (views.tsx L826-840): copies without the
+                // security gate — a copy is a copy, the menu's "Copy username"
+                // never asked for the factor either. Only a login that *has*
+                // a username carries it.
+                if (root.card.username != "" && !root.hide-copy-user) : IconButton {
+                    width: 24px;
+                    height: 24px;
+                    icon: "⧉";
+                    clicked => { root.copy-user(root.card.id); }
+                }
             }
 
             if (root.card.modified-note != "") : Text {
@@ -515,22 +542,32 @@ component list-row inherits Rectangle {
                 overflow: elide;
             }
 
-            Text {
-                width: 200px * root.scale;
-                text: root.card.masked-password;
-                color: Theme.muted;
-                font-size: 13px * root.scale;
-                horizontal-alignment: right;
-                letter-spacing: 1px;
-            }
-        }
+            HorizontalLayout {
+                spacing: 6px * root.scale;
 
-        Btn {
-            label: "Copy";
-            kind: 1;
-            h: 32px * root.scale;
-            enabled: !root.busy;
-            clicked => { root.copy(root.card.id); }
+                Text {
+                    width: 200px * root.scale;
+                    text: root.card.masked-password;
+                    color: Theme.muted;
+                    font-size: 13px * root.scale;
+                    horizontal-alignment: right;
+                    letter-spacing: 1px;
+                    vertical-alignment: center;
+                }
+
+                // `card-copy-pass` (views.tsx L846-862, the parity 6e8d318
+                // gave the Flow rows): disabled without a password, and
+                // copying without the gate like the menu — revealing stays
+                // the only gated action.
+                if (!root.hide-copy-pass) : IconButton {
+                    width: 24px;
+                    height: 24px;
+                    enabled: root.card.has-password;
+                    opacity: root.card.has-password ? 1.0 : 0.35;
+                    icon: "⧉";
+                    clicked => { root.copy-pass(root.card.id); }
+                }
+            }
         }
 
         // Favourite, on its own so it can be hit without opening the
@@ -1108,6 +1145,11 @@ export component MainWindow inherits Window {
     callback import-from-vault();
     callback lock-vault();
     callback copy-password(id: string);
+    // The rows' own copy icons: the username's copies the name, both hidden
+    // from Settings' hidden-button list exactly as views.tsx's `gone()` does.
+    callback copy-username(id: string);
+    in property <bool> hide-card-copy-user: false;
+    in property <bool> hide-card-copy-pass: false;
     callback search-changed(query: string);
     callback channel-selected(id: string);
     // The History channel (Task 7.2): the query and segment are screen state
@@ -2570,7 +2612,10 @@ export component MainWindow inherits Window {
                                 reorder-move(px, py) => { root.reorder-move(px, py); }
                                 reorder-end(commit) => { root.reorder-end(commit); }
                                 open => { root.open-editor(card.id); }
-                                copy => { root.copy-password(card.id); }
+                                hide-copy-user: root.hide-card-copy-user;
+                                hide-copy-pass: root.hide-card-copy-pass;
+                                copy-user => { root.copy-username(card.id); }
+                                copy-pass => { root.copy-password(card.id); }
                                 star => { root.toggle-favorite(card.id); }
                                 menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                             }
@@ -2605,7 +2650,10 @@ export component MainWindow inherits Window {
                                 reorder-move(px, py) => { root.reorder-move(px, py); }
                                 reorder-end(commit) => { root.reorder-end(commit); }
                                 open => { root.open-editor(card.id); }
-                                copy => { root.copy-password(card.id); }
+                                hide-copy-user: root.hide-card-copy-user;
+                                hide-copy-pass: root.hide-card-copy-pass;
+                                copy-user => { root.copy-username(card.id); }
+                                copy-pass => { root.copy-password(card.id); }
                                 star => { root.toggle-favorite(card.id); }
                                 menu-asked(id, x, y) => { root.item-menu(id, x, y); }
                             }

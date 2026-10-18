@@ -225,6 +225,10 @@ export struct LoginCard {
     notes: string,
     // Always dots. The plaintext only crosses this boundary on reveal.
     masked-password: string,
+    // Whether there is a password behind the mask (`disabled={!item.password}`
+    // on the copy button, views.tsx L852): the mask always draws ten dots, so
+    // its own text can never answer this.
+    has-password: bool,
     // "Password 2 days ago · Username last week"
     modified-note: string,
     // Gates reveal/edit behind the security gate.

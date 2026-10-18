@@ -299,6 +299,9 @@ pub fn card_for(
         tags: ModelRc::new(VecModel::from(Vec::<TagChip>::new())),
         notes: item.notes.clone().into(),
         masked_password: mask_of(item).into(),
+        // `disabled={!item.password}` (views.tsx L852): the mask itself never
+        // runs dry, so the row needs the truth, not its dots.
+        has_password: !item.password.is_empty(),
         modified_note: modified_note(item).into(),
         secured: false,
         selected,

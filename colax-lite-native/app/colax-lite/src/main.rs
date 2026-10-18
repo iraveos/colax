@@ -702,6 +702,10 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
         ui.set_history_data(history);
     }
     ui.set_show_urls(prefs.show_urls);
+    // Hidden buttons (`hiddenButtons`): the rows' copy icons consult these,
+    // the way views.tsx's `gone('card-copy-user'/'card-copy-pass')` does.
+    ui.set_hide_card_copy_user(prefs.hidden_buttons.iter().any(|b| b == "card-copy-user"));
+    ui.set_hide_card_copy_pass(prefs.hidden_buttons.iter().any(|b| b == "card-copy-pass"));
     // The three shortcuts the Layout tab switches off (Task 5.2b). They are
     // read on every refresh, so a switch thrown in Settings lands on the
     // shell in the same tick the preference is written.
@@ -4622,6 +4626,34 @@ fn copy_item_password(ui: &MainWindow, state: &Shared, id: &str) {
     }
 }
 
+/// The username copy beside the row's username text (`card-copy-user`):
+/// the same two calls `onCopy` makes, `Username` labelled like the menu's
+/// own copy is.
+fn copy_item_username(ui: &MainWindow, state: &Shared, id: &str) {
+    if ui.get_screen() != Screen::Vault {
+        return;
+    }
+    let username = {
+        let guard = state.borrow();
+        guard
+            .engine
+            .items()
+            .and_then(|items| items.iter().find(|item| item.id == id))
+            .map(|item| item.username.clone())
+    };
+    let Some(username) = username else {
+        ui.set_error_text("That item no longer exists.".into());
+        return;
+    };
+
+    // Reaching for a login counts as a use, like every other copy.
+    record_use(ui, state, id);
+
+    if !username.is_empty() {
+        copy_to_clipboard(ui, state, &username, "Username");
+    }
+}
+
 /* ==========================================================================
 The item editor
 ========================================================================== */
@@ -7173,6 +7205,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_copy_password(move |id| {
                 if let Some(ui) = weak.upgrade() {
                     copy_item_password(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_copy_username(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    copy_item_username(&ui, &st, &id);
                 }
             });
 
