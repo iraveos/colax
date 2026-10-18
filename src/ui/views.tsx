@@ -833,24 +833,10 @@ export function AnimatedListView({
               </div>
               <div className="card-row__secret-row">
                 <code className="card-row__password">{show ? item.password || '—' : maskOf(item)}</code>
-                {/* Parity with the Grid view: the copy lives on
-                    the password row itself, like the username's. Revealing
-                    stays the only gated action — a copy is a copy, the menu's
-                    "Copy password" never asked for the factor either. */}
-                {!gone('card-copy-pass') ? (
-                  <button
-                    className="btn btn--icon"
-                    aria-label="Copy password"
-                    disabled={!item.password}
-                    {...hideAttrs('card-copy-pass', 'Copy-password button')}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onCopy(item.password, 'Password', item);
-                    }}
-                  >
-                    <CopyIcon />
-                  </button>
-                ) : null}
+                {/* Reveal sits left of copy, matching the order the rest of
+                    the app reads in: the eye shows, the clipboard takes. Copy
+                    stays ungated — a copy is a copy, the menu's "Copy password"
+                    never asked for the factor either. */}
                 {!gone('card-reveal') ? (
                   <button
                     className="btn btn--icon"
@@ -865,6 +851,20 @@ export function AnimatedListView({
                   >
                   {show ? <EyeOffIcon /> : <EyeIcon />}
                 </button>
+                ) : null}
+                {!gone('card-copy-pass') ? (
+                  <button
+                    className="btn btn--icon"
+                    aria-label="Copy password"
+                    disabled={!item.password}
+                    {...hideAttrs('card-copy-pass', 'Copy-password button')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onCopy(item.password, 'Password', item);
+                    }}
+                  >
+                    <CopyIcon />
+                  </button>
                 ) : null}
               </div>
             </div>
@@ -1298,6 +1298,23 @@ export function GridView({
                 </div>
                 <div className="card-row__secret-row">
                   <code className="card-row__password">{show ? item.password || '—' : maskOf(item)}</code>
+                  {/* Same order as Flow: the eye first, the clipboard second. */}
+                  {!gone('card-reveal') ? (
+                    <button
+                      className="btn btn--icon"
+                      data-action="password"
+                      data-active={show || undefined}
+                      aria-label={show ? 'Hide password' : 'Reveal password'}
+                      aria-pressed={show}
+                      {...hideAttrs('card-reveal', 'Reveal button')}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggle(item.id);
+                      }}
+                    >
+                      {show ? <EyeOffIcon /> : <EyeIcon />}
+                    </button>
+                  ) : null}
                   {!gone('card-copy-pass') ? (
                     <button
                       className="btn btn--icon"
@@ -1330,22 +1347,6 @@ export function GridView({
                     }}
                   >
                     <EditIcon />
-                  </button>
-                ) : null}
-                {!gone('card-reveal') ? (
-                  <button
-                    className="btn btn--icon"
-                    data-action="password"
-                    data-active={show || undefined}
-                    aria-label={show ? 'Hide password' : 'Reveal password'}
-                    aria-pressed={show}
-                    {...hideAttrs('card-reveal', 'Reveal button')}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggle(item.id);
-                    }}
-                  >
-                    {show ? <EyeOffIcon /> : <EyeIcon />}
                   </button>
                 ) : null}
                 {!gone('card-menu') ? (

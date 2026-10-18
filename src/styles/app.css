@@ -1394,10 +1394,26 @@ to{transform:translate(0)}
    rules that match the tighter rhythm. The folder chevron becomes noise at
    this width — collapse stays available from the right-click menu. */
 .sidebar[data-compact] .nav-item{min-height:40px;gap:0;border-radius:var(--radius-md)}
-.sidebar[data-compact] .nav-item__icon{width:34px;height:34px;border-radius:var(--radius-md)}
+.sidebar[data-compact] .nav-item__icon{width:32px;height:32px;border-radius:var(--radius-md)}
 .sidebar[data-compact] .nav-item[aria-current=true]{background:var(--surface-hover)}
-.sidebar[data-compact] .nav-item__label,.sidebar[data-compact] .nav-item__chevron{display:none}
-.sidebar[data-compact] .nav-item__dot{bottom:4px}
+.sidebar[data-compact] .nav-item__label{display:none}
+/* The hue dot used to sit below the icon; at a 32px plate it landed on top of
+   it and read as a speck. Pinned to the plate's top-right corner instead, where
+   it looks like a status light rather than a rendering artefact. */
+.sidebar[data-compact] .nav-item__dot{left:auto;right:8px;top:6px;bottom:auto;width:6px;height:6px;translate:0}
+/* Folders still have to expand at this width, so the chevron stays — as a small
+   badge on the icon plate instead of a full row slot. */
+.sidebar[data-compact] .nav-item--folder{position:relative}
+.sidebar[data-compact] .nav-item__chevron{position:absolute;right:5px;bottom:4px;width:16px;height:16px;background:var(--bg-deep);border:1px solid var(--border);z-index:2}
+.sidebar[data-compact] .nav-item__chevron svg{width:9px;height:9px}
+.sidebar[data-compact] .nav-item__chevron:hover{background:var(--surface-hover)}
+/* The folder guide line and its 28px of indent left 32px for a 32px plate, so
+   nested rows were clipped on the right. Nested rows line up with the rest. */
+.sidebar[data-compact] .sidebar__folder-children{margin-left:0;padding-left:0;border-left:none}
+.sidebar[data-compact] .sidebar__folder-empty{display:none}
+/* The bulk bar is a wide toolbar; inside a 60px rail it only overflowed and
+   clipped. Multi-select still works — act through the right-click menu. */
+.sidebar[data-compact] .sidebar__bulk{display:none}
 .sidebar[data-compact] .sidebar__rule{margin:var(--space-2) 12px}
 .sidebar[data-compact] .sidebar__add{align-self:center;margin-top:var(--space-2)}
 .sidebar[data-compact] .sidebar__empty{margin:var(--space-2);text-align:center}
@@ -1455,6 +1471,13 @@ to{transform:translate(0)}
 .tag-manager__name:hover{background:var(--surface-hover)}
 .tag-manager__name:focus-visible{outline:2px solid hsl(var(--accent-h) 55% 58% / .7);outline-offset:1px;border-radius:var(--radius-md)}
 .tag-manager__hue{width:90px;flex-shrink:0;accent-color:var(--accent)}
+/* Rail placement pill in the channel manager: three tiny words, one state. */
+.rail-place{display:flex;gap:2px;padding:2px;border:1px solid var(--border);border-radius:var(--radius-full);background:var(--bg-deep);flex-shrink:0}
+.rail-place__option{padding:2px 8px;border-radius:var(--radius-full);font-size:10px;font-weight:640;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint);transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.rail-place__option:hover{color:var(--text)}
+.rail-place__option[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-text)}
+.rail-place__option:focus-visible{outline:2px solid hsl(var(--accent-h) 55% 58% / .7);outline-offset:1px}
+.rail-place__option:disabled{opacity:.4;cursor:default}
 .tag-manager__count{flex:1;min-width:0;font-size:var(--text-xs);color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .channel-preview{--channel-h: 212;display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);color:var(--text-muted);font-size:var(--text-sm);font-weight:500}
 .channel-preview__dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;background:hsl(var(--channel-h) 48% 56%)}

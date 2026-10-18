@@ -47,7 +47,7 @@ import {
 import { formatBytes, useEfficiency } from './useEfficiency.ts';
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import { buildStamp, getPlatform } from '../lib/platform.ts';
-import { applyChannel, parentFolderFor, type Tag } from '../vault/channels.ts';
+import { applyChannel, parentFolderFor, type RailPosition, type Tag } from '../vault/channels.ts';
 import { HIDDEN_BUTTON_LABELS } from './context-menu.tsx';
 import { DockSlotsEditor } from './DockSettings.tsx';
 import {
@@ -206,6 +206,11 @@ export function Settings(props: {
   onReset: () => Promise<void>;
   /** Opens the channel editor for one channel, or a blank one. */
   onEditChannel?: (channelId: string | 'new') => void;
+  /**
+   * Pins a channel to the top/middle/bottom block of the rail. Routed through
+   * the app so the sidebar tree is hoisted along with the flag.
+   */
+  onChannelPlacement?: (channelId: string, position: RailPosition) => void;
   onScrubTag?: (tagId: string) => void;
   /**
    * Creates a tag by name (or returns the existing one), for the CSV import's
@@ -221,7 +226,7 @@ export function Settings(props: {
 }) {
   const {
     open, onClose, tab, hideDividers, prefs, service, protection, items, onUpdate, onNotify, onLock, onReset,
-    onEditChannel, onScrubTag, onOpenTuner, onCreateTag,
+    onEditChannel, onScrubTag, onOpenTuner, onCreateTag, onChannelPlacement,
   } = props;
   const [changing, setChanging] = useState(false);
   const [enabling, setEnabling] = useState(false);
@@ -1272,6 +1277,7 @@ export function Settings(props: {
             if (onEditChannel) onEditChannel(channelId);
             else onNotify('Right-click a channel in the sidebar to edit it', 'error');
           }}
+          onChannelPlacement={onChannelPlacement}
           onTagsChange={(tags) => void onUpdate({ tags })}
           onHiddenChannelsChange={(hiddenChannels) => void onUpdate({ hiddenChannels })}
           onScrubTag={onScrubTag}

@@ -112,6 +112,17 @@ export function isAllLoginTab(kind: ChannelKind): kind is AllLoginTab {
 const RETIRED_CHANNEL_IDS = new Set(['favorites', 'attention', 'weak']);
 
 /**
+ * Ids the app owns and must never store as channels.
+ *
+ * `unassigned` is a pseudo-channel built on the fly for logins with no tags at
+ * all. The rail-placement menu used to save it like any other row, which wrote
+ * a real copy into `channels` AND left the pseudo row in the tree — so the rail
+ * drew Unassigned twice and never recovered. Dropping the stored copy heals
+ * those vaults; `normaliseSidebar` then drops the orphaned tree entry.
+ */
+const RESERVED_CHANNEL_IDS = new Set(['unassigned']);
+
+/**
  * Whether an id belonged to one of the rows the tab strip replaced.
  *
  * Used to sweep the retired ids out of stored lists that still refer to them —
@@ -650,6 +661,10 @@ export function normaliseSidebar(stored: SidebarEntry[] | undefined, channels: C
   const folderIds = new Set(folders.map((folder) => folder.id));
   const usedChannels = new Set<string>();
   const usedFolders = new Set<string>();
+  // Separators are the one entry kind the tree never de-duplicated, so a save
+  // cycle that wrote the same row twice produced two rows with the same React
+  // key. Ids are unique per separator, so first-one-wins is safe.
+  const usedSeparators = new Set<string>();
 
   const fix = (list: SidebarEntry[] | undefined, depth: number): SidebarEntry[] => {
     if (!Array.isArray(list) || depth > 2) return [];
@@ -661,11 +676,17 @@ export function normaliseSidebar(stored: SidebarEntry[] | undefined, channels: C
         usedChannels.add(raw.id);
         out.push({ kind: 'channel', id: raw.id });
         lastKind = 'channel';
-      } else if (raw.kind === 'separator' && typeof raw.id === 'string' && lastKind !== 'separator') {
+      } else if (
+        raw.kind === 'separator' &&
+        typeof raw.id === 'string' &&
+        lastKind !== 'separator' &&
+        !usedSeparators.has(raw.id)
+      ) {
         // Only two separators in a row are meaningless. The old guard also
         // required `out.length > 0`, which silently deleted a separator that
         // happened to be the first entry of a folder's children (and a leading
         // separator at the root), so it vanished on the next load.
+        usedSeparators.add(raw.id);
         out.push({ kind: 'separator', id: raw.id });
         lastKind = 'separator';
       } else if (raw.kind === 'folder' && typeof raw.id === 'string' && folderIds.has(raw.id) && !usedFolders.has(raw.id)) {
@@ -922,7 +943,7 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
     // The three merged rows are gone as channels; their content is the tabs of
     // All logins now. Dropping the stored copy here is what stops a reload from
     // resurrecting them beside the tab strip they were folded into.
-    if (RETIRED_CHANNEL_IDS.has(id)) continue;
+    if (RETIRED_CHANNEL_IDS.has(id) || RESERVED_CHANNEL_IDS.has(id)) continue;
     seen.add(id);
 
     const preset = defaults.get(id);

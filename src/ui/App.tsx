@@ -11,6 +11,7 @@ import {
   groupChannelsIntoFolder,
   channelSeedFromFolder,
   moveChannelToFolder,
+  moveSidebarEntry,
   moveManualOrder,
   selectableIds,
   parentFolderFor,
@@ -1099,6 +1100,28 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     return counts;
   }, [folderLocked, channelLocked, activeChannel, stripTabs, vault.items, staleDays, getParentFolderForChannel]);
 
+  /**
+   * Keeps the strip alive across a strip jump.
+   *
+   * A tab that opens another channel used to land on a scope with no strip of
+   * its own, so the strip that had just been used vanished. Carrying the
+   * configuration over — only when the destination has never been configured —
+   * means the strip stays put and its tabs keep working. When the jump comes
+   * from a channel scope, that channel is appended as a tab so there is a way
+   * back to where the user came from.
+   */
+  const carryStripTo = useCallback(
+    (to: string) => {
+      if (to === scopeId) return;
+      if (Object.prototype.hasOwnProperty.call(vault.prefs.listTabs, to)) return;
+      const source = vault.prefs.listTabs[scopeId] ?? [];
+      const back = scopeId === 'all' || scopeId.startsWith('folder:') ? [] : [scopeId];
+      const carried = [...source, ...back.filter((id) => !source.includes(id))];
+      void vault.updatePrefs({ listTabs: { ...vault.prefs.listTabs, [to]: carried } });
+    },
+    [scopeId, vault],
+  );
+
   /** What pressing a strip tab does. */
   const openStripTab = useCallback(
     (id: string) => {
@@ -1108,12 +1131,17 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
         // else it jumps to the section's channel — the user's own row if they
         // made one, the All logins tab otherwise.
         if (activeChannel?.id === 'all') setAllTab(kind);
-        else openSection(kind);
+        else {
+          const target = sectionTarget(channels, kind);
+          carryStripTo(target.channelId);
+          openChannel(target.channelId, target.tab);
+        }
         return;
       }
+      carryStripTo(id);
       openChannel(id);
     },
-    [activeChannel, openSection, openChannel],
+    [activeChannel, channels, carryStripTo, openChannel],
   );
 
   /** Writes one scope's strip configuration back to the preferences. */
@@ -1374,6 +1402,10 @@ const visible = useMemo(() => {
    */
   const writeChannel = useCallback(
     (next: Channel, announce: boolean) => {
+      // Unassigned is a synthetic row, not a stored channel. Writing it used to
+      // append a real copy to `channels` while the tree kept the synthetic entry
+      // — the rail then drew two Unassigned rows that no reload could heal.
+      if (next.id === UNASSIGNED.id) return;
       const exists = channels.some((channel) => channel.id === next.id);
       const nextChannels = exists
         ? channels.map((channel) => (channel.id === next.id ? next : channel))
@@ -1387,6 +1419,14 @@ const visible = useMemo(() => {
       if (!exists && targetFolder) {
         nextSidebar = moveChannelToFolder(nextSidebar, next.id, targetFolder);
         if (newChannelFolder) setNewChannelFolder(null);
+      }
+      // A row marked top/bottom belongs at that end of the rail, not at that end
+      // of its folder's children. Hoisting it to the root is what makes the
+      // choice visible when the row was dragged into a folder earlier.
+      if (next.railPosition === 'top') {
+        nextSidebar = moveSidebarEntry(nextSidebar, next.id, 'root', 0);
+      } else if (next.railPosition === 'bottom') {
+        nextSidebar = moveChannelToFolder(nextSidebar, next.id, null);
       }
       void vault.updatePrefs({ channels: nextChannels, sidebar: nextSidebar });
       if (!exists) {
@@ -1507,13 +1547,13 @@ const visible = useMemo(() => {
       { kind: 'separator' },
       {
         kind: 'item',
-        label: 'New channel.',
+        label: 'New channel',
         icon: <PlusIcon />,
         onSelect: () => setEditingChannel('new'),
       },
       {
         kind: 'item',
-        label: 'New folder.',
+        label: 'New folder',
         icon: <PlusIcon />,
         onSelect: () => setEditingFolder('new'),
       },
@@ -1568,12 +1608,6 @@ const visible = useMemo(() => {
           void vault.updatePrefs({ showSidebar: false });
           notify('Hidden — the recovery pill sits on the same edge');
         },
-      },
-      {
-        kind: 'item',
-        label: 'Show hidden items…',
-        icon: <EyeOffIcon />,
-        onSelect: () => openSettings('hidden'),
       },
       {
         kind: 'submenu',
@@ -1695,7 +1729,14 @@ const visible = useMemo(() => {
         heading: 'Put every picked channel in',
         disabled: selectedChannelIds.length === 0,
         items: [
-          { kind: 'item', label: 'Top level', checked: true, onSelect: () => moveSelectionTo(null) },
+          {
+            kind: 'item',
+            label: 'Top level',
+            // Only reads as the current home when none of the picked rows is
+            // inside a folder.
+            checked: selectedChannelIds.every((id) => !parentFolderIdOf(id)),
+            onSelect: () => moveSelectionTo(null),
+          },
           ...folders.map((folder): MenuItem => ({
             kind: 'item',
             label: folder.name,
@@ -1718,6 +1759,17 @@ const visible = useMemo(() => {
 
   const channelMenu = useCallback(
     (channel: Channel): MenuItem[] => {
+      // The Unassigned row is synthetic: it has no stored channel to edit,
+      // recolour, move or pin. Offering those actions produced clicks that
+      // silently did nothing (and, before the write guard, duplicated the row).
+      if (channel.id === UNASSIGNED.id) {
+        return [
+          { kind: 'item', label: 'Unassigned', icon: <InboxIcon />, disabled: true },
+          { kind: 'item', label: 'Logins with no tags at all', disabled: true },
+          { kind: 'separator' },
+          { kind: 'item', label: 'Open', icon: <InboxIcon />, onSelect: () => openChannel(channel.id) },
+        ];
+      }
       const label = channel.name;
       return [
         { kind: 'item', label, icon: <LayersIcon />, disabled: true },
@@ -4165,6 +4217,12 @@ onCreate={vault.create}
         onNotify={notify}
         onLock={vault.lock}
         onEditChannel={(channelId) => setEditingChannel(channelId)}
+        onChannelPlacement={(channelId, position) => {
+          const channel = channels.find((entry) => entry.id === channelId);
+          if (channel) {
+            writeChannel({ ...channel, railPosition: position === 'middle' ? undefined : position }, true);
+          }
+        }}
         onScrubTag={(tagId) => void scrubTag(tagId)}
         onCreateTag={createTagNow}
         onOpenTuner={openTuner}
