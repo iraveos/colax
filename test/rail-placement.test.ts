@@ -2,19 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BUILTIN_CHANNELS,
-  composeRailOrder,
   normaliseChannels,
   normaliseSidebar,
   type Channel,
   type Folder,
   type SidebarEntry,
 } from '../src/vault/channels.ts';
+import { DEFAULT_PREFERENCES, normalisePreferences } from '../src/vault/storage.ts';
 
 /**
- * Rail placement groups rows into three stable blocks, and the tree it runs on
- * has to survive the round-trip through storage without ever drawing a row
- * twice. These guard the two failure modes that were reported: choosing a
- * placement duplicated rows, and placement inside a folder looked like a no-op.
+ * Rail alignment is one setting for the whole run of channels, and the tree it
+ * applies to has to survive a round-trip through storage without ever drawing a
+ * row twice. These guard the storage side of that, plus the two corruption
+ * cases that were reported while per-row placement existed.
  */
 
 const CHANNELS: Channel[] = [
@@ -28,54 +28,45 @@ const FOLDERS: Folder[] = [{ id: 'f1' } as Folder];
 const flat = (entries: SidebarEntry[]): string[] =>
   entries.map((entry) => (entry.kind === 'folder' ? `folder:${entry.id}` : `${entry.kind}:${entry.id}`));
 
-const positionOf = (map: Record<string, 'top' | 'middle' | 'bottom'>) =>
-  (entry: SidebarEntry): 'top' | 'middle' | 'bottom' =>
-    (entry.kind === 'channel' && map[entry.id]) || 'middle';
-
-test('top, middle and bottom rows are split into stable blocks', () => {
-  const tree: SidebarEntry[] = [
-    { kind: 'channel', id: 'a' },
-    { kind: 'channel', id: 'b' },
-    { kind: 'channel', id: 'c' },
-    { kind: 'channel', id: 'd' },
-  ];
-  const ordered = composeRailOrder(
-    tree,
-    positionOf({ b: 'top', a: 'bottom', d: 'bottom' }),
-  );
-  // `c` is the only middle row; the two top/bottom blocks keep their own order.
-  assert.deepEqual(flat(ordered), ['channel:b', 'channel:c', 'channel:a', 'channel:d']);
+const stored = (patch: Record<string, unknown>): Record<string, unknown> => ({
+  ...(structuredClone(DEFAULT_PREFERENCES) as unknown as Record<string, unknown>),
+  ...patch,
 });
 
-test('placement is applied inside a folder as well as at the root', () => {
-  const tree: SidebarEntry[] = [
-    { kind: 'folder', id: 'f1', children: [{ kind: 'channel', id: 'a' }, { kind: 'channel', id: 'b' }] },
-  ];
-  const ordered = composeRailOrder(tree, positionOf({ b: 'top' }));
-  const folder = ordered[0];
-  assert.equal(folder?.kind, 'folder');
-  if (folder?.kind === 'folder') {
-    assert.deepEqual(flat(folder.children), ['channel:b', 'channel:a']);
+test('rail alignment defaults to top', () => {
+  assert.equal(normalisePreferences(stored({})).railAlign, 'top');
+  assert.equal(DEFAULT_PREFERENCES.railAlign, 'top');
+});
+
+test('rail alignment accepts the three known values', () => {
+  for (const value of ['top', 'middle', 'bottom'] as const) {
+    assert.equal(normalisePreferences(stored({ railAlign: value })).railAlign, value);
   }
 });
 
-test('a row with no placement keeps the drag order around it', () => {
-  const tree: SidebarEntry[] = [
-    { kind: 'channel', id: 'c' },
-    { kind: 'channel', id: 'a' },
-    { kind: 'channel', id: 'b' },
-  ];
-  assert.deepEqual(flat(composeRailOrder(tree, positionOf({}))), ['channel:c', 'channel:a', 'channel:b']);
+test('an unknown rail alignment falls back to top', () => {
+  assert.equal(normalisePreferences(stored({ railAlign: 'sideways' })).railAlign, 'top');
+  assert.equal(normalisePreferences(stored({ railAlign: 42 })).railAlign, 'top');
 });
 
 test('a stored copy of the synthetic Unassigned row is dropped on load', () => {
-  // The rail-placement menu could save the pseudo row; because the tree also
-  // kept the synthetic entry, the rail then drew Unassigned twice forever.
+  // The old per-row placement menu could save the pseudo row; because the tree
+  // also kept the synthetic entry, the rail then drew Unassigned twice forever.
   const channels = normaliseChannels([
     ...BUILTIN_CHANNELS,
     { ...BUILTIN_CHANNELS[0]!, id: 'unassigned', name: 'Unassigned', kind: 'unassigned' as const },
   ]);
   assert.ok(!channels.some((channel) => channel.id === 'unassigned'));
+});
+
+test('the retired per-row railPosition field is not carried forward', () => {
+  const channels = normaliseChannels([
+    ...BUILTIN_CHANNELS,
+    { ...BUILTIN_CHANNELS[0]!, id: 'a', name: 'A', kind: 'all', railPosition: 'top' } as unknown as Channel,
+  ]);
+  const a = channels.find((channel) => channel.id === 'a');
+  assert.ok(a);
+  assert.equal('railPosition' in a, false);
 });
 
 test('a tree that repeats a channel or a separator draws each row once', () => {

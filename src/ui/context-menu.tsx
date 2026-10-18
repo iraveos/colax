@@ -26,6 +26,12 @@ export type MenuItem =
       disabled?: boolean;
       danger?: boolean;
       checked?: boolean;
+      /**
+       * Renders as a non-interactive heading rather than a button. Used for the
+       * name of the thing a menu acts on: a real disabled button invites a
+       * click that can never do anything.
+       */
+      heading?: boolean;
       onSelect?: () => void;
     }
   | { kind: 'separator' }
@@ -198,6 +204,14 @@ function MenuLayer({
 
         const disabled = Boolean('disabled' in item && item.disabled);
         const isActive = activeIndex === index;
+
+        if (item.kind === 'item' && item.heading) {
+          return (
+            <div className="ctx-menu__heading" key={`heading-${index}`} role="presentation">
+              {item.label}
+            </div>
+          );
+        }
 
         if (item.kind === 'submenu') {
           return (
@@ -471,7 +485,7 @@ const publishAnchors = useCallback((depth: number, next: (Anchor | null)[]) => {
       const active = activeIndexes[depth] ?? -1;
       const selectable = items
         .map((item, index) => ({ item, index }))
-        .filter(({ item }) => item.kind !== 'separator');
+        .filter(({ item }) => item.kind !== 'separator' && !(item.kind === 'item' && item.heading));
 
       if (event.key === 'Escape') {
         event.preventDefault();

@@ -3,7 +3,6 @@ import { estimateStrength } from '../crypto/passwords.ts';
 import { findReusedPasswords, hostnameOf, isWeakPassword, type VaultItem } from '../vault/types.ts';
 import {
   applyChannel,
-  composeRailOrder,
   createChannel,
   createTag,
   normaliseChannels,
@@ -11,7 +10,6 @@ import {
   groupChannelsIntoFolder,
   channelSeedFromFolder,
   moveChannelToFolder,
-  moveSidebarEntry,
   moveManualOrder,
   selectableIds,
   parentFolderFor,
@@ -565,16 +563,8 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     if (prefs.showUnassignedChannel) {
       entries.push({ kind: 'channel', id: UNASSIGNED.id });
     }
-    // Then the user's placements: rows marked top/bottom in the rail (per
-    // channel or per folder) split the flow into three stable blocks.
-    const channelsById = new Map(channelLookup.map((channel) => [channel.id, channel]));
-    const foldersById = new Map(folders.map((folder) => [folder.id, folder]));
-    return composeRailOrder(entries, (entry) => {
-      if (entry.kind === 'channel') return channelsById.get(entry.id)?.railPosition ?? 'middle';
-      if (entry.kind === 'folder') return foldersById.get(entry.id)?.railPosition ?? 'middle';
-      return 'middle';
-    });
-  }, [prefs.sidebar, channels, folders, prefs.showUnassignedChannel, channelLookup]);
+    return entries;
+  }, [prefs.sidebar, channels, folders, prefs.showUnassignedChannel]);
 
   const activeFolder = useMemo(
     () => (activeId.startsWith('folder:') ? folders.find((folder) => folder.id === activeId.slice('folder:'.length)) ?? null : null),
@@ -1058,19 +1048,25 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     if (folderLocked || channelLocked) return [];
     const config = prefs.listTabs[scopeId] ?? [];
     const builtIn = new Map(ALL_LOGIN_TABS.map((tab) => [`tab:${tab.kind}`, tab.label]));
-    const tabs: { id: string; label: string; kind?: AllLoginTab; channel?: Channel }[] = [];
+    const tabs: { id: string; label: string; kind?: AllLoginTab; channel?: Channel; active: boolean }[] = [];
     for (const id of config) {
       const builtLabel = builtIn.get(id);
       if (builtLabel) {
-        tabs.push({ id, label: builtLabel, kind: id.slice(4) as AllLoginTab });
+        const kind = id.slice(4) as AllLoginTab;
+        // On All logins the current section is a tab; elsewhere a built-in
+        // tab is a jump target, so it only reads as current when the open
+        // channel is of that kind.
+        const active = activeChannel?.id === 'all' ? allTab === kind : activeChannel?.kind === kind;
+        tabs.push({ id, label: builtLabel, kind, active });
         continue;
       }
       const own = channelLookup.find((channel) => channel.id === id);
-      // A tab pointing at this scope's own channel is a button to nowhere.
-      if (own && own.id !== scopeId) tabs.push({ id, label: own.name, channel: own });
+      if (own) {
+        tabs.push({ id, label: own.name, channel: own, active: own.id === activeChannel?.id });
+      }
     }
     return tabs;
-  }, [prefs.listTabs, scopeId, channelLookup, folderLocked, channelLocked]);
+  }, [prefs.listTabs, scopeId, channelLookup, folderLocked, channelLocked, activeChannel, allTab]);
 
   /** Counts for every tab the strip would show. Zero-config scopes skip it. */
   const stripCounts = useMemo(() => {
@@ -1106,18 +1102,32 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
    * A tab that opens another channel used to land on a scope with no strip of
    * its own, so the strip that had just been used vanished. Carrying the
    * configuration over — only when the destination has never been configured —
-   * means the strip stays put and its tabs keep working. When the jump comes
-   * from a channel scope, that channel is appended as a tab so there is a way
-   * back to where the user came from.
+   * means the strip stays exactly as it was, the clicked tab included, and its
+   * other tabs keep working. The tab for the channel just opened is rendered
+   * as the current one rather than being filtered out, so the set of tabs does
+   * not visibly change under the pointer.
    */
   const carryStripTo = useCallback(
-    (to: string) => {
+    (to: string, via?: string) => {
       if (to === scopeId) return;
-      if (Object.prototype.hasOwnProperty.call(vault.prefs.listTabs, to)) return;
-      const source = vault.prefs.listTabs[scopeId] ?? [];
-      const back = scopeId === 'all' || scopeId.startsWith('folder:') ? [] : [scopeId];
-      const carried = [...source, ...back.filter((id) => !source.includes(id))];
-      void vault.updatePrefs({ listTabs: { ...vault.prefs.listTabs, [to]: carried } });
+      const stored = vault.prefs.listTabs;
+      const own = Object.prototype.hasOwnProperty.call(stored, to);
+      const source = stored[scopeId] ?? [];
+      if (!own) {
+        if (source.length === 0) return;
+        // The clicked tab is part of the source, so it lands in the copy too;
+        // the extra check only matters if the source changed in between.
+        const next = via && !source.includes(via) ? [...source, via] : [...source];
+        void vault.updatePrefs({ listTabs: { ...stored, [to]: next } });
+        return;
+      }
+      // A destination configured under an older build may not name the channel
+      // the user just clicked. Keep that tab rather than silently swapping it
+      // out from under the pointer.
+      const existing = stored[to] ?? [];
+      if (via && !existing.includes(via)) {
+        void vault.updatePrefs({ listTabs: { ...stored, [to]: [...existing, via] } });
+      }
     },
     [scopeId, vault],
   );
@@ -1133,12 +1143,12 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
         if (activeChannel?.id === 'all') setAllTab(kind);
         else {
           const target = sectionTarget(channels, kind);
-          carryStripTo(target.channelId);
+          carryStripTo(target.channelId, id);
           openChannel(target.channelId, target.tab);
         }
         return;
       }
-      carryStripTo(id);
+      carryStripTo(id, id);
       openChannel(id);
     },
     [activeChannel, channels, carryStripTo, openChannel],
@@ -1171,9 +1181,10 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       const current = (vault.prefs.listTabs[scopeId] ?? []).filter((id) => id !== tabId);
       const addableLabels: { id: string; label: string }[] = [
         ...ALL_LOGIN_TABS.map((tab) => ({ id: `tab:${tab.kind}`, label: tab.label })),
-        ...channelLookup
-          .filter((channel) => channel.id !== scopeId)
-          .map((channel) => ({ id: channel.id, label: channel.name })),
+        // The current scope's own channel is addable too: a tab pointing at
+        // where you already are now renders as the current tab instead of
+        // being filtered out, so it is a marker rather than a dead button.
+        ...channelLookup.map((channel) => ({ id: channel.id, label: channel.name })),
       ];
       const missing = addableLabels.filter((tab) => !current.includes(tab.id));
       const items: MenuItem[] = [];
@@ -1396,6 +1407,17 @@ const visible = useMemo(() => {
   /* ---- Channel editing -------------------------------------------------- */
 
   /**
+   * Opens the editor for a brand new channel at the root. Clearing the folder
+   * first matters: "New channel in this folder…" sets it, and cancelling that
+   * editor used to leave it set, so the next plain "New channel" quietly landed
+   * in a folder the user had walked away from.
+   */
+  const startNewChannel = useCallback(() => {
+    setNewChannelFolder(null);
+    setEditingChannel('new');
+  }, []);
+
+  /**
    * Writes a channel. `announce` is what separates Add/Save from the live
    * autosave the editor runs while you type: the write is identical, but a
    * toast per keystroke-debounce would be noise, so only deliberate saves speak.
@@ -1419,14 +1441,6 @@ const visible = useMemo(() => {
       if (!exists && targetFolder) {
         nextSidebar = moveChannelToFolder(nextSidebar, next.id, targetFolder);
         if (newChannelFolder) setNewChannelFolder(null);
-      }
-      // A row marked top/bottom belongs at that end of the rail, not at that end
-      // of its folder's children. Hoisting it to the root is what makes the
-      // choice visible when the row was dragged into a folder earlier.
-      if (next.railPosition === 'top') {
-        nextSidebar = moveSidebarEntry(nextSidebar, next.id, 'root', 0);
-      } else if (next.railPosition === 'bottom') {
-        nextSidebar = moveChannelToFolder(nextSidebar, next.id, null);
       }
       void vault.updatePrefs({ channels: nextChannels, sidebar: nextSidebar });
       if (!exists) {
@@ -1543,61 +1557,75 @@ const visible = useMemo(() => {
   /** Sidebar right-click on empty space: offer to create or reshape channels. */
   const newChannelMenu = useCallback((): MenuItem[] => {
     return [
-      { kind: 'item', label: 'Channels', icon: <LayersIcon />, disabled: true },
-      { kind: 'separator' },
       {
-        kind: 'item',
-        label: 'New channel',
-        icon: <PlusIcon />,
-        onSelect: () => setEditingChannel('new'),
+        // The group label used to be a disabled row, which reads as a button
+        // that does nothing. A submenu gives the heading somewhere to go.
+        kind: 'submenu',
+        label: 'Channels',
+        icon: <LayersIcon />,
+        heading: 'Channels, folders and separators',
+        items: [
+          {
+            kind: 'item' as const,
+            label: 'New channel…',
+            icon: <PlusIcon />,
+            onSelect: () => startNewChannel(),
+          },
+          {
+            kind: 'item' as const,
+            label: 'New folder…',
+            icon: <PlusIcon />,
+            onSelect: () => setEditingFolder('new'),
+          },
+          {
+            kind: 'item' as const,
+            label: 'New separator',
+            icon: <RowsIcon />,
+            onSelect: () => void vault.updatePrefs({ sidebar: addSeparatorAtEnd(sidebarBase) }),
+          },
+          { kind: 'separator' as const },
+          {
+            kind: 'item' as const,
+            label: 'Manage channels…',
+            icon: <RowsIcon />,
+            onSelect: () => openSettings('channels'),
+          },
+        ],
       },
       {
-        kind: 'item',
-        label: 'New folder',
-        icon: <PlusIcon />,
-        onSelect: () => setEditingFolder('new'),
-      },
-      { kind: 'separator' },
-      {
-        kind: 'item',
-        label: 'New separator',
-        icon: <RowsIcon />,
-        onSelect: () => void vault.updatePrefs({ sidebar: addSeparatorAtEnd(sidebarBase) }),
-      },
-      {
-        kind: 'item',
-        label: 'Manage channels',
-        icon: <RowsIcon />,
-        onSelect: () => openSettings('channels'),
-      },
-      { kind: 'separator' },
-      { kind: 'item', label: 'Bars', icon: <GridIcon />, disabled: true },
-      {
-        kind: 'item',
-        label: prefs.docks.length >= MAX_DOCKS ? `New bar (at most ${MAX_DOCKS})` : 'New bar',
-        icon: <PlusIcon />,
-        disabled: prefs.docks.length >= MAX_DOCKS,
-        // A bar is a second sidebar: the same slots, the same keys, dragged
-        // anywhere on screen like a docked panel in an editor. This used to be
-        // reachable only by right-clicking an existing bar, which is no use to
-        // anyone who has not found one yet.
-        onSelect: () => {
-          const fresh: DockState = {
-            id: newDockId(),
-            slots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })),
-            pos: freeDockSpot(prefs.docks),
-            enabled: true,
-          };
-          void vault
-            .updatePrefs({ docks: [...prefs.docks, fresh] })
-            .then(() => notify('New bar added — drag it anywhere by its grip'));
-        },
-      },
-      {
-        kind: 'item',
-        label: 'Configure bars…',
-        icon: <SettingsIcon />,
-        onSelect: () => openSettings('layout'),
+        kind: 'submenu',
+        label: 'Bars',
+        icon: <GridIcon />,
+        heading: 'Detached bars',
+        items: [
+          {
+            kind: 'item' as const,
+            label: prefs.docks.length >= MAX_DOCKS ? `New bar (at most ${MAX_DOCKS})` : 'New bar',
+            icon: <PlusIcon />,
+            disabled: prefs.docks.length >= MAX_DOCKS,
+            // A bar is a second sidebar: the same slots, the same keys, dragged
+            // anywhere on screen like a docked panel in an editor. This used to be
+            // reachable only by right-clicking an existing bar, which is no use to
+            // anyone who has not found one yet.
+            onSelect: () => {
+              const fresh: DockState = {
+                id: newDockId(),
+                slots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })),
+                pos: freeDockSpot(prefs.docks),
+                enabled: true,
+              };
+              void vault
+                .updatePrefs({ docks: [...prefs.docks, fresh] })
+                .then(() => notify('New bar added — drag it anywhere by its grip'));
+            },
+          },
+          {
+            kind: 'item' as const,
+            label: 'Configure bars…',
+            icon: <SettingsIcon />,
+            onSelect: () => openSettings('layout'),
+          },
+        ],
       },
       { kind: 'item', label: 'Show hidden items…', icon: <EyeOffIcon />, onSelect: () => openSettings('hidden') },
       {
@@ -1618,6 +1646,26 @@ const visible = useMemo(() => {
           { kind: 'item' as const, label: 'Icons only', checked: prefs.sidebarLabels === 'icon', onSelect: () => void vault.updatePrefs({ sidebarLabels: 'icon' }) },
           { kind: 'item' as const, label: 'Names only', checked: prefs.sidebarLabels === 'name', onSelect: () => void vault.updatePrefs({ sidebarLabels: 'name' }) },
         ],
+      },
+      {
+        // This is the "rail placement" the sidebar menu used to offer per row.
+        // It is one setting for the whole run of channels, not a pin on a row.
+        kind: 'submenu',
+        label: 'Rail alignment',
+        icon: <RowsIcon />,
+        heading: 'Where the channel list sits',
+        items: (
+          [
+            { id: 'top', label: 'Top', hint: 'Rows start at the top edge' },
+            { id: 'middle', label: 'Middle', hint: 'The list floats in the middle' },
+            { id: 'bottom', label: 'Bottom', hint: 'The list sits above the footer' },
+          ] as const
+        ).map((option) => ({
+          kind: 'item' as const,
+          label: option.label,
+          checked: prefs.railAlign === option.id,
+          onSelect: () => void vault.updatePrefs({ railAlign: option.id }),
+        })),
       },
       {
         kind: 'submenu',
@@ -1663,6 +1711,7 @@ const visible = useMemo(() => {
     channels,
     saveChannel,
     vault,
+    prefs,
     setEditingChannel,
     setEditingFolder,
     openSettings,
@@ -1719,7 +1768,7 @@ const visible = useMemo(() => {
   const bulkChannelMenu = useCallback((): MenuItem[] => {
     const picked = selectedChannelIds.length + selectedFolderIds.length;
     return [
-      { kind: 'item', label: `${picked} rows picked`, disabled: true },
+      { kind: 'item', label: `${picked} rows picked`, heading: true },
       { kind: 'separator' },
       { kind: 'item', label: 'Hide', onSelect: () => runBulkChannelAction('hide') },
       { kind: 'item', label: 'Show (unhide)', onSelect: () => runBulkChannelAction('show') },
@@ -1764,15 +1813,15 @@ const visible = useMemo(() => {
       // silently did nothing (and, before the write guard, duplicated the row).
       if (channel.id === UNASSIGNED.id) {
         return [
-          { kind: 'item', label: 'Unassigned', icon: <InboxIcon />, disabled: true },
-          { kind: 'item', label: 'Logins with no tags at all', disabled: true },
+          { kind: 'item', label: 'Unassigned', icon: <InboxIcon />, heading: true },
+          { kind: 'item', label: 'Logins with no tags at all', heading: true },
           { kind: 'separator' },
           { kind: 'item', label: 'Open', icon: <InboxIcon />, onSelect: () => openChannel(channel.id) },
         ];
       }
       const label = channel.name;
       return [
-        { kind: 'item', label, icon: <LayersIcon />, disabled: true },
+        { kind: 'item', label, icon: <LayersIcon />, heading: true },
         { kind: 'separator' },
         {
           kind: 'item',
@@ -1866,17 +1915,6 @@ const visible = useMemo(() => {
           ],
         },
         {
-          kind: 'submenu',
-          label: 'Rail placement',
-          icon: <RowsIcon />,
-          heading: 'Where this row sits in the rail',
-          items: [
-            { kind: 'item' as const, label: 'Top', checked: channel.railPosition === 'top', onSelect: () => saveChannel({ ...channel, railPosition: 'top' }) },
-            { kind: 'item' as const, label: 'Middle', checked: channel.railPosition !== 'top' && channel.railPosition !== 'bottom', onSelect: () => saveChannel({ ...channel, railPosition: 'middle' }) },
-            { kind: 'item' as const, label: 'Bottom', checked: channel.railPosition === 'bottom', onSelect: () => saveChannel({ ...channel, railPosition: 'bottom' }) },
-          ],
-        },
-        {
           kind: 'item',
           label: 'Add separator above',
           icon: <RowsIcon />,
@@ -1886,7 +1924,7 @@ const visible = useMemo(() => {
           kind: 'item',
           label: 'New channel…',
           icon: <PlusIcon />,
-          onSelect: () => setEditingChannel('new'),
+          onSelect: () => startNewChannel(),
         },
         // Hiding is not deleting: every channel — the built-ins included —
         // can be taken off the rail and brought back from Settings › Hidden
@@ -1930,7 +1968,7 @@ const visible = useMemo(() => {
 
   const folderMenu = useCallback(
     (folder: Folder): MenuItem[] => [
-      { kind: 'item', label: folder.name, icon: <LayersIcon />, disabled: true },
+      { kind: 'item', label: folder.name, icon: <LayersIcon />, heading: true },
       { kind: 'separator' },
       {
         kind: 'item',
@@ -1963,17 +2001,6 @@ const visible = useMemo(() => {
         label: folder.collapsed ? 'Expand' : 'Collapse',
         icon: <RowsIcon />,
         onSelect: () => toggleFolderCollapse(folder.id),
-      },
-      {
-        kind: 'submenu',
-        label: 'Rail placement',
-        icon: <RowsIcon />,
-        heading: 'Where this row sits in the rail',
-        items: [
-          { kind: 'item' as const, label: 'Top', checked: folder.railPosition === 'top', onSelect: () => saveFolder({ ...folder, railPosition: 'top' }) },
-          { kind: 'item' as const, label: 'Middle', checked: folder.railPosition !== 'top' && folder.railPosition !== 'bottom', onSelect: () => saveFolder({ ...folder, railPosition: 'middle' }) },
-          { kind: 'item' as const, label: 'Bottom', checked: folder.railPosition === 'bottom', onSelect: () => saveFolder({ ...folder, railPosition: 'bottom' }) },
-        ],
       },
       { kind: 'separator' },
       {
@@ -2011,7 +2038,7 @@ const visible = useMemo(() => {
 
   const separatorMenu = useCallback(
     (entryId: string): MenuItem[] => [
-      { kind: 'item', label: 'Separator', icon: <RowsIcon />, disabled: true },
+      { kind: 'item', label: 'Separator', icon: <RowsIcon />, heading: true },
       { kind: 'separator' },
       // A separator is an ordinary sidebar entry, so it gets the same
       // move-to-folder treatment a channel does rather than being root-only.
@@ -3158,7 +3185,10 @@ label: 'Settings',
                 onSelect: () => {
                   const fresh = {
                     id: newDockId(),
-                    slots: [],
+                    // An empty dock renders as nothing at all, so "New dock"
+                    // looked like a dead button. Start it with the shipped
+                    // slot set; Settings › Layout edits it from there.
+                    slots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })),
                     pos: freeDockSpot(prefs.docks),
                     enabled: true,
                   };
@@ -3559,6 +3589,7 @@ onCreate={vault.create}
         // resumes on the next focus, so nothing about the app is lost.
         data-quiet={appActive ? undefined : true}
         data-rail={prefs.sidebarPosition}
+        data-rail-align={prefs.railAlign}
         data-labels={prefs.sidebarLabels}
       >
         {prefs.showSidebar !== false ? (
@@ -3615,7 +3646,7 @@ onCreate={vault.create}
           onBackgroundMenu={(event) => {
             setMenu({ x: event.clientX, y: event.clientY, items: newChannelMenu() });
           }}
-          onNewChannel={() => setEditingChannel('new')}
+          onNewChannel={() => startNewChannel()}
           onToggleCompact={() => void vault.updatePrefs({ compactSidebar: !prefs.compactSidebar })}
           onHideSidebar={() => void vault.updatePrefs({ showSidebar: false })}
           showShortcuts={prefs.showShortcuts}
@@ -3842,7 +3873,7 @@ onCreate={vault.create}
                   }}
                 >
                   {stripTabs.map((tab) => {
-                    const active = tab.kind && activeChannel?.id === 'all' ? allTab === tab.kind : false;
+                    const active = tab.active;
                     return (
                       <button
                         key={tab.id}
@@ -3980,7 +4011,7 @@ onCreate={vault.create}
                   }}
                   onOpenSettings={(tab) => openSettings(tab)}
                   onAddLogin={() => setEditing('new')}
-                  onNewChannel={() => setEditingChannel('new')}
+                  onNewChannel={() => startNewChannel()}
                   onBulkAdd={() => setBulkAdding(true)}
                 />
               </div>
@@ -4217,12 +4248,6 @@ onCreate={vault.create}
         onNotify={notify}
         onLock={vault.lock}
         onEditChannel={(channelId) => setEditingChannel(channelId)}
-        onChannelPlacement={(channelId, position) => {
-          const channel = channels.find((entry) => entry.id === channelId);
-          if (channel) {
-            writeChannel({ ...channel, railPosition: position === 'middle' ? undefined : position }, true);
-          }
-        }}
         onScrubTag={(tagId) => void scrubTag(tagId)}
         onCreateTag={createTagNow}
         onOpenTuner={openTuner}

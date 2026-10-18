@@ -50,6 +50,7 @@ const SEARCH_INDEX: { tab: string; label: string; words: string }[] = [
   { tab: 'layout', label: 'Tag chips', words: 'labels on cards show' },
   { tab: 'layout', label: 'Sidebar labels', words: 'icons names rail' },
   { tab: 'layout', label: 'Sidebar position', words: 'rail left right top bottom dock' },
+  { tab: 'layout', label: 'Rail alignment', words: 'rail placement channels middle bottom vertical align sidebar' },
   { tab: 'layout', label: 'Compact sidebar', words: 'icons only narrow rail' },
   { tab: 'layout', label: 'Floating chrome', words: 'pills detach buttons' },
   { tab: 'layout', label: 'Channel layout', words: 'channels folders reorder rail' },

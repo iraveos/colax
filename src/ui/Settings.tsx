@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ACCENT_PRESETS,
+  DEFAULT_DOCK_SLOTS,
   DEFAULT_PREFERENCES,
   freeDockSpot,
   MAX_DOCKS,
@@ -47,7 +48,7 @@ import {
 import { formatBytes, useEfficiency } from './useEfficiency.ts';
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import { buildStamp, getPlatform } from '../lib/platform.ts';
-import { applyChannel, parentFolderFor, type RailPosition, type Tag } from '../vault/channels.ts';
+import { applyChannel, parentFolderFor, type Tag } from '../vault/channels.ts';
 import { HIDDEN_BUTTON_LABELS } from './context-menu.tsx';
 import { DockSlotsEditor } from './DockSettings.tsx';
 import {
@@ -206,11 +207,6 @@ export function Settings(props: {
   onReset: () => Promise<void>;
   /** Opens the channel editor for one channel, or a blank one. */
   onEditChannel?: (channelId: string | 'new') => void;
-  /**
-   * Pins a channel to the top/middle/bottom block of the rail. Routed through
-   * the app so the sidebar tree is hoisted along with the flag.
-   */
-  onChannelPlacement?: (channelId: string, position: RailPosition) => void;
   onScrubTag?: (tagId: string) => void;
   /**
    * Creates a tag by name (or returns the existing one), for the CSV import's
@@ -226,7 +222,7 @@ export function Settings(props: {
 }) {
   const {
     open, onClose, tab, hideDividers, prefs, service, protection, items, onUpdate, onNotify, onLock, onReset,
-    onEditChannel, onScrubTag, onOpenTuner, onCreateTag, onChannelPlacement,
+    onEditChannel, onScrubTag, onOpenTuner, onCreateTag,
   } = props;
   const [changing, setChanging] = useState(false);
   const [enabling, setEnabling] = useState(false);
@@ -824,6 +820,32 @@ export function Settings(props: {
           </Row>
 
           <Row
+            label="Rail alignment"
+            hint="Where the run of channels sits vertically in a side-docked rail. Middle floats the list in the middle; Bottom parks it just above the footer. Ignored when the rail is docked top or bottom."
+            stacked
+          >
+            <div className="option-cards">
+              {(
+                [
+                  { id: 'top', label: 'Top', hint: 'Channels start at the top' },
+                  { id: 'middle', label: 'Middle', hint: 'Channels float in the middle' },
+                  { id: 'bottom', label: 'Bottom', hint: 'Channels sit above the footer' },
+                ] as const
+              ).map((option) => (
+                <button
+                  key={option.id}
+                  className="option-card"
+                  aria-pressed={prefs.railAlign === option.id}
+                  onClick={() => set({ railAlign: option.id })}
+                >
+                  <span>{option.label}</span>
+                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-faint)' }}>{option.hint}</span>
+                </button>
+              ))}
+            </div>
+          </Row>
+
+          <Row
             label="Card size"
             hint="Each view is tuned separately, because a ring card and a list row have different geometry. The appearance panel edits the same values live."
             stacked
@@ -891,7 +913,7 @@ export function Settings(props: {
                 className="btn btn--secondary btn--sm"
                 onClick={() =>
                   set({
-                    docks: [...prefs.docks, { id: newDockId(), slots: [], pos: freeDockSpot(prefs.docks), enabled: true }],
+                    docks: [...prefs.docks, { id: newDockId(), slots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })), pos: freeDockSpot(prefs.docks), enabled: true }],
                   })
                 }
               >
@@ -1277,7 +1299,6 @@ export function Settings(props: {
             if (onEditChannel) onEditChannel(channelId);
             else onNotify('Right-click a channel in the sidebar to edit it', 'error');
           }}
-          onChannelPlacement={onChannelPlacement}
           onTagsChange={(tags) => void onUpdate({ tags })}
           onHiddenChannelsChange={(hiddenChannels) => void onUpdate({ hiddenChannels })}
           onScrubTag={onScrubTag}

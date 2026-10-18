@@ -23,7 +23,7 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
    auto-sized, grow to the full content height, push .main past the viewport and
    leave .content with nothing to scroll against. */
 .shell{position:relative;z-index:2;display:grid;grid-template-columns:272px 1fr;grid-template-rows:minmax(0, 1fr);height:100%}
-/* ---- Rail placement ------------------------------------------------------
+/* ---- Rail docking --------------------------------------------------------
    The rail is a grid area, so docking it to another edge is a matter of
    changing which rows and columns it occupies rather than reordering DOM.
    `order` is deliberately NOT used: the rail is the first child, and moving it
@@ -68,6 +68,22 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
 .shell[data-rail=top] .sidebar__rule,.shell[data-rail=bottom] .sidebar__rule{width:1px;height:22px;align-self:center;margin:0 var(--space-2);background:linear-gradient(180deg,transparent,var(--border-strong) 22%,var(--border-strong) 78%,transparent)}
 
 .shell[data-rail=top] .sidebar__footer,.shell[data-rail=bottom] .sidebar__footer{flex-direction:row;margin-top:0;border-top:none;padding-top:0}
+/* Vertical alignment of the whole channel run in a side-docked rail. The list
+   is one block: 'middle' floats it and 'bottom' parks it above the footer, and
+   no row changes order. The spacer is hidden in these modes because a flex:1
+   sibling would consume the free space the auto margin needs. Scoped to the
+   two vertical edges and to wide windows, so the horizontal strip and the
+   narrow fold lay out exactly as before. */
+@media(min-width:901px){
+  .shell[data-rail=left][data-rail-align=middle] .sidebar__spacer,
+  .shell[data-rail=right][data-rail-align=middle] .sidebar__spacer,
+  .shell[data-rail=left][data-rail-align=bottom] .sidebar__spacer,
+  .shell[data-rail=right][data-rail-align=bottom] .sidebar__spacer{display:none}
+  .shell[data-rail=left][data-rail-align=middle] .sidebar__nav,
+  .shell[data-rail=right][data-rail-align=middle] .sidebar__nav{margin-block:auto}
+  .shell[data-rail=left][data-rail-align=bottom] .sidebar__nav,
+  .shell[data-rail=right][data-rail-align=bottom] .sidebar__nav{margin-top:auto}
+}
 /* Name-only drops the glyphs but keeps the hue dot, which is the only thing
    telling two similar channel names apart at a glance. */
 .sidebar[data-labels=name] .nav-item{gap:var(--space-2)}
@@ -1471,13 +1487,6 @@ to{transform:translate(0)}
 .tag-manager__name:hover{background:var(--surface-hover)}
 .tag-manager__name:focus-visible{outline:2px solid hsl(var(--accent-h) 55% 58% / .7);outline-offset:1px;border-radius:var(--radius-md)}
 .tag-manager__hue{width:90px;flex-shrink:0;accent-color:var(--accent)}
-/* Rail placement pill in the channel manager: three tiny words, one state. */
-.rail-place{display:flex;gap:2px;padding:2px;border:1px solid var(--border);border-radius:var(--radius-full);background:var(--bg-deep);flex-shrink:0}
-.rail-place__option{padding:2px 8px;border-radius:var(--radius-full);font-size:10px;font-weight:640;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint);transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
-.rail-place__option:hover{color:var(--text)}
-.rail-place__option[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-text)}
-.rail-place__option:focus-visible{outline:2px solid hsl(var(--accent-h) 55% 58% / .7);outline-offset:1px}
-.rail-place__option:disabled{opacity:.4;cursor:default}
 .tag-manager__count{flex:1;min-width:0;font-size:var(--text-xs);color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .channel-preview{--channel-h: 212;display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);color:var(--text-muted);font-size:var(--text-sm);font-weight:500}
 .channel-preview__dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;background:hsl(var(--channel-h) 48% 56%)}

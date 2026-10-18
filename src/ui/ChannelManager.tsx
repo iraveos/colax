@@ -7,16 +7,9 @@
  */
 
 import { useMemo, useState } from 'react';
-import { applyChannel, CHANNEL_KIND_LABELS, createTag, parentFolderFor, type Channel, type Folder, type RailPosition, type SidebarEntry, type Tag } from '../vault/channels.ts';
+import { applyChannel, CHANNEL_KIND_LABELS, createTag, parentFolderFor, type Channel, type Folder, type SidebarEntry, type Tag } from '../vault/channels.ts';
 import type { VaultItem } from '../vault/types.ts';
 import { EditIcon, EyeIcon, EyeOffIcon, PlusIcon, TagIcon, TrashIcon } from './icons.tsx';
-
-/** The three rail blocks, mirroring the sidebar's right-click submenu. */
-const RAIL_PLACEMENT: { id: RailPosition; label: string; hint: string }[] = [
-  { id: 'top', label: 'Top', hint: 'Pin above the flowing rows' },
-  { id: 'middle', label: 'Mid', hint: 'Leave in the flowing order — drag to move' },
-  { id: 'bottom', label: 'Bot', hint: 'Pin below the flowing rows' },
-];
 
 export function ChannelManager({
   channels,
@@ -27,7 +20,6 @@ export function ChannelManager({
   folders = [],
   sidebar = [],
   onEditChannel,
-  onChannelPlacement,
   onTagsChange,
   onHiddenChannelsChange,
   onScrubTag,
@@ -48,8 +40,6 @@ export function ChannelManager({
   sidebar?: SidebarEntry[];
   /** Opens the shared channel editor for an id, or 'new'. */
   onEditChannel: (channelId: string | 'new') => void;
-  /** Pins the channel to the top/middle/bottom block of the sidebar rail. */
-  onChannelPlacement?: (channelId: string, position: RailPosition) => void;
   onTagsChange: (next: Tag[]) => void;
   onHiddenChannelsChange?: (next: string[]) => void;
   /** Removes a deleted tag from every login that referenced it. */
@@ -152,28 +142,6 @@ export function ChannelManager({
                 {channel.tagIds.length === 0
                   ? CHANNEL_KIND_LABELS[channel.kind]
                   : channel.tagIds.map(tagName).join(', ')}
-              </span>
-              {/* Rail placement lives here as well as in the right-click menu
-                  and the editor, because this is the one screen that lists every
-                  channel at once — the natural place to arrange the rail. */}
-              <span
-                className="rail-place"
-                role="group"
-                aria-label={`Rail placement for ${channel.name}`}
-              >
-                {RAIL_PLACEMENT.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className="rail-place__option"
-                    aria-pressed={(channel.railPosition ?? 'middle') === option.id}
-                    title={option.hint}
-                    disabled={!onChannelPlacement}
-                    onClick={() => onChannelPlacement?.(channel.id, option.id)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
               </span>
               <button
                 className="btn btn--icon"

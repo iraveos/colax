@@ -65,6 +65,16 @@ export type SidebarLabels = 'icon' | 'name' | 'both';
 /** Which edge of the window the channel rail is docked to. */
 export type SidebarPosition = 'left' | 'right' | 'top' | 'bottom';
 
+/**
+ * Where the channel list sits vertically inside a side-docked rail.
+ *
+ * This is about the whole list, not individual rows: 'middle' floats the run of
+ * channels in the middle of the rail and 'bottom' parks it just above the
+ * footer. Ignored when the rail is docked top or bottom, where it runs
+ * horizontally and the question does not apply.
+ */
+export type RailAlign = 'top' | 'middle' | 'bottom';
+
 /** Per-view card geometry and colour. */
 export interface CardSizePrefs {
   /** Overall scale, 0.6 to 1.6, as a multiple shown as 0.6x to 1.6x. */
@@ -607,6 +617,8 @@ export interface VaultPreferences {
   viewLabelsByView: Partial<Record<VaultView, ViewLabels>>;
   /** Which edge of the window the channel rail is docked to. */
   sidebarPosition: SidebarPosition;
+  /** Where the channel list sits vertically in a side-docked rail. */
+  railAlign: RailAlign;
   /** Root font size as a percentage of the default. */
   textScale: number;
   /** Drops the frosted-glass effect for a flatter, faster surface. */
@@ -924,6 +936,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   viewLabels: 'both',
   viewLabelsByView: {},
   sidebarPosition: 'left',
+  railAlign: 'top',
   textScale: 100,
   reduceTransparency: false,
   highContrast: true,
@@ -1404,6 +1417,7 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   }
   merged.viewLabelsByView = viewLabelsByView;
   merged.sidebarPosition = oneOf(merged.sidebarPosition, ['left', 'right', 'top', 'bottom'] as const, 'left');
+  merged.railAlign = oneOf(merged.railAlign, ['top', 'middle', 'bottom'] as const, 'top');
 
   // Use counts: plain objects with numeric fields only, capped at 200 by
   // recency so the record cannot grow without bound. Pruning by id happens on
