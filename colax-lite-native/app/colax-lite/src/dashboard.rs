@@ -197,23 +197,31 @@ pub fn build(
     };
 
     // ---- Issues (L306-361): worst first, biggest first inside a severity
-    // The channel id a stat or issue opens; `SharedString` so every field
-    // below can take it directly.
-    let id_of = |kind: ChannelKind| -> slint::SharedString {
-        builtin_channels()
-            .into_iter()
-            .find(|channel| channel.kind == kind)
-            .map(|channel| channel.id.into())
-            .unwrap_or_else(|| "all".into())
+    // Where a stat or issue opens, resolved through `sectionTarget` (channels.ts
+    // L706), so nothing opens a retired row: a channel the user made with a
+    // merged kind wins, otherwise the section rides inside All logins as a tab.
+    // Both halves are `SharedString` so every field below can take them
+    // directly; an empty tab means a real channel of its own. The two
+    // "unassigned" targets keep a pseudo id that falls back to All logins,
+    // because the native has no Unassigned rail row to open.
+    let where_of = |kind: ChannelKind| -> (slint::SharedString, slint::SharedString) {
+        let (id, tab) = colax_core::section_target(&prefs.channels, kind);
+        let tab = match tab {
+            Some(k) if k != ChannelKind::All => k.as_str().into(),
+            _ => "".into(),
+        };
+        (id.into(), tab)
     };
     let mut issues: Vec<DashIssue> = Vec::new();
     if !weak.is_empty() {
+        let (channel, tab) = where_of(ChannelKind::Weak);
         issues.push(DashIssue {
             label: "Weak or reused passwords".into(),
             detail: "Short, guessable, or the same password used twice".into(),
             count: weak.len() as i32,
             severity: 0,
-            channel: id_of(ChannelKind::Weak),
+            channel,
+            tab,
         });
     }
     if !stale.is_empty() {
@@ -227,15 +235,18 @@ pub fn build(
         } else {
             "Unchanged past the reminder window".to_string()
         };
+        let (channel, tab) = where_of(ChannelKind::Weak);
         issues.push(DashIssue {
             label: "Rotation overdue".into(),
             detail: detail.into(),
             count: stale.len() as i32,
             severity: 0,
-            channel: id_of(ChannelKind::Weak),
+            channel,
+            tab,
         });
     }
     if !email_check.is_empty() {
+        let (channel, tab) = where_of(ChannelKind::All);
         issues.push(DashIssue {
             label: "Email review due".into(),
             detail: format!(
@@ -245,16 +256,19 @@ pub fn build(
             .into(),
             count: email_check.len() as i32,
             severity: 1,
-            channel: id_of(ChannelKind::All),
+            channel,
+            tab,
         });
     }
     if flagged > 0 {
+        let (channel, tab) = where_of(ChannelKind::Attention);
         issues.push(DashIssue {
             label: "Flagged by you".into(),
             detail: "You marked these as needing attention".into(),
             count: flagged,
             severity: 1,
-            channel: id_of(ChannelKind::Attention),
+            channel,
+            tab,
         });
     }
     if !untagged.is_empty() {
@@ -264,6 +278,7 @@ pub fn build(
             count: untagged.len() as i32,
             severity: 2,
             channel: "unassigned".into(),
+            tab: "".into(),
         });
     }
     issues.sort_by_key(|issue| (issue.severity, -issue.count));
@@ -276,15 +291,19 @@ pub fn build(
             count: 0,
             severity: 0,
             channel: "".into(),
+            tab: "".into(),
         });
 
     // ---- The four tiles (L403-428), notes included ------------------------
+    let (weak_channel, weak_tab) = where_of(ChannelKind::Weak);
+    let (fav_channel, fav_tab) = where_of(ChannelKind::Favorites);
     let stats = vec![
         DashStat {
             value: total,
             label: "Total Logins".into(),
             note: format!("{} with a second factor", with_totp.len()).into(),
-            channel: id_of(ChannelKind::All),
+            channel: where_of(ChannelKind::All).0,
+            tab: "".into(),
         },
         DashStat {
             value: favorites,
@@ -294,7 +313,8 @@ pub fn build(
             } else {
                 "Pinned to the top of the list".into()
             },
-            channel: id_of(ChannelKind::Favorites),
+            channel: fav_channel,
+            tab: fav_tab,
         },
         DashStat {
             value: weak.len() as i32,
@@ -304,7 +324,8 @@ pub fn build(
             } else {
                 "Short, reused or guessable".into()
             },
-            channel: id_of(ChannelKind::Weak),
+            channel: weak_channel,
+            tab: weak_tab,
         },
         DashStat {
             value: untagged.len() as i32,
@@ -315,6 +336,7 @@ pub fn build(
                 "Nothing to search them by".into()
             },
             channel: "unassigned".into(),
+            tab: "".into(),
         },
     ];
 
@@ -693,7 +715,16 @@ pub fn build(
         .collect();
 
     // ---- Channels (L367-380): biggest first, name as the tiebreak --------
-    let mut channel_rows: Vec<(String, String, i32)> = builtin_channels()
+    // The live catalogue, not just the shipped rows: user channels are real
+    // places too, and the retired sections are gone from the built-ins. The
+    // empty fallback is belt-and-braces — normalise guarantees a catalogue —
+    // but `channel_by_id`-style callers keep it.
+    let catalogue = if prefs.channels.is_empty() {
+        builtin_channels()
+    } else {
+        prefs.channels.clone()
+    };
+    let mut channel_rows: Vec<(String, String, i32)> = catalogue
         .into_iter()
         .map(|channel| {
             let count = apply_channel(&channel, items, prefs.password_age_days as f64).len() as i32;
@@ -751,7 +782,11 @@ pub fn build(
         channels,
         channels_more,
         tag_count: prefs.tags.len() as i32,
-        channel_count: builtin_channels().len() as i32,
+        channel_count: if prefs.channels.is_empty() {
+            builtin_channels().len() as i32
+        } else {
+            prefs.channels.len() as i32
+        },
         pop_strength,
         pop_domains,
         pop_reuse,
