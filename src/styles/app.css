@@ -1135,7 +1135,12 @@ to{transform:translate(0)}
 /* The merged sections of All logins. Sticky because the list is the page: a long
    vault scrolls under the strip instead of taking it away, and Flow/Orbit — which
    pin their own height — get it as the row above their scroller. */
-.list-tabs{position:sticky;top:0;z-index:6;flex:none;display:flex;align-items:center;justify-content:center;gap:var(--space-3);flex-wrap:wrap;padding:var(--space-4) var(--space-6) var(--space-2);background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(14px) saturate(1.05);-webkit-backdrop-filter:blur(14px) saturate(1.05)}
+/* The merged sections of All logins. Not sticky and unbacked: the ambient mesh
+   shows through everywhere else, and a sticky slab of --bg + blur over it read
+   as a hard dark band across the top of the page — so the strip now simply
+   scrolls with its list, and Flow/Orbit still get it as the row above their
+   scroller. */
+.list-tabs{flex:none;display:flex;align-items:center;justify-content:center;gap:var(--space-3);flex-wrap:wrap;padding:var(--space-4) var(--space-6) var(--space-2)}
 /* The list column is centered (.content__inner), so a hard-left strip read as
    broken — the pill now sits over the column. The group wraps like the strip
    around it instead of clipping in an overflow scroller that cut the pill's
