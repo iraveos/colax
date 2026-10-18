@@ -30,6 +30,7 @@ mod platform;
 mod reorder;
 mod settings_ops;
 mod shortcuts;
+mod toasts;
 mod tuner;
 
 use std::cell::RefCell;
@@ -910,7 +911,6 @@ fn labels_picked(ui: &MainWindow, state: &Shared, labels: &str) {
 /// stays.
 fn goto(ui: &MainWindow, state: &Shared, screen: Screen) {
     ui.set_error_text("".into());
-    ui.set_notice_text("".into());
     if screen != Screen::Vault {
         // The create flow stashes its password in Rust before leaving its
         // stage, so the fields cannot be needed on the far side.
@@ -943,18 +943,13 @@ fn goto(ui: &MainWindow, state: &Shared, screen: Screen) {
     }
 }
 
-/// A green strip that clears itself. `Timer::single_shot` owns its own
-/// lifetime, so there is nothing to keep alive here. Visible to the whole
-/// crate because the Settings window's Alarms tab raises the same toasts the
-/// TS does ("Alarm added", `Sound "…" imported`).
-pub(crate) fn notice(ui: &MainWindow, text: &str) {
-    ui.set_notice_text(text.into());
-    let weak = ui.as_weak();
-    slint::Timer::single_shot(std::time::Duration::from_millis(2500), move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.set_notice_text("".into());
-        }
-    });
+/// A toast in the top-right stack. The call shape stays what its ~40 call
+/// sites already say (`notice(ui, text)`); the timer, the three-card cap and
+/// the drain are `toasts`' ledger. Visible to the whole crate because the
+/// Settings window's Alarms tab raises the same toasts the TS does
+/// ("Alarm added", "Sound "…" imported").
+pub(crate) fn notice(_ui: &MainWindow, text: &str) {
+    toasts::notice(text);
 }
 
 fn tray_lock_enabled(tray: &Weak<AppTray>, enabled: bool) {
@@ -1754,7 +1749,7 @@ fn dev_dump(ui: &MainWindow, tag: &str) {
         ui.get_edit_sec_totp_note(),
         ui.get_edit_sec_passcode_error(),
         ui.get_edit_sec_answer_error(),
-        ui.get_notice_text(),
+        toasts::top_text(),
         // The Organise half: the cloud exactly as it will draw (a `*` on each
         // pill this login carries, `|` between lines), both dates with the age
         // under them, and the add box's verdict. Pills with no `*`, a date that
@@ -2107,7 +2102,7 @@ fn dev_alarm(ui: &MainWindow, state: &Shared) {
 /// toast the window currently holds — enough to prove the match without a
 /// picture of the strip.
 #[cfg(debug_assertions)]
-fn dev_dump_alarm(ui: &MainWindow, state: &Shared, tag: &str) {
+fn dev_dump_alarm(_ui: &MainWindow, state: &Shared, tag: &str) {
     let prefs = {
         let guard = state.borrow();
         colax_core::normalise_preferences(guard.engine.preferences())
@@ -2123,7 +2118,7 @@ fn dev_dump_alarm(ui: &MainWindow, state: &Shared, tag: &str) {
         prefs.alarms.len(),
         prefs.sounds_muted,
         alarms::fired_log(),
-        ui.get_notice_text(),
+        toasts::top_text(),
     );
     let path = app_dir().join("dev-dump.txt");
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -2766,7 +2761,7 @@ fn dev_docks(ui: &MainWindow, state: &Shared) {
             "accept={} view={} notice=[{}]",
             accepted,
             ui.get_vault_view(),
-            ui.get_notice_text(),
+            toasts::top_text(),
         ),
     );
 
@@ -2784,7 +2779,7 @@ fn dev_docks(ui: &MainWindow, state: &Shared) {
             "docks={} bars={} notice=[{}]",
             dock_ids().len(),
             bars(),
-            ui.get_notice_text(),
+            toasts::top_text(),
         ),
     );
 
@@ -3717,6 +3712,18 @@ fn render_check(ui: &MainWindow, state: &Shared) -> i32 {
     for line in &lines {
         println!("render-check: {line}");
     }
+
+    // The toast stack (`.toasts`): raise one, reconcile, and find it still
+    // up — the thing the inline notice pill could never prove, because the
+    // dump itself was the only witness of its text.
+    notice(ui, "Toast stays up.");
+    toasts::pump();
+    let raised = toasts::cards_reading("Toast stays up.");
+    if raised != 1 {
+        failures.push(format!("toast: {raised} cards read \"Toast stays up.\""));
+    }
+    println!("render-check: toast: cards={raised}");
+
     for failure in &failures {
         eprintln!("render-check: FAIL {failure}");
     }
@@ -5026,7 +5033,6 @@ fn open_editor(ui: &MainWindow, state: &Shared, id: &str) {
     ui.set_gen_revealed(false);
     ui.set_gen_reveal_editor(false);
     ui.set_error_text("".into());
-    ui.set_notice_text("".into());
 
     // The Security transient layer. `changed screen` cannot reach it (the
     // editor may already be open, and this runs before the screen changes),
@@ -6610,6 +6616,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let ui = MainWindow::new()?;
+
+    // ---- Toasts -------------------------------------------------------------
+    // The stack's model, wired before anything can raise a card: notices are
+    // app-wide (the Settings window's Alarms tab raises them too) and the
+    // render check reads the stack synchronously, before any event loop.
+    toasts::install(&ui);
 
     // The lock card's storage warning is decided here, once: the folder
     // either takes a write or it does not.

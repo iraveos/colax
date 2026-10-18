@@ -16,7 +16,7 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow, ShortcutRow, DockBarRow, DockManagerRow, ListTab } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow, ShortcutRow, DockBarRow, DockManagerRow, ListTab, ToastRow } from "models.slint";
 import { ShortcutsSheet } from "screens/shortcuts.slint";
 import { AppearanceTuner } from "screens/appearance_tuner.slint";
 import { DockLayer } from "screens/dock.slint";
@@ -621,6 +621,74 @@ component list-tab inherits Rectangle {
     }
 }
 
+// One toast card (`.toast`, app.css L892-906): a glass pill, the line it
+// reads, and the 2px drain hairline under its bottom edge that empties for
+// exactly as long as the card is up. **toast-in** slides 22px in from the
+// right over 240ms and **toast-out** back out over 200ms (both at `motion 0`
+// get no animation at all, `[data-motion='off'] .toast`). The TS card sizes
+// to its own wrapped text; here the message is one line that elides — the
+// native writes its long failures into the inline Alert strip instead.
+component toast-card inherits Rectangle {
+    in property <ToastRow> data;
+    in property <float> motion: 1.0;
+
+    property <bool> entered: false;
+    init => { entered = true; }
+    // The slide **from** the anchor: the overlay row places the card at its
+    // right rest point, so `+22px` is the arrival offset and the leaving
+    // slide starts where the arrival finished.
+    property <length> slide: root.data.leaving ? 22px
+        : (!root.entered && root.motion > 0 ? 22px : 0px);
+
+    width: 316px;
+    height: 40px;
+    // The overlay's rows sit at the window's top-right edge; this card is
+    // its own rest point 316px to the left, and the slide is the offset
+    // around it (`translate3d(22px,-6px)` in).
+    x: self.slide - 316px;
+    background: Theme.glass-strong;
+    border-radius: 10px; // `--radius-md`
+    border-width: 1px;
+    border-color: Theme.border;
+    opacity: root.data.leaving ? 0.0 : (root.entered ? 1.0 : (root.motion > 0 ? 0.0 : 1.0));
+    // `animation:toast-in .24s cubic-bezier(.16,1,.3,1) both`,
+    // `.toast--leaving{animation:toast-out .2s ease-in forwards}`.
+    animate x { duration: root.motion > 0 ? (root.data.leaving ? 200ms : 240ms) : 0ms; }
+    animate opacity { duration: root.motion > 0 ? (root.data.leaving ? 200ms : 240ms) : 0ms; }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+
+        Text {
+            text: root.data.tone == 1 ? "!" : "●";
+            color: root.data.tone == 1 ? Theme.danger : Theme.accent;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.data.text;
+            color: Theme.text;
+            font-size: 12.5px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+    }
+
+    // `.toast__timer`: the hairline drains linearly through the card's whole
+    // life; an error drains in `--danger`. `motion 0` hides it, exactly as
+    // the reduced-motion block does.
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        width: Math.max(0.0, Math.min(1.0, root.data.progress)) * parent.width;
+        background: root.data.tone == 1 ? Theme.danger : Theme.accent;
+        opacity: root.motion > 0 ? 0.45 : 0.0;
+    }
+}
+
 // One button of the view switcher. `labels-mode` is the `sidebarLabels`
 // pref (icon / name / both) that Settings offers in TS: one value decides
 // whether the four buttons spell themselves out.
@@ -809,10 +877,14 @@ export component MainWindow inherits Window {
     background: Theme.bg;
 
     in property <Screen> screen;
-    // Messages are written by the Rust side *and* cleared by `changed
-    // screen` here, so they have to be `in-out`.
+    // Message errors are written by the Rust side *and* cleared by `changed
+    // screen` here, so they have to be `in-out`. Notices left the inline
+    // green pill for the toast stack (`.toasts`): TS pops a card top-right.
     in-out property <string> error-text;
-    in-out property <string> notice-text;
+    // The toast stack: Rust owns the lifecycle (2200ms a card, a leaving
+    // marker then a fade, the drain hairline underneath), this shell only
+    // draws what it is handed.
+    in property <[ToastRow]> toasts;
     in property <bool> busy: false;
     // The derived models: rail (channels + a separator) and the visible
     // cards. Pushed together by `refresh_items` so they cannot disagree.
@@ -2246,11 +2318,6 @@ export component MainWindow inherits Window {
                         message: root.error-text;
                     }
 
-                    if (root.notice-text != "") : Alert {
-                        message: root.notice-text;
-                        good: true;
-                    }
-
                     search-input := Field {
                         placeholder: "Search logins...";
                         // The vault does not open on the search box: the
@@ -2633,6 +2700,26 @@ export component MainWindow inherits Window {
 
         }
 
+            // ---- Toasts (`.toasts`, app.css L891) ---------------------------
+            // Top-right, opposite the rail, the newest card entering at the
+            // bottom of a stack of at most three. The rows are positioned
+            // rather than laid out so each one can slide on its own `x`:
+            // **toast-in** slides in from the window edge and **toast-out**
+            // back out, the way the web's `translate3d` does.
+            Rectangle {
+                x: root.width - 16px;
+                y: 16px;
+                width: 0px;
+                height: 0px;
+                z: 45;
+
+                for toast[i] in root.toasts : toast-card {
+                    data: toast;
+                    motion: root.motion;
+                    y: i * 50px;
+                }
+            }
+
             // ---- Context menus (Task 8.1) ---------------------------------
             // The backdrop eats presses on anything else, closes on wheel,
             // and the FocusScope that owns the keyboard sits between it and
@@ -2865,7 +2952,6 @@ export component MainWindow inherits Window {
             generated-crack: root.gen-strength-crack;
             busy: root.busy;
             error-text: root.error-text;
-            notice-text: root.notice-text;
             confirm-delete: root.editor-confirm-delete;
             accent-hue <=> root.edit-accent-hue;
             hue-slider <=> root.edit-hue-slider;
@@ -3057,11 +3143,6 @@ export component MainWindow inherits Window {
                     // strip would only repeat it.
                     if (root.error-text != "" && root.screen != Screen.Error) : Alert {
                         message: root.error-text;
-                    }
-
-                    if (root.notice-text != "") : Alert {
-                        message: root.notice-text;
-                        good: true;
                     }
 
                     if (root.screen == Screen.CreateChoose) : VerticalLayout {

@@ -306,6 +306,17 @@ export struct ListTab {
     count: int,
 }
 
+/// One card in the top-right toast stack (`.toast`): the line it reads, its
+/// tone (0 ok, 1 error), and Rust's own bookkeeping — whether the card is on
+/// its way out (the 200ms fade) and how far the drain hairline has got.
+export struct ToastRow {
+    id: int,
+    text: string,
+    tone: int,
+    leaving: bool,
+    progress: float,
+}
+
 /// One list row: a login's name button, its meta line and a trailing slot
 /// (relative time on Recent, the masked address on review lists).
 export struct DashRow {

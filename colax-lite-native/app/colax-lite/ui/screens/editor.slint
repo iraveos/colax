@@ -89,7 +89,6 @@ export component Editor inherits VerticalLayout {
 
     in property <bool> busy: false;
     in property <string> error-text;
-    in property <string> notice-text;
 
     // ---- Security -----------------------------------------------------
     // The form itself lives in `security_form.slint`: Settings' own "Vault
@@ -485,11 +484,6 @@ export component Editor inherits VerticalLayout {
 
                 if (root.error-text != "") : Alert {
                     message: root.error-text;
-                }
-
-                if (root.notice-text != "") : Alert {
-                    message: root.notice-text;
-                    good: true;
                 }
 
                 // ---- Identity ------------------------------------------
