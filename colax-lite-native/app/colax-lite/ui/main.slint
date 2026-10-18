@@ -744,7 +744,12 @@ export component MainWindow inherits Window {
     min-width: 880px;
     min-height: 560px;
     default-font-family: "Segoe UI";
-    background: @linear-gradient(160deg, Theme.bg-deep, Theme.bg);
+    // `body { background: var(--bg) }` (tokens.css L354): flat, with the
+    // ambient mesh above it doing the talking. This used to be a
+    // `bg-deep -> bg` diagonal gradient -- the ambient look drawn *instead*
+    // of the mesh, which is why the Background tab's strength slider moved
+    // nothing. The mesh is real now, so the window is the flat token again.
+    background: Theme.bg;
 
     in property <Screen> screen;
     // Messages are written by the Rust side *and* cleared by `changed
@@ -1623,6 +1628,89 @@ export component MainWindow inherits Window {
     if (root.app-bg-dim > 0) : Rectangle {
         background: Theme.bg;
         opacity: root.app-bg-dim;
+    }
+
+    // -- The ambient mesh (`.ambient`, app.css L7-13) ----------------------
+    // Three accent-tinted circles behind every screen, drawn between the photo
+    // and its wash so the picture reads *through* them -- the web's own
+    // stacking. The slider is `--ambient-strength`: at 0 the layer is not
+    // drawn at all, which is what the "no ambient" preset asks for.
+    //
+    // The drift is CSS `transform`, and Slint cannot transform an arbitrary
+    // element, so all three effects are folded into the numbers the geometry
+    // already needs: `size` is the scale applied by redrawing the circle
+    // bigger, and the corner takes half the growth back so it grows about its
+    // centre the way `transform-origin: 50% 50%` does, plus the keyframe's own
+    // translate. The clock is `animation-tick()`, the one thing in Slint that
+    // keeps repainting; `motion == 0` pins it, which is the CSS's
+    // `[data-motion='off'] .ambient__blob { animation: none }`.
+    if (Theme.ambient > 0.001) : Rectangle {
+        width: root.width;
+        height: root.height;
+        clip: true;
+        opacity: Theme.ambient;
+        // `.ambient` fades over `--slow` when the slider moves.
+        animate opacity { duration: Theme.motion <= 0.0 ? 0ms : 480ms; }
+
+        property <length> vmax: Math.max(self.width, self.height);
+        property <float> t: Theme.motion > 0.0 ? (animation-tick() / 1s) : 0.0;
+        // `alternate` plays the keyframe forward and then back, so one cycle
+        // is twice the 26s that is written -- and the pose over that cycle is
+        // a raised cosine: 0 at the start, 1 halfway, 0 again, easing at both
+        // ends the way the keyframe's own `--ease` does. `Math.sin` takes an
+        // angle and there is no `Math.PI`, hence the degrees.
+        property <float> a: (1.0 - Math.cos(self.t / 52.0 * 360deg)) / 2.0;
+        property <float> b: (1.0 - Math.cos(self.t / 64.0 * 360deg)) / 2.0;
+
+        // drift-a: scale 1 -> 1.18 and translate(8%, 7%) of the blob's own
+        // box, anchored at top -14vmax / left -10vmax.
+        property <length> a-base: self.vmax * 0.44;
+        property <length> a-size: self.a-base * (1.0 + 0.18 * self.a);
+        property <length> a-x: self.vmax * -0.10 + self.a-base * 0.08 * self.a
+            - (self.a-size - self.a-base) / 2.0;
+        property <length> a-y: self.vmax * -0.14 + self.a-base * 0.07 * self.a
+            - (self.a-size - self.a-base) / 2.0;
+
+        // drift-b: scale 1.1 -> .94 and translate(-9%, -6%), anchored at
+        // bottom -18vmax / right -12vmax. It is `alternate-reverse`, so it
+        // *starts* at the far pose: the pose is counted back down.
+        property <length> b-base: self.vmax * 0.42;
+        property <float> b-pose: 1.0 - self.b;
+        property <length> b-size: self.b-base * (1.10 - 0.16 * self.b-pose);
+        property <length> b-x: self.width + self.vmax * 0.12 - self.b-base
+            - self.b-base * 0.09 * self.b-pose - (self.b-size - self.b-base) / 2.0;
+        property <length> b-y: self.height + self.vmax * 0.18 - self.b-base
+            - self.b-base * 0.06 * self.b-pose - (self.b-size - self.b-base) / 2.0;
+
+        // The third circle does not drift (`.ambient__blob--3`): top 26%,
+        // right 14%, `opacity: .6`, a slightly tighter falloff.
+        property <length> c-size: self.vmax * 0.30;
+
+        Rectangle {
+            x: parent.a-x;
+            y: parent.a-y;
+            width: parent.a-size;
+            height: parent.a-size;
+            border-radius: self.width / 2;
+            background: @radial-gradient(circle, Theme.ambient-1, transparent 70%);
+        }
+        Rectangle {
+            x: parent.b-x;
+            y: parent.b-y;
+            width: parent.b-size;
+            height: parent.b-size;
+            border-radius: self.width / 2;
+            background: @radial-gradient(circle, Theme.ambient-2, transparent 70%);
+        }
+        Rectangle {
+            x: parent.width * 0.86 - parent.c-size;
+            y: parent.height * 0.26;
+            width: parent.c-size;
+            height: parent.c-size;
+            border-radius: self.width / 2;
+            opacity: 0.6;
+            background: @radial-gradient(circle, Theme.ambient-3, transparent 72%);
+        }
     }
 
     Rectangle {

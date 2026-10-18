@@ -158,6 +158,7 @@ export component AppearanceTuner inherits Rectangle {
                     height: 28px;
                     border-radius: 8px;
                     background: close-touch.has-hover ? #ffffff14 : #00000000;
+                    animate background { duration: Theme.fast; }
                     Text {
                         width: parent.width;
                         height: parent.height;
@@ -265,6 +266,9 @@ export component AppearanceTuner inherits Rectangle {
                     background: root.accent == chip.id
                         ? Theme.plate
                         : (chip-touch.has-hover ? #ffffff0d : #00000000);
+                    // `.accent-swatch` again, this time in the tuner.
+                    animate background { duration: Theme.fast; }
+                    animate border-color { duration: Theme.fast; }
                     chip-touch := TouchArea {
                         clicked => { root.accent-picked(chip.id); }
                     }

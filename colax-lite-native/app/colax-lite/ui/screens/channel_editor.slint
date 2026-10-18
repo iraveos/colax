@@ -34,6 +34,7 @@ component account-row inherits Rectangle {
     height: 30px;
     border-radius: Theme.radius-sm;
     background: account-touch.has-hover ? Theme.row-hover : #00000000;
+    animate background { duration: Theme.fast; }
 
     account-touch := TouchArea {
         clicked => { root.picked(); }
@@ -386,6 +387,10 @@ export component ChannelEditor inherits Rectangle {
                                 border-width: 1px;
                                 border-color: root.icon-key == opt.key ? Theme.accent : Theme.border;
                                 background: root.icon-key == opt.key ? Theme.accent-soft : (icon-touch.has-hover ? #ffffff14 : #ffffff08);
+    // `.icon-picker__option` transitions border, colour and background on
+    // `--fast` (app.css L1413).
+    animate background { duration: Theme.fast; }
+    animate border-color { duration: Theme.fast; }
                                 icon-touch := TouchArea {
                                     clicked => { root.icon-picked(opt.key); }
                                 }

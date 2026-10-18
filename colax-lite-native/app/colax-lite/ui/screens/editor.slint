@@ -426,6 +426,8 @@ export component Editor inherits VerticalLayout {
                     background: root.section-ids[i] == root.section
                         ? (row-touch.pressed ? #ffffff1f : #ffffff12)
                         : #00000000;
+                    // `.sec__tab` (app.css L1690's micro list).
+                    animate background { duration: Theme.fast; }
 
                     row-touch := TouchArea {
                         clicked => { root.section-selected(root.section-ids[i]); }
@@ -1017,6 +1019,7 @@ export component Editor inherits VerticalLayout {
                                     font-weight: 600;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
+                                    animate color { duration: Theme.fast; }
                                 }
                             }
                         }

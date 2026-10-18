@@ -101,6 +101,11 @@ export component Field inherits Rectangle {
         : input.has-focus
             ? Theme.field-focus
             : Theme.field;
+    // `.input` / `.search__input`: border and background over `--fast`
+    // (app.css L666, L164), which is what makes the focus ring arrive
+    // instead of appear.
+    animate border-color { duration: Theme.fast; }
+    animate background { duration: Theme.fast; }
     clip: true;
 
     init => { if (root.autofocus) { input.focus(); } }
@@ -228,6 +233,9 @@ export component Toggle inherits Rectangle {
                 background: root.checked
                     ? (touch.has-hover ? Theme.accent-strong : Theme.accent)
                     : (touch.has-hover ? #ffffff1f : #ffffff14);
+                // `.toggle` and its knob: background and translate over
+                // `--normal` (app.css L748-749).
+                animate background { duration: Theme.normal; }
                 Rectangle {
                     x: root.checked ? parent.width - 22px : 2px;
                     y: 2px;
@@ -235,7 +243,7 @@ export component Toggle inherits Rectangle {
                     height: 20px;
                     border-radius: 10px;
                     background: root.checked ? #10182a : Theme.muted;
-                    animate x { duration: 120ms; easing: ease-out; }
+                    animate x { duration: Theme.normal; easing: ease-out; }
                 }
             }
         }
@@ -362,6 +370,9 @@ export component Segmented inherits Rectangle {
             background: i == root.selected ? Theme.accent-soft : (touch.has-hover ? #ffffff1a : #ffffff0a);
             border-width: 1px;
             border-color: i == root.selected ? Theme.accent : #00000000;
+            // `.segmented__option` (app.css L753).
+            animate background { duration: Theme.fast; }
+            animate border-color { duration: Theme.fast; }
             touch := TouchArea {
                 clicked => { root.changed(i); }
             }
@@ -369,6 +380,7 @@ export component Segmented inherits Rectangle {
                 text: opt; color: i == root.selected ? Theme.accent : Theme.muted; font-size: 13px; font-weight: 600;
                 width: parent.width; height: parent.height;
                 horizontal-alignment: center; vertical-alignment: center;
+                animate color { duration: Theme.fast; }
             }
         }
         Rectangle { horizontal-stretch: 1; }
@@ -399,6 +411,9 @@ export component Chip inherits Rectangle {
         background: root.selected ? Theme.accent-soft : #ffffff0a;
         border-width: 1px;
         border-color: root.selected ? Theme.accent-soft : Theme.border;
+        // `.chip` (app.css L1690's micro list): background, border and colour.
+        animate background { duration: Theme.fast; }
+        animate border-color { duration: Theme.fast; }
         chip-content := HorizontalLayout {
             padding-left: root.compact ? 6px : 10px;
             padding-right: root.compact ? 6px : 10px;
@@ -474,6 +489,9 @@ export component StrengthMeter inherits Rectangle {
                     ? (root.score <= 1 ? Theme.danger :
                        root.score == 2 ? Theme.warn : Theme.accent)
                     : Theme.hairline;
+                // `.strength__seg` lights over `--normal` (app.css L674), so
+                // the meter climbs rather than jumps as a password is typed.
+                animate background { duration: Theme.normal; }
             }
         }
 

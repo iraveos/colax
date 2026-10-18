@@ -84,24 +84,37 @@ export global Theme {
     // nobody can see.
     //
     // Two switches feed them, and both are in the CSS too. `microMotion`
-    // rides the whole hover layer: `[data-micro='off']` leaves `.btn`,
-    // `.card-row` and the rest with no transition at all (app.css L1745).
-    // A zero `motion` is `[data-motion='off'] *`: every transition *and*
-    // animation collapses to nothing, hover layer included. So `fast` folds
+    // (`[data-micro='on']`, app.css L1682) is the hover/press layer on its
+    // own: with it off, `.btn`, `.card-row` and the rest swap instantly
+    // (L1745). A zero `motion` is `[data-motion='off'] *`, which collapses
+    // every transition *and* animation, hover layer included. So `fast` folds
     // both and `normal` folds only the second -- the menu's drop-in is not
     // part of the micro layer, and motion off still silences it.
-    // `microMotion`: the hover/press feedback layer the TS gates behind
-    // `[data-micro='on']` (app.css L1682) -- the colour swaps on the chrome
-    // that would otherwise be instant.
     in-out property <bool> micro: true;
-    // Derived from the three switches above, so `out`: Rust writes those and
-    // never these.
+    // Derived from the switches above, so `out`: Rust writes those and never
+    // these.
     out property <duration> fast: !Theme.micro || Theme.motion <= 0.0 ? 0ms
         : (Theme.motion-speed >= 1.75 ? 0ms
             : (Theme.motion-speed >= 1.25 ? 95ms : 140ms));
     out property <duration> normal: Theme.motion <= 0.0 ? 0ms
         : (Theme.motion-speed >= 1.75 ? 0ms
             : (Theme.motion-speed >= 1.25 ? 175ms : 260ms));
+    // `--fast` again, but for the transitions the TS keeps *outside* the
+    // micro block: `.dash-card`'s arrival ring and the sort panel's rows.
+    // Micro off leaves those alone, motion off still stops them.
+    out property <duration> quick: Theme.motion <= 0.0 ? 0ms
+        : (Theme.motion-speed >= 1.75 ? 0ms
+            : (Theme.motion-speed >= 1.25 ? 95ms : 140ms));
+    // -- The ambient mesh (tokens.css L223-225, L320-322) -------------------
+    // Three accent-tinted circles behind every screen. Rust resolves them
+    // from the accent hue the way it resolves everything else; the defaults
+    // are the slate pair so a cold launch still has its glow.
+    in-out property <color> ambient-1: #3f7fbf6b;
+    in-out property <color> ambient-2: #4a6fc457;
+    in-out property <color> ambient-3: #4a9fc438;
+    // `--ambient-strength`: the Background tab's slider. 0 means the layer is
+    // not drawn at all, which is what the "no ambient" preset sets.
+    in-out property <float> ambient: 1.0;
     // 0 = flat cards, 1 = deep stack.
     in-out property <float> card-depth: 0.4;
     // Which theme won the resolve, for anything that must special-case it.

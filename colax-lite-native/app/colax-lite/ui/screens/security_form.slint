@@ -151,6 +151,10 @@ export component SecurityForm inherits VerticalLayout {
                 : (tile-touch.has-hover ? #ffffff10 : #ffffff08);
             border-width: 1px;
             border-color: root.sec-tab == tab ? Theme.accent : Theme.border;
+            // `.sec__tab`: background, border and colour on `--fast`
+            // (app.css L1690's micro list).
+            animate background { duration: Theme.fast; }
+            animate border-color { duration: Theme.fast; }
 
             tile-touch := TouchArea {
                 // Passkey is shown as a fourth tile because the

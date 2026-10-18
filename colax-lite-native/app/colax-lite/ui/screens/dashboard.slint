@@ -100,6 +100,7 @@ component pop-row inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
+            animate color { duration: Theme.fast; }
         }
         if (root.meta != "") : Text {
             text: root.meta;
@@ -115,6 +116,8 @@ component pop-row inherits Rectangle {
     Rectangle {
         background: touch.has-hover && root.can-open ? Theme.row-hover : #00000000;
         border-radius: Theme.radius-sm;
+        // `.dash-row` (app.css L1690's list): background on `--fast`.
+        animate background { duration: Theme.fast; }
     }
 }
 
@@ -136,7 +139,14 @@ component card inherits Rectangle {
     background: Theme.card;
     border-radius: Theme.radius-lg;
     border-width: 1px;
-    border-color: Theme.border;
+    border-color: content.has-hover
+        ? Theme.accent.with-alpha(0.45)
+        : Theme.border;
+    // `.dash-card` (app.css L1544): the ring warms on `--fast`, and this
+    // rule sits *outside* the micro block, so it is `quick` rather than
+    // `fast`. The 4px lift and the shadow are CSS transforms Slint has no
+    // equivalent for on a laid-out child, so they are not attempted.
+    animate border-color { duration: Theme.quick; }
 
     // The ancestor hover layer. Its event filter sees every pointer position
     // over the card *before* the content below accepts the event, so hover
@@ -159,9 +169,18 @@ component card inherits Rectangle {
     panel := Rectangle {
         visible: root.pop-shown;
         x: 12px;
-        y: parent.height - 6px;
+        // `dash-pop-in` (app.css L1556): the panel arrives from 10px above
+        // with a fade, over `--normal`. It is built whether or not it is
+        // shown, so the arrival has somewhere to come *from* -- a panel
+        // created inside the show would already be at its final pose on the
+        // first frame. The 0.98 scale the keyframe also starts from is a
+        // transform Slint cannot apply to a laid-out panel, so it is dropped.
+        y: parent.height - 6px + (root.pop-shown ? 0px : -10px);
         width: parent.width - 24px;
         height: root.pop.height * 1px;
+        opacity: root.pop-shown ? 1.0 : 0.0;
+        animate y { duration: Theme.normal; easing: ease-out; }
+        animate opacity { duration: Theme.normal; easing: ease-out; }
         background: Theme.card;
         border-radius: Theme.radius-md;
         border-width: 1px;
@@ -277,6 +296,7 @@ component list-row inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
+            animate color { duration: Theme.fast; }
         }
         if (root.meta != "") : Text {
             text: root.meta;
@@ -302,6 +322,7 @@ component list-row inherits Rectangle {
     Rectangle {
         background: touch.has-hover && root.can-open ? Theme.row-hover : #00000000;
         border-radius: Theme.radius-sm;
+        animate background { duration: Theme.fast; }
     }
 }
 
@@ -328,6 +349,7 @@ component bar-row inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             width: 132px;
+            animate color { duration: Theme.fast; }
         }
         Rectangle {
             height: 6px;
@@ -366,6 +388,8 @@ component issue-row inherits Rectangle {
     }
     background: touch.has-hover ? Theme.row-hover : #00000000;
     border-radius: Theme.radius-sm;
+    // `.dash-issue` (app.css L1188).
+    animate background { duration: Theme.fast; }
     HorizontalLayout {
         padding-left: 6px;
         padding-right: 8px;
@@ -481,6 +505,18 @@ component stat-tile inherits Rectangle {
     }
     background: touch.pressed ? Theme.surface-hover : touch.has-hover ? Theme.surface-raised : Theme.surface;
     border-radius: Theme.radius-md;
+    // `.stat--link` (app.css L1256): background, border and colour on
+    // `--fast`.
+    animate background { duration: Theme.fast; }
+    // `stat-in` (app.css L1184): the tiles rise into place with a fade, over
+    // `--normal`. The rise is `transform: translateY(6px)`, which Slint has
+    // no equivalent for on a *laid-out* tile -- the grid owns this element's
+    // `y` -- so only the fade survives. It rides a flag `init` flips, the
+    // same one-frame trick `list-row` uses for Flow's stagger.
+    property <bool> entered: false;
+    init => { root.entered = true; }
+    opacity: root.entered ? 1.0 : 0.0;
+    animate opacity { duration: Theme.normal; easing: ease-out; }
     VerticalLayout {
         padding: 14px;
         spacing: 3px;
@@ -1002,6 +1038,7 @@ export component Dashboard inherits Flickable {
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
                                 overflow: elide;
+                                animate color { duration: Theme.fast; }
                             }
                         }
                         if (root.uses.length > 0) : Text {

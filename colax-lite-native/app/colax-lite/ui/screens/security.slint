@@ -33,6 +33,8 @@ component GateTab inherits Rectangle {
         : (tab-touch.has-hover ? Theme.row-hover : #ffffff0f);
     border-width: 1px;
     border-color: root.selected ? Theme.accent : #00000000;
+    animate background { duration: Theme.fast; }
+    animate border-color { duration: Theme.fast; }
 
     tab-touch := TouchArea {
         clicked => { root.clicked(); }

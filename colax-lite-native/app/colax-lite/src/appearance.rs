@@ -277,6 +277,21 @@ pub fn apply_appearance(ui: &MainWindow, prefs: &VaultPreferences) {
     theme.set_grad_from(hsl(h, 44.0, if dark { 58.0 } else { 48.0 }, 1.0));
     theme.set_grad_to(hsl(h2, if dark { 40.0 } else { 38.0 }, if dark { 62.0 } else { 52.0 }, 1.0));
 
+    // The ambient mesh's three circles (tokens.css L223-225 dark, L320-322
+    // light), and the strength the Background tab's slider asks for. The
+    // third circle is the accent shifted 30 degrees, which is what keeps the
+    // mesh from reading as one flat tint.
+    theme.set_ambient(prefs.ambient as f32);
+    if dark {
+        theme.set_ambient_1(hsl(h, 55.0, 48.0, 0.42));
+        theme.set_ambient_2(hsl(h2, 52.0, 52.0, 0.34));
+        theme.set_ambient_3(hsl(h + 30.0, 50.0, 50.0, 0.22));
+    } else {
+        theme.set_ambient_1(hsl(h, 62.0, 62.0, 0.32));
+        theme.set_ambient_2(hsl(h2, 58.0, 64.0, 0.26));
+        theme.set_ambient_3(hsl(h + 30.0, 58.0, 62.0, 0.18));
+    }
+
     // -- Scalars ----------------------------------------------------------
     // Radii derive from one scalar so they stay in proportion (hooks.ts L382).
     let round = prefs.roundness;
