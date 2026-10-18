@@ -293,6 +293,12 @@ pub fn apply_appearance(ui: &MainWindow, prefs: &VaultPreferences) {
     // `motion` for on/off and multiply by `motion-speed`.
     theme.set_motion(prefs.motion as f32);
     theme.set_motion_speed(prefs.motion_speed as f32);
+    // `microMotion` is the second half of the motion story: the TS's
+    // `[data-micro='on']` block (app.css L1682) is what turns a colour swap
+    // into a transition at all, and `[data-motion='off']` overrides it back
+    // to instant. `Theme.fast`/`Theme.normal` already answer the second
+    // half, so only the switch itself is pushed here.
+    theme.set_micro(prefs.micro_motion);
     theme.set_card_depth(prefs.card_depth as f32);
 }
 

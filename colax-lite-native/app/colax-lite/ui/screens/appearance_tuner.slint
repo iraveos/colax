@@ -86,6 +86,15 @@ export component AppearanceTuner inherits Rectangle {
     callback reset();
     callback closed();
 
+    // `.tuner` arrives with `tuner-in var(--normal) var(--ease-out)`
+    // (app.css L531): 16px to the right and transparent, then settled. The
+    // panel is created per open (the caller keeps it inside an `if`), so the
+    // animation rides a flag `init` flips -- the same arrival `list-row`
+    // uses for Flow's stagger, and the only way to animate something whose
+    // first frame *is* its creation.
+    property <bool> entered: false;
+    init => { root.entered = true; }
+
     // The whole window is a dismissal target; the panel is declared after it,
     // so the panel sits on top and takes its own clicks (Slint paints siblings
     // in declaration order).
@@ -96,9 +105,12 @@ export component AppearanceTuner inherits Rectangle {
     }
 
     panel := Rectangle {
-        x: root.width - self.width;
+        x: root.width - self.width + (root.entered ? 0px : 16px);
         width: min(340px, root.width);
         height: root.height;
+        opacity: root.entered ? 1.0 : 0.0;
+        animate x { duration: Theme.normal; easing: ease-out; }
+        animate opacity { duration: Theme.normal; easing: ease-out; }
         background: Theme.resolved-theme == "light" ? #f4f7fbd9 : #0e1219d9;
         drop-shadow-color: Theme.resolved-theme == "light" ? #22304a33 : #02040a99;
         drop-shadow-blur: 28px;

@@ -46,8 +46,20 @@ export component MenuLayer inherits Rectangle {
             // at once -- a disabled row never lights (the TS's
             // `aria-disabled` rows dodge hover too), the truth a menu walking
             // with the arrows needs rows that hold still.
-            background: row.kind == 0 && !row.disabled
-                && (i == active || row-hot.has-hover) ? Theme.row-hover : #00000000;
+            //
+            // What it lights *with* is the TS's own treatment
+            // (`.ctx-menu__row[data-active]`, app.css L1442): the accent
+            // gradient and white text, not a grey wash -- and red for a
+            // danger row, which is how "Delete login" reads as the one row
+            // that cannot be undone. Both transition over `--fast`.
+            property <bool> hot: row.kind == 0 && !row.disabled
+                && (i == active || row-hot.has-hover);
+            background: !hot ? #00000000
+                : (row.danger ? Theme.danger
+                    : @linear-gradient(120deg, Theme.grad-from, Theme.grad-to));
+            opacity: row.disabled ? 0.4 : 1.0;
+            animate background { duration: Theme.fast; }
+            animate opacity { duration: Theme.fast; }
 
             if (row.kind == 1) : Rectangle {
                 x: 10px;
@@ -65,9 +77,12 @@ export component MenuLayer inherits Rectangle {
                     height: parent.height;
                     text: row.label;
                     color: Theme.faint;
-                    font-size: 11.5px;
+                    // `.ctx-menu__heading`: 10px, 700, letter-spacing .07em,
+                    // uppercase (the label arrives already upper-cased -- see
+                    // menus.rs's `heading`).
+                    font-size: 10px;
                     font-weight: 700;
-                    letter-spacing: 1px;
+                    letter-spacing: 0.7px;
                     vertical-alignment: center;
                     overflow: elide;
                 }
@@ -98,41 +113,47 @@ export component MenuLayer inherits Rectangle {
                     width: 15px;
                     height: parent.height;
                     text: row.checked ? "✓" : "";
-                    color: Theme.accent;
+                    color: hot ? #ffffff : Theme.accent;
                     font-size: 12.5px;
                     font-weight: 700;
                     vertical-alignment: center;
+                    animate color { duration: Theme.fast; }
                 }
 
                 Text {
                     height: parent.height;
                     horizontal-stretch: 1;
                     text: row.label;
-                    color: row.disabled ? Theme.faint
-                        : (row.danger ? Theme.danger : Theme.text);
+                    color: !row.disabled && hot
+                        ? #ffffff
+                        : (row.disabled ? Theme.faint
+                            : (row.danger ? Theme.danger : Theme.text));
                     font-size: 13px;
                     vertical-alignment: center;
                     overflow: elide;
+                    animate color { duration: Theme.fast; }
                 }
 
                 Text {
                     height: parent.height;
                     text: row.shortcut;
-                    color: Theme.faint;
+                    color: hot ? #ffffffbf : Theme.faint;
                     font-size: 11.5px;
                     vertical-alignment: center;
                     horizontal-alignment: right;
                     overflow: elide;
+                    animate color { duration: Theme.fast; }
                 }
 
                 Text {
                     width: 7px;
                     height: parent.height;
                     text: row.sub ? "›" : "";
-                    color: Theme.muted;
+                    color: hot ? #ffffff : Theme.muted;
                     font-size: 12px;
                     font-weight: 700;
                     vertical-alignment: center;
+                    animate color { duration: Theme.fast; }
                 }
             }
         }

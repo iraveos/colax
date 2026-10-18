@@ -16,7 +16,11 @@ export component Btn inherits Rectangle {
     height: root.h;
     border-radius: 10px;
     border-width: root.kind == 1 ? 1px : 0px;
-    animate background { duration: 100ms; }
+    // `.btn` transitions background, border, colour and shadow over `--fast`
+    // (app.css L631) -- and it is one of the selectors in the micro block
+    // (L1682), so a disabled micro switch makes it instant again.
+    animate background { duration: Theme.fast; }
+    animate border-color { duration: Theme.fast; }
 
     background: !root.enabled
         ? #ffffff08
@@ -50,6 +54,7 @@ export component Btn inherits Rectangle {
             font-size: 14px;
             font-weight: 600;
             vertical-alignment: center;
+            animate color { duration: Theme.fast; }
         }
     }
 

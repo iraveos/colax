@@ -75,6 +75,33 @@ export global Theme {
     in-out property <float> motion: 1.0;
     // Divides every duration, so the speed control is one number.
     in-out property <float> motion-speed: 1.0;
+    // -- Durations (tokens.css L56-58) -------------------------------------
+    // `--fast` is the length of every hover/selection swap, `--normal` the
+    // arrival of something larger, and both are `calc(140ms / speed)` in the
+    // CSS. Slint durations are literals here, so the speed control's three
+    // named stops (Normal / Fast / Instant in Settings) pick between three
+    // lengths rather than dividing: the difference is a few milliseconds
+    // nobody can see.
+    //
+    // Two switches feed them, and both are in the CSS too. `microMotion`
+    // rides the whole hover layer: `[data-micro='off']` leaves `.btn`,
+    // `.card-row` and the rest with no transition at all (app.css L1745).
+    // A zero `motion` is `[data-motion='off'] *`: every transition *and*
+    // animation collapses to nothing, hover layer included. So `fast` folds
+    // both and `normal` folds only the second -- the menu's drop-in is not
+    // part of the micro layer, and motion off still silences it.
+    // `microMotion`: the hover/press feedback layer the TS gates behind
+    // `[data-micro='on']` (app.css L1682) -- the colour swaps on the chrome
+    // that would otherwise be instant.
+    in-out property <bool> micro: true;
+    // Derived from the three switches above, so `out`: Rust writes those and
+    // never these.
+    out property <duration> fast: !Theme.micro || Theme.motion <= 0.0 ? 0ms
+        : (Theme.motion-speed >= 1.75 ? 0ms
+            : (Theme.motion-speed >= 1.25 ? 95ms : 140ms));
+    out property <duration> normal: Theme.motion <= 0.0 ? 0ms
+        : (Theme.motion-speed >= 1.75 ? 0ms
+            : (Theme.motion-speed >= 1.25 ? 175ms : 260ms));
     // 0 = flat cards, 1 = deep stack.
     in-out property <float> card-depth: 0.4;
     // Which theme won the resolve, for anything that must special-case it.

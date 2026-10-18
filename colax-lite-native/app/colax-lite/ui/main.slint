@@ -139,6 +139,12 @@ component card-face inherits Rectangle {
         border-width: 1px;
         border-color: root.card.selected ? Theme.border-focus : Theme.border;
         opacity: root.dragging ? 0.4 : 1.0;
+        // `.grid-cell` transitions border, background and shadow over
+        // `--fast` (app.css L265); the card face is also what Grid and Orbit
+        // draw, so one pair covers both views.
+        animate background { duration: Theme.fast; }
+        animate border-color { duration: Theme.fast; }
+        animate opacity { duration: Theme.fast; }
 
         VerticalLayout {
             padding-top: 12px * root.scale;
@@ -317,6 +323,15 @@ component list-row inherits Rectangle {
     border-width: root.card.selected ? 1px : 0px;
     border-color: root.card.selected ? Theme.border-focus : #00000000;
     opacity: root.animated && !root.entered ? 0.0 : (root.dragging ? 0.4 : 1.0);
+    // `.card-row`: background, border and colour over `--fast` (app.css
+    // L1690's micro block lists it); the arrival below is the larger,
+    // non-micro animation and keeps its own 280ms stagger.
+    //
+    // The border *width* stays instant on purpose: the TS draws this ring
+    // as a box-shadow, which costs no reflow, and a width that grows would
+    // shove the row's text sideways on selection.
+    animate background { duration: Theme.fast; }
+    animate border-color { duration: Theme.fast; }
     animate opacity {
         duration: 280ms;
         easing: ease-out;
@@ -527,6 +542,9 @@ component list-row inherits Rectangle {
             vertical-stretch: 0;
             border-radius: 8px;
             background: star-touch.has-hover ? #ffffff14 : #00000000;
+            // A tool button like any other: `--fast` on both the plate and
+            // the glyph.
+            animate background { duration: Theme.fast; }
 
             star-touch := TouchArea {
                 clicked => { root.star(root.card.id); }
@@ -540,6 +558,7 @@ component list-row inherits Rectangle {
                 font-size: 15px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
+                animate color { duration: Theme.fast; }
             }
         }
     }
@@ -558,11 +577,26 @@ component view-chip inherits Rectangle {
     callback picked();
 
     height: 32px;
+    // A Rectangle in a layout stretches to share the leftover width by
+    // default, which spread the four chips across the whole row -- the
+    // switcher read as a control that occupied half the window. Each chip
+    // hugs its own label instead (`.view-switcher__option` is an
+    // inline-flex button in app.css L554) and the row's single spacer takes
+    // the slack.
+    horizontal-stretch: 0;
     border-radius: 8px;
+    // The ring is a colour, not a width: a 1px border that appears on
+    // selection would nudge the label sideways as the view changes, the
+    // reflow the TS avoids by drawing this ring as a box-shadow.
+    border-width: 1px;
     background: root.selected ? root.hue.with-alpha(0.16)
         : (chip-touch.has-hover ? Theme.row-hover : #00000000);
-    border-width: root.selected ? 1px : 0px;
     border-color: root.selected ? root.hue.with-alpha(0.45) : #00000000;
+    // `.view-switcher__option` transitions background, colour and shadow
+    // over `--fast` with `--ease`; `Theme.fast` is already 0ms when the
+    // motion or micro switch says so.
+    animate background { duration: Theme.fast; }
+    animate border-color { duration: Theme.fast; }
 
     chip-touch := TouchArea {
         clicked => { root.picked(); }
@@ -579,6 +613,7 @@ component view-chip inherits Rectangle {
             color: root.selected ? root.hue : Theme.muted;
             font-size: 13px;
             vertical-alignment: center;
+            animate color { duration: Theme.fast; }
         }
 
         if (root.labels-mode != "icon") : Text {
@@ -587,6 +622,7 @@ component view-chip inherits Rectangle {
             font-size: 12.5px;
             font-weight: root.selected ? 600 : 500;
             vertical-alignment: center;
+            animate color { duration: Theme.fast; }
         }
     }
 }
@@ -609,6 +645,8 @@ component rail-row inherits Rectangle {
     border-radius: Theme.radius-sm;
     background: root.entry.selected ? Theme.accent-soft
         : (rail-touch.has-hover ? Theme.row-hover : #00000000);
+    // `.nav-item` (app.css L80, L1086): background and colour over `--fast`.
+    animate background { duration: Theme.fast; }
 
     rail-touch := TouchArea {
         clicked => { root.picked(root.entry.id); }
@@ -625,6 +663,7 @@ component rail-row inherits Rectangle {
             border-radius: 8px;
             background: root.entry.hue;
             opacity: root.entry.selected ? 1.0 : 0.65;
+            animate opacity { duration: Theme.fast; }
         }
 
         if (root.labels-mode != "icon" && !root.compact) : Text {
@@ -634,6 +673,7 @@ component rail-row inherits Rectangle {
             font-weight: root.entry.selected ? 600 : 500;
             overflow: elide;
             vertical-alignment: center;
+            animate color { duration: Theme.fast; }
         }
 
         if (!root.compact) : Rectangle { horizontal-stretch: 1; width: 1px; }
@@ -658,6 +698,7 @@ component settings-item inherits Rectangle {
     height: 34px;
     border-radius: Theme.radius-sm;
     background: footer-touch.has-hover ? Theme.row-hover : #00000000;
+    animate background { duration: Theme.fast; }
 
     footer-touch := TouchArea {
         clicked => { root.clicked(); }
@@ -673,6 +714,7 @@ component settings-item inherits Rectangle {
             color: Theme.muted;
             font-size: 14px;
             vertical-alignment: center;
+            animate color { duration: Theme.fast; }
         }
 
         if (root.labels && !root.compact) : Text {
@@ -682,6 +724,7 @@ component settings-item inherits Rectangle {
             font-weight: 500;
             overflow: elide;
             vertical-alignment: center;
+            animate color { duration: Theme.fast; }
         }
     }
 }
@@ -2056,11 +2099,15 @@ export component MainWindow inherits Window {
                         Rectangle {
                             height: 32px;
                             vertical-stretch: 0;
+                            // Hugs its own label, like the chips beside it.
+                            horizontal-stretch: 0;
                             border-radius: 8px;
                             background: root.sort-menu-open ? Theme.accent-soft
                                 : (sort-touch.has-hover ? Theme.row-hover : #00000000);
                             border-width: 1px;
                             border-color: root.sort-menu-open ? Theme.border-focus : Theme.border;
+                            animate background { duration: Theme.fast; }
+                            animate border-color { duration: Theme.fast; }
 
                             sort-touch := TouchArea {
                                 clicked => { root.sort-menu-open = !root.sort-menu-open; }
@@ -2341,16 +2388,34 @@ export component MainWindow inherits Window {
                 }
             }
 
+        }
+
             // ---- Context menus (Task 8.1) ---------------------------------
             // The backdrop eats presses on anything else, closes on wheel,
             // and the FocusScope that owns the keyboard sits between it and
             // the layers. One submenu level, because no menu this port ships
             // is deeper (context-menu.tsx allows many; depth is a property of
             // the trees in menus.rs, not of this overlay).
-            if (root.menu-open) : Rectangle {
+            //
+            // A child of the *window*, not of the content column: the point
+            // handed to `open_*` is the pointer's own, measured with
+            // `absolute-position + mouse-x` -- window pixels, the same pair
+            // the card's drag uses. Nested in the content column, which sits
+            // one rail's width to the right of the window, every menu landed
+            // that width away from the click; and the backdrop stopped at the
+            // column's edge, so a right-click on the rail left the menu open.
+            Rectangle {
+                // Built whether or not it is open, so the fade below has
+                // somewhere to come *from*: a layer created inside an `if` is
+                // already at full opacity the moment it exists, which is how
+                // the menu came to pop. While closed, `visible` keeps it out
+                // of the render and out of hit-testing.
+                visible: root.menu-open;
                 width: root.width;
                 height: root.height;
                 z: 40;
+                opacity: root.menu-open ? 1.0 : 0.0;
+                animate opacity { duration: Theme.normal; easing: ease-out; }
 
                 // Placement maths, the TS's `placeRoot`: flip back inside the
                 // window when the point would clip.
@@ -2372,7 +2437,10 @@ export component MainWindow inherits Window {
                 property <length> sub-y: (sub-y-raw + root.menu-sub-h * 1px + 8px > root.height)
                     ? Math.max(8px, root.height - root.menu-sub-h * 1px - 8px) : sub-y-raw;
 
-                TouchArea {
+                // The keyboard's focus is taken on every open, so the scope
+                // is still built per open (`init` fires at creation, not at
+                // visibility); the layers ride with it.
+                if (root.menu-open) : TouchArea {
                     width: parent.width;
                     height: parent.height;
                     clicked => { root.menu-close(); }
@@ -2383,7 +2451,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                keys := FocusScope {
+                if (root.menu-open) : FocusScope {
                     width: parent.width;
                     height: parent.height;
                     init => { self.focus(); }
@@ -2393,7 +2461,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                MenuLayer {
+                if (root.menu-open) : MenuLayer {
                     x: root-x;
                     y: root-y;
                     rows: root.menu-root-rows;
@@ -2415,7 +2483,6 @@ export component MainWindow inherits Window {
                     hovered(i) => { root.menu-hover(i); }
                 }
             }
-        }
 
             // ---- The sort menu -------------------------------------------
             // Drops under its button and floats over the columns, so the
@@ -2434,14 +2501,22 @@ export component MainWindow inherits Window {
                 clicked => { root.sort-menu-open = false; }
             }
 
-            if (root.sort-menu-open) : Rectangle {
+            // `.view-menu__panel` drops in (`view-menu-in`, 170ms
+            // `--ease-out`): 6px up and transparent, then settled. A panel
+            // built inside an `if` is already in place on its first frame, so
+            // it can only pop; this one is always built, and `visible` keeps
+            // it out of the render and out of hit-testing while closed, so
+            // `y` and `opacity` are what the animation reads.
+            Rectangle {
+                visible: root.sort-menu-open;
                 // The button sits at the far right of the content column:
                 // window minus a hand's width of margin for the panel.
                 x: root.width - 252px;
                 // Padding + title row + search + the switcher row, with the
                 // column's 14px between each -- the menu hangs off the row
                 // that owns it.
-                y: 180px;
+                y: root.sort-menu-open ? 180px : 174px;
+                opacity: root.sort-menu-open ? 1.0 : 0.0;
                 z: 31;
                 width: 228px;
                 height: root.sort-options.length * 36px + 16px;
@@ -2450,6 +2525,8 @@ export component MainWindow inherits Window {
                 border-width: 1px;
                 border-color: Theme.border;
                 clip: true;
+                animate y { duration: Theme.motion <= 0.0 ? 0ms : 170ms; easing: ease-out; }
+                animate opacity { duration: Theme.motion <= 0.0 ? 0ms : 170ms; easing: ease-out; }
 
                 VerticalLayout {
                     padding-top: 8px;
@@ -2461,9 +2538,15 @@ export component MainWindow inherits Window {
                     for opt in root.sort-options : Rectangle {
                         height: 36px;
                         border-radius: 6px;
+                        // `.view-menu__option`: `--surface-hover` under the
+                        // pointer, `--grad-soft` when it is the current one,
+                        // both over `--fast`.
                         background: opt.id == root.vault-sort
-                            ? Theme.accent-soft
+                            ? @linear-gradient(120deg,
+                                Theme.grad-from.with-alpha(0.20),
+                                Theme.grad-to.with-alpha(0.12))
                             : (opt-touch.has-hover ? Theme.row-hover : #00000000);
+                        animate background { duration: Theme.fast; }
 
                         opt-touch := TouchArea {
                             clicked => {

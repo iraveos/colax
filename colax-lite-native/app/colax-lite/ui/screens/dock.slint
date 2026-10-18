@@ -43,6 +43,10 @@ component dock-slot inherits Rectangle {
     border-color: root.slot.active ? Theme.accent.with-alpha(0.45) : #00000000;
     background: root.slot.active ? Theme.accent-soft
         : (slot-touch.has-hover ? Theme.surface-hover : #00000000);
+    // `.dock__slot`: background, colour and border over `--fast` (app.css
+    // L395), its glyph lifting on the same length (L399).
+    animate background { duration: Theme.fast; }
+    animate border-color { duration: Theme.fast; }
 
     // The family boundary: a hairline in the gap before this slot, vertical on
     // a top/bottom bar and horizontal on the sides (`.dock__div`).

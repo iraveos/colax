@@ -100,7 +100,11 @@ fn sep() -> MenuRow {
 fn heading(label: &str) -> MenuRow {
     MenuRow {
         id: "".into(),
-        label: label.into(),
+        // `.ctx-menu__heading` is `text-transform: uppercase`, which has no
+        // Slint equivalent: the label is upper-cased here so the two render
+        // the same. The trees keep their sentence-case source, so the menu's
+        // own text still reads the way App.tsx wrote it.
+        label: label.to_uppercase().into(),
         shortcut: "".into(),
         kind: 2,
         sub: false,
