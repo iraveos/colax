@@ -14,6 +14,7 @@ import {
   EyeIcon,
   EyeOffIcon,
   FlagIcon,
+  ImageIcon,
   InboxIcon,
   KeyShieldIcon,
   StarIcon,
@@ -859,10 +860,23 @@ export function AnimatedListView({
               </div>
             </div>
 
-            {item.notes ? (
+            {(item.notes || item.attachments?.length) ? (
               <div className="card-row__foot">
-                <span className="card-row__label">Notes</span>
-                <span className="card-row__notes">{item.notes}</span>
+                {item.notes ? (
+                  <>
+                    <span className="card-row__label">Notes</span>
+                    <span className="card-row__notes">{item.notes}</span>
+                  </>
+                ) : null}
+                {/* A count chip, not the media itself: the strip lives in the
+                    editor, and decoding megabytes of data URL per visible card
+                    would stall the list the media was meant to enrich. */}
+                {item.attachments?.length ? (
+                  <span className="card-row__media" title={`${item.attachments.length} image(s) or video(s) in the notes`}>
+                    <ImageIcon />
+                    {item.attachments.length}
+                  </span>
+                ) : null}
               </div>
             ) : null}
 

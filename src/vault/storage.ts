@@ -6,7 +6,7 @@
  * Nothing here ever receives a master password or a plaintext credential.
  */
 
-import { normaliseItem, type StoredItem, type VaultItem } from './types.ts';
+import { normaliseItem, type StoredItem, type VaultAttachment, type VaultItem } from './types.ts';
 import type { VaultHeader } from '../crypto/vault-crypto.ts';
 
 import {
@@ -335,10 +335,19 @@ export const MAX_HISTORY_CHARS = 400_000;
  * True when two versions of a login differ in nothing a user would call a
  * change: every field matches apart from the save clocks. Used to keep a
  * re-save out of the History log.
+ *
+ * Media counts by digest: the data URLs are megabytes and this runs on every
+ * edit of any login, so stringifying them twice per check is a stall — id,
+ * type and length answer "did the media change" just as well.
  */
 function sameContent(a: VaultItem, b: VaultItem): boolean {
   const strip = (item: VaultItem) => {
     const { updatedAt: _u, passwordUpdatedAt: _p, usernameUpdatedAt: _n, ...rest } = item;
+    if (rest.attachments?.length) {
+      rest.attachments = rest.attachments.map(
+        (attachment) => ({ ...attachment, dataUrl: attachment.dataUrl.length }),
+      ) as unknown as VaultAttachment[];
+    }
     return JSON.stringify(rest);
   };
   return strip(a) === strip(b);
@@ -431,6 +440,18 @@ export function historyEventsFor(
     title: item.title || item.username || 'Untitled',
     username: item.username,
   });
+  /**
+   * History snapshots go into prefs, and prefs live **unencrypted** on disk —
+   * pasted media, however well encrypted in the item blob, must never copy
+   * into it. A restore keeps the text and loses the media; the editor's note
+   * says so at the point of paste, where the tradeoff is visible.
+   */
+  const snapshot = (item: VaultItem): VaultItem => {
+    if (!item.attachments?.length) return item;
+    const { attachments: _withoutMedia, ...rest } = item;
+    return { ...rest, attachments: [] };
+  };
+
   for (const item of after) {
     const was = previous.get(item.id);
     if (!was) {
@@ -444,13 +465,13 @@ export function historyEventsFor(
     // (`updatedAt`, and the per-field `passwordUpdatedAt` / `usernameUpdatedAt`
     // that move with it) are what a no-op save touches.
     if (was.updatedAt !== item.updatedAt && !sameContent(was, item)) {
-      events.push({ id: newHistoryEventId(), at: now, action: 'edited', itemId: item.id, ...describe(was), before: was });
+      events.push({ id: newHistoryEventId(), at: now, action: 'edited', itemId: item.id, ...describe(was), before: snapshot(was) });
     }
   }
   const alive = new Set(after.map((item) => item.id));
   for (const item of before) {
     if (alive.has(item.id)) continue;
-    events.push({ id: newHistoryEventId(), at: now, action: 'deleted', itemId: item.id, ...describe(item), before: item });
+    events.push({ id: newHistoryEventId(), at: now, action: 'deleted', itemId: item.id, ...describe(item), before: snapshot(item) });
   }
   return events;
 }

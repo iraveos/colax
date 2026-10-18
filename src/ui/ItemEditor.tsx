@@ -7,7 +7,7 @@
  * section one click away and the height stable as fields are added.
  */
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type ReactNode } from 'react';
 import { generatePassphrase, generatePassword, type GeneratorOptions } from '../crypto/passwords.ts';
 import { EMPTY_SECURITY, requiresVerification } from '../crypto/security.ts';
 import { SecurityForm } from './SecurityForm.tsx';
@@ -15,6 +15,9 @@ import {
   MAX_AVATAR_BYTES,
   MAX_BACKGROUND_BYTES,
   MAX_IMAGE_EDGE,
+  MAX_NOTE_ATTACHMENTS,
+  MAX_NOTE_MEDIA_BYTES,
+  attachmentBytes,
   fromDateInput,
   hueFor,
   isAllowedImageSrc,
@@ -25,6 +28,7 @@ import {
 import { createTag, type Tag } from '../vault/channels.ts';
 import { mailboxUsable } from '../vault/site-intel.ts';
 import { readImageFile } from './card-art.ts';
+import { mediaFilesFromTransfer, readNoteAttachment } from './note-media.ts';
 import { Alert, Modal, StrengthMeter, Toggle } from './primitives.tsx';
 import { formatLoginCompact } from './login-format.ts';
 import { markClipboardSelfWritten } from './useClipboardWatcher.ts';
@@ -44,6 +48,7 @@ import {
   PaletteIcon,
   ShieldIcon,
   TagIcon,
+  TrashIcon,
   XIcon,
   MailIcon,
   ShareIcon,
@@ -392,6 +397,66 @@ export function ItemEditor({
 
   const patch = (next: Partial<VaultItem>) => setDraft((current) => ({ ...current, ...next }));
 
+  /**
+   * Media pasted or dropped into the notes: the files become attachments that
+   * the save seals inside the encrypted login, in the order pasted. A plain
+   * text paste (no media on the clipboard) never reaches here and keeps the
+   * default textarea behavior.
+   */
+  const collectNoteMedia = async (files: File[]) => {
+    const existing = draft.attachments ?? [];
+    if (existing.length >= MAX_NOTE_ATTACHMENTS) {
+      onNotify(`Notes hold the media limit (${MAX_NOTE_ATTACHMENTS}) — remove something first`);
+      return;
+    }
+    let used = existing.reduce((sum, attachment) => sum + attachmentBytes(attachment.dataUrl), 0);
+    let working = [...existing];
+    let rejected = '';
+    for (const file of files) {
+      if (working.length >= MAX_NOTE_ATTACHMENTS) {
+        rejected = `the ${MAX_NOTE_ATTACHMENTS}-media limit was reached first`;
+        break;
+      }
+      try {
+        const attachment = await readNoteAttachment(file);
+        const bytes = attachmentBytes(attachment.dataUrl);
+        if (used + bytes > MAX_NOTE_MEDIA_BYTES) {
+          rejected = 'the 20 MB notes-media budget was hit first';
+          break;
+        }
+        working = [...working, attachment];
+        used += bytes;
+      } catch (cause) {
+        rejected = cause instanceof Error ? cause.message : 'one file could not be read';
+        break;
+      }
+    }
+    if (working.length > existing.length) {
+      onNotify(
+        rejected
+          ? `${working.length - existing.length} added — ${rejected}`
+          : `${working.length - existing.length} added to the notes`,
+      );
+      patch({ attachments: working });
+    } else if (rejected) {
+      onNotify(rejected.charAt(0).toUpperCase() + rejected.slice(1));
+    }
+  };
+
+  const onNotesPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = mediaFilesFromTransfer(event.clipboardData);
+    if (!files.length) return; // Text: the textarea does what it always does.
+    event.preventDefault();
+    void collectNoteMedia(files);
+  };
+
+  const onNotesDrop = (event: DragEvent<HTMLTextAreaElement>) => {
+    const files = mediaFilesFromTransfer(event.dataTransfer);
+    if (!files.length) return;
+    event.preventDefault();
+    void collectNoteMedia(files);
+  };
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
@@ -707,8 +772,38 @@ export function ItemEditor({
           className="input"
           value={draft.notes ?? ''}
           onChange={(event) => patch({ notes: event.target.value })}
+          onPaste={onNotesPaste}
+          onDrop={onNotesDrop}
           placeholder="Recovery codes, security questions, anything else"
         />
+        {draft.attachments?.length ? (
+          <div className="notes-media" role="list" aria-label="Media in the notes">
+            {draft.attachments.map((attachment) => (
+              <div className="notes-media__item" key={attachment.id}>
+                {attachment.mime.startsWith('video/') ? (
+                  <video className="notes-media__video" src={attachment.dataUrl} controls muted preload="metadata" />
+                ) : (
+                  <img className="notes-media__thumb" src={attachment.dataUrl} alt="" loading="lazy" />
+                )}
+                <button
+                  type="button"
+                  className="btn btn--icon notes-media__remove"
+                  aria-label="Remove media"
+                  title="Remove from the notes"
+                  onClick={() =>
+                    patch({ attachments: draft.attachments!.filter((kept) => kept.id !== attachment.id) })
+                  }
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <p className="field__note">
+          Paste (Ctrl+V) or drop images, GIFs and videos here. They are encrypted with the login and never leave
+          the device — History keeps no media, so restoring an older version of this login leaves the media out.
+        </p>
       </div>
     ),
 
