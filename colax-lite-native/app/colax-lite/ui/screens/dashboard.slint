@@ -575,7 +575,9 @@ export component Dashboard inherits Flickable {
     in property <DashPop> pop-reuse;
     in property <DashPop> pop-uses;
 
-    callback select-channel(id: string);
+    // `tab` is the merged section to open through (models `DashStat.tab`): ""
+    // means a real channel of its own.
+    callback select-channel(id: string, tab: string);
     callback open-login(id: string);
     callback add-login();
     callback bulk-add();
@@ -687,7 +689,7 @@ export component Dashboard inherits Flickable {
                             kind: 0;
                             h: 36px;
                             cross-axis-self-alignment: center;
-                            clicked => { root.select-channel(root.headline.channel); }
+                            clicked => { root.select-channel(root.headline.channel, root.headline.tab); }
                         }
                     }
                     if (!root.has-headline) : Text {
@@ -736,7 +738,7 @@ export component Dashboard inherits Flickable {
             for stat in root.stats : stat-tile {
                 stat: stat;
                 horizontal-stretch: 1;
-                open => { root.select-channel(stat.channel); }
+                open => { root.select-channel(stat.channel, stat.tab); }
             }
         }
 
@@ -801,7 +803,7 @@ export component Dashboard inherits Flickable {
                         padding-right: 6px;
                         for issue in root.issues : issue-row {
                             issue: issue;
-                            open => { root.select-channel(issue.channel); }
+                            open => { root.select-channel(issue.channel, issue.tab); }
                         }
                     }
                 }
@@ -1150,7 +1152,7 @@ export component Dashboard inherits Flickable {
                             count: bar.count;
                             share: bar.share;
                             can-open: bar.channel != "";
-                            open => { root.select-channel(bar.channel); }
+                            open => { root.select-channel(bar.channel, ""); }
                         }
                         if (root.channels-more > 0) : VerticalLayout {
                             padding: 4px;

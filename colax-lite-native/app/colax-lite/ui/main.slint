@@ -16,7 +16,7 @@ import { Theme } from "theme.slint";
 // `Badge` the widget is aliased: models.slint also exports a `Badge` *struct*
 // and one name cannot mean both here.
 import { Btn, Field, Alert, Badge as BadgeBox, EmptyState, StrengthMeter } from "widgets.slint";
-import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow, ShortcutRow, DockBarRow, DockManagerRow } from "models.slint";
+import { Screen, Badge, LoginCard, SidebarRow, TagChip, ViewKind, RailPosition, HueSwatch, PickTag, QuestionRow, QrCell, OptRow, DashRing, DashIssue, DashStat, DashRow, DashBar, DashReuse, DashUse, DashDay, DashKey, DashPop, HistoryData, AccentChip, ChannelRow, TagRow, IconOption, OptProfileRow, MenuRow, ShortcutRow, DockBarRow, DockManagerRow, ListTab } from "models.slint";
 import { ShortcutsSheet } from "screens/shortcuts.slint";
 import { AppearanceTuner } from "screens/appearance_tuner.slint";
 import { DockLayer } from "screens/dock.slint";
@@ -564,6 +564,59 @@ component list-row inherits Rectangle {
     }
 }
 
+// One tab of the All-logins strip (`.segmented__option.list-tabs__option`,
+// app.css L1138-1146): the section's label with its count pill after it. The
+// active tab wears the accent; the pill reads `--text-faint` only while
+// inactive, exactly as the web does.
+component list-tab inherits Rectangle {
+    in property <string> label;
+    in property <int> count;
+    in property <bool> selected;
+    callback picked();
+
+    height: 32px;
+    border-radius: Theme.radius-sm;
+    background: root.selected ? Theme.accent-soft : (touch.has-hover ? #ffffff1a : #ffffff0a);
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : #00000000;
+    animate background { duration: Theme.fast; }
+    animate border-color { duration: Theme.fast; }
+    touch := TouchArea {
+        clicked => { root.picked(); }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        horizontal-stretch: 0;
+        Text {
+            text: root.label;
+            color: root.selected ? Theme.accent : Theme.muted;
+            font-size: 12.5px;
+            font-weight: 600;
+            vertical-alignment: center;
+            animate color { duration: Theme.fast; }
+        }
+        Rectangle {
+            // `.list-tabs__count` (app.css L1145): the pill. The width grows a
+            // little with the count, clamped roughly to one-to-four digits.
+            width: (3px * Math.max(1, Math.min(root.count, 4))) + 8px;
+            height: 14px;
+            border-radius: 7px;
+            background: Theme.row-hover;
+            Text {
+                text: root.count;
+                width: parent.width;
+                height: parent.height;
+                color: root.selected ? Theme.text : Theme.faint;
+                font-size: 10px;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
+
 // One button of the view switcher. `labels-mode` is the `sidebarLabels`
 // pref (icon / name / both) that Settings offers in TS: one value decides
 // whether the four buttons spell themselves out.
@@ -767,6 +820,21 @@ export component MainWindow inherits Window {
     // The rail label for the active channel, pushed with the models above
     // (a channel may be renamed, and "All logins" is only the default).
     in property <string> channel-name;
+    // The active channel's own id, which decides when the merged strip
+    // belongs on screen: TS's `showAllTabs` is `activeChannel.id === 'all'`
+    // — a channel the user made never wears the tabs, whatever its kind.
+    in property <bool> show-all-tabs: false;
+    // Which merged section is showing. Favorites, Needs attention and Weak or
+    // reused are tabs of the main channel now, not rows of their own (channels.ts
+    // ALL_LOGIN_TABS); the tab is a view of the same channel, so it lives here
+    // rather than being pushed into the channel itself.
+    in-out property <string> all-tab: "all";
+    // The strip's four tabs with their counts, derived in Rust from the same
+    // filters the list uses, so a tab can never advertise a number the list
+    // behind it would not show (App.tsx `tabCounts`).
+    in property <[ListTab]> all-tabs;
+    /// Clicking a tab, or a dashboard tile that opens All logins on a section.
+    callback open-section(id: string, tab: string);
     // Empty-state copy, ordered by Rust (`cards_empty_state`, from
     // ViewEmptyState in views.tsx): a search that found nothing comes first,
     // then the two channels the TS names, then the vault-empty fallback. The
@@ -2026,7 +2094,7 @@ export component MainWindow inherits Window {
                     // Both routes exist on the root already: the rail handler
                     // clears the search and refreshes, the editor handler
                     // opens a new login for "".
-                    select-channel(id) => { root.channel-selected(id); }
+                    select-channel(id, tab) => { root.open-section(id, tab); }
                     open-login(id) => { root.open-editor(id); }
                     add-login() => { root.open-editor(""); }
                     bulk-add() => { root.dash-bulk-add(); }
@@ -2154,6 +2222,27 @@ export component MainWindow inherits Window {
                         focus-tick: root.search-focus-tick;
                         value <=> root.search-text;
                         edited => { root.search-changed(root.search-text); }
+                    }
+
+                    // ---- The merged sections of All logins ----------------
+                    // Favorites, Needs attention and Weak or reused were three
+                    // rows in the rail; they are four views of one list, so
+                    // they are tabs of it instead (channels.ts ALL_LOGIN_TABS).
+                    // Only the main channel carries the strip (App.tsx
+                    // `showAllTabs`), and the counts come from Rust through the
+                    // same filters the list uses, so a tab can never advertise
+                    // a number the list behind it would not show.
+                    if (root.show-all-tabs) : HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        vertical-stretch: 0;
+
+                        for tab in root.all-tabs : list-tab {
+                            label: tab.label;
+                            count: tab.count;
+                            selected: root.all-tab == tab.kind;
+                            picked => { root.open-section(root.active-channel, tab.kind); }
+                        }
                     }
 
                     // ---- The view switcher --------------------------------
