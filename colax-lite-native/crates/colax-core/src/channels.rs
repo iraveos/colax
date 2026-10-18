@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::health::find_weak_items;
-use crate::model::VaultItem;
+use crate::model::{normalise_security, LoginSecurity, VaultItem};
 
 /// The base filter a channel applies. `'tags'` behaves like `'all'`; the
 /// channel's `tag_ids` then narrow it, so tags work on any channel rather
@@ -120,6 +120,11 @@ pub struct Channel {
     pub show_mail: bool,
     /// Which account's mail the expander reads: `'all'` or an account id.
     pub mail_account: String,
+    /// The channel's own second factor (`Channel.security`, channels.ts
+    /// L181/223): the same `LoginSecurity` a login carries, gating the list
+    /// behind it — the sidebar row stays visible and asks on arrival rather
+    /// than disappearing. Shipped rows carry the empty block.
+    pub security: LoginSecurity,
 }
 
 impl Default for Channel {
@@ -140,6 +145,7 @@ impl Default for Channel {
             locked: false,
             show_mail: true,
             mail_account: "all".into(),
+            security: LoginSecurity::default(),
         }
     }
 }
@@ -405,6 +411,10 @@ pub fn normalise_channels(stored: Option<&serde_json::Value>) -> Vec<Channel> {
                 ),
             show_mail: obj.get("showMail").and_then(serde_json::Value::as_bool) != Some(false),
             mail_account,
+            // The channel's own factor — normalised through the one shared
+            // coercer (`normaliseSecurity` in security.ts), so a hand-edited
+            // file reads the same no matter where it is mounted.
+            security: normalise_security(obj.get("security")),
         });
     }
 
@@ -506,7 +516,7 @@ fn now_ms() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::empty_item;
+    use crate::model::{empty_item, is_secured, security_level};
     use crate::strength::estimate_strength;
 
     fn item(id: &str, title: &str) -> VaultItem {
@@ -829,5 +839,33 @@ mod tests {
         let (id, tab) = section_target(&orphans, ChannelKind::Attention);
         assert_eq!(id, orphans[0].id);
         assert_eq!(tab, Some(ChannelKind::Attention));
+    }
+
+    /// A channel can carry a second factor of its own (`Channel.security`,
+    /// channels.ts L181): normalised through the same coercer a login's is,
+    /// and empty on everything the app ships.
+    #[test]
+    fn channels_carry_an_optional_second_factor() {
+        for shipped in builtin_channels() {
+            assert!(!is_secured(&shipped.security), "{} ships unsecured", shipped.id);
+        }
+
+        let stored = serde_json::json!([
+            {
+                "id": "vault-door",
+                "name": "Vault door",
+                "kind": "tags",
+                "security": { "passcode": { "hash": "h", "salt": "s" } }
+            },
+            { "id": "plain", "name": "Plain", "kind": "tags" }
+        ]);
+        let channels = normalise_channels(Some(&stored));
+        let door = channels.iter().find(|c| c.id == "vault-door").unwrap();
+        // A passcode is one factor: `securityLevel`'s `partial`, and the gate
+        // treats any of them as must-clear.
+        assert!(is_secured(&door.security));
+        assert_eq!(security_level(&door.security), "partial");
+        let plain = channels.iter().find(|c| c.id == "plain").unwrap();
+        assert!(!is_secured(&plain.security));
     }
 }
