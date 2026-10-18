@@ -1408,6 +1408,48 @@ export component MainWindow inherits Window {
     callback channel-ed-image-float(key: string, value: float);
     callback channel-ed-show-mail-toggled(value: bool);
     callback channel-ed-mail-account-picked(id: string);
+
+    // ---- The channel editor's Security form ------------------------------
+    // Window-level relays of the `SecurityForm` the channel modal mounts:
+    // one name per one of the panel's inputs and actions, handlers in
+    // `channels_ops` answering all of them. Same names as the login
+    // editor's `edit-sec-*` set, a different prefix, so the two modals'
+    // state never crosses even though they share the whole form.
+    in-out property <string> channel-sec-level: "none";
+    in-out property <string> channel-sec-questions-note: "Not set";
+    in-out property <bool> channel-sec-totp: false;
+    in-out property <string> channel-sec-otpauth;
+    in property <int> channel-sec-qr-size: 0;
+    in property <[QrCell]> channel-sec-qr-cells;
+    in-out property <bool> channel-sec-totp-staged: false;
+    in-out property <string> channel-sec-totp-note;
+    in-out property <string> channel-sec-totp-seed;
+    in-out property <string> channel-sec-totp-code;
+    in-out property <bool> channel-sec-passcode: false;
+    in-out property <string> channel-sec-passcode-new;
+    in-out property <string> channel-sec-passcode-confirm;
+    in-out property <string> channel-sec-passcode-input;
+    in-out property <string> channel-sec-passcode-error;
+    in property <[QuestionRow]> channel-sec-questions;
+    in-out property <string> channel-sec-answer-error;
+    in-out property <string> channel-sec-checking-id;
+    in-out property <string> channel-sec-check-input;
+    in-out property <string> channel-sec-new-prompt;
+    in-out property <string> channel-sec-new-answer;
+
+    callback channel-sec-totp-attach();
+    callback channel-sec-totp-generate();
+    callback channel-sec-totp-check();
+    callback channel-sec-totp-discard();
+    callback channel-sec-totp-remove();
+    callback channel-sec-passcode-save();
+    callback channel-sec-passcode-check();
+    callback channel-sec-passcode-remove();
+    callback channel-sec-question-add();
+    callback channel-sec-question-remove(id: string);
+    callback channel-sec-question-check(id: string);
+    callback channel-sec-prompt-step(delta: int);
+
     in-out property <bool> settings-open: false;
     in-out property <int> settings-tab-index: 0;
     // The modal's frame, in logical pixels, kept in step with the window by
@@ -3740,6 +3782,43 @@ export component MainWindow inherits Window {
             image-float(key, value) => { root.channel-ed-image-float(key, value); }
             show-mail-toggled(value) => { root.channel-ed-show-mail-toggled(value); }
             mail-account-picked(id) => { root.channel-ed-mail-account-picked(id); }
+
+            // The Security panel, relayed through the root like the login
+            // editor's is.
+            sec-level: root.channel-sec-level;
+            sec-questions-note: root.channel-sec-questions-note;
+            sec-totp: root.channel-sec-totp;
+            sec-otpauth: root.channel-sec-otpauth;
+            qr-size: root.channel-sec-qr-size;
+            qr-cells: root.channel-sec-qr-cells;
+            sec-totp-staged: root.channel-sec-totp-staged;
+            sec-totp-note: root.channel-sec-totp-note;
+            sec-totp-seed <=> root.channel-sec-totp-seed;
+            sec-totp-code <=> root.channel-sec-totp-code;
+            sec-passcode: root.channel-sec-passcode;
+            sec-passcode-new <=> root.channel-sec-passcode-new;
+            sec-passcode-confirm <=> root.channel-sec-passcode-confirm;
+            sec-passcode-input <=> root.channel-sec-passcode-input;
+            sec-passcode-error: root.channel-sec-passcode-error;
+            sec-questions: root.channel-sec-questions;
+            sec-answer-error: root.channel-sec-answer-error;
+            sec-checking-id <=> root.channel-sec-checking-id;
+            sec-check-input <=> root.channel-sec-check-input;
+            sec-new-prompt: root.channel-sec-new-prompt;
+            sec-new-answer <=> root.channel-sec-new-answer;
+
+            sec-totp-attach => { root.channel-sec-totp-attach(); }
+            sec-totp-generate => { root.channel-sec-totp-generate(); }
+            sec-totp-check => { root.channel-sec-totp-check(); }
+            sec-totp-discard => { root.channel-sec-totp-discard(); }
+            sec-totp-remove => { root.channel-sec-totp-remove(); }
+            sec-passcode-save => { root.channel-sec-passcode-save(); }
+            sec-passcode-check => { root.channel-sec-passcode-check(); }
+            sec-passcode-remove => { root.channel-sec-passcode-remove(); }
+            sec-question-add => { root.channel-sec-question-add(); }
+            sec-question-remove(id) => { root.channel-sec-question-remove(id); }
+            sec-question-check(id) => { root.channel-sec-question-check(id); }
+            sec-prompt-step(delta) => { root.channel-sec-prompt-step(delta); }
         }
 
         // The appearance tuner (Task 8.4): a translucent slide-over, *not* a

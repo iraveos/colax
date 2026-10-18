@@ -352,6 +352,9 @@ enum GateIntent {
     Edit(String),
     /// The password inside the editor stays hidden without it (`reveal`).
     Reveal(String),
+    /// A channel's own factor gates the list behind it, the sidebar row
+    /// staying visible and asking on arrival (App.tsx `channelLocked`).
+    Channel(String),
 }
 
 /// Behinds a `RefCell` because the Slint callbacks are plain `Fn` closures
@@ -392,6 +395,12 @@ struct AppState {
     editor_staged_seed: Option<String>,
     /// Which of `QUESTION_PROMPTS` the add-question row is showing.
     editor_prompt_index: usize,
+    /// Same staging as the editor's `editor_staged_seed`, kept apart so the
+    /// two modals can never cross: `SecurityForm.tsx` is one component that
+    /// both mount, and each one must hold its own draft.
+    channel_staged_seed: Option<String>,
+    /// The channel form's prompt stepper, for the same reason.
+    channel_prompt_index: usize,
     /// The vault's own second factor (Settings › Security) staged exactly as
     /// the editor's is: a key generated or pasted but not yet confirmed by a
     /// code. Nothing about `prefs.vaultSecurity` changes until a code proves
@@ -432,6 +441,11 @@ struct AppState {
     /// Logins whose second factor was cleared this session (TS's
     /// `verifiedItems`): the gate asks once per login, not once per click.
     verified: HashSet<String>,
+    /// Channels whose own factor was cleared this session (TS's
+    /// `channelsUnlocked`, App.tsx L391): the gate asks on arrival, not on
+    /// every repaint of the channel, and is spent again on lock — the vault
+    /// was sealed, so the list behind its door went with it.
+    channels_unlocked: HashSet<String>,
     /// The vault's own factor, cleared for the session (TS's
     /// `vaultVerified`), and spent again on lock: the vault was sealed, so
     /// the proof went with it.
@@ -732,6 +746,53 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     // The quick-launch bars and the Layout tab's dock manager (Task 8.3) ride
     // it too: a key write, a drag commit and a channel rename all land here.
     dock::push(ui, state);
+    // A channel secured with its own factor asks on arrival (App.tsx
+    // `channelLocked`): the pane never paints its list without the check now,
+    // whichever path arrived — rail, tab strip, dashboard tile.
+    maybe_gate_channel(ui, state);
+}
+
+/// A secured channel's gate (`SecurityGate.tsx`, App.tsx L3680-3691): the
+/// same panel the vault's factor and a login's open use, against the
+/// channel's own `LoginSecurity`. The proof is per-channel for the session
+/// (`channelsUnlocked`), and the rail row is never hidden — the list behind
+/// it is what is protected.
+fn maybe_gate_channel(ui: &MainWindow, state: &Shared) {
+    if ui.get_screen() != Screen::Vault {
+        return;
+    }
+    let channel_id = ui.get_active_channel().to_string();
+    // A gate already asking for this channel stays put: `open_gate` clears
+    // its panel, so a refresh riding a keystroke would wipe an attempt typed
+    // mid-sentence.
+    if state
+        .borrow()
+        .gate
+        .as_ref()
+        .is_some_and(|gate| matches!(gate.intent, GateIntent::Channel(ref id) if id == &channel_id))
+    {
+        return;
+    }
+    let (name, security) = {
+        let guard = state.borrow();
+        let prefs = items::prefs_from(guard.engine.preferences());
+        let channel = items::channel_by_id(&prefs, &channel_id);
+        (channel.name.clone(), channel.security.clone())
+    };
+    if !colax_core::is_secured(&security) {
+        return;
+    }
+    if state.borrow().channels_unlocked.contains(&channel_id) {
+        return;
+    }
+    open_gate(
+        ui,
+        state,
+        GateIntent::Channel(channel_id),
+        security,
+        &format!("Open \"{name}\""),
+        "This channel has its own second factor.",
+    );
 }
 
 /// The picture behind every screen, and its wash.
@@ -3709,10 +3770,6 @@ fn render_check(ui: &MainWindow, state: &Shared) -> i32 {
         failures.push("editor: no card to edit".to_string());
     }
 
-    for line in &lines {
-        println!("render-check: {line}");
-    }
-
     // The toast stack (`.toasts`): raise one, reconcile, and find it still
     // up — the thing the inline notice pill could never prove, because the
     // dump itself was the only witness of its text.
@@ -3724,6 +3781,84 @@ fn render_check(ui: &MainWindow, state: &Shared) -> i32 {
     }
     println!("render-check: toast: cards={raised}");
 
+    // A secured channel asks on arrival (App.tsx `channelLocked`). Make one,
+    // walk to it: the gate opens with the TS's own title and hint, refuses
+    // the wrong passcode, takes the right one, and the proof is spent by a
+    // lock like every other proof here.
+    let secured = colax_core::Channel {
+        name: "Locked door".into(),
+        ..colax_core::channels::create_channel("")
+    };
+    let gate_channel_id = secured.id.clone();
+    let (gate_hash, gate_salt) = hash_passcode("123456");
+    let secured = colax_core::Channel {
+        security: LoginSecurity {
+            passcode: Some(SecurityPasscode { hash: gate_hash, salt: gate_salt }),
+            ..LoginSecurity::default()
+        },
+        ..secured
+    };
+    settings_ops::write(ui, state, |prefs| {
+        prefs.channels.push(secured);
+        true
+    });
+    ui.set_active_channel(gate_channel_id.as_str().into());
+    refresh_items(ui, state);
+    let gate_up = state
+        .borrow()
+        .gate
+        .as_ref()
+        .map(|gate| {
+            matches!(gate.intent, GateIntent::Channel(ref id) if id == &gate_channel_id)
+        })
+        .unwrap_or(false);
+    lines.push(format!(
+        "gate/open: open={} title={:?} hint={:?} cards={}",
+        ui.get_gate_open(),
+        ui.get_gate_title(),
+        ui.get_gate_hint(),
+        ui.get_cards().row_count()
+    ));
+    if !gate_up || !ui.get_gate_open() {
+        failures.push("gate/open: the channel gate did not open for a secured channel".into());
+    }
+    if ui.get_gate_open() {
+        // The gate's callbacks are registered later in the boot (the render
+        // check never runs the event loop), so the harness calls the Rust
+        // handlers the way the Slint invocations would.
+        gate_unlock(ui, state, "passcode", "000000", "");
+        lines.push(format!("gate/refused: err={:?}", ui.get_gate_error()));
+        if ui.get_gate_error().is_empty() || !ui.get_gate_open() {
+            failures.push("gate/refused: a wrong passcode must refuse and stay up".into());
+        }
+        gate_unlock(ui, state, "passcode", "123456", "");
+        lines.push(format!(
+            "gate/passed: open={} cards={}",
+            ui.get_gate_open(),
+            ui.get_cards().row_count()
+        ));
+        if ui.get_gate_open() {
+            failures.push("gate/passed: the gate should drop once the passcode is proved".into());
+        }
+        // A lock spends a channel's proof, and cancel walks home to All.
+        lock_vault(ui, state);
+        goto(ui, state, Screen::Vault);
+        ui.set_active_channel(gate_channel_id.as_str().into());
+        refresh_items(ui, state);
+        lines.push(format!("gate/reasks: open={}", ui.get_gate_open()));
+        if !ui.get_gate_open() {
+            failures.push("gate/reasks: a lock must spend the channel's proof".into());
+        }
+        gate_cancel(ui, state);
+        lines.push(format!("gate/cancel: channel={:?}", ui.get_active_channel()));
+        if ui.get_active_channel() != "all" {
+            failures.push("gate/cancel: a declined channel should walk home to All".into());
+        }
+    }
+
+    for line in &lines {
+        println!("render-check: {line}");
+    }
     for failure in &failures {
         eprintln!("render-check: FAIL {failure}");
     }
@@ -4567,7 +4702,9 @@ const HUE_PRESETS: [(&str, f64); 8] = [
 /// `SecurityForm.tsx` L627. Copy lives beside the presets for the same reason
 /// they do: Rust steps the index and shows one of them, and a list written in
 /// two files would have two chances to drift.
-const QUESTION_PROMPTS: [&str; 8] = [
+/// The prompts the add-question row cycles through (`QUESTION_PROMPTS` in
+/// `SecurityForm``). Shared with the channel editor's own stepper.
+pub(crate) const QUESTION_PROMPTS: [&str; 8] = [
     "The name of the street you grew up on",
     "The name of your first pet",
     "The make of your first car",
@@ -5515,6 +5652,9 @@ fn gate_unlock(
             GateIntent::Edit(ref id) | GateIntent::Reveal(ref id) => {
                 guard.verified.insert(id.clone());
             }
+            GateIntent::Channel(ref id) => {
+                guard.channels_unlocked.insert(id.clone());
+            }
         }
     }
     ui.set_gate_open(false);
@@ -5523,6 +5663,9 @@ fn gate_unlock(
         GateIntent::Vault => {}
         GateIntent::Edit(id) => open_editor(ui, state, &id),
         GateIntent::Reveal(_) => editor_reveal(ui, state),
+        // The proof was for the list behind the door: with the door open, the
+        // channel paints its rows at last.
+        GateIntent::Channel(_) => refresh_items(ui, state),
     }
 }
 
@@ -5535,6 +5678,14 @@ fn gate_cancel(ui: &MainWindow, state: &Shared) {
     ui.set_gate_error("".into());
     if matches!(intent, Some(GateIntent::Vault)) {
         lock_vault(ui, state);
+    }
+    // A channel the user declined stays closed: home to the whole list
+    // (App.tsx `onCancel={() => setActiveId('all')}`), not wherever the jump
+    // started from.
+    if matches!(intent, Some(GateIntent::Channel(_))) {
+        ui.set_active_channel("all".into());
+        ui.set_all_tab("all".into());
+        refresh_items(ui, state);
     }
 }
 
@@ -6246,6 +6397,10 @@ fn lock_vault(ui: &MainWindow, state: &Shared) {
         // the next unlock (TS rebuilds `vaultVerified` along with the locked
         // component tree).
         guard.vault_verified = false;
+        // A channel's proof went with the key: `channelsUnlocked` clears when
+        // vault status leaves unlocked (App.tsx L393), so the next unlock
+        // re-asks at every secured door.
+        guard.channels_unlocked.clear();
         // A gate is proof-seeking for what is being sealed. Closing it here
         // is what stops a lock raised from the tray -- no backdrop sits in
         // front of that menu -- from parking the panel over the lock screen.
@@ -6644,6 +6799,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 editor_security: LoginSecurity::default(),
                 editor_staged_seed: None,
                 editor_prompt_index: 0,
+                channel_staged_seed: None,
+                channel_prompt_index: 0,
                 vault_staged_seed: None,
                 vault_prompt_index: 0,
                 editor_tags: Vec::new(),
@@ -6657,6 +6814,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vault_width: 800.0,
                 gate: None,
                 verified: HashSet::new(),
+                channels_unlocked: HashSet::new(),
                 vault_verified: false,
                 background_pushed: None,
                 channel_draft: None,
@@ -8498,6 +8656,105 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.on_editor_sec_prompt_step(move |delta| {
                 if let Some(ui) = weak.upgrade() {
                     editor_sec_prompt_step(&ui, &st, delta);
+                }
+            });
+
+            // ---- The channel editor's security form ---------------------
+            // channels_ops' `sec_*` set, one callback each, the way the
+            // login editor's `editor_sec_*` set is wired.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_totp_attach(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_totp_attach(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_totp_generate(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_totp_generate(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_totp_check(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_totp_check(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_totp_discard(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_totp_discard(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_totp_remove(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_totp_remove(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_passcode_save(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_passcode_save(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_passcode_check(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_passcode_check(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_passcode_remove(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_passcode_remove(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_question_add(move || {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_question_add(&ui, &st);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_question_check(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_question_check(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_question_remove(move |id| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_question_remove(&ui, &st, &id);
+                }
+            });
+
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_channel_sec_prompt_step(move |delta| {
+                if let Some(ui) = weak.upgrade() {
+                    channels_ops::sec_prompt_step(&ui, &st, delta);
                 }
             });
 

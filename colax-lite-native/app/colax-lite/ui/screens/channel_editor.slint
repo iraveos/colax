@@ -21,7 +21,8 @@ import { Theme } from "../theme.slint";
 import {
     Btn, Field, Toggle, Slider, Segmented, Chip, Note, Label, IconButton
 } from "../widgets.slint";
-import { PickTag, IconOption, AccentChip } from "../models.slint";
+import { PickTag, IconOption, AccentChip, QrCell, QuestionRow } from "../models.slint";
+import { SecurityForm } from "security_form.slint";
 
 /// One row of the "Read mail from" picker: a radio dot and the mailbox's
 /// address. A `<select>` in the TS; a list here because a native select is a
@@ -144,6 +145,46 @@ export component ChannelEditor inherits Rectangle {
     callback image-float(key: string, value: float);
     callback show-mail-toggled(value: bool);
     callback mail-account-picked(id: string);
+
+    // ---- Security (ChannelEditor.tsx's third tab) -----------------------
+    // One `SecurityForm` — the very panel the login editor mounts — against
+    // the channel's own `LoginSecurity`. Same component, same names; Rust
+    // reads and writes these through the window's `channel-sec-*` relays, so
+    // the two modals never share a line of state.
+    in property <string> sec-level: "none";
+    in property <string> sec-questions-note: "Not set";
+    in property <bool> sec-totp: false;
+    in property <string> sec-otpauth;
+    in property <int> qr-size: 0;
+    in property <[QrCell]> qr-cells;
+    in property <bool> sec-totp-staged: false;
+    in property <string> sec-totp-note;
+    in-out property <string> sec-totp-seed;
+    in-out property <string> sec-totp-code;
+    in property <bool> sec-passcode: false;
+    in-out property <string> sec-passcode-new;
+    in-out property <string> sec-passcode-confirm;
+    in-out property <string> sec-passcode-input;
+    in property <string> sec-passcode-error;
+    in property <[QuestionRow]> sec-questions;
+    in property <string> sec-answer-error;
+    in-out property <string> sec-checking-id;
+    in-out property <string> sec-check-input;
+    in property <string> sec-new-prompt;
+    in-out property <string> sec-new-answer;
+
+    callback sec-totp-attach();
+    callback sec-totp-generate();
+    callback sec-totp-check();
+    callback sec-totp-discard();
+    callback sec-totp-remove();
+    callback sec-passcode-save();
+    callback sec-passcode-check();
+    callback sec-passcode-remove();
+    callback sec-question-add();
+    callback sec-question-remove(id: string);
+    callback sec-question-check(id: string);
+    callback sec-prompt-step(delta: int);
 
     // `.overlay` (app.css L726): the same wash the settings sheet and the
     // confirm dialogs wear.
@@ -670,6 +711,49 @@ export component ChannelEditor inherits Rectangle {
                                 picked => { root.mail-account-picked(root.account-ids[i]); }
                             }
                         }
+                    }
+
+                    // ---- Security ---------------------------------------
+                    // ChannelEditor.tsx's third tab, `subject: 'this
+                    // channel'` (L535-538): the same form, the channel's own
+                    // factor, and every write lands on the draft like the
+                    // name's do.
+                    SecurityForm {
+                        subject: "this channel";
+                        sec-level: root.sec-level;
+                        sec-questions-note: root.sec-questions-note;
+                        sec-totp: root.sec-totp;
+                        sec-otpauth: root.sec-otpauth;
+                        qr-size: root.qr-size;
+                        qr-cells: root.qr-cells;
+                        sec-totp-staged: root.sec-totp-staged;
+                        sec-totp-note: root.sec-totp-note;
+                        sec-totp-seed <=> root.sec-totp-seed;
+                        sec-totp-code <=> root.sec-totp-code;
+                        sec-passcode: root.sec-passcode;
+                        sec-passcode-new <=> root.sec-passcode-new;
+                        sec-passcode-confirm <=> root.sec-passcode-confirm;
+                        sec-passcode-input <=> root.sec-passcode-input;
+                        sec-passcode-error: root.sec-passcode-error;
+                        sec-questions: root.sec-questions;
+                        sec-answer-error: root.sec-answer-error;
+                        sec-checking-id <=> root.sec-checking-id;
+                        sec-check-input <=> root.sec-check-input;
+                        sec-new-prompt: root.sec-new-prompt;
+                        sec-new-answer <=> root.sec-new-answer;
+
+                        sec-totp-attach => { root.sec-totp-attach(); }
+                        sec-totp-generate => { root.sec-totp-generate(); }
+                        sec-totp-check => { root.sec-totp-check(); }
+                        sec-totp-discard => { root.sec-totp-discard(); }
+                        sec-totp-remove => { root.sec-totp-remove(); }
+                        sec-passcode-save => { root.sec-passcode-save(); }
+                        sec-passcode-check => { root.sec-passcode-check(); }
+                        sec-passcode-remove => { root.sec-passcode-remove(); }
+                        sec-question-add => { root.sec-question-add(); }
+                        sec-question-remove(id) => { root.sec-question-remove(id); }
+                        sec-question-check(id) => { root.sec-question-check(id); }
+                        sec-prompt-step(delta) => { root.sec-prompt-step(delta); }
                     }
                 }
             }

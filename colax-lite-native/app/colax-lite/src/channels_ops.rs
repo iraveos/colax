@@ -14,12 +14,18 @@
 //! writes on the move) and `moveChannelToFolder` (folders are Phase 8).
 
 use colax_core::channels::{apply_channel, create_channel, new_channel_id, Channel, ChannelAccent, ChannelKind, CHANNEL_ICONS};
-use colax_core::{create_tag, VaultPreferences};use serde_json::json;
+use colax_core::model::{SecurityPasscode, SecurityQuestion, TotpSecret};
+use colax_core::totp::{extract_totp_secret, generate_totp_seed, otpauth_url, qr_matrix, verify_totp};
+use colax_core::{
+    answer_too_weak, create_tag, hash_answer, hash_passcode, passcode_too_weak, security_level,
+    verify_answer, verify_passcode, LoginSecurity, VaultPreferences,
+};
+use serde_json::json;
 use slint::{ModelRc, VecModel};
 
 use crate::items;
 use crate::settings_ops;
-use crate::{notice, AccentChip, ChannelRow, IconOption, MainWindow, Shared, TagRow};
+use crate::{notice, AccentChip, ChannelRow, IconOption, MainWindow, QrCell, QuestionRow, Shared, TagRow};
 
 /// The four kinds the editor offers, in the TS's order (`KIND_OPTIONS`).
 /// Everything else the enum holds is structural (Dashboard, Mail, History),
@@ -557,6 +563,10 @@ pub fn open(ui: &MainWindow, state: &Shared, id: &str) {
         guard.channel_new = is_new;
         guard.channel_editing = if is_new { None } else { Some(id.to_string()) };
         guard.channel_draft = Some(draft);
+        // The security panel's own staging resets with the mount, as the
+        // scroll does: a second channel must not inherit the first's
+        // half-confirmed key.
+        guard.channel_staged_seed = None;
         // The URL box starts on a stored `http(s)` source only: a photo that
         // came in through Upload is a data URL, and showing it as text would
         // be a wall of base64 the user never typed.
@@ -752,6 +762,10 @@ pub fn push_editor(ui: &MainWindow, state: &Shared) {
         }
         .into(),
     );
+    // The Security panel rides the same push: it is a view of the same
+    // draft, and the QR half re-derives itself from the name that just
+    // landed beside it.
+    push_channel_security(ui, state);
 }
 
 /// Applies a change to the draft and, for an existing channel, writes it
@@ -1016,3 +1030,405 @@ pub fn deleted(ui: &MainWindow, state: &Shared) {
     push_manager(ui, state);
     crate::push_background(ui, state);
 }
+
+/* ==========================================================================
+The Security tab — ChannelEditor.tsx L232-239 and L535-538
+========================================================================== */
+
+// The one `SecurityForm` the login editor mounts, mounted against the
+// channel's own `LoginSecurity`. Every one of these `sec_*` functions is the
+// editor's `editor_sec_*` twin: same check, same refusal sentences the TS
+// writes, a different draft (`channel_draft.security` instead of
+// `editor_security`) and a different modal guard (`channel-ed-open` instead
+// of `Screen::Editor` — the channel editor is a panel on the vault, not a
+// screen of its own).
+
+fn channel_editor_open(ui: &MainWindow) -> bool {
+    ui.get_channel_ed_open()
+}
+
+/// The security half of `push_editor`: what the panel reads, all of it
+/// derived from the draft — the level, the factors, the staged key, the
+/// prompts and the QR.
+pub(crate) fn push_channel_security(ui: &MainWindow, state: &Shared) {
+    let (sec, staged, prompt_index) = {
+        let guard = state.borrow();
+        let sec = guard
+            .channel_draft
+            .as_ref()
+            .map(|draft| draft.security.clone())
+            .unwrap_or_default();
+        (
+            sec,
+            guard.channel_staged_seed.clone(),
+            guard.channel_prompt_index,
+        )
+    };
+
+    ui.set_channel_sec_level(security_level(&sec).into());
+    ui.set_channel_sec_totp(sec.totp.is_some());
+    ui.set_channel_sec_passcode(sec.passcode.is_some());
+    // Staged is a *separate* flag from saved: a key the phone has never
+    // confirmed must never look like a set factor.
+    ui.set_channel_sec_totp_staged(staged.is_some());
+
+    let note = match sec.questions.len() {
+        0 => "Not set".to_string(),
+        1 => "1 question".to_string(),
+        n => format!("{n} questions"),
+    };
+    ui.set_channel_sec_questions_note(note.as_str().into());
+
+    let rows: Vec<QuestionRow> = sec
+        .questions
+        .iter()
+        .map(|q| QuestionRow {
+            id: q.id.clone().into(),
+            prompt: q.prompt.clone().into(),
+        })
+        .collect();
+    ui.set_channel_sec_questions(ModelRc::new(VecModel::from(rows)));
+
+    let prompt = crate::QUESTION_PROMPTS
+        .get(prompt_index)
+        .copied()
+        .unwrap_or(crate::QUESTION_PROMPTS[0]);
+    ui.set_channel_sec_new_prompt(prompt.into());
+
+    push_channel_security_qr(ui, &sec, staged.as_deref());
+}
+
+/// The QR half, split like the login editor's: the channel's *name* feeds
+/// the `otpauth://` URI, so renaming a channel has to redraw the symbol.
+fn push_channel_security_qr(ui: &MainWindow, sec: &LoginSecurity, staged: Option<&str>) {
+    let seed = staged.or_else(|| sec.totp.as_ref().map(|totp| totp.seed.as_str()));
+    let Some(seed) = seed else {
+        ui.set_channel_sec_qr_size(0);
+        ui.set_channel_sec_qr_cells(ModelRc::new(VecModel::from(Vec::<QrCell>::new())));
+        ui.set_channel_sec_otpauth("".into());
+        return;
+    };
+
+    // `label={draft.name || 'channel'}` for nth — the URI is composed
+    // Rust-side (`push_security_qr`'s mirror), so a fresh channel still
+    // carries a stable account name on its code.
+    let name = ui.get_channel_ed_name().to_string();
+    let label = if name.is_empty() { "channel" } else { name.as_str() };
+    let url = otpauth_url(label, seed);
+
+    let matrix = qr_matrix(&url).map(|(side, bits)| {
+        let cells: Vec<QrCell> = bits
+            .iter()
+            .enumerate()
+            .filter(|(_, dark)| **dark)
+            .map(|(i, _)| QrCell {
+                col: (i % side) as i32,
+                row: (i / side) as i32,
+            })
+            .collect();
+        (side as i32, cells)
+    });
+
+    match matrix {
+        Some((side, cells)) => {
+            ui.set_channel_sec_qr_size(side);
+            ui.set_channel_sec_qr_cells(ModelRc::new(VecModel::from(cells)));
+            ui.set_channel_sec_otpauth(url.as_str().into());
+        }
+        None => {
+            // No symbol can hold this URI: TS keeps the setup key usable and
+            // shows it, which is what the panel does here too.
+            ui.set_channel_sec_qr_size(0);
+            ui.set_channel_sec_qr_cells(ModelRc::new(VecModel::from(Vec::<QrCell>::new())));
+            ui.set_channel_sec_otpauth(url.as_str().into());
+        }
+    }
+}
+
+/// Paste an `otpauth://` link or a bare base32 key (`attachSeed`): parsed,
+/// staged, and *nothing written* — the panel asks for one working code
+/// before the draft carries anything.
+pub(crate) fn sec_totp_attach(ui: &MainWindow, state: &Shared) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    let input = ui.get_channel_sec_totp_seed().to_string();
+    let Some(seed) = extract_totp_secret(&input) else {
+        ui.set_channel_sec_totp_note("That does not look like an authenticator key".into());
+        return;
+    };
+    ui.set_channel_sec_totp_seed("".into());
+    ui.set_channel_sec_totp_code("".into());
+    ui.set_channel_sec_totp_note("".into());
+    state.borrow_mut().channel_staged_seed = Some(seed);
+    push_channel_security(ui, state);
+    notice(ui, "Scan the code, then confirm one to keep the key");
+}
+
+/// Mint a fresh key and stage it — generated rather than pasted, same story.
+pub(crate) fn sec_totp_generate(ui: &MainWindow, state: &Shared) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    let seed = generate_totp_seed();
+    ui.set_channel_sec_totp_code("".into());
+    ui.set_channel_sec_totp_note("".into());
+    state.borrow_mut().channel_staged_seed = Some(seed);
+    push_channel_security(ui, state);
+    notice(ui, "Scan the code, then confirm one to keep the key");
+}
+
+/// Check the typed code against the staged key while confirming, saved one
+/// after. The first successful check of a staged key writes it — until this
+/// block runs, nothing about the channel has changed.
+pub(crate) fn sec_totp_check(ui: &MainWindow, state: &Shared) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    let code = ui.get_channel_sec_totp_code().to_string();
+    let (staged, saved) = {
+        let guard = state.borrow();
+        (
+            guard.channel_staged_seed.clone(),
+            guard
+                .channel_draft
+                .as_ref()
+                .and_then(|draft| draft.security.totp.as_ref())
+                .map(|totp| totp.seed.clone()),
+        )
+    };
+    let Some(seed) = staged.clone().or(saved) else {
+        return;
+    };
+    if code.chars().filter(char::is_ascii_digit).count() != 6 {
+        ui.set_channel_sec_totp_note("A code is six digits.".into());
+        return;
+    }
+    if !verify_totp(&seed, &code) {
+        ui.set_channel_sec_totp_note("That code did not match. Check the clock on this device.".into());
+        return;
+    }
+    ui.set_channel_sec_totp_note("".into());
+    if staged.is_some() {
+        patch(ui, state, |draft| {
+            draft.security.totp = Some(TotpSecret { seed });
+        });
+        state.borrow_mut().channel_staged_seed = None;
+        push_channel_security(ui, state);
+        notice(ui, "Authenticator key saved");
+    } else {
+        notice(ui, "Authenticator confirmed");
+    }
+}
+
+/// Drop a staged key without touching the draft — the whole point of
+/// staging: walking away leaves no trace.
+pub(crate) fn sec_totp_discard(ui: &MainWindow, state: &Shared) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    state.borrow_mut().channel_staged_seed = None;
+    ui.set_channel_sec_totp_code("".into());
+    ui.set_channel_sec_totp_note("".into());
+    push_channel_security(ui, state);
+}
+
+/// Remove the saved key from the draft, staged or not.
+pub(crate) fn sec_totp_remove(ui: &MainWindow, state: &Shared) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    state.borrow_mut().channel_staged_seed = None;
+    patch(ui, state, |draft| draft.security.totp = None);
+    ui.set_channel_sec_totp_code("".into());
+    ui.set_channel_sec_totp_note("".into());
+    push_channel_security(ui, state);
+    notice(ui, "Authenticator removed");
+}
+
+/// Set the extra passcode. The three refusals are checked in the TS order.
+/// `patch` writes the hash only; the plaintext never leaves this function.
+pub(crate) fn sec_passcode_save(ui: &MainWindow, state: &Shared) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    let new = ui.get_channel_sec_passcode_new().to_string();
+    let confirm = ui.get_channel_sec_passcode_confirm().to_string();
+    if passcode_too_weak(&new, false) {
+        ui.set_channel_sec_passcode_error(
+            "Use at least 8 characters, and mix letters, numbers or symbols. Not \"password\"."
+                .into(),
+        );
+        return;
+    }
+    if new != confirm {
+        ui.set_channel_sec_passcode_error("Those two do not match.".into());
+        return;
+    }
+    let totp_set = state
+        .borrow()
+        .channel_draft
+        .as_ref()
+        .map(|draft| draft.security.totp.is_some())
+        .unwrap_or(false);
+    let floor = if totp_set { 12 } else { 0 };
+    if new.chars().count() < floor {
+        ui.set_channel_sec_passcode_error(
+            "With an authenticator already set, use at least 12 characters.".into(),
+        );
+        return;
+    }
+    let (hash, salt) = hash_passcode(&new);
+    patch(ui, state, |draft| {
+        draft.security.passcode = Some(SecurityPasscode { hash, salt });
+    });
+    ui.set_channel_sec_passcode_new("".into());
+    ui.set_channel_sec_passcode_confirm("".into());
+    ui.set_channel_sec_passcode_error("".into());
+    ui.set_channel_sec_passcode_input("".into());
+    push_channel_security(ui, state);
+    notice(ui, "Passcode saved");
+}
+
+/// Prove the typed passcode against the stored hash.
+pub(crate) fn sec_passcode_check(ui: &MainWindow, state: &Shared) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    let input = ui.get_channel_sec_passcode_input().to_string();
+    let stored = state.borrow().channel_draft.as_ref().and_then(|draft| {
+        draft
+            .security
+            .passcode
+            .as_ref()
+            .map(|passcode| (passcode.hash.clone(), passcode.salt.clone()))
+    });
+    let Some((hash, salt)) = stored else {
+        return;
+    };
+    if verify_passcode(&input, &hash, &salt) {
+        ui.set_channel_sec_passcode_input("".into());
+        ui.set_channel_sec_passcode_error("".into());
+        notice(ui, "Passcode confirmed");
+    } else {
+        ui.set_channel_sec_passcode_error("That does not match the stored passcode.".into());
+    }
+}
+
+/// Drop the extra passcode from the draft.
+pub(crate) fn sec_passcode_remove(ui: &MainWindow, state: &Shared) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    patch(ui, state, |draft| draft.security.passcode = None);
+    ui.set_channel_sec_passcode_input("".into());
+    ui.set_channel_sec_passcode_error("".into());
+    push_channel_security(ui, state);
+    notice(ui, "Passcode removed");
+}
+
+/// Add a recovery question. The prompt goes on the panel; the hash and salt
+/// are built here and stay here.
+pub(crate) fn sec_question_add(ui: &MainWindow, state: &Shared) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    let prompt = ui.get_channel_sec_new_prompt().to_string();
+    let answer = ui.get_channel_sec_new_answer().to_string();
+    if prompt.trim().is_empty() {
+        return;
+    }
+    if answer_too_weak(&answer) {
+        ui.set_channel_sec_answer_error(
+            "Use something a stranger could not guess, not a single word or \"yes\".".into(),
+        );
+        return;
+    }
+    let (hash, salt) = hash_answer(&answer);
+    // `sq_` plus eight characters, as the TS's slice gives.
+    let id = format!("sq_{}", &colax_core::new_item_id().replace('-', "")[..8]);
+    let prompt = prompt.trim().to_string();
+    patch(ui, state, |draft| {
+        draft.security.questions.push(SecurityQuestion {
+            id,
+            prompt,
+            hash,
+            salt,
+        });
+    });
+    ui.set_channel_sec_new_answer("".into());
+    ui.set_channel_sec_answer_error("".into());
+    push_channel_security(ui, state);
+    notice(ui, "Recovery question added");
+}
+
+/// Two-stage: the first press for an id opens its answer box, the second
+/// verifies what is typed in it.
+pub(crate) fn sec_question_check(ui: &MainWindow, state: &Shared, id: &str) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    if ui.get_channel_sec_checking_id().to_string() != id {
+        ui.set_channel_sec_checking_id(id.into());
+        ui.set_channel_sec_check_input("".into());
+        ui.set_channel_sec_answer_error("".into());
+        return;
+    }
+    let answer = ui.get_channel_sec_check_input().to_string();
+    let stored = state.borrow().channel_draft.as_ref().and_then(|draft| {
+        draft
+            .security
+            .questions
+            .iter()
+            .find(|question| question.id == id)
+            .map(|question| (question.hash.clone(), question.salt.clone()))
+    });
+    let Some((hash, salt)) = stored else {
+        ui.set_channel_sec_checking_id("".into());
+        ui.set_channel_sec_check_input("".into());
+        return;
+    };
+    if verify_answer(&answer, &hash, &salt) {
+        ui.set_channel_sec_checking_id("".into());
+        ui.set_channel_sec_check_input("".into());
+        ui.set_channel_sec_answer_error("".into());
+        notice(ui, "Answer confirmed");
+    } else {
+        ui.set_channel_sec_answer_error("That does not match the stored answer.".into());
+    }
+}
+
+/// Remove a question, and close its box if that is the one that was open.
+pub(crate) fn sec_question_remove(ui: &MainWindow, state: &Shared, id: &str) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    if ui.get_channel_sec_checking_id().to_string() == id {
+        ui.set_channel_sec_checking_id("".into());
+        ui.set_channel_sec_check_input("".into());
+    }
+    patch(ui, state, |draft| {
+        draft
+            .security
+            .questions
+            .retain(|question| question.id != id);
+    });
+    push_channel_security(ui, state);
+}
+
+/// Step the prompt the add row offers. Wraps, so the last prompt stays
+/// reachable.
+pub(crate) fn sec_prompt_step(ui: &MainWindow, state: &Shared, delta: i32) {
+    if !channel_editor_open(ui) {
+        return;
+    }
+    let len = crate::QUESTION_PROMPTS.len() as i32;
+    let index = {
+        let mut guard = state.borrow_mut();
+        guard.channel_prompt_index =
+            ((guard.channel_prompt_index as i32 + delta).rem_euclid(len)) as usize;
+        guard.channel_prompt_index
+    };
+    ui.set_channel_sec_new_prompt(crate::QUESTION_PROMPTS[index].into());
+}
+
