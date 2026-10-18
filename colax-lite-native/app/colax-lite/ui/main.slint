@@ -1630,6 +1630,16 @@ export component MainWindow inherits Window {
         opacity: root.app-bg-dim;
     }
 
+    // -- Is the window being watched? (`.shell[data-quiet]`, app.css L1762) --
+    // `activity.rs` writes this once a second: true while the foreground
+    // window belongs to this process. The web pauses the ambient drift, the
+    // carousel's animation and its polling loops in the other state, so both
+    // continuous animations here stop too -- the mesh below, and the ring's
+    // drift in `main.rs`. The default is optimistic, the same `let active =
+    // true` `activity.ts` starts from, so a cold launch animates from its
+    // first frame and the poll only ever corrects it.
+    in-out property <bool> app-active: true;
+
     // -- The ambient mesh (`.ambient`, app.css L7-13) ----------------------
     // Three accent-tinted circles behind every screen, drawn between the photo
     // and its wash so the picture reads *through* them -- the web's own
@@ -1641,8 +1651,13 @@ export component MainWindow inherits Window {
     // already needs: `size` is the scale applied by redrawing the circle
     // bigger, and the corner takes half the growth back so it grows about its
     // centre the way `transform-origin: 50% 50%` does, plus the keyframe's own
-    // translate. The clock is `animation-tick()`, the one thing in Slint that
-    // keeps repainting; `motion == 0` pins it, which is the CSS's
+    // translate.
+    //
+    // The clock is a 30fps Timer rather than `animation-tick()`, because the
+    // CSS *pauses* this animation when nobody is looking: a stopped Timer
+    // holds the pose it was at, which is what `animation-play-state: paused`
+    // means -- not a restart, and not the blanking app.css L1776 goes out of
+    // its way to avoid. `motion == 0` stops it the same way, the CSS's
     // `[data-motion='off'] .ambient__blob { animation: none }`.
     if (Theme.ambient > 0.001) : Rectangle {
         width: root.width;
@@ -1653,14 +1668,25 @@ export component MainWindow inherits Window {
         animate opacity { duration: Theme.motion <= 0.0 ? 0ms : 480ms; }
 
         property <length> vmax: Math.max(self.width, self.height);
-        property <float> t: Theme.motion > 0.0 ? (animation-tick() / 1s) : 0.0;
+        // Seconds since the mesh appeared. Wrapped at 832s -- a whole number
+        // of both cycles (52 x 16, 64 x 13), so the pose the drift resumes
+        // from is the one it left -- and that keeps the float small enough
+        // that its own precision never swallows the step.
+        property <float> clock: 0;
+        drift := Timer {
+            // 30fps: three huge soft gradients on a 26-second journey do not
+            // need 60, and in the quiet state this does not tick at all.
+            interval: 33ms;
+            running: root.app-active && Theme.motion > 0.0;
+            triggered => { parent.clock = Math.mod(parent.clock + 0.033, 832.0); }
+        }
         // `alternate` plays the keyframe forward and then back, so one cycle
         // is twice the 26s that is written -- and the pose over that cycle is
         // a raised cosine: 0 at the start, 1 halfway, 0 again, easing at both
         // ends the way the keyframe's own `--ease` does. `Math.sin` takes an
         // angle and there is no `Math.PI`, hence the degrees.
-        property <float> a: (1.0 - Math.cos(self.t / 52.0 * 360deg)) / 2.0;
-        property <float> b: (1.0 - Math.cos(self.t / 64.0 * 360deg)) / 2.0;
+        property <float> a: (1.0 - Math.cos(self.clock / 52.0 * 360deg)) / 2.0;
+        property <float> b: (1.0 - Math.cos(self.clock / 64.0 * 360deg)) / 2.0;
 
         // drift-a: scale 1 -> 1.18 and translate(8%, 7%) of the blob's own
         // box, anchored at top -14vmax / left -10vmax.

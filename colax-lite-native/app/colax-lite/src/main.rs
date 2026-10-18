@@ -15,6 +15,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity;
 mod appearance;
 mod alarms;
 mod art;
@@ -8399,7 +8400,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // comparison every 40ms -- and only while the ring *is* on screen does it
     // cost anything more. `motion == 0` stops the angle where it is, which is
     // what "reduce animation" means for a carousel that would otherwise never
-    // hold still.
+    // hold still, and `!app-active` does the same for a ring nobody is looking
+    // at (`.rb-animated-list` is in the `[data-quiet]` pause list too, app.css
+    // L1772) -- stopped where it stands rather than put back to zero.
     {
         let weak = ui.as_weak();
         let timer = slint::Timer::default();
@@ -8409,7 +8412,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             move || {
                 if let Some(ui) = weak.upgrade() {
                     let motion = ui.get_motion();
-                    if ui.get_vault_view() == "carousel" && motion > 0.0 {
+                    if ui.get_vault_view() == "carousel"
+                        && motion > 0.0
+                        && ui.get_app_active()
+                    {
                         let step = 3.0 * motion;
                         let angle = ui.get_orbit_angle();
                         ui.set_orbit_angle(if angle >= 360.0 {
@@ -8434,6 +8440,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(state) = &app_state {
         alarms::start(&ui, state);
     }
+
+    // ---- Being watched -----------------------------------------------------
+    // The other whole-app timer, and the reason the ambient mesh can animate
+    // at all: one query a second asks whether the foreground window belongs to
+    // this process, and both continuous animations stop while it does not --
+    // the mesh's drift in the Slint file, the ring's here. That is the web's
+    // `[data-quiet]` (app.css L1762), which exists because a window behind
+    // another app is still painting every frame at nobody.
+    activity::start(&ui);
 
     ui.show()?;
 
