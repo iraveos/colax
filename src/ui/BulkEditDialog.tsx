@@ -14,17 +14,20 @@ import { useMemo, useState } from 'react';
 import type { VaultItem } from '../vault/types.ts';
 import type { Tag } from '../vault/channels.ts';
 import { extractEmails } from '../vault/site-intel.ts';
+import { estimateStrength, generatePassword, type GeneratorOptions } from '../crypto/passwords.ts';
 import { detectBulk, markClipboardSelfWritten } from './useClipboardWatcher.ts';
-import { countAffected, type BulkEdit } from './bulk-edit.ts';
+import { countAffected, FALLBACK_GENERATOR, type BulkEdit, type BulkField } from './bulk-edit.ts';
 import { formatLoginForClipboard, formatLoginsForClipboard } from './login-format.ts';
 import { Modal } from './primitives.tsx';
 import { CopyIcon } from './icons.tsx';
 import { HUE_PRESETS } from './ItemEditor.tsx';
 
-type Field = 'title' | 'notes' | 'tags' | 'theme';
+type Field = BulkField;
 
 const FIELD_TITLES: Record<Field, string> = {
   title: 'Title',
+  username: 'Email / username',
+  password: 'Password',
   notes: 'Notes',
   tags: 'Tags',
   theme: 'Theme',
@@ -39,6 +42,11 @@ function summary(items: readonly VaultItem[], field: Field, tags: readonly Tag[]
   const values = new Set<string>();
   for (const item of items) {
     if (field === 'title') values.add(item.title || '(empty)');
+    // Never the addresses or the passwords themselves: this string is rendered,
+    // and a summary that quotes them puts a vault's contents on screen in a
+    // dialog whose whole job is to avoid doing that.
+    else if (field === 'username') values.add(item.username ? 'set' : '(empty)');
+    else if (field === 'password') values.add(item.password ? 'set' : '(empty)');
     else if (field === 'notes') values.add(item.notes ? 'has notes' : '(empty)');
     else if (field === 'tags') {
       // Tag names, not ids. The ids read as gibberish in a sentence that is
@@ -61,6 +69,7 @@ export function BulkEditDialog({
   items,
   field,
   tags,
+  generatorOptions,
   onCreateTag,
   onApply,
   onCancel,
@@ -69,6 +78,8 @@ export function BulkEditDialog({
   items: readonly VaultItem[];
   field: Field;
   tags: readonly Tag[];
+  /** The vault's saved password-generator settings. Drives "new one each". */
+  generatorOptions?: GeneratorOptions;
   /** Creates a tag in the vault catalogue and returns it, or null on failure. */
   onCreateTag?: (name: string) => Tag | null;
   onApply: (edit: BulkEdit) => void;
@@ -80,6 +91,12 @@ export function BulkEditDialog({
   const [tagRemove, setTagRemove] = useState<string[]>([]);
   const [tagQuery, setTagQuery] = useState('');
   const [hue, setHue] = useState<number | null | undefined>(undefined);
+  /**
+   * How a password change works. "New one each" is the default because one
+   * password written to a dozen logins is precisely the reuse the vault flags as
+   * a problem — a rotation should leave every login with its own secret.
+   */
+  const [passwordMode, setPasswordMode] = useState<'each' | 'same'>('each');
 
   // Built only from fields the user touched. `value` is left as '' rather than
   // being defaulted, and it is only included when non-empty, so an untouched
@@ -87,6 +104,15 @@ export function BulkEditDialog({
   const edit = useMemo<BulkEdit>(() => {
     const next: BulkEdit = {};
     if (field === 'title' && value.trim()) next.title = value.trim();
+    if (field === 'username' && value.trim()) next.username = value.trim();
+    if (field === 'password') {
+      if (passwordMode === 'each') {
+        next.passwordGenerate = true;
+        next.passwordOptions = generatorOptions;
+      } else if (value) {
+        next.password = value;
+      }
+    }
     if (field === 'notes' && value.trim()) next.notes = value.trim();
     if (field === 'tags' && (tagAdd.length > 0 || tagRemove.length > 0)) {
       next.tagsAdd = tagAdd;
@@ -94,7 +120,7 @@ export function BulkEditDialog({
     }
     if (field === 'theme' && hue !== undefined) next.accentHue = hue;
     return next;
-  }, [field, value, tagAdd, tagRemove, hue]);
+  }, [field, value, tagAdd, tagRemove, hue, passwordMode, generatorOptions]);
 
   /**
    * How a tag sits across the selection: on every login, on some, or on none.
@@ -171,7 +197,7 @@ export function BulkEditDialog({
         </p>
 
         <div className="field">
-          <label className="field__label" htmlFor="bulk-value">
+          <label className="field__label" htmlFor={field === 'password' && passwordMode === 'each' ? undefined : 'bulk-value'}>
             {FIELD_TITLES[field]}
           </label>
           {field === 'tags' ? (
@@ -279,6 +305,60 @@ export function BulkEditDialog({
                 </button>
               ))}
             </div>
+          ) : field === 'password' ? (
+            <>
+              <div className="segmented segmented--wrap" role="group" aria-label="How to change the password">
+                <button
+                  type="button"
+                  className="segmented__option"
+                  aria-pressed={passwordMode === 'each'}
+                  onClick={() => setPasswordMode('each')}
+                >
+                  A new one for each
+                </button>
+                <button
+                  type="button"
+                  className="segmented__option"
+                  aria-pressed={passwordMode === 'same'}
+                  onClick={() => setPasswordMode('same')}
+                >
+                  One password for all
+                </button>
+              </div>
+              {passwordMode === 'each' ? (
+                <p className="field__hint" style={{ marginTop: 'var(--space-2)' }}>
+                  Every selected login gets its own {generatorOptions?.length ?? 20}-character password, generated with
+                  your saved settings. Nothing is reused, and each one is revealed by opening its login.
+                </p>
+              ) : (
+                <>
+                  <div className="field-row" style={{ marginTop: 'var(--space-2)' }}>
+                    <input
+                      id="bulk-value"
+                      className="input"
+                      type="text"
+                      value={value}
+                      onChange={(event) => setValue(event.target.value)}
+                      placeholder="Type a password, or generate one…"
+                    />
+                    <button
+                      type="button"
+                      className="btn btn--secondary btn--sm"
+                      onClick={() => setValue(generatePassword(generatorOptions ?? FALLBACK_GENERATOR))}
+                    >
+                      Generate
+                    </button>
+                  </div>
+                  <p className="field__hint">
+                    {value
+                      ? `That password scores ${estimateStrength(value).label}. `
+                      : ''}
+                    One password on {items.length} {items.length === 1 ? 'login' : 'logins'} is reuse — the vault will
+                    flag them until each is rotated.
+                  </p>
+                </>
+              )}
+            </>
           ) : (
             <input
               id="bulk-value"
@@ -288,7 +368,9 @@ export function BulkEditDialog({
               placeholder={summary(items, field, tags)}
             />
           )}
-          <p className="field__hint">Currently: {summary(items, field, tags) || '—'}</p>
+          {field === 'password' && passwordMode === 'each' ? null : (
+            <p className="field__hint">Currently: {summary(items, field, tags) || '—'}</p>
+          )}
         </div>
 
         <button type="button" className="btn btn--secondary bulk__share" onClick={() => void share()}>

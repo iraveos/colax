@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { estimateStrength } from '../crypto/passwords.ts';
 import { findWeakItems, hostnameOf, relativeTime, staleDaysFor, type VaultItem } from '../vault/types.ts';
 import { maskEmail } from '../vault/site-intel.ts';
 import { isSecured } from '../crypto/security.ts';
-import { applyChannel, type Channel, type Tag } from '../vault/channels.ts';
+import { applyChannel, parentFolderFor, sectionTarget, type AllLoginTab, type Channel, type Tag } from '../vault/channels.ts';
 import type { VaultPreferences } from '../vault/storage.ts';
+import { HistoryPanel, type HistoryPanelProps } from './HistoryPanel.tsx';
 import { labelOf } from './views.tsx';
 
 /**
@@ -26,13 +27,20 @@ import { labelOf } from './views.tsx';
 
 const DAY = 86_400_000;
 
+/**
+ * Where a tile sends you: a channel, and — for the sections that are now tabs of
+ * All logins — which tab to open. Resolved through `sectionTarget`, so a tile
+ * never points at one of the retired rows.
+ */
+type Where = { channelId: string; tab?: AllLoginTab };
+
 /** One problem worth naming, in the order a user should act on it. */
 type Issue = {
   key: string;
   label: string;
   count: number;
   severity: 'high' | 'medium' | 'low';
-  channel: string;
+  where: Where;
   detail: string;
 };
 
@@ -53,6 +61,12 @@ export function Dashboard({
   focus,
   /** Called once the focus has been honoured. */
   onFocusHandled,
+  /**
+   * Everything the change log needs, as one bundle: the Dashboard's History tab
+   * and the History channel render the same panel, so the wiring lives in one
+   * place rather than twice.
+   */
+  history,
 }: {
   channels: Channel[];
   tags: Tag[];
@@ -60,7 +74,7 @@ export function Dashboard({
   prefs: VaultPreferences;
   /** Per-login copy/edit counts plus last-use timestamps. Drives Recent. */
   usage?: Record<string, { count: number; at: number }>;
-  onSelectChannel: (channelId: string) => void;
+  onSelectChannel: (channelId: string, tab?: AllLoginTab) => void;
   /** Opens one login in the editor (gated like everywhere else). */
   onOpenLogin: (item: VaultItem) => void;
   /** Opens one connected mailbox's messages window. Absent: the mail panel hides. */
@@ -80,15 +94,34 @@ export function Dashboard({
    */
   focus?: 'reused' | null;
   onFocusHandled?: () => void;
+  history: HistoryPanelProps;
 }) {
+  /**
+   * Which half of the screen is showing. The change log used to be a channel of
+   * its own in the rail, which meant one more row to find for the thing you
+   * reach for right after something moved; it is a tab here now, so the log sits
+   * one click from the overview it describes. Local rather than persisted: the
+   * Dashboard opening on the overview every time is what makes it a dashboard.
+   */
+  const [tab, setTab] = useState<'overview' | 'history'>('overview');
+
   // Arriving from the reused-password notification: bring the card into view
   // once, then hand the focus back so a later visit is an ordinary one.
   const reusedCard = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (focus !== 'reused') return;
-    reusedCard.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // The card lives on the overview, so a notification that leads here has to
+    // bring the overview back whether or not the log was showing. The scroll
+    // waits a frame, because the card is not mounted until the tab has swapped.
+    setTab('overview');
+    const raf = requestAnimationFrame(() =>
+      reusedCard.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }),
+    );
     const done = setTimeout(() => onFocusHandled?.(), 1600);
-    return () => clearTimeout(done);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(done);
+    };
   }, [focus, onFocusHandled]);
 
   const health = useMemo(() => {
@@ -180,8 +213,7 @@ export function Dashboard({
       .slice(0, 20);
   }, [items, usage]);
 
-  const idOf = (kind: Channel['kind']) =>
-    channels.find((channel) => channel.kind === kind)?.id ?? 'all';
+  const whereOf = (kind: AllLoginTab): Where => sectionTarget(channels, kind);
 
   /** How the vault's passwords are distributed across the five strength bands. */
   const strengthBands = useMemo(() => {
@@ -311,7 +343,7 @@ export function Dashboard({
         label: 'Weak or reused passwords',
         count: health.weak.length,
         severity: 'high',
-        channel: idOf('weak'),
+        where: whereOf('weak'),
         detail: 'Short, guessable, or the same password used twice',
       });
     }
@@ -321,7 +353,7 @@ export function Dashboard({
         label: 'Rotation overdue',
         count: health.stale.length,
         severity: 'high',
-        channel: idOf('weak'),
+        where: whereOf('weak'),
         detail: `Unchanged past the reminder window${prefs.passwordAgeDays > 0 ? ` (${prefs.passwordAgeDays} days, per-login overrides apply)` : ''}`,
       });
     }
@@ -331,7 +363,7 @@ export function Dashboard({
         label: 'Email review due',
         count: health.emailCheck.length,
         severity: 'medium',
-        channel: idOf('all'),
+        where: whereOf('all'),
         detail: `Addresses untouched past the check window (${prefs.emailCheckDays} days)`,
       });
     }
@@ -341,7 +373,7 @@ export function Dashboard({
         label: 'Flagged by you',
         count: health.flagged,
         severity: 'medium',
-        channel: idOf('attention'),
+        where: whereOf('attention'),
         detail: 'You marked these as needing attention',
       });
     }
@@ -351,7 +383,7 @@ export function Dashboard({
         label: 'Untagged logins',
         count: health.untagged.length,
         severity: 'low',
-        channel: 'unassigned',
+        where: { channelId: 'unassigned' },
         detail: 'Nothing to search them by later',
       });
     }
@@ -368,7 +400,18 @@ export function Dashboard({
     const counts = new Map<string, number>();
     for (const channel of channels) {
       try {
-        counts.set(channel.id, applyChannel(channel, items, prefs.passwordAgeDays).length);
+        // Scoped by the folder the channel sits in: a folder child narrows by
+        // its own tags inside the folder's main tags, so counting it without the
+        // parent would put logins in the bar that the channel does not list.
+        counts.set(
+          channel.id,
+          applyChannel(
+            channel,
+            items,
+            prefs.passwordAgeDays,
+            parentFolderFor(prefs.sidebar, prefs.folders, channel.id),
+          ).length,
+        );
       } catch {
         counts.set(channel.id, 0);
       }
@@ -377,7 +420,7 @@ export function Dashboard({
       .map(([id, count]) => ({ channel: channels.find((entry) => entry.id === id)!, count }))
       .filter((entry) => entry.channel)
       .sort((a, b) => b.count - a.count || a.channel.name.localeCompare(b.channel.name));
-  }, [channels, items, prefs.passwordAgeDays]);
+  }, [channels, items, prefs.passwordAgeDays, prefs.sidebar, prefs.folders]);
 
   /**
    * How many logins carry at least one issue, and how many are clear.
@@ -404,25 +447,25 @@ export function Dashboard({
     {
       label: 'Total Logins',
       value: health.total,
-      channel: idOf('all'),
+      where: whereOf('all'),
       note: `${health.withTotp.length} with a second factor`,
     },
     {
       label: 'Favorites',
       value: health.favorites,
-      channel: idOf('favorites'),
+      where: whereOf('favorites'),
       note: health.favorites === 0 ? 'Star a login to pin it here' : 'Pinned to the top of the list',
     },
     {
       label: 'Weak Passwords',
       value: health.weak.length,
-      channel: idOf('weak'),
+      where: whereOf('weak'),
       note: health.weak.length === 0 ? 'Nothing short, reused or guessable' : 'Short, reused or guessable',
     },
     {
       label: 'Untagged Logins',
       value: health.untagged.length,
-      channel: 'unassigned',
+      where: { channelId: 'unassigned' },
       note: health.untagged.length === 0 ? 'Everything is filed' : 'Nothing to search them by',
     },
   ];
@@ -435,6 +478,39 @@ export function Dashboard({
 
   return (
     <div className="dashboard">
+      {/* Overview / History. The change log sits one click from the overview it
+          describes; the tab strip is the first child so switching never moves it. */}
+      <div className="dash-screen__tabs">
+        <div className="segmented" role="tablist" aria-label="Dashboard sections">
+          <button
+            type="button"
+            role="tab"
+            className="segmented__option"
+            aria-selected={tab === 'overview'}
+            aria-pressed={tab === 'overview'}
+            onClick={() => setTab('overview')}
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className="segmented__option"
+            aria-selected={tab === 'history'}
+            aria-pressed={tab === 'history'}
+            title="Every login that was added, edited or deleted, with restore"
+            onClick={() => setTab('history')}
+          >
+            History
+            {history.events.length > 0 ? <span className="dash-screen__count">{history.events.length}</span> : null}
+          </button>
+        </div>
+      </div>
+
+      {tab === 'history' ? (
+        <HistoryPanel embedded {...history} />
+      ) : (
+        <>
       {/* Compact header: title, one-line subtitle, vault status. */}
       <header className="cc-head">
         <div>
@@ -471,7 +547,7 @@ export function Dashboard({
                 <button
                   type="button"
                   className="btn btn--champagne"
-                  onClick={() => onSelectChannel(headline.channel)}
+                  onClick={() => onSelectChannel(headline.where.channelId, headline.where.tab)}
                 >
                   Review now
                 </button>
@@ -527,7 +603,7 @@ export function Dashboard({
             className="stat stat--link"
             key={metric.label}
             style={{ animationDelay: `${index * 28}ms` } as React.CSSProperties}
-            onClick={() => onSelectChannel(metric.channel)}
+            onClick={() => onSelectChannel(metric.where.channelId, metric.where.tab)}
             title={`Show ${metric.label.toLowerCase()}`}
           >
             <span className="stat__value">{metric.value}</span>
@@ -566,7 +642,7 @@ export function Dashboard({
                 </header>
                 <div className="dash-issues">
                   {issues.map((issue) => (
-                    <button className="dash-issue" key={issue.key} data-severity={issue.severity} onClick={() => onSelectChannel(issue.channel)}>
+                    <button className="dash-issue" key={issue.key} data-severity={issue.severity} onClick={() => onSelectChannel(issue.where.channelId, issue.where.tab)}>
                       <span className="dash-issue__bar" aria-hidden="true" />
                       <span className="dash-issue__body">
                         <span className="dash-issue__label">{issue.label}</span>
@@ -1053,6 +1129,8 @@ export function Dashboard({
           </div>
         </div>
       </section>
+        </>
+      )}
     </div>
   );
 }

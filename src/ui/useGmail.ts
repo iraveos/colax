@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GmailAccount } from '../vault/storage.ts';
 import { resolveConnection } from './../lib/mail-providers.ts';
+import { hasOauthTokens, type MailOAuth } from '../lib/oauth.ts';
 import { imapUidOf } from '../lib/mail-text.ts';
 import { getPlatform } from '../lib/platform.ts';
 import { appActiveNow } from '../lib/activity.ts';
@@ -46,8 +47,12 @@ export function normAppPassword(value: string): string {
 }
 
 /** True when an account has enough (normalised) credentials to attempt a read. */
-export function hasMailCreds(account: Pick<GmailAccount, 'address' | 'appPassword'>): boolean {
-  return normMailAddress(account.address) !== '' && normAppPassword(account.appPassword) !== '';
+export function hasMailCreds(
+  account: Pick<GmailAccount, 'address' | 'appPassword'> & { oauth?: unknown },
+): boolean {
+  if (normMailAddress(account.address) === '') return false;
+  if (normAppPassword(account.appPassword) !== '') return true;
+  return hasOauthTokens(account.oauth);
 }
 
 /**
@@ -136,6 +141,8 @@ export async function fetchGmailOnce(
 export interface MailTarget {
   address: string;
   appPassword: string;
+  /** OAuth record for a mailbox signed in without an app password. */
+  oauth?: MailOAuth;
   host?: string;
   port?: number;
   secure?: boolean;
@@ -145,6 +152,7 @@ export interface MailTarget {
 export function mailTargetOf(account: {
   address: string;
   appPassword: string;
+  oauth?: MailOAuth;
   provider?: string;
   host?: string;
   port?: number;
@@ -154,6 +162,7 @@ export function mailTargetOf(account: {
   return {
     address: normMailAddress(account.address),
     appPassword: normAppPassword(account.appPassword),
+    oauth: account.oauth,
     host: connection.host,
     port: connection.port,
     secure: connection.secure,
@@ -176,13 +185,17 @@ export async function listGmailPage(
 ): Promise<{ messages: GmailMessage[]; hasMore: boolean; error: string | null }> {
   const cleanAddress = normMailAddress(target.address);
   const cleanPassword = normAppPassword(target.appPassword);
-  if (!cleanAddress || !cleanPassword) return { messages: [], hasMore: false, error: null };
+  // Either credential is enough: an OAuth mailbox has no password at all.
+  if (!cleanAddress || (!cleanPassword && !hasOauthTokens(target.oauth))) {
+    return { messages: [], hasMore: false, error: null };
+  }
   const listMail = getPlatform().mail?.listInbox;
   if (!listMail) return { messages: [], hasMore: false, error: null };
   try {
     const listed = await listMail({
       address: cleanAddress,
       appPassword: cleanPassword,
+      oauth: target.oauth,
       host: target.host,
       port: target.port,
       secure: target.secure,
@@ -228,7 +241,9 @@ export async function listGmailOnce(
   const connection = target ?? mailTargetOf({ address, appPassword });
   const cleanAddress = normMailAddress(address);
   const cleanPassword = normAppPassword(appPassword);
-  if (!cleanAddress || !cleanPassword) return { messages: [], error: null };
+  if (!cleanAddress || (!cleanPassword && !hasOauthTokens(connection.oauth))) {
+    return { messages: [], error: null };
+  }
   const listMail = getPlatform().mail?.listInbox;
   if (listMail) {
     const page = await listGmailPage(
@@ -321,10 +336,14 @@ export function useGmail({
     try {
       const perAccount = await Promise.all(
         live.map(async (account) => {
+          // The whole target rides along — server *and* credentials — so an
+          // OAuth mailbox polls with its tokens exactly as a password one
+          // polls with its app password.
           const { messages: found, error: failed } = await listGmailOnce(
             account.address,
             account.appPassword,
             account.id,
+            mailTargetOf(account),
           );
           return { account, found, failed };
         }),
@@ -360,7 +379,14 @@ export function useGmail({
   // still refetch, or fixed credentials silently keep showing the old error.
   const liveKey = accounts
     .filter((account) => account.enabled && hasMailCreds(account))
-    .map((account) => `${account.id}|${normMailAddress(account.address).toLowerCase()}|${credHash(normAppPassword(account.appPassword))}|${account.refreshSeconds}`)
+    .map(
+      (account) =>
+        `${account.id}|${normMailAddress(account.address).toLowerCase()}|${credHash(normAppPassword(account.appPassword))}|${credHash(
+          // Reconnects rotate tokens without touching the password field, so
+          // the token tail rides in the key the same way the password does.
+          account.oauth?.refreshToken ?? account.oauth?.accessToken ?? '',
+        )}|${account.refreshSeconds}`,
+    )
     .sort()
     .join(';');
   const autoKey = accounts

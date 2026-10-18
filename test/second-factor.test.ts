@@ -9,9 +9,9 @@ import {
   totpCodeAt,
 } from '../src/crypto/security.ts';
 import { normalisePreferences, DEFAULT_PREFERENCES } from '../src/vault/storage.ts';
-import type { Folder } from '../src/vault/channels.ts';
+import type { Channel, Folder } from '../src/vault/channels.ts';
 import { emptyItem, normaliseItem } from '../src/vault/types.ts';
-import { normaliseFolders } from '../src/vault/channels.ts';
+import { normaliseChannels, normaliseFolders } from '../src/vault/channels.ts';
 
 /**
  * Two bugs around second factors:
@@ -98,6 +98,34 @@ test('folders keep a passcode-only second factor', () => {
   ]);
   assert.deepEqual(out[0]?.security.passcode, { hash: 'h', salt: 's' });
   assert.ok(isSecured(out[0]?.security));
+});
+
+test('channels keep a passcode-only second factor', () => {
+  // A channel's factor gates the list behind it, so losing it on reload would
+  // unlock a channel the user had deliberately protected.
+  const out = normaliseChannels([
+    {
+      id: 'ch_secret',
+      name: 'Secret',
+      kind: 'all',
+      tagIds: [],
+      icon: 'lock',
+      hue: 1,
+      accent: 'slate',
+      backgroundImage: '',
+      builtin: false,
+      locked: false,
+      showMail: true,
+      mailAccount: 'all',
+      security: { totp: null, questions: [], passcode: { hash: 'h', salt: 's' } },
+    } as unknown as Channel,
+  ]);
+  const secret = out.find((channel) => channel.id === 'ch_secret');
+  assert.deepEqual(secret?.security.passcode, { hash: 'h', salt: 's' });
+  assert.ok(isSecured(secret?.security));
+  // Anything stored before the field existed gains no gate at all.
+  const fresh = normaliseChannels(undefined).every((channel) => !isSecured(channel.security));
+  assert.equal(fresh, true, 'the shipped channels are ungated');
 });
 
 test('a generated seed verifies against its own codes', async () => {

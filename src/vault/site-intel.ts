@@ -14,6 +14,7 @@
 
 import { hostnameOf } from './types.ts';
 import { createTag, type Tag } from './channels.ts';
+import { hasOauthTokens } from '../lib/oauth.ts';
 
 /** A login captured from a page. */
 export interface Capture {
@@ -273,16 +274,17 @@ export function mailboxOwnedBy<T extends { address: string }>(
 export interface MailboxLike {
   address: string;
   appPassword?: string;
+  /** OAuth record, when the mailbox signed in without an app password. */
+  oauth?: unknown;
   enabled?: boolean;
 }
 
-/** An account that can actually be read: switched on, address and app password present. */
+/** An account that can actually be read: switched on, address, and either an
+ *  app password or OAuth tokens present. */
 export function mailboxUsable(account: MailboxLike): boolean {
-  return (
-    account.enabled !== false &&
-    account.address.trim() !== '' &&
-    (account.appPassword ?? '').replace(/\s+/g, '') !== ''
-  );
+  if (account.enabled === false || account.address.trim() === '') return false;
+  if ((account.appPassword ?? '').replace(/\s+/g, '') !== '') return true;
+  return hasOauthTokens(account.oauth);
 }
 
 /**
@@ -424,7 +426,9 @@ export function tagIdsForDraft(
   const tagIds = [...new Set(inherited.filter((id) => catalogue.some((tag) => tag.id === id)))];
   let next = catalogue;
   if (options.autoTag) {
-    for (const suggestion of suggestTagsForDraft(draft)) {
+    // The catalogue goes in so a site or address the vault already has a tag for
+    // is recognised by name — see suggestTagsForDraft.
+    for (const suggestion of suggestTagsForDraft(draft, next)) {
       const existing = findSimilarTag(suggestion.name, next.map((tag) => ({ id: tag.id, name: tag.name })));
       let id: string;
       if (existing) {
@@ -591,19 +595,43 @@ export function captureToDraft(capture: Capture, insight: CaptureInsight): {
  * Tags worth attaching to a freshly saved login, derived from its website and
  * the provider of its email address. Names only; the caller resolves them
  * against the catalogue.
+ *
+ * `catalogue` is read, never extended: a site the curated table does not know is
+ * filed by its registrable domain *when the vault already has a tag of that
+ * name*, and left alone otherwise. That is deliberately the same rule the
+ * capture prompt applies, so a login typed into All logins is filed like one
+ * captured on the page — and it is why this cannot invent a tag per host: forty
+ * logins on forty small sites must not become forty tags.
  */
-export function suggestTagsForDraft(draft: { url?: string; username?: string }): { name: string; reason: 'site' | 'domain' }[] {
+export function suggestTagsForDraft(
+  draft: { url?: string; username?: string },
+  catalogue: readonly { id: string; name: string }[] = [],
+): { name: string; reason: 'site' | 'domain' }[] {
   const suggestions: { name: string; reason: 'site' | 'domain' }[] = [];
   const host = hostnameOf(draft.url ?? '');
   if (host) {
     const site = knownSite(host);
-    if (site) suggestions.push({ name: site.tag, reason: 'site' });
+    if (site) {
+      suggestions.push({ name: site.tag, reason: 'site' });
+    } else {
+      const domain = hostOnlyOf(host);
+      if (domain && findSimilarTag(domain, [...catalogue])) {
+        suggestions.push({ name: domain, reason: 'site' });
+      }
+    }
   }
   const username = (draft.username ?? '').trim();
   if (looksLikeEmail(username)) {
     const provider = emailProvider(username);
     if (provider && !suggestions.some((entry) => entry.name === provider.tag)) {
       suggestions.push({ name: provider.tag, reason: 'domain' });
+    } else if (!provider) {
+      // An address on a domain of its own (`me@acme.com`): reuse the tag if the
+      // vault already files things under it, but never mint one per domain.
+      const domain = username.split('@')[1]?.toLowerCase() ?? '';
+      if (domain && findSimilarTag(domain, [...catalogue]) && !suggestions.some((entry) => entry.name === domain)) {
+        suggestions.push({ name: domain, reason: 'domain' });
+      }
     }
   }
   return suggestions;

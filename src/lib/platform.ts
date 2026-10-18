@@ -12,6 +12,10 @@
  * do the job; everything else stays a web API call at the call site.
  */
 
+import type { MailOAuth, OAuthConnectInput, OAuthConnectResult } from './oauth.ts';
+
+export type { OAuthConnectInput, OAuthConnectResult } from './oauth.ts';
+
 /** What the tray menu can ask the renderer to do. Main handles show/restart/quit itself. */
 export type TrayAction = 'lock-now' | 'toggle-mute';
 
@@ -27,6 +31,8 @@ export interface MailConnectionInput {
 export interface FullMailInput extends MailConnectionInput {
   address: string;
   appPassword: string;
+  /** OAuth record for a mailbox signed in without an app password. */
+  oauth?: MailOAuth;
   /** Feed message id (`tag:...,2004:<hex>`); the hex tail addresses the mail. */
   feedId: string;
   /** Subject/sender, for the best-effort fallback when the id misses. */
@@ -79,6 +85,8 @@ export interface InboxListMessage {
 export interface InboxListInput extends MailConnectionInput {
   address: string;
   appPassword: string;
+  /** OAuth record for a mailbox signed in without an app password. */
+  oauth?: MailOAuth;
   limit?: number;
   /**
    * Page back past this UID.
@@ -168,6 +176,19 @@ export interface PlatformAPI {
     fetchFullBody(input: FullMailInput): Promise<FullMailResult>;
     /** Lists recent unread headers over IMAP. The feed fallback when Atom fails. */
     listInbox(input: InboxListInput): Promise<InboxListResult>;
+  };
+  /**
+   * OAuth2 sign-in for a mailbox. Absent on web — the flow needs a loopback
+   * server and the real browser, neither of which a served page can have —
+   * so call sites feature-check and say the desktop app is needed.
+   */
+  oauth?: {
+    /**
+     * Runs the authorization-code flow: opens the provider in the real
+     * browser, catches the redirect on 127.0.0.1, and returns the tokens.
+     * The PKCE exchange happens entirely in the main process.
+     */
+    connect(input: OAuthConnectInput): Promise<OAuthConnectResult>;
   };
   /**
    * Desktop shell controls. Absent on web — there is no tray, autostart or

@@ -73,6 +73,7 @@ export function useFullBody() {
       .fetchFullBody({
         address: normMailAddress(target.address),
         appPassword: normAppPassword(target.appPassword),
+        oauth: target.oauth,
         host: target.host,
         port: target.port,
         secure: target.secure,

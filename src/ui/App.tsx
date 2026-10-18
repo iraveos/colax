@@ -12,9 +12,15 @@ import {
   moveChannelToFolder,
   moveManualOrder,
   selectableIds,
+  parentFolderFor,
+  ALL_LOGIN_TABS,
+  describeChannel,
+  sectionTarget,
   DEFAULT_BACKGROUND_FIELDS,
   CHANNEL_ACCENTS,
   CHANNEL_ICONS,
+  CHANNEL_SCREEN_KINDS,
+  type AllLoginTab,
   type Channel,
   type Folder,
   type SidebarEntry,
@@ -41,7 +47,7 @@ import { ItemEditor } from './ItemEditor.tsx';
 import { AppearancePanel } from './AppearancePanel.tsx';
 import { Settings } from './Settings.tsx';
 import { Dashboard } from './Dashboard.tsx';
-import { HistoryPanel } from './HistoryPanel.tsx';
+import { HistoryPanel, type HistoryPanelProps } from './HistoryPanel.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { ViewContextMenu, VIEW_OPTIONS, useViewShortcuts } from './ViewMenu.tsx';
 import { Dock, useDockShortcuts, type DockSlot } from './Dock.tsx';
@@ -67,7 +73,7 @@ import {
   typingHasFocus,
 } from './hooks.ts';
 import { useSelection } from './useSelection.ts';
-import { applyBulkEdit, bulkMenu, type BulkEdit } from './bulk-edit.ts';
+import { applyBulkEdit, bulkMenu, type BulkEdit, type BulkField } from './bulk-edit.ts';
 import { BulkAddDialog, BulkEditDialog } from './BulkEditDialog.tsx';
 import { formatLoginCompact, formatLoginForClipboard, formatLoginsForClipboard } from './login-format.ts';
 import { appActiveNow } from '../lib/activity.ts';
@@ -133,6 +139,7 @@ const UNASSIGNED: Channel = {
   locked: false,
   showMail: true,
   mailAccount: 'all',
+  security: EMPTY_SECURITY,
 };
 
 function stripChannel(rows: SidebarEntry[], id: string): SidebarEntry[] {
@@ -163,6 +170,15 @@ export function App() {
   const appActive = useAppActive();
 
   const [activeId, setActiveId] = useState('all');
+  /**
+   * Which section of All logins is showing.
+   *
+   * Favorites, Needs attention and Weak or reused are tabs of the main channel
+   * now, not rows of their own. The tab is a view of the same channel, so it
+   * lives here rather than being pushed into the channel's kind — switching
+   * tabs must not rewrite the channel the user saved.
+   */
+  const [allTab, setAllTab] = useState<AllLoginTab>('all');
   const [query, setQuery] = useState('');
   /** Tags chosen from the search bar's tag picker; any of them matches. */
   const [tagFilters, setTagFilters] = useState<string[]>([]);
@@ -194,7 +210,7 @@ export function App() {
   const [editing, setEditing] = useState<VaultItem | null | 'new'>(null);
   // Multi-selection, plus which bulk dialog (if any) is open over it.
   const selection = useSelection();
-  const [bulkField, setBulkField] = useState<'title' | 'notes' | 'tags' | 'theme' | null>(null);
+  const [bulkField, setBulkField] = useState<BulkField | null>(null);
   const [bulkSecurity, setBulkSecurity] = useState(false);
   const [bulkAdding, setBulkAdding] = useState(false);
   // True while a History restore is being written: two clicks on a slow disk
@@ -270,6 +286,34 @@ export function App() {
 
   useAutoLock(prefs.autoLockMinutes, vault.status === 'unlocked', vault.lock);
 
+  /**
+   * The tags a login arriving right now should carry.
+   *
+   * One rule for every way a login can arrive — typed, pasted, bulk-added, or
+   * accepted from the capture prompt — so automatic tagging means the same thing
+   * in All logins as it does anywhere else:
+   *
+   *  1. the open channel's tags, or the open folder's main tags, come first;
+   *  2. the login's own site and email provider are added when automatic tagging
+   *     is on, which is what files a login created in All logins by what it is
+   *     for instead of leaving it in Unassigned;
+   *  3. inside a folder the provider guess is skipped: the folder's own tags are
+   *     the filing there, and a login made in it has to belong to it.
+   *
+   * Read through refs rather than the memos, so the early clipboard watcher and
+   * the late editor can share one callback without either capturing a stale set.
+   */
+  const tagsForNewLogin = useCallback(
+    // `catalogue` is overridable so a bulk paste can keep chaining the tags it
+    // has already created into the next entry, instead of minting a second copy
+    // of each new tag per row.
+    (draft: { url?: string; username?: string }, catalogue: Tag[] = prefs.tags) =>
+      tagIdsForDraft(draft, focusedTagsRef.current, catalogue, {
+        autoTag: prefs.autoTagDomain && !folderOpenRef.current,
+      }),
+    [prefs.autoTagDomain, prefs.tags],
+  );
+
   // Clipboard login detection, opt-in from Settings.
   const { pending: clipPending, dismiss: dismissClip } = useClipboardWatcher({
     enabled: prefs.clipboardCapture,
@@ -279,9 +323,7 @@ export function App() {
       // Filed where the paste landed: the open tagged channel or folder's tags
       // come first, then whatever the login's own address and site suggest. With
       // neither, the login is left untagged and waits in Unassigned, as before.
-      const { tagIds, catalogue } = tagIdsForDraft(creds, focusedTagsRef.current, prefs.tags, {
-        autoTag: prefs.autoTagDomain && !folderOpenRef.current,
-      });
+      const { tagIds, catalogue } = tagsForNewLogin(creds);
       void (async () => {
         if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
         const created = await vault.mutate(() =>
@@ -345,6 +387,12 @@ export function App() {
     if (vault.status !== 'unlocked') setFoldersUnlocked(new Set());
   }, [vault.status]);
 
+  // The same for a single channel that carries its own factor.
+  const [channelsUnlocked, setChannelsUnlocked] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (vault.status !== 'unlocked') setChannelsUnlocked(new Set());
+  }, [vault.status]);
+
   /** A sign-up or sign-in offered by the browser extension, awaiting a decision. */
   const capture = useCaptureOffer({
     // Only while the vault can actually store something.
@@ -366,22 +414,35 @@ export function App() {
       let catalogue = prefs.tags;
       const tagIds: string[] = [];
 
-      for (const suggestion of offer.insight.suggestedTags) {
-        if (suggestion.id) {
-          // Guard against a tag that was deleted while the prompt was open.
-          if (catalogue.some((tag) => tag.id === suggestion.id)) {
-            tagIds.push(suggestion.id);
+      // The open channel — or folder — files it first, exactly as it does for a
+      // paste or a login typed into the editor. Without this, a capture accepted
+      // while a channel was open landed in Unassigned instead of the channel the
+      // user was looking at.
+      for (const id of focusedTagsRef.current) {
+        if (catalogue.some((tag) => tag.id === id) && !tagIds.includes(id)) tagIds.push(id);
+      }
+
+      // Then the capture's own guesses, when automatic tagging is on. These come
+      // from `inspectCapture` rather than a fresh guess, so they keep the richer
+      // work: an unknown mail provider still falls back to the domain itself.
+      if (prefs.autoTagDomain && !folderOpenRef.current) {
+        for (const suggestion of offer.insight.suggestedTags) {
+          if (suggestion.id) {
+            // Guard against a tag that was deleted while the prompt was open.
+            if (catalogue.some((tag) => tag.id === suggestion.id)) {
+              if (!tagIds.includes(suggestion.id)) tagIds.push(suggestion.id);
+              continue;
+            }
+          }
+          const similar = findSimilarTag(suggestion.name, catalogue.map((tag) => ({ id: tag.id, name: tag.name })));
+          if (similar) {
+            if (!tagIds.includes(similar.id)) tagIds.push(similar.id);
             continue;
           }
+          const created = createTag(suggestion.name, catalogue);
+          catalogue = [...catalogue, created];
+          tagIds.push(created.id);
         }
-        const similar = findSimilarTag(suggestion.name, catalogue.map((tag) => ({ id: tag.id, name: tag.name })));
-        if (similar) {
-          tagIds.push(similar.id);
-          continue;
-        }
-        const created = createTag(suggestion.name, catalogue);
-        catalogue = [...catalogue, created];
-        tagIds.push(created.id);
       }
 
       const channels = [...prefs.channels];
@@ -401,7 +462,7 @@ export function App() {
       appendToOrder([created.id]);
       notify(`Saved ${draft.title}`);
     },
-    [notify, prefs.autoTagChannel, prefs.channels, prefs.tags, vault],
+    [notify, prefs.autoTagChannel, prefs.autoTagDomain, prefs.channels, prefs.tags, vault],
   );
 
   const cycleView = useCallback(
@@ -495,6 +556,46 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     if (activeFolder) return null;
     return channelLookup.find((channel) => channel.id === activeId) ?? channelLookup.find((c) => c.kind === 'all') ?? channels[0]!;
   }, [channelLookup, activeId, activeFolder, channels]);
+
+  /**
+   * Opens a channel, optionally on one of the merged tabs.
+   *
+   * Every deliberate jump to a channel goes through here, so the tab always
+   * matches where the jump came from: clicking All logins in the rail shows
+   * everything, while the Dashboard's Favorites tile opens All logins *on*
+   * Favorites. Without the reset the second click on "the same" row would land
+   * on whichever tab was left behind.
+   */
+  const openChannel = useCallback((id: string, tab?: AllLoginTab) => {
+    setActiveId(id);
+    setAllTab(tab ?? 'all');
+  }, []);
+
+  /**
+   * Jumps to a merged section: a channel the user made with that kind if one
+   * exists, otherwise the All logins tab that now stands in for it.
+   */
+  const openSection = useCallback(
+    (tab: AllLoginTab) => {
+      const target = sectionTarget(channels, tab);
+      openChannel(target.channelId, target.tab);
+    },
+    [channels, openChannel],
+  );
+
+  /**
+   * The channel as the list should read it: the merged tabs are the All logins
+   * channel with a different base filter, so the kind is swapped for the list
+   * while the channel itself — tags, look, security — stays what it is.
+   */
+  const listChannel = useMemo(() => {
+    if (!activeChannel) return null;
+    if (activeChannel.id !== 'all' || allTab === 'all') return activeChannel;
+    return { ...activeChannel, kind: allTab as Channel['kind'] };
+  }, [activeChannel, allTab]);
+
+  /** Whether the merged tab strip belongs on screen at all. */
+  const showAllTabs = Boolean(!activeFolder && activeChannel && activeChannel.id === 'all');
 
   /** The workspace whose drag order applies: a folder, a channel, or all. */
   const scopeKey = activeFolder ? `folder:${activeFolder.id}` : activeId;
@@ -659,12 +760,24 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vault.status, vault.items, prefs.autoTagReused, prefs.tags, duplicateIds]);
 
-/** How long a password may go unchanged before the weak/stale view counts it. */
+  /**
+   * The folder a channel sits in, if any.
+   *
+   * Needed wherever a channel is filtered, not just where it is drawn: a
+   * channel inside a folder is scoped by the folder's main tags, so a count or
+   * a list computed without the parent answers a different question.
+   */
+  const getParentFolderForChannel = useCallback(
+    (id: string) => parentFolderFor(sidebarBase, folders, id),
+    [sidebarBase, folders],
+  );
+
+  /** How long a password may go unchanged before the weak/stale view counts it. */
   const staleDays = prefs.passwordAgeDays;
 
   /** Keyed by channel id, for the sidebar badges. The dashboard is a summary
-   *  screen rather than a filtered list, so it gets no count. Folders sum
-   *  their children. */
+   *  screen rather than a filtered list, so it gets no count. A folder badge is
+   *  its own scope, not the sum of its children. */
   const channelCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const channel of channelLookup) {
@@ -674,19 +787,55 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       counts[channel.id] =
         channel.kind === 'history'
           ? prefs.history.length
-          : applyChannel(channel, vault.items, staleDays).length;
+          // The parent folder goes in, because a channel inside one is scoped by
+          // the folder's tags: without it the badge counts logins the channel
+          // does not list, and a folder child reads as far larger than it is.
+          : applyChannel(channel, vault.items, staleDays, getParentFolderForChannel(channel.id)).length;
     }
     for (const folder of folders) {
       const entry = sidebarBase.find((row) => row.kind === 'folder' && row.id === folder.id);
-      if (entry && entry.kind === 'folder') {
-        counts[`folder:${folder.id}`] = entry.children.reduce(
-          (total, child) => (child.kind === 'channel' ? total + (counts[child.id] ?? 0) : total),
-          0,
-        );
+      if (!entry || entry.kind !== 'folder') continue;
+      // One row per login over the folder's whole scope: everything carrying its
+      // main tags, plus whatever its channels add. Summing the children instead
+      // double-counts a login two channels share, and misses one that carries
+      // the folder's tag and no channel's own.
+      const seen = new Set<string>();
+      if (folder.tagIds.length > 0) {
+        for (const item of vault.items) {
+          if (folder.tagIds.every((tagId) => item.tags.includes(tagId))) seen.add(item.id);
+        }
       }
+      for (const child of entry.children) {
+        if (child.kind !== 'channel') continue;
+        const channel = channelLookup.find((candidate) => candidate.id === child.id);
+        if (!channel) continue;
+        for (const item of applyChannel(channel, vault.items, staleDays, folder)) seen.add(item.id);
+      }
+      counts[`folder:${folder.id}`] = seen.size;
     }
     return counts;
-  }, [channelLookup, vault.items, staleDays, folders, sidebarBase, prefs.history]);
+  }, [channelLookup, vault.items, staleDays, folders, sidebarBase, prefs.history, getParentFolderForChannel]);
+
+  /**
+   * How many logins each merged tab holds, for the strip's counters.
+   *
+   * Counted through the same filter the list uses, from the same parent folder,
+   * so a tab can never advertise a number the list behind it would not show.
+   */
+  const tabCounts = useMemo(() => {
+    const counts: Partial<Record<AllLoginTab, number>> = {};
+    if (!activeChannel || activeChannel.id !== 'all') return counts;
+    const parent = getParentFolderForChannel(activeChannel.id);
+    for (const tab of ALL_LOGIN_TABS) {
+      counts[tab.kind] = applyChannel(
+        { ...activeChannel, kind: tab.kind },
+        vault.items,
+        staleDays,
+        parent,
+      ).length;
+    }
+    return counts;
+  }, [activeChannel, getParentFolderForChannel, staleDays, vault.items]);
 
   /* ---- Picking several channels at once ------------------------------------
      Ctrl/Cmd+click toggles one row in and out of the selection, Shift+click
@@ -727,9 +876,12 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       }
       selectionAnchor.current = id;
       clearChannelSelection();
-      setActiveId(id);
+      // Through openChannel rather than setActiveId so the merged sections reset:
+      // clicking All logins in the rail means the whole list, not whichever
+      // section was left open last time.
+      openChannel(id);
     },
-    [clearChannelSelection, selectionOrder],
+    [clearChannelSelection, openChannel, selectionOrder],
   );
 
   /** The ids behind the selection, split into channels and folders. */
@@ -844,19 +996,6 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
 
   // A channel carries its own accent and image, so the app re-skins while it is
   // selected. Anything the channel leaves blank falls back to the preference.
-  const getParentFolderForChannel = useCallback(
-    (id: string): Folder | undefined => {
-      for (const row of sidebarBase) {
-        if (row.kind !== 'folder') continue;
-        if (row.children.some((c) => c.kind === 'channel' && c.id === id)) {
-          return folders.find((f) => f.id === row.id);
-        }
-      }
-      return undefined;
-    },
-    [sidebarBase, folders],
-  );
-
   // Only a background image overrides the global appearance now; the accent is
   // global. See applyChannelAppearance for why the accent was taken back out.
   const contextForAppearance = useMemo(() => {
@@ -884,6 +1023,18 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     activeFolder && isSecured(activeFolder.security) && !foldersUnlocked.has(activeFolder.id),
   );
 
+  /**
+   * A channel with its own factor, gated the same way at the same point: the
+   * list behind it is what is protected, so the sidebar row stays visible and
+   * asks on arrival rather than disappearing.
+   */
+  const channelLocked = Boolean(
+    !activeFolder &&
+      activeChannel &&
+      isSecured(activeChannel.security) &&
+      !channelsUnlocked.has(activeChannel.id),
+  );
+
 const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
 
@@ -897,13 +1048,28 @@ const visible = useMemo(() => {
       const entry = sidebarBase.find((row) => row.kind === 'folder' && row.id === activeFolder.id);
       const seen = new Set<string>();
       list = [];
+      // The folder row is the folder's whole scope, not merely the sum of its
+      // channels. A channel narrows its own tags within the folder, so a login
+      // carrying the folder's main tags but none of a channel's own would
+      // otherwise be listed nowhere — present in the vault, invisible in the
+      // folder it is filed under. Unioning the children on top keeps channels
+      // that narrow by tags the folder itself does not carry (see
+      // channelTagFilter for when the narrowing set is the channel's own).
+      if (activeFolder.tagIds.length > 0) {
+        for (const item of vault.items) {
+          if (activeFolder.tagIds.every((tagId) => item.tags.includes(tagId))) {
+            seen.add(item.id);
+            list.push(item);
+          }
+        }
+      }
       if (entry && entry.kind === 'folder') {
         for (const child of entry.children) {
           if (child.kind !== 'channel') continue;
           const channel = channelLookup.find((candidate) => candidate.id === child.id);
           if (!channel) continue;
-          // Folder tags narrow each child channel too: main tags always, and
-          // alternate tags only for a child that has no tags of its own.
+          // Folder tags scope each child channel: the folder's main tags are
+          // required and the child's own tags are the narrowing set.
           for (const item of applyChannel(channel, vault.items, staleDays, activeFolder)) {
             if (!seen.has(item.id)) {
               seen.add(item.id);
@@ -916,8 +1082,10 @@ const visible = useMemo(() => {
       // Channel-scoped (and folder-scoped above): the channel filters first,
       // the text query filters second. Searching the whole vault is what the
       // explicit "entire vault" scope is for.
-      const parent = getParentFolderForChannel(activeChannel!.id);
-      list = applyChannel(activeChannel!, vault.items, staleDays, parent);
+      // `listChannel` rather than `activeChannel`: on the All logins channel
+      // that carries the selected tab's kind, so Favorites lists favorites.
+      const parent = getParentFolderForChannel(listChannel!.id);
+      list = applyChannel(listChannel!, vault.items, staleDays, parent);
     }
 
     // The drag order, as an index map. Each workspace has its own list, so
@@ -980,7 +1148,10 @@ const visible = useMemo(() => {
     );
   }, [
     vault.items,
-    activeChannel,
+    // `listChannel`, not `activeChannel`: on All logins the tabs swap the kind
+    // on `listChannel` while `activeChannel` stays the same object, so without
+    // this the memo never recomputed and the tabs visibly stopped filtering.
+    listChannel,
     activeFolder,
     sidebarBase,
     channelLookup,
@@ -1277,30 +1448,35 @@ const visible = useMemo(() => {
       },
       { kind: 'separator' },
       {
+        // Favorites, Needs attention and Weak or reused are tabs of All logins
+        // now, so this jumps to the section instead of making a channel for it.
+        // A channel of the user's own with one of those kinds still wins — see
+        // sectionTarget.
         kind: 'submenu',
-        label: 'Quick add',
+        label: 'Sections',
         icon: <StarIcon />,
-        items: [
-          { kind: 'favorites', label: 'Favorites' },
-          { kind: 'attention', label: 'Needs attention' },
-          { kind: 'weak', label: 'Weak or reused' },
-        ].map((option) => ({
+        items: ALL_LOGIN_TABS.filter((tab) => tab.kind !== 'all').map((tab) => ({
           kind: 'item' as const,
-          label: option.label,
+          label: tab.label,
           icon:
-            option.kind === 'favorites' ? <StarIcon /> : option.kind === 'attention' ? <FlagIcon /> : <ShieldIcon />,
-          onSelect: () => {
-            const exists = channels.find((channel) => channel.kind === option.kind);
-            if (exists) {
-              setActiveId(exists.id);
-              return;
-            }
-            saveChannel(createChannel(option.label, { kind: option.kind as Channel['kind'] }));
-          },
+            tab.kind === 'favorites' ? <StarIcon /> : tab.kind === 'attention' ? <FlagIcon /> : <ShieldIcon />,
+          checked: activeChannel?.id === sectionTarget(channels, tab.kind).channelId && allTab === tab.kind,
+          onSelect: () => openSection(tab.kind),
         })),
       },
     ];
-  }, [sidebarBase, channels, saveChannel, vault, setEditingChannel, setEditingFolder, openSettings, setActiveId]);
+  }, [
+    sidebarBase,
+    channels,
+    saveChannel,
+    vault,
+    setEditingChannel,
+    setEditingFolder,
+    openSettings,
+    openSection,
+    activeChannel,
+    allTab,
+  ]);
 
   /**
    * Removes a deleted tag from every login that referenced it.
@@ -1391,7 +1567,7 @@ const visible = useMemo(() => {
           kind: 'item',
           label: 'Open',
           icon: <InboxIcon />,
-          onSelect: () => setActiveId(channel.id),
+          onSelect: () => openChannel(channel.id),
         },
         {
           kind: 'item',
@@ -1490,23 +1666,22 @@ const visible = useMemo(() => {
           icon: <PlusIcon />,
           onSelect: () => setEditingChannel('new'),
         },
-        ...(channel.locked
-          ? []
-          : [
-              {
-                kind: 'item' as const,
-                label: prefs.hiddenChannels.includes(channel.id) ? 'Show channel' : 'Hide channel',
-                icon: <EyeOffIcon />,
-                onSelect: () => {
-                  const hidden = prefs.hiddenChannels.includes(channel.id)
-                    ? prefs.hiddenChannels.filter((id) => id !== channel.id)
-                    : [...prefs.hiddenChannels, channel.id];
-                  void vault.updatePrefs({ hiddenChannels: hidden }).then(() => {
-                    if (hidden.includes(channel.id)) notify('Hidden — bring it back in Settings › Hidden');
-                  });
-                },
-              },
-            ]),
+        // Hiding is not deleting: every channel — the built-ins included —
+        // can be taken off the rail and brought back from Settings › Hidden
+        // (or the eye in Settings › Channels). Deletion stays locked below.
+        {
+          kind: 'item' as const,
+          label: prefs.hiddenChannels.includes(channel.id) ? 'Show channel' : 'Hide channel',
+          icon: <EyeOffIcon />,
+          onSelect: () => {
+            const hidden = prefs.hiddenChannels.includes(channel.id)
+              ? prefs.hiddenChannels.filter((id) => id !== channel.id)
+              : [...prefs.hiddenChannels, channel.id];
+            void vault.updatePrefs({ hiddenChannels: hidden }).then(() => {
+              if (hidden.includes(channel.id)) notify('Hidden - bring it back in Settings › Hidden');
+            });
+          },
+        },
         {
           kind: 'item',
           label: channel.locked ? 'Cannot be deleted' : 'Delete channel',
@@ -1517,7 +1692,7 @@ const visible = useMemo(() => {
         },
       ];
     },
-    [prefs.tags, prefs.hiddenChannels, folders, saveChannel, deleteChannel, notify, moveChannel, addSeparator, vault],
+    [prefs.tags, prefs.hiddenChannels, folders, saveChannel, deleteChannel, notify, moveChannel, addSeparator, openChannel, vault],
   );
 
   const parentFolderIdOf = useCallback(
@@ -1961,6 +2136,61 @@ tags: prefs.tags,
         items: itemMenu(item),
       });
     },
+  };
+
+  /**
+   * Everything the change log needs, wired once.
+   *
+   * The History channel and the Dashboard's History tab show the same panel, so
+   * restore/forget/clear live here rather than being spelled out at both call
+   * sites — two copies of the restore path is exactly how the two screens would
+   * start disagreeing about what a restore does.
+   */
+  const historyPanel: HistoryPanelProps = {
+    events: prefs.history,
+    items: vault.items,
+    busy: historyBusy,
+    onRestore: (event) => {
+      if (!event.before) return;
+      const snapshot = event.before;
+      setHistoryBusy(true);
+      void vault
+        .mutate(
+          async () => {
+            if (vault.items.some((item) => item.id === snapshot.id)) {
+              // An edit, or a delete followed by a re-add: put the old
+              // fields back but keep the current `updatedAt` so the
+              // restore reads as the most recent change, which it is.
+              const { updatedAt: _when, ...patch } = snapshot;
+              await vault.service.updateItem(snapshot.id, patch);
+            } else {
+              await vault.service.restoreItem(snapshot);
+            }
+          },
+          // A restore is the log acting on itself: recording it
+          // would append a row for every row you press Restore on.
+          { log: false },
+        )
+        .then(() =>
+          notify(
+            event.action === 'deleted'
+              ? `Restored “${event.title || 'login'}” exactly as it was`
+              : `Put the earlier version of “${event.title || 'login'}” back`,
+          ),
+        )
+        .catch((cause: unknown) =>
+          notify(cause instanceof Error ? cause.message : 'Could not restore that version', 'error'),
+        )
+        .finally(() => setHistoryBusy(false));
+    },
+    onOpenLogin: (item) => requestEdit(item),
+    onCopy: viewActions.onCopy,
+    onForget: (id) =>
+      void vault.updatePrefs({ history: prefs.history.filter((entry) => entry.id !== id) }),
+    onClear: () =>
+      void vault
+        .updatePrefs({ history: [] })
+        .then(() => notify('History cleared — the log is empty, nothing in the vault changed')),
   };
 
   const itemMenu = useCallback(
@@ -2508,13 +2738,13 @@ label: 'Settings',
           hue: channel.hue,
           key: slot.key,
           active: activeId === channel.id,
-          onJump: () => setActiveId(channel.id),
+          onJump: () => openChannel(channel.id),
         });
       }
     }
     return resolved;
     },
-    [prefs.gmailAccounts, channelLookup, folders, view, activeChannel, activeFolder, activeId, selection, vault, viewActions, copy, mailboxFor, requestEdit],
+    [prefs.gmailAccounts, channelLookup, folders, view, activeChannel, activeFolder, activeId, openChannel, selection, vault, viewActions, copy, mailboxFor, requestEdit],
   );
 
   /** One resolved bar per stored dock. */
@@ -2812,11 +3042,11 @@ label: 'Settings',
       const id = ids[Number(event.key) - 1];
       if (!id) return;
       event.preventDefault();
-      setActiveId(id);
+      openChannel(id);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [vault.status, sidebarBase, prefs.hiddenChannels, prefs.hiddenFolders]);
+  }, [vault.status, sidebarBase, prefs.hiddenChannels, prefs.hiddenFolders, openChannel]);
 
   /* ---- Selection and bulk actions -----------------------------------------
      These have to sit above the boot/lock early returns below, not beside the
@@ -2874,13 +3104,19 @@ label: 'Settings',
     async (edit: BulkEdit) => {
       const target = selectedItems;
       if (target.length === 0) return;
-      await vault.mutate(() =>
+      const changed = await vault.mutate(() =>
         applyBulkEdit(target, edit, (id, patch) => vault.service.updateItem(id, patch)),
       );
-      // Reported from the dialog's own "Apply to N" count rather than recounted
-      // here: the count was computed from the same diff, and re-deriving it here
-      // risks the two disagreeing about what "changed" means.
-      notify(`${target.length} ${target.length === 1 ? 'login' : 'logins'} checked`, 'ok');
+      const loginWord = target.length === 1 ? 'login' : 'logins';
+      // The changed count, not the selected one: a field that already held the
+      // value is not a change, and saying "12 updated" when three were identical
+      // is the sort of claim that makes a user distrust the whole dialog.
+      notify(
+        changed === target.length
+          ? `${changed} ${loginWord} updated`
+          : `${changed} of ${target.length} ${loginWord} updated`,
+        'ok',
+      );
     },
     [notify, selectedItems, vault],
   );
@@ -3018,6 +3254,22 @@ onCreate={vault.create}
   // A reuse warning masquerades as a delete dialog; treat it separately.
   const pendingDelete = confirmDelete;
 
+  /**
+   * True only for the Flow and Orbit *list* views, which own an inner scroller
+   * and need the pane's overflow frozen so the two do not fight over the wheel.
+   *
+   * Everything else — List, Grid, the empty state, and the purpose-built
+   * screens (Dashboard, Mail, History) — is an ordinary scrolling page and must
+   * keep `.content`'s scroll. Excluding only the Dashboard is what froze the
+   * History channel: its log rendered into a pane with `overflow: hidden` and it
+   * has no scroller of its own, so nothing below the fold could be reached.
+   */
+  const selfScrollingView =
+    (view === 'animated' || view === 'carousel') &&
+    !activeFolder &&
+    !showEmpty &&
+    !(activeChannel && CHANNEL_SCREEN_KINDS.includes(activeChannel.kind));
+
   const commonProps = {
     items: visible,
     duplicateIds,
@@ -3095,7 +3347,7 @@ onCreate={vault.create}
             event.preventDefault();
             setMenu({ x: event.clientX, y: event.clientY, items: hideChromeMenu(id, () => hideChrome(id), () => openSettings('hidden')) });
           }}
-          onSelect={setActiveId}
+          onSelect={openChannel}
           onReorder={(next) => void vault.updatePrefs({ sidebar: next })}
           onToggleFolder={toggleFolderCollapse}
           selectedRows={channelSelection}
@@ -3199,7 +3451,7 @@ onCreate={vault.create}
                 </button>
 
                 {tagPickerOpen ? (
-                  <div className="tag-picker" role="dialog" aria-label="Filter by tags">
+                  <div className="tag-picker tag-picker--popover" role="dialog" aria-label="Filter by tags">
                     <input
                       className="input tag-picker__search"
                       value={tagPickerQuery}
@@ -3315,9 +3567,7 @@ onCreate={vault.create}
             className="content"
             ref={contentRef}
             style={{
-              ...((view === 'animated' || view === 'carousel') && activeChannel?.kind !== 'dashboard'
-                ? { overflow: 'hidden' }
-                : undefined),
+              ...(selfScrollingView ? { overflow: 'hidden' } : undefined),
               // A dock floats over the page: without clearance on its edge the
               // content ends scroll underneath it. One rule per edge, since
               // bars roam freely now.
@@ -3335,6 +3585,39 @@ onCreate={vault.create}
                 : undefined),
             }}
           >
+            {/* The merged sections of All logins. Favorites, Needs attention and
+                Weak or reused were three rows in the rail; they are four views
+                of one list, so they are tabs of it instead. The strip is the
+                first child of the scroll container and sticky, so a long list
+                scrolls under it rather than carrying it away, and Flow/Orbit —
+                which pin their own height — simply get it as the row above. */}
+            {showAllTabs && !folderLocked && !channelLocked ? (
+              <div className="list-tabs">
+                <div className="segmented list-tabs__group" role="tablist" aria-label="All logins sections">
+                  {ALL_LOGIN_TABS.map((tab) => {
+                    const active = allTab === tab.kind;
+                    return (
+                      <button
+                        key={tab.kind}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        aria-pressed={active}
+                        className="segmented__option list-tabs__option"
+                        title={describeChannel({ kind: tab.kind, tagIds: [] }, prefs.tags)}
+                        onClick={() => setAllTab(tab.kind)}
+                      >
+                        {tab.label}
+                        <span className="list-tabs__count">
+                          {(tabCounts[tab.kind] ?? 0).toLocaleString()}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
             {/* The folder's notes live behind one small pill, not a permanent
                 panel: they are reference material, not part of the list. The
                 panel sits in the flow when open, so the list moves down to
@@ -3394,6 +3677,16 @@ onCreate={vault.create}
                 }
                 onCancel={() => setActiveId('all')}
               />
+            ) : channelLocked && activeChannel ? (
+              <SecurityGate
+                security={activeChannel.security}
+                title={`Open "${activeChannel.name}"`}
+                hint="This channel has its own second factor."
+                onVerified={() =>
+                  setChannelsUnlocked((current) => new Set(current).add(activeChannel.id))
+                }
+                onCancel={() => setActiveId('all')}
+              />
             ) : activeChannel?.kind === 'mail' ? (
               <div className="content__inner content__inner--dash">
                 <MailCenter
@@ -3409,54 +3702,7 @@ onCreate={vault.create}
                 />
               </div>
             ) : activeChannel?.kind === 'history' ? (
-              <HistoryPanel
-                events={prefs.history}
-                items={vault.items}
-                busy={historyBusy}
-                onRestore={(event) => {
-                  if (!event.before) return;
-                  const snapshot = event.before;
-                  setHistoryBusy(true);
-                  void vault
-                    .mutate(
-                      async () => {
-                        if (vault.items.some((item) => item.id === snapshot.id)) {
-                          // An edit, or a delete followed by a re-add: put the old
-                          // fields back but keep the current `updatedAt` so the
-                          // restore reads as the most recent change, which it is.
-                          const { updatedAt: _when, ...patch } = snapshot;
-                          await vault.service.updateItem(snapshot.id, patch);
-                        } else {
-                          await vault.service.restoreItem(snapshot);
-                        }
-                      },
-                      // A restore is the log acting on itself: recording it
-                      // would append a row for every row you press Restore on.
-                      { log: false },
-                    )
-                    .then(() =>
-                      notify(
-                        event.action === 'deleted'
-                          ? `Restored “${event.title || 'login'}” exactly as it was`
-                          : `Put the earlier version of “${event.title || 'login'}” back`,
-                      ),
-                    )
-                    .catch((cause: unknown) =>
-                      notify(cause instanceof Error ? cause.message : 'Could not restore that version', 'error'),
-                    )
-                    .finally(() => setHistoryBusy(false));
-                }}
-                onOpenLogin={(item) => requestEdit(item)}
-                onCopy={viewActions.onCopy}
-                onForget={(id) =>
-                  void vault.updatePrefs({ history: prefs.history.filter((entry) => entry.id !== id) })
-                }
-                onClear={() =>
-                  void vault
-                    .updatePrefs({ history: [] })
-                    .then(() => notify('History cleared — the log is empty, nothing in the vault changed'))
-                }
-              />
+              <HistoryPanel {...historyPanel} />
             ) : activeChannel?.kind === 'dashboard' ? (
               <div className="content__inner content__inner--dash">
                 <Dashboard
@@ -3467,7 +3713,8 @@ onCreate={vault.create}
                   usage={prefs.usage}
                   focus={dashboardFocus}
                   onFocusHandled={() => setDashboardFocus(null)}
-                  onSelectChannel={(id) => setActiveId(id)}
+                  history={historyPanel}
+                  onSelectChannel={openChannel}
                   onOpenLogin={(item) => requestEdit(item)}
                   // Same window the dock's mailbox slot opens, so the two are
                   // genuinely the same screen rather than two mail views.
@@ -3485,7 +3732,10 @@ onCreate={vault.create}
               <div className="content__inner">
                 <ViewEmptyState
                   query={query}
-                  screen={activeChannel ? activeChannel.id : `folder:${activeFolder?.id ?? ''}`}
+                  // On All logins the tab is what the empty state is about: an
+                  // empty Favorites tab must say "no favorites", not "your vault
+                  // is empty".
+                  screen={activeChannel ? (activeChannel.id === 'all' ? allTab : activeChannel.id) : `folder:${activeFolder?.id ?? ''}`}
                   onAdd={() => setEditing('new')}
                   onSearchAll={query.trim() && searchScope === 'channel' ? () => setSearchScope('all') : null}
                 />
@@ -3515,6 +3765,41 @@ onCreate={vault.create}
                 <BasicView {...commonProps} {...cardProps} />
               </div>
             )}
+
+            {/* The way into a bulk edit. Right-clicking a member of a selection
+                opens the same menu, but a gesture nobody is told about is not a
+                feature: this appears the moment more than one login is picked
+                and leads with what a selection is actually for — rotating the
+                credentials of a set of accounts. Sticky to the foot of the pane
+                so it never covers a dock and never scrolls out of reach. */}
+            {selection.ids.size > 1 ? (
+              <div className="selection-bar" role="toolbar" aria-label={`${selection.ids.size} logins selected`}>
+                <span className="selection-bar__count">{selection.ids.size} selected</span>
+                <button type="button" className="btn btn--primary btn--sm" onClick={() => setBulkField('password')}>
+                  New password
+                </button>
+                <button type="button" className="btn btn--secondary btn--sm" onClick={() => setBulkField('username')}>
+                  Email / username
+                </button>
+                <button type="button" className="btn btn--ghost btn--sm" onClick={() => void shareSelection()}>
+                  Copy
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  title="Title, notes, tags, theme and security"
+                  onClick={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setMenu({ x: rect.left, y: rect.top - 6, items: selectionMenu });
+                  }}
+                >
+                  More…
+                </button>
+                <button type="button" className="btn btn--ghost btn--sm" onClick={() => selection.clear()}>
+                  Clear
+                </button>
+              </div>
+            ) : null}
           </div>
         </main>
       </div>
@@ -3524,6 +3809,7 @@ onCreate={vault.create}
           items={selectedItems}
           field={bulkField}
           tags={prefs.tags}
+          generatorOptions={prefs.passwordGenerator}
           onCreateTag={createTagNow}
           onApply={(edit) => void applySelectionEdit(edit)}
           onCancel={() => setBulkField(null)}
@@ -3542,11 +3828,11 @@ onCreate={vault.create}
               // first entry is reused by the rest rather than duplicated.
               let catalogue = prefs.tags;
               const planned = entries.map((entry) => {
-                const { tagIds, catalogue: next } = tagIdsForDraft(entry, focusedTagIds, catalogue, {
-                  // Bulk-added logins follow the same rule as single ones: in a
-                  // folder they take the folder's tags, not a provider guess.
-                  autoTag: prefs.autoTagDomain && !activeFolder,
-                });
+                // The shared rule, with the running catalogue so a tag created
+                // for the first entry is reused by the rest rather than
+                // duplicated — including in All logins, where there is no channel
+                // tag to inherit and the site and provider do the filing.
+                const { tagIds, catalogue: next } = tagsForNewLogin(entry, catalogue);
                 catalogue = next;
                 return { entry, tagIds };
               });
@@ -3746,11 +4032,10 @@ onCreate={vault.create}
               <button
                 className="btn btn--primary"
                 onClick={() => {
-                  // Same rule as the auto-save path: the open channel or folder
-                  // supplies the tags, the login's own address adds any it earns.
-                  const { tagIds, catalogue } = tagIdsForDraft(clipPending, focusedTagIds, prefs.tags, {
-                    autoTag: prefs.autoTagDomain && !activeFolder,
-                  });
+                  // Same rule as the auto-save path — literally the same helper,
+                  // so a login saved from this prompt cannot be filed differently
+                  // from one the watcher saved without asking.
+                  const { tagIds, catalogue } = tagsForNewLogin(clipPending);
                   void (async () => {
                     if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
                     const created = await vault.mutate(() =>
@@ -3795,7 +4080,9 @@ onCreate={vault.create}
           <p className="capture__note">
             {focusedTagIds.length > 0
               ? 'Saves with this channel’s tags, so it lands where you are.'
-              : 'Saves untagged, so it waits in Unassigned until you file it.'}
+              : prefs.autoTagDomain
+                ? 'Saves tagged by its site and address, so it does not wait in Unassigned.'
+                : 'Saves untagged, so it waits in Unassigned until you file it.'}
           </p>
           <p className="capture__note">Turn this off in Settings &gt; Security if it prompts too often.</p>
         </Modal>
@@ -3854,11 +4141,22 @@ onCreate={vault.create}
           onCreateTag={createTagNow}
           accounts={prefs.gmailAccounts}
           itemCount={
+            // A new channel in a folder starts as the folder's scope, so the
+            // preview counts that rather than the whole vault.
             editingChannel === 'new'
-              ? vault.items.length
+              ? pendingChannelFolder
+                ? applyChannel(
+                    createChannel('', channelSeed ?? {}),
+                    vault.items,
+                    staleDays,
+                    pendingChannelFolder,
+                  ).length
+                : vault.items.length
               : applyChannel(
                   channels.find((entry) => entry.id === editingChannel) ?? channels[0]!,
                   vault.items,
+                  staleDays,
+                  getParentFolderForChannel(editingChannel),
                 ).length
           }
           onSave={saveChannel}
@@ -3905,14 +4203,11 @@ onCreate={vault.create}
           }}
           onSave={async (draft) => {
             if (editing === 'new') {
-              // Tags for a login created here. The open channel or folder is the
-              // context it belongs to, so its tags come first. Domain guesses
-              // are only added outside a folder: a login made in a folder must
-              // be filed by that folder, not by whichever provider happens to
-              // own the address.
-              const { tagIds, catalogue } = tagIdsForDraft(draft, focusedTagIds, prefs.tags, {
-                autoTag: prefs.autoTagDomain && !activeFolder,
-              });
+              // Tags for a login created here, by the same rule as every other
+              // arrival: the open channel or folder is the context it belongs to,
+              // and outside a folder the site and email provider file it too — so
+              // a login made in All logins lands tagged instead of in Unassigned.
+              const { tagIds, catalogue } = tagsForNewLogin(draft);
               if (catalogue !== prefs.tags) await vault.updatePrefs({ tags: catalogue });
               draft = { ...draft, tags: [...new Set([...(draft.tags ?? []), ...tagIds])] };
               const created = await vault.mutate(() => vault.service.addItem(draft));
@@ -3979,24 +4274,30 @@ onCreate={vault.create}
             {/* What the site was recognised as, and where it will be filed. */}
             <div className="capture__tags">
               <span className="capture__tags-label">
-                {capture.pending.insight.suggestedTags.length > 0 ? 'Tags' : 'No matching tag'}
+                {!prefs.autoTagDomain
+                  ? 'Auto-tagging is off'
+                  : capture.pending.insight.suggestedTags.length > 0
+                    ? 'Tags'
+                    : 'No matching tag'}
               </span>
-              {capture.pending.insight.suggestedTags.map((tag) => (
-                <span
-                  key={tag.name}
-                  className={`chip ${tag.id ? 'chip--tag' : 'chip--tag chip--new'}`}
-                  title={
-                    tag.id
-                      ? 'Using an existing tag'
-                      : tag.reason === 'site'
-                        ? 'Matched from the site'
-                        : 'Taken from the email domain'
-                  }
-                >
-                  {tag.name}
-                  {tag.id ? '' : ' (new)'}
-                </span>
-              ))}
+              {prefs.autoTagDomain
+                ? capture.pending.insight.suggestedTags.map((tag) => (
+                    <span
+                      key={tag.name}
+                      className={`chip ${tag.id ? 'chip--tag' : 'chip--tag chip--new'}`}
+                      title={
+                        tag.id
+                          ? 'Using an existing tag'
+                          : tag.reason === 'site'
+                            ? 'Matched from the site'
+                            : 'Taken from the email domain'
+                      }
+                    >
+                      {tag.name}
+                      {tag.id ? '' : ' (new)'}
+                    </span>
+                  ))
+                : null}
             </div>
 
             <p className="capture__note">

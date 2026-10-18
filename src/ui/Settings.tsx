@@ -47,7 +47,7 @@ import {
 import { formatBytes, useEfficiency } from './useEfficiency.ts';
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import { buildStamp, getPlatform } from '../lib/platform.ts';
-import { applyChannel } from '../vault/channels.ts';
+import { applyChannel, parentFolderFor } from '../vault/channels.ts';
 import { HIDDEN_BUTTON_LABELS } from './context-menu.tsx';
 import { DockSlotsEditor } from './DockSettings.tsx';
 import {
@@ -1070,7 +1070,14 @@ export function Settings(props: {
             let count = 0;
             if (channel) {
               try {
-                count = applyChannel(channel, items, prefs.passwordAgeDays).length;
+                // Scoped by the folder the channel sits in, so the number here
+                // matches what the row shows when it is back in the sidebar.
+                count = applyChannel(
+                  channel,
+                  items,
+                  prefs.passwordAgeDays,
+                  parentFolderFor(prefs.sidebar, prefs.folders, channel.id),
+                ).length;
               } catch {
                 count = 0;
               }
@@ -1189,6 +1196,8 @@ export function Settings(props: {
           items={items}
           staleDays={prefs.passwordAgeDays}
           hiddenChannels={prefs.hiddenChannels}
+          folders={prefs.folders}
+          sidebar={prefs.sidebar}
           onEditChannel={(channelId) => {
             if (onEditChannel) onEditChannel(channelId);
             else onNotify('Right-click a channel in the sidebar to edit it', 'error');

@@ -9,13 +9,25 @@ test('hidden channels default to visible, junk ids are dropped', () => {
   assert.equal(fresh.showNewChannelButton, true);
   assert.equal(fresh.showCompactButton, true);
   const out = normalisePreferences({
-    hiddenChannels: ['weak', 42, '', 'weak', null],
+    hiddenChannels: ['ch_work', 42, '', 'ch_work', null],
     showNewChannelButton: false,
     showCompactButton: 0,
   } as never);
-  assert.deepEqual(out.hiddenChannels, ['weak']);
+  assert.deepEqual(out.hiddenChannels, ['ch_work']);
   assert.equal(out.showNewChannelButton, false);
   assert.equal(out.showCompactButton, false);
+  // The three rows that became tabs of All logins are swept out: a hide entry
+  // for a channel that no longer exists is a row in Settings that does nothing.
+  assert.deepEqual(normalisePreferences({ hiddenChannels: ['favorites', 'weak'] } as never).hiddenChannels, []);
+});
+
+test('hiding a built-in channel survives the sweep', () => {
+  // Built-ins can be hidden from the rail now; the sweep only retires the ids
+  // of rows that became tabs, never the surviving built-ins.
+  const kept = normalisePreferences({
+    hiddenChannels: ['all', 'dashboard', 'mail', 'history'],
+  } as never);
+  assert.deepEqual(kept.hiddenChannels, ['all', 'dashboard', 'mail', 'history']);
 });
 
 test('the sidebar shows unless explicitly hidden', () => {

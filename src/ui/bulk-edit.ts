@@ -52,9 +52,36 @@ export type MenuItem =
     };
 import { EMPTY_SECURITY } from '../crypto/security.ts';
 import type { LoginSecurity } from '../crypto/security.ts';
+import { generatePassword, type GeneratorOptions } from '../crypto/passwords.ts';
 
 /** A title the user has not edited. Never written to any login. */
 export const UNTOUCHED = undefined;
+
+/**
+ * The fields the bulk editor can open on.
+ *
+ * `username` and `password` are here because rotating a set of credentials is
+ * exactly what a multi-selection is for: the alternative is opening a dozen
+ * editors one at a time and remembering which ones you already did.
+ */
+export type BulkField = 'title' | 'username' | 'password' | 'notes' | 'tags' | 'theme';
+
+/**
+ * Generator settings used when nothing better was supplied.
+ *
+ * The dialog always passes the user's saved settings, so what it generates is
+ * what the editor generates. This exists for the other two callers: a test, and
+ * the diff itself, which must never throw on a missing option block — that would
+ * look exactly like "the password did not change".
+ */
+export const FALLBACK_GENERATOR: GeneratorOptions = {
+  length: 20,
+  lower: true,
+  upper: true,
+  digits: true,
+  symbols: true,
+  avoidAmbiguous: true,
+};
 
 /**
  * What a bulk edit wants to change. A field left as `undefined` is not applied.
@@ -71,6 +98,17 @@ export interface BulkEdit {
   notes?: string;
   favorite?: boolean;
   needsAttention?: boolean;
+  /**
+   * A fresh password per login, generated when the edit is applied.
+   *
+   * This is the sane reading of "change their passwords at once": one password
+   * shared by a dozen logins is the reuse the vault itself flags as a problem,
+   * so the default rotation makes each one different. `password` above stays the
+   * way to set one value on all of them, for the cases that really are a group.
+   */
+  passwordGenerate?: boolean;
+  /** Generator settings for `passwordGenerate`. Falls back when absent. */
+  passwordOptions?: GeneratorOptions;
   /** Replaces every selected login's tags with this exact set. */
   tags?: string[];
   /** Adds these tags to each selected login, keeping the rest. */
@@ -115,7 +153,14 @@ export function diffBulkEdit(item: VaultItem, edit: BulkEdit): Partial<VaultItem
   // A password change is special: it also moves passwordUpdatedAt, otherwise the
   // "this password is old" health check would still call a just-rotated
   // password stale.
-  if (edit.password !== UNTOUCHED && edit.password !== item.password) {
+  if (edit.passwordGenerate) {
+    // Not compared first, deliberately: the whole point of generating is that the
+    // result is new, so "it already equals this" cannot happen and skipping the
+    // write would be the bug.
+    patch.password = generatePassword(edit.passwordOptions ?? FALLBACK_GENERATOR);
+    patch.passwordUpdatedAt = Date.now();
+    dirty = true;
+  } else if (edit.password !== UNTOUCHED && edit.password !== item.password) {
     patch.password = edit.password;
     patch.passwordUpdatedAt = Date.now();
     dirty = true;
@@ -179,6 +224,9 @@ function sameSecurity(a: LoginSecurity, b: LoginSecurity): boolean {
 
 /** How many of the selection the given edit would actually change. */
 export function countAffected(items: readonly VaultItem[], edit: BulkEdit): number {
+  // A generated password is new for every login by construction, and asking the
+  // diff would generate a string per item just to throw it away.
+  if (edit.passwordGenerate) return items.length;
   let count = 0;
   for (const item of items) if (diffBulkEdit(item, edit)) count += 1;
   return count;
@@ -253,7 +301,7 @@ export function bulkMenu(options: {
    * Tags edited titles, and the tags screen looked broken because it never
    * opened.
    */
-  onEditFields: (field: 'title' | 'notes' | 'tags' | 'theme') => void;
+  onEditFields: (field: BulkField) => void;
   onEditSecurity: () => void;
   onDelete: () => void;
   onSelectAll: () => void;
@@ -291,6 +339,12 @@ export function bulkMenu(options: {
       icon: options.icon.edit,
       items: [
         { kind: 'item', label: 'Title', onSelect: () => options.onEditFields('title') },
+        // Email/username and password sit at the top of the list with title
+        // because they are what a bulk selection is actually for: rotating the
+        // credentials of a set of accounts. The rest are organisation.
+        { kind: 'item', label: 'Email / username', onSelect: () => options.onEditFields('username') },
+        { kind: 'item', label: 'New password…', onSelect: () => options.onEditFields('password') },
+        { kind: 'separator' },
         { kind: 'item', label: 'Notes', onSelect: () => options.onEditFields('notes') },
         { kind: 'item', label: 'Tags', onSelect: () => options.onEditFields('tags') },
         { kind: 'item', label: 'Theme', onSelect: () => options.onEditFields('theme') },

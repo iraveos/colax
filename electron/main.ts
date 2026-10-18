@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ShellSettings } from '../src/lib/platform.ts';
 import { closeMailConnections, fetchFullMail, listInboxMail } from './mail-imap.ts';
+import { connectOAuth } from './oauth.ts';
 // Inlined as a data URL by esbuild (see scripts/electron-build.mjs), so the
 // tray icon needs no file path that differs between dev and packaged builds.
 import trayPng from '../public/colax-icon.png';
@@ -545,18 +546,20 @@ void app.whenReady().then(() => {
       const args = input as {
         address?: unknown;
         appPassword?: unknown;
+        oauth?: unknown;
         feedId?: unknown;
         host?: unknown;
         port?: unknown;
         secure?: unknown;
         images?: unknown;
       };
-      if (typeof args.address !== 'string' || typeof args.appPassword !== 'string' || typeof args.feedId !== 'string') {
+      if (typeof args.address !== 'string' || typeof args.feedId !== 'string') {
         return { ok: false, error: 'Bad request.' };
       }
       return await fetchFullMail({
         address: args.address,
-        appPassword: args.appPassword,
+        appPassword: typeof args.appPassword === 'string' ? args.appPassword : '',
+        oauth: args.oauth as never,
         feedId: args.feedId,
         host: typeof args.host === 'string' ? args.host : undefined,
         port: typeof args.port === 'number' ? args.port : undefined,
@@ -578,6 +581,7 @@ void app.whenReady().then(() => {
       const args = input as {
         address?: unknown;
         appPassword?: unknown;
+        oauth?: unknown;
         host?: unknown;
         port?: unknown;
         secure?: unknown;
@@ -585,12 +589,13 @@ void app.whenReady().then(() => {
         beforeUid?: unknown;
         query?: unknown;
       };
-      if (typeof args.address !== 'string' || typeof args.appPassword !== 'string') {
+      if (typeof args.address !== 'string') {
         return { ok: false, error: 'Bad request.' };
       }
       return await listInboxMail({
         address: args.address,
-        appPassword: args.appPassword,
+        appPassword: typeof args.appPassword === 'string' ? args.appPassword : '',
+        oauth: args.oauth,
         host: args.host,
         port: args.port,
         secure: args.secure,
@@ -604,6 +609,38 @@ void app.whenReady().then(() => {
         error: `Mailer error (${cause instanceof Error && cause.message ? cause.message : 'unexpected error'}).`,
       };
     }
+  });
+  /**
+   * The OAuth2 sign-in flow for a mailbox.
+   *
+   * The browser opens at the provider, the redirect lands on a loopback port
+   * only this process knows, and the code is redeemed here with the PKCE
+   * verifier — the renderer only ever sees the resulting tokens.
+   */
+  ipcMain.handle('colax:oauth-connect', async (_event, input: unknown) => {
+    if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };
+    const args = input as {
+      clientId?: unknown;
+      clientSecret?: unknown;
+      authUrl?: unknown;
+      tokenUrl?: unknown;
+      scopes?: unknown;
+      extraParams?: unknown;
+    };
+    return await connectOAuth(
+      {
+        clientId: typeof args.clientId === 'string' ? args.clientId : '',
+        clientSecret: typeof args.clientSecret === 'string' ? args.clientSecret : undefined,
+        authUrl: typeof args.authUrl === 'string' ? args.authUrl : '',
+        tokenUrl: typeof args.tokenUrl === 'string' ? args.tokenUrl : '',
+        scopes: typeof args.scopes === 'string' ? args.scopes : '',
+        extraParams:
+          args.extraParams && typeof args.extraParams === 'object' && !Array.isArray(args.extraParams)
+            ? (args.extraParams as Record<string, string>)
+            : undefined,
+      },
+      openExternal,
+    );
   });
   /**
    * The one renderer-driven Chromium knob.

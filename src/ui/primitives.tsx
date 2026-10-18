@@ -340,20 +340,33 @@ export function Toasts({ toasts }: { toasts: Toast[] }) {
           'toast',
           toast.tone === 'error' ? 'toast--error' : '',
           toast.onSelect ? 'toast--action' : '',
+          toast.leaving ? 'toast--leaving' : '',
         ]
           .filter(Boolean)
           .join(' ');
+        // The hairline drains for exactly as long as the card is up, so "how
+        // long have I got" is visible instead of guessed at. It is decoration:
+        // the message is the announcement, and the timer is hidden from AT.
+        const body = (
+          <>
+            {icon}
+            <span className="toast__text">{toast.message}</span>
+            <span
+              className="toast__timer"
+              aria-hidden="true"
+              style={{ animationDuration: `${toast.duration}ms` }}
+            />
+          </>
+        );
         // A toast with an action is a real button, so it is keyboard reachable
         // and announced as one — the reused-password reminder leads somewhere.
         return toast.onSelect ? (
           <button key={toast.id} type="button" className={className} onClick={toast.onSelect}>
-            {icon}
-            {toast.message}
+            {body}
           </button>
         ) : (
           <div key={toast.id} className={className}>
-            {icon}
-            {toast.message}
+            {body}
           </div>
         );
       })}

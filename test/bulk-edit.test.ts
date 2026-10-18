@@ -226,7 +226,55 @@ test('the bulk menu opens the field it names', () => {
   const editMenu = menu.find((entry) => entry.kind === 'submenu' && entry.label.startsWith('Edit'));
   assert.ok(editMenu && editMenu.kind === 'submenu');
   for (const entry of editMenu.items) {
-    if (entry.kind === 'item' && ['Title', 'Notes', 'Tags', 'Theme'].includes(entry.label)) entry.onSelect?.();
+    if (
+      entry.kind === 'item' &&
+      ['Title', 'Email / username', 'New password…', 'Notes', 'Tags', 'Theme'].includes(entry.label)
+    ) {
+      entry.onSelect?.();
+    }
   }
-  assert.deepEqual(opened, ['title', 'notes', 'tags', 'theme']);
+  assert.deepEqual(opened, ['title', 'username', 'password', 'notes', 'tags', 'theme']);
+});
+
+/* ---- Rotating credentials ------------------------------------------------ */
+
+test('a generated password is new for every login in the selection', () => {
+  const a = item({ id: 'a', password: 'old', passwordUpdatedAt: 1 });
+  const b = item({ id: 'b', password: 'old', passwordUpdatedAt: 1 });
+  const edit: BulkEdit = { passwordGenerate: true };
+
+  const first = diffBulkEdit(a, edit)!;
+  const second = diffBulkEdit(b, edit)!;
+
+  assert.notEqual(first.password, 'old');
+  assert.notEqual(first.password, second.password, 'one shared password across a selection is reuse by definition');
+  // The age check has to move with the password, or every rotated login is still
+  // reported as stale the moment the dialog closes.
+  assert.ok((first.passwordUpdatedAt ?? 0) > 1);
+});
+
+test('a generated password is counted for the whole selection', () => {
+  // The diff would have to generate a string per login just to answer this, and
+  // the answer cannot be "0 of 3" while Apply would clearly do something.
+  const items = [item({ id: 'a' }), item({ id: 'b' }), item({ id: 'c' })];
+  assert.equal(countAffected(items, { passwordGenerate: true }), 3);
+});
+
+test('generation honours the saved generator settings', () => {
+  const patch = diffBulkEdit(item(), {
+    passwordGenerate: true,
+    passwordOptions: { length: 32, lower: true, upper: false, digits: false, symbols: false, avoidAmbiguous: false },
+  })!;
+  assert.equal(patch.password?.length, 32);
+  assert.match(patch.password ?? '', /^[a-z]+$/, 'only the selected character set may appear');
+});
+
+test('setting one password for all still writes exactly that value', () => {
+  const patch = diffBulkEdit(item({ password: 'old' }), { password: 'shared' })!;
+  assert.equal(patch.password, 'shared');
+});
+
+test('an email can be set across a selection without touching passwords', () => {
+  const patch = diffBulkEdit(item({ username: 'old@x', password: 'keep' }), { username: 'new@x' })!;
+  assert.deepEqual(patch, { username: 'new@x' });
 });

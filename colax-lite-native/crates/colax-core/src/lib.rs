@@ -31,7 +31,7 @@ pub mod text;
 pub mod totp;
 pub mod util;
 
-pub use channels::{apply_channel, builtin_channels, find_reused_passwords, Channel, ChannelAccent, ChannelKind};
+pub use channels::{apply_channel, builtin_channels, find_reused_passwords, is_all_login_tab, is_retired_channel_id, normalise_channels, section_target, Channel, ChannelAccent, ChannelKind};
 pub use crypto::{
     create_device_header, create_password_header, open_item, open_vault_key, resolve_header,
     rewrap_vault_key, seal_item, SealedBlob, VaultHeader, VaultKeyHandle, VaultProtection,

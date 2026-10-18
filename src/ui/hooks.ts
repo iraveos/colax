@@ -485,21 +485,64 @@ export interface Toast {
    * rather than an instruction to read.
    */
   onSelect?: () => void;
+  /** How long it stays up, in ms. Drives the draining hairline on the card. */
+  duration: number;
+  /** True while the exit animation plays, so the card can fade before it goes. */
+  leaving?: boolean;
 }
+
+/** Matches the exit animation in app.css; the node is dropped once it has run. */
+const TOAST_EXIT_MS = 200;
 
 export function useToasts() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextId = useRef(0);
+  /** One timer per toast, so nothing is removed twice and nothing outlives the app. */
+  const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
 
-  const dismiss = useCallback((id: number) => {
+  const remove = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
+    const pending = timers.current.get(id);
+    if (pending) clearTimeout(pending);
+    timers.current.delete(id);
   }, []);
+
+  /**
+   * Dismiss with the exit animation: mark the card as leaving, then drop it once
+   * the fade has played. Removing the node outright is what made every message
+   * blink out mid-sentence instead of settling.
+   */
+  const dismiss = useCallback(
+    (id: number) => {
+      setToasts((current) => current.map((toast) => (toast.id === id ? { ...toast, leaving: true } : toast)));
+      const pending = timers.current.get(id);
+      if (pending) clearTimeout(pending);
+      timers.current.set(
+        id,
+        setTimeout(() => remove(id), TOAST_EXIT_MS),
+      );
+    },
+    [remove],
+  );
+
+  // Timers are not owners of anything: without this, one that fires after an
+  // unmount still calls setState.
+  useEffect(
+    () => () => {
+      for (const pending of timers.current.values()) clearTimeout(pending);
+      timers.current.clear();
+    },
+    [],
+  );
 
   const notify = useCallback(
     (message: string, tone: Toast['tone'] = 'ok', duration = 2200, onSelect?: () => void) => {
       const id = (nextId.current += 1);
-      setToasts((current) => [...current.slice(-2), { id, message, tone, onSelect }]);
-      setTimeout(() => dismiss(id), duration);
+      setToasts((current) => [...current.slice(-2), { id, message, tone, onSelect, duration }]);
+      timers.current.set(
+        id,
+        setTimeout(() => dismiss(id), duration),
+      );
     },
     [dismiss],
   );

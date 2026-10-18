@@ -121,7 +121,9 @@ export function MailCenter({
                 ) : (
                   <span className="chip chip--muted">manual checks</span>
                 )}
-                {providerById(active.provider).appPasswordUrl ? (
+                {/* An OAuth mailbox has no app password to create — the link
+                    would point at a page the user has no use for. */}
+                {active.auth !== 'oauth' && providerById(active.provider).appPasswordUrl ? (
                   <button
                     type="button"
                     className="btn btn--quiet btn--sm"

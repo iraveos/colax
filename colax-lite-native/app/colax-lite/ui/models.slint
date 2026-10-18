@@ -280,16 +280,30 @@ export struct DashStat {
     label: string,
     note: string,
     channel: string,
+    // The merged section the tile opens on, when the target is All logins
+    // (`sectionTarget`): "all"/"favorites"/"attention"/"weak", or "" for a
+    // real channel of its own.
+    tab: string,
 }
 
 /// One row of "Needs your attention". `severity` is 0 high, 1 medium, 2 low
-/// — the order they sort in, and the colour they borrow.
+/// - the order they sort in, and the colour they borrow.
 export struct DashIssue {
     label: string,
     detail: string,
     count: int,
     severity: int,
     channel: string,
+    // The merged section, as on DashStat.
+    tab: string,
+}
+
+/// One tab of the All-logins strip (`list-tabs__option`): the section it
+/// shows, its own name, and how many logins the section's filter holds.
+export struct ListTab {
+    kind: string,
+    label: string,
+    count: int,
 }
 
 /// One list row: a login's name button, its meta line and a trailing slot

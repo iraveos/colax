@@ -11,7 +11,7 @@
  * short list.
  */
 import { contextBridge, ipcRenderer } from 'electron';
-import type { EfficiencyState, FullMailInput, FullMailResult, InboxListInput, InboxListResult, PlatformAPI, RuntimeMemory, ShellSettings, TrayAction } from '../src/lib/platform.ts';
+import type { EfficiencyState, FullMailInput, FullMailResult, InboxListInput, InboxListResult, OAuthConnectInput, OAuthConnectResult, PlatformAPI, RuntimeMemory, ShellSettings, TrayAction } from '../src/lib/platform.ts';
 
 declare const COLAX_APP_VERSION: string;
 
@@ -32,6 +32,10 @@ const platform: PlatformAPI = {
       ipcRenderer.invoke('colax:mail-full', input) as Promise<FullMailResult>,
     listInbox: (input: InboxListInput): Promise<InboxListResult> =>
       ipcRenderer.invoke('colax:mail-list', input) as Promise<InboxListResult>,
+  },
+  oauth: {
+    connect: (input: OAuthConnectInput): Promise<OAuthConnectResult> =>
+      ipcRenderer.invoke('colax:oauth-connect', input) as Promise<OAuthConnectResult>,
   },
   runtime: {
     setSpellcheck: (enabled: boolean) => {

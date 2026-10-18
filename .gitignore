@@ -41,3 +41,7 @@ dev-artifacts/
 # file-lock failures when packaging. Neither belongs in the repository.
 .freebuff/
 release-build/
+
+# Snapshot copies kept out of the repo until they earn a real home.
+lite version/
+main rust version/

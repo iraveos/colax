@@ -1608,17 +1608,21 @@ export function ViewEmptyState({
     ? 'No matches'
     : screen === 'favorites'
       ? 'No favorites yet'
-      : screen === 'weak'
-        ? 'Nothing needs attention'
-        : 'Your vault is empty';
+      : screen === 'attention'
+        ? 'Nothing flagged'
+        : screen === 'weak'
+          ? 'Nothing needs attention'
+          : 'Your vault is empty';
 
   const text = query
     ? `Nothing matches "${query}" here. Try a different search.`
     : screen === 'favorites'
       ? 'Star a login to pin it to the top of every view.'
-      : screen === 'weak'
-        ? 'No reused or long-untouched passwords. Nice.'
-        : 'Add your first login and it will be encrypted on this device straight away.';
+      : screen === 'attention'
+        ? 'Logins you flag for follow-up collect here.'
+        : screen === 'weak'
+          ? 'No reused or long-untouched passwords. Nice.'
+          : 'Add your first login and it will be encrypted on this device straight away.';
 
   return (
     <EmptyState

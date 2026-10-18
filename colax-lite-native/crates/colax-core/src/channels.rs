@@ -162,20 +162,78 @@ fn builtin(id: &str, name: &str, kind: ChannelKind, icon: &str, hue: i32, accent
     }
 }
 
-/// The shipped rail. Seven rows, three of which are summary screens rather
+/// The shipped rail. Four rows, three of which are summary screens rather
 /// than filtered lists — that distinction is what `apply_channel` encodes.
+///
+/// Favorites, Needs attention and Weak or reused used to be rows of their own
+/// (channels.ts up to the tab-strip change). They are the same list with a
+/// different filter, which is what a tab strip is for, so they became tabs
+/// inside `all` — see `all_login_tabs` below. Their *kinds* stay valid, so a
+/// channel anybody makes with them still works exactly as before; only the
+/// shipped rows went away.
 pub fn builtin_channels() -> Vec<Channel> {
     vec![
         builtin("all", "All logins", ChannelKind::All, "inbox", DEFAULT_CHANNEL_HUE, ChannelAccent::Slate, true, true),
-        builtin("favorites", "Favorites", ChannelKind::Favorites, "star", 44, ChannelAccent::Slate, false, true),
-        builtin("attention", "Needs attention", ChannelKind::Attention, "flag", 8, ChannelAccent::Clay, false, true),
-        builtin("weak", "Weak or reused", ChannelKind::Weak, "shield", 152, ChannelAccent::Sage, false, true),
         builtin("dashboard", "Dashboard", ChannelKind::Dashboard, "grid", 268, ChannelAccent::Dusk, true, true),
         // Mail and History are structural like Dashboard: exactly one of each,
         // undeletable, but renameable/recolourable/movable like any other row.
         builtin("mail", "Mail", ChannelKind::Mail, "inbox", 205, ChannelAccent::Slate, true, false),
         builtin("history", "History", ChannelKind::History, "clock", 28, ChannelAccent::Clay, true, false),
     ]
+}
+
+/// `ALL_LOGIN_TABS` (channels.ts L655-661): the sections of the main channel,
+/// in the strip's order. `Kind::all` is the strip's own "All" tab, and the
+/// other three are the rows the rail retired.
+pub const ALL_LOGIN_TABS: &[(ChannelKind, &str)] = &[
+    (ChannelKind::All, "All"),
+    (ChannelKind::Favorites, "Favorites"),
+    (ChannelKind::Attention, "Needs attention"),
+    (ChannelKind::Weak, "Weak or reused"),
+];
+
+/// Whether a kind is one of the merged sections rather than a screen of its
+/// own — a channel that carries one of these kinds is either the user's own
+/// row or a tab of All logins.
+pub fn is_all_login_tab(kind: &ChannelKind) -> bool {
+    matches!(
+        kind,
+        ChannelKind::All | ChannelKind::Favorites | ChannelKind::Attention | ChannelKind::Weak
+    )
+}
+
+/// Whether an id belonged to one of the rows the tab strip replaced.
+///
+/// Their stored channels are dropped on load rather than left beside the tabs
+/// (an id is only ever one of these for a preset, since everything a user
+/// makes is `ch_…`), and stored lists that name them — `hiddenChannels`, for
+/// instance — are swept so nothing renders a row that cannot be opened.
+pub fn is_retired_channel_id(id: &str) -> bool {
+    id == "favorites" || id == "attention" || id == "weak"
+}
+
+/// Where one of the merged sections lives for this vault.
+///
+/// A channel the user made with one of those kinds is a real channel and wins:
+/// their own "Favorites" row keeps working. Otherwise the section is the tab
+/// of All logins that stands in for it. Every caller that used to jump to one
+/// of the retired ids — the dashboard tiles, a menu — goes through this, so
+/// none of them can point at a channel that no longer exists.
+///
+/// Returns `(channel_id, tab)`: the tab is `None` when the target is a real
+/// channel of its own, or the section's kind when it rides inside All logins.
+pub fn section_target(channels: &[Channel], kind: ChannelKind) -> (String, Option<ChannelKind>) {
+    if let Some(own) = channels.iter().find(|channel| channel.kind == kind) {
+        if own.id != "all" {
+            return (own.id.clone(), None);
+        }
+    }
+    let main = channels
+        .iter()
+        .find(|channel| channel.kind == ChannelKind::All)
+        .map(|channel| channel.id.clone())
+        .unwrap_or_else(|| "all".into());
+    (main, Some(kind))
 }
 
 /// Icon keys the sidebar knows how to draw.
@@ -259,6 +317,13 @@ pub fn normalise_channels(stored: Option<&serde_json::Value>) -> Vec<Channel> {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
         if id.is_empty() || seen.iter().any(|known| known == id) {
+            continue;
+        }
+        // The three merged rows are gone as channels; their content is the
+        // tabs of All logins now. Dropping the stored copy here is what stops
+        // a reload from resurrecting them beside the tab strip they were
+        // folded into.
+        if is_retired_channel_id(id) {
             continue;
         }
         seen.push(id.to_string());
@@ -451,9 +516,9 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_rail_is_seven_rows_and_three_are_screens() {
+    fn the_shipped_rail_is_four_rows_and_three_are_screens() {
         let channels = builtin_channels();
-        assert_eq!(channels.len(), 7);
+        assert_eq!(channels.len(), 4);
         let screens = channels
             .iter()
             .filter(|c| {
@@ -464,7 +529,7 @@ mod tests {
             })
             .count();
         assert_eq!(screens, 3);
-        // Three of the seven cannot be deleted, and 'all' is among them:
+        // The three screens cannot be deleted, and 'all' cannot either:
         // there must always be one view.
         let locked = channels.iter().filter(|c| c.locked).count();
         assert_eq!(locked, 4);
@@ -664,10 +729,13 @@ mod tests {
             "an id appears once"
         );
 
-        // The stored row kept its name and its kind, and is still builtin.
-        let favorites = channels.iter().find(|c| c.id == "favorites").unwrap();
-        assert_eq!(favorites.name, "Stars");
-        assert!(favorites.builtin && !favorites.locked);
+        // A row whose id belongs to a retired rail row is dropped, whatever it
+        // carries: it is the tab strip's content now, and reloading must not
+        // resurrect it beside the strip it was folded into.
+        assert!(
+            !channels.iter().any(|c| c.id == "favorites"),
+            "the retired Favorites row comes back"
+        );
 
         // Every shipped row is present, in its canonical order, and the
         // structural three are locked.
@@ -683,9 +751,9 @@ mod tests {
         assert!(channels.iter().find(|c| c.id == "mail").unwrap().locked);
         assert!(channels.iter().find(|c| c.id == "history").unwrap().locked);
 
-        // Nothing stored at all: exactly the shipped seven.
+        // Nothing stored at all: exactly the shipped four.
         assert_eq!(normalise_channels(None), builtin_channels());
-        assert_eq!(normalise_channels(Some(&serde_json::json!("x"))).len(), 7);
+        assert_eq!(normalise_channels(Some(&serde_json::json!("x"))).len(), 4);
 
         // A document whose `all` row was somehow dropped gets one back.
         let without_all = normalise_channels(Some(&serde_json::json!([
@@ -731,5 +799,35 @@ mod tests {
         // the role is what deletion is gated on.
         let mine = channels.iter().find(|c| c.id == "mine").unwrap();
         assert!(!mine.builtin && mine.locked);
+    }
+
+    /// `sectionTarget` (channels.ts L706-722): a channel the user made with a
+    /// merged kind wins and takes no tab; otherwise the section rides inside
+    /// All logins. This is why the dashboard tiles cannot point at a retired
+    /// row: the target is resolved through the live catalogue every time.
+    #[test]
+    fn section_targets_resolve_to_the_merge() {
+        let user_row = Channel {
+            name: "My stars".into(),
+            kind: ChannelKind::Favorites,
+            ..create_channel("")
+        };
+        let channels = vec![builtin_channels()[0].clone(), user_row.clone()];
+        let (id, tab) = section_target(&channels, ChannelKind::Favorites);
+        assert_eq!(id, user_row.id);
+        assert!(tab.is_none(), "a real row opens with no tab");
+
+        // With no user row of that kind the section is a tab of `all`.
+        let shipped = builtin_channels();
+        let (id, tab) = section_target(&shipped, ChannelKind::Weak);
+        assert_eq!(id, "all");
+        assert_eq!(tab, Some(ChannelKind::Weak));
+
+        // The TS's `?? channels[0]` keeps the jump working on a catalogue that
+        // lost its `all` row: the first channel plays host to the tab.
+        let orphans = vec![create_channel("Random")];
+        let (id, tab) = section_target(&orphans, ChannelKind::Attention);
+        assert_eq!(id, orphans[0].id);
+        assert_eq!(tab, Some(ChannelKind::Attention));
     }
 }

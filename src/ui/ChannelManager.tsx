@@ -7,7 +7,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { applyChannel, CHANNEL_KIND_LABELS, createTag, type Channel, type Tag } from '../vault/channels.ts';
+import { applyChannel, CHANNEL_KIND_LABELS, createTag, parentFolderFor, type Channel, type Folder, type SidebarEntry, type Tag } from '../vault/channels.ts';
 import type { VaultItem } from '../vault/types.ts';
 import { EditIcon, EyeIcon, EyeOffIcon, PlusIcon, TagIcon, TrashIcon } from './icons.tsx';
 
@@ -17,6 +17,8 @@ export function ChannelManager({
   items = [],
   staleDays = 180,
   hiddenChannels = [],
+  folders = [],
+  sidebar = [],
   onEditChannel,
   onTagsChange,
   onHiddenChannelsChange,
@@ -30,6 +32,12 @@ export function ChannelManager({
   staleDays?: number;
   /** Channel ids hidden from the sidebar rail. */
   hiddenChannels?: string[];
+  /**
+   * The sidebar tree and the folders. Each row's count is scoped by the folder
+   * its channel sits in, so a folder child does not read as larger than it is.
+   */
+  folders?: Folder[];
+  sidebar?: SidebarEntry[];
   /** Opens the shared channel editor for an id, or 'new'. */
   onEditChannel: (channelId: string | 'new') => void;
   onTagsChange: (next: Tag[]) => void;
@@ -42,13 +50,19 @@ export function ChannelManager({
     const next = new Map<string, number>();
     for (const channel of channels) {
       try {
-        next.set(channel.id, applyChannel(channel, items, staleDays).length);
+        // The parent folder goes in: a channel inside one is scoped by the
+        // folder's main tags, so a count without it includes logins the channel
+        // never lists.
+        next.set(
+          channel.id,
+          applyChannel(channel, items, staleDays, parentFolderFor(sidebar, folders, channel.id)).length,
+        );
       } catch {
         next.set(channel.id, 0);
       }
     }
     return next;
-  }, [channels, items, staleDays]);
+  }, [channels, items, staleDays, sidebar, folders]);
   const hidden = new Set(hiddenChannels);
 
   function toggleHidden(channel: Channel) {

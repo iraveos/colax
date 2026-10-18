@@ -30,10 +30,18 @@ import {
   stripHtml,
   type MailPartNode,
 } from '../src/lib/mail-text.ts';
+import { normaliseMailOAuth, type MailOAuth } from '../src/lib/oauth.ts';
+import { resolveAccessToken } from './oauth.ts';
 
 export interface FullMailInput {
   address: string;
   appPassword: string;
+  /**
+   * OAuth record for a mailbox signed in without an app password. When
+   * present it wins over `appPassword`: the access token is refreshed here if
+   * expired and handed to IMAP as SASL XOAUTH2.
+   */
+  oauth?: MailOAuth;
   /** Message id: `imap:<uid>`, from the inbox listing. */
   feedId: string;
   /** The account's mail server. Absent means Google's, for callers from before providers. */
@@ -112,6 +120,8 @@ export interface MailConnection {
 interface ManagedMailbox {
   client: ImapFlow;
   pass: string;
+  /** Present when this mailbox authenticates with OAuth rather than a password. */
+  oauth?: MailOAuth;
   conn: MailConnection;
   ready: boolean;
   lastUsed: number;
@@ -148,13 +158,15 @@ export function connectInfo(input: {
   return { host, port, secure };
 }
 
-function makeClient(address: string, pass: string, conn: MailConnection): ImapFlow {
+function makeClient(address: string, pass: string, conn: MailConnection, oauth?: MailOAuth): ImapFlow {
   return new ImapFlow({
     host: conn.host,
     port: conn.port,
     secure: conn.secure,
     logger: false,
-    auth: { user: address, pass },
+    // OAuth mailboxes authenticate with SASL XOAUTH2: imapflow picks the
+    // mechanism from the field, so the same client code serves both paths.
+    auth: oauth ? { user: address, accessToken: pass } : { user: address, pass },
     connectionTimeout: 15000,
     socketTimeout: 30000,
   });
@@ -192,7 +204,12 @@ async function ensureConnected(
   pass: string,
   conn: MailConnection,
   force = false,
+  oauth?: MailOAuth,
 ): Promise<ImapFlow> {
+  // A live access token, refreshed here when the stored one has expired. The
+  // resolved token doubles as the password for change-detection below: a
+  // rotated token reconnects the pool entry exactly like a changed password.
+  if (oauth) pass = await resolveAccessToken(oauth);
   const key = mailboxKey(address, conn);
   const current = mailboxes.get(key);
   const moved =
@@ -200,8 +217,8 @@ async function ensureConnected(
   if (current && (force || moved || current.pass !== pass)) await dropMailbox(key);
   let managed = mailboxes.get(key);
   if (!managed) {
-    const client = makeClient(address, pass, conn);
-    managed = { client, pass, conn, ready: false, lastUsed: Date.now(), connecting: null };
+    const client = makeClient(address, pass, conn, oauth);
+    managed = { client, pass, oauth, conn, ready: false, lastUsed: Date.now(), connecting: null };
     mailboxes.set(key, managed);
     watch(client, key, managed);
   }
@@ -250,14 +267,17 @@ async function runMail<T>(
   pass: string,
   conn: MailConnection,
   work: (client: ImapFlow) => Promise<T>,
+  oauth?: MailOAuth,
 ): Promise<T> {
   let client: ImapFlow;
   try {
-    client = await ensureConnected(address, pass, conn);
+    client = await ensureConnected(address, pass, conn, false, oauth);
   } catch (cause) {
     throw staged(
       'signin',
-      `Could not sign in to ${conn.host}. Check the address and the app password for that provider. (${causeText(cause)})`,
+      oauth
+        ? `Could not sign in to ${conn.host} with this mailbox's OAuth sign-in. Reconnect it from the login's Inbox tab. (${causeText(cause)})`
+        : `Could not sign in to ${conn.host}. Check the address and the app password for that provider. (${causeText(cause)})`,
     );
   }
   try {
@@ -265,7 +285,7 @@ async function runMail<T>(
   } catch (cause) {
     if (!isConnectionError(cause)) throw cause;
     try {
-      client = await ensureConnected(address, pass, conn, true);
+      client = await ensureConnected(address, pass, conn, true, oauth);
     } catch (cause2) {
       throw staged('reconnect', `The connection dropped and would not come back (${causeText(cause2)}).`);
     }
@@ -306,6 +326,7 @@ function causeText(cause: unknown): string {
 export async function listInboxMail(input: {
   address: unknown;
   appPassword: unknown;
+  oauth?: unknown;
   host?: unknown;
   port?: unknown;
   secure?: unknown;
@@ -318,7 +339,10 @@ export async function listInboxMail(input: {
   const address = typeof input?.address === 'string' ? input.address.trim().slice(0, 320) : '';
   const appPassword =
     typeof input?.appPassword === 'string' ? input.appPassword.replace(/\s+/g, '').slice(0, 200) : '';
-  if (!address || !appPassword) return { ok: false, error: 'Missing mailbox credentials.' };
+  const oauth = normaliseMailOAuth(input?.oauth) ?? undefined;
+  // An OAuth mailbox has no app password at all; a password mailbox has no
+  // oauth record. Either credential is enough, never neither.
+  if (!address || (!appPassword && !oauth)) return { ok: false, error: 'Missing mailbox credentials.' };
   const conn = connectInfo(input ?? {});
   // 100 per page rather than 50: a page is one round trip either way, and the
   // list keeps the rest behind "Load older", so the ceiling is only about how
@@ -369,7 +393,7 @@ export async function listInboxMail(input: {
       } finally {
         lock.release();
       }
-    });
+    }, oauth);
   } catch (cause) {
     return {
       ok: false,
@@ -476,7 +500,8 @@ async function readOne(client: ImapFlow, box: string, uid: number, wantImages = 
 export async function fetchFullMail(input: FullMailInput): Promise<FullMailResult> {
   const address = typeof input?.address === 'string' ? input.address.trim().slice(0, 320) : '';
   const appPassword = typeof input?.appPassword === 'string' ? input.appPassword.replace(/\s+/g, '').slice(0, 200) : '';
-  if (!address || !appPassword) return invalid('Missing mailbox credentials.');
+  const oauth = normaliseMailOAuth(input?.oauth) ?? undefined;
+  if (!address || (!appPassword && !oauth)) return invalid('Missing mailbox credentials.');
   const conn = connectInfo((input ?? {}) as { host?: unknown; port?: unknown; secure?: unknown });
   // Listings address INBOX UIDs directly; anything else is a row saved before
   // the rebuild, which no longer addresses anything.
@@ -485,8 +510,12 @@ export async function fetchFullMail(input: FullMailInput): Promise<FullMailResul
     return invalid('That saved message is from an older version. Refresh the list and open it again.');
   }
   try {
-    return await runMail(address, appPassword, conn, (client) =>
-      readOne(client, 'INBOX', uid, input.images !== false),
+    return await runMail(
+      address,
+      appPassword,
+      conn,
+      (client) => readOne(client, 'INBOX', uid, input.images !== false),
+      oauth,
     );
   } catch (cause) {
     // Sign-in and reconnect texts arrive final; anything else already carries

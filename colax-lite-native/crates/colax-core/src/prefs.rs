@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use crate::channels::{builtin_channels, normalise_channels, Channel};
+use crate::channels::{builtin_channels, normalise_channels, is_retired_channel_id, Channel};
 use crate::dock::{default_docks, normalise_docks, DockState};
 use crate::history::{normalise_history, HistoryEvent};
 use crate::model::{normalise_security, LoginSecurity};
@@ -697,7 +697,12 @@ pub fn normalise_preferences(raw: &Value) -> VaultPreferences {
     out.show_lock_button = bool_or(o.get("showLockButton"), true);
     out.floating_chrome = bool_or(o.get("floatingChrome"), true);
     out.hide_dividers = bool_or(o.get("hideDividers"), false);
-    out.hidden_channels = id_list(o.get("hiddenChannels"));
+    // Rows the tab strip replaced cannot stay in here either: a hidden id
+    // that has no channel would otherwise keep a dead entry forever.
+    out.hidden_channels = id_list(o.get("hiddenChannels"))
+        .into_iter()
+        .filter(|id| !is_retired_channel_id(id))
+        .collect();
     out.hidden_folders = id_list(o.get("hiddenFolders"));
     out.hidden_buttons = id_list(o.get("hiddenButtons"));
     // The vault's own second factor, through the same helper the items use:

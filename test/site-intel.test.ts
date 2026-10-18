@@ -158,6 +158,13 @@ test('an unusable mailbox qualifies nobody, however it is configured', () => {
     'pasted spaces and stray whitespace are normalised, not rejected',
   );
   assert.equal(mailboxUsable({ address: 'a@b.c', appPassword: 'x' }), true, 'enabled defaults to true');
+  // An OAuth mailbox carries no app password at all; its tokens are the
+  // credential, and the same gate decides it is readable.
+  assert.equal(mailboxUsable({ address: 'a@b.c', oauth: { accessToken: 'at' } }), true, 'oauth tokens count as credentials');
+  assert.equal(mailboxUsable({ address: 'a@b.c', oauth: { refreshToken: 'rt' } }), true, 'a refresh token alone still signs in');
+  assert.equal(mailboxUsable({ address: 'a@b.c', oauth: {} }), false, 'config without tokens is not readable yet');
+  assert.equal(mailboxUsable({ address: 'a@b.c' }), false, 'no credentials at all');
+  assert.equal(mailboxUsable({ address: 'a@b.c', oauth: { accessToken: 'at' }, enabled: false }), false);
 });
 
 test('masking keeps two letters and the domain, hides the rest', () => {
@@ -299,6 +306,32 @@ test('a pasted login keeps the tags of the channel it was pasted into', () => {
   assert.ok(gmail.catalogue.length > catalogue.length, 'a new tag is created for the new hint');
   // …and off really means off.
   assert.deepEqual(tagIdsForDraft({ username: 'me@gmail.com' }, [], catalogue, { autoTag: false }).tagIds, []);
+});
+
+test('an unknown site is filed by its own tag when the vault already has one', () => {
+  // The capture prompt has always reused the tag named for the site's
+  // registrable domain. The paste and editor paths did not, so the same login
+  // typed into All logins — where there is no channel tag to inherit — landed
+  // untagged. Both paths now apply the same rule.
+  const acme = { id: 'tag_acme', name: 'acme.com', hue: 30 };
+  const catalogue = [acme];
+
+  const reused = tagIdsForDraft({ url: 'https://login.acme.com/session' }, [], catalogue, { autoTag: true });
+  assert.deepEqual(reused.tagIds, ['tag_acme']);
+  assert.equal(reused.catalogue, catalogue, 'an existing tag is reused, never duplicated');
+
+  // An address on a domain of its own, already filed, is matched the same way.
+  const shop = { id: 'tag_shop', name: 'shop.example', hue: 60 };
+  assert.deepEqual(
+    tagIdsForDraft({ username: 'me@shop.example' }, [], [shop], { autoTag: true }).tagIds,
+    ['tag_shop'],
+  );
+
+  // A domain nobody has filed under is not turned into a tag of its own: one
+  // new tag per small site would bury the tags that mean something.
+  const fresh = tagIdsForDraft({ url: 'https://portal.small-shop.example/' }, [], catalogue, { autoTag: true });
+  assert.deepEqual(fresh.tagIds, []);
+  assert.equal(fresh.catalogue, catalogue);
 });
 
 test('mail belongs to the login it was connected for, and nowhere else', () => {

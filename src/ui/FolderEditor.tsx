@@ -333,8 +333,8 @@ export function FolderEditor({
           <div className="field">
             <span className="field__label">Main tags</span>
             <p className="field__hint" style={{ marginTop: 0 }}>
-              These apply to every channel in this folder, and are given to any login created while the
-              folder is open.
+              Applied to every channel in this folder, and given to any login created while the folder is
+              open. A login must carry all of them to appear in the folder at all.
             </p>
             <TagCloud tags={tags} selected={draft.tagIds} onToggle={(id) => toggleTag('tagIds', id)} />
           </div>
@@ -342,7 +342,9 @@ export function FolderEditor({
           <div className="field">
             <span className="field__label">Alternate tags</span>
             <p className="field__hint" style={{ marginTop: 0 }}>
-              Used only by channels that have no tags of their own — the folder&apos;s fallback filing.
+              Used only by channels that have no tags of their own — the folder&apos;s fallback filing. To
+              narrow one channel instead, add tags to that channel: the folder&apos;s main tags apply to it
+              either way.
             </p>
             <TagCloud tags={tags} selected={draft.altTagIds} onToggle={(id) => toggleTag('altTagIds', id)} />
           </div>

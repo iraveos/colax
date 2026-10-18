@@ -50,6 +50,13 @@ export interface HistoryPanelProps {
   onClear: () => void;
   /** True while the vault is doing the write, so rows cannot be double-fired. */
   busy?: boolean;
+  /**
+   * Rendered inside another screen (the Dashboard's History tab) rather than as
+   * a channel's own page. Only the outer padding and the page-level wrapper
+   * change: the panel is deliberately one component, so the tab and the channel
+   * can never drift apart.
+   */
+  embedded?: boolean;
 }
 
 export function HistoryPanel({
@@ -61,6 +68,7 @@ export function HistoryPanel({
   onForget,
   onClear,
   busy,
+  embedded = false,
 }: HistoryPanelProps) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | HistoryEvent['action']>('all');
@@ -100,11 +108,11 @@ export function HistoryPanel({
   }, [shown, now]);
 
   return (
-    <div className="content__inner content__inner--dash history">
+    <div className={embedded ? 'history history--embedded' : 'content__inner content__inner--dash history'}>
       <header className="history__head">
         <div className="history__title">
           <ClockIcon width="18" height="18" />
-          <h2>History</h2>
+          {embedded ? null : <h2>History</h2>}
           <span className="history__count">
             {events.length === 1 ? '1 change' : `${events.length} changes`}
           </span>

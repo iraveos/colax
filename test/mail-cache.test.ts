@@ -87,6 +87,62 @@ test('the mail memory knobs default on and clamp to the offered page sizes', () 
   assert.equal(normalisePreferences({ mailPageSize: 'lots' as never }).mailPageSize, 50);
 });
 
+test('an OAuth mailbox survives normalisation and never carries a password', () => {
+  // Partial records on purpose: normalisation is what fills in the rest, so
+  // the test hands it exactly what a hand-edited prefs file might contain.
+  const out = normalisePreferences({
+    gmailAccounts: [
+      {
+        id: 'gm_oauth',
+        address: 'me@gmail.com',
+        appPassword: '',
+        auth: 'oauth',
+        oauth: {
+          clientId: 'cid',
+          authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+          tokenUrl: 'https://oauth2.googleapis.com/token',
+          scopes: 'https://mail.google.com/',
+          accessToken: 'at',
+          refreshToken: 'rt',
+          expiresAt: Date.now() + 3_600_000,
+        },
+      } as never,
+    ],
+  });
+  const account = out.gmailAccounts[0]!;
+  assert.equal(account.auth, 'oauth');
+  assert.equal(account.appPassword, '', 'the two credentials are alternatives, never layered');
+  assert.equal(account.oauth?.clientId, 'cid');
+  assert.equal(account.oauth?.refreshToken, 'rt');
+  // A saved sign-in that never finished (browser refused, consent cancelled)
+  // keeps its place on the OAuth path: the config is there, so the row can
+  // offer Sign in again instead of demanding a password that never existed.
+  const configOnly = normalisePreferences({
+    gmailAccounts: [
+      { id: 'gm_cfg', address: 'cfg@gmail.com', auth: 'oauth', oauth: { clientId: 'cid', authUrl: 'https://x/a', tokenUrl: 'https://x/t' } } as never,
+    ],
+  }).gmailAccounts[0]!;
+  assert.equal(configOnly.auth, 'oauth');
+  assert.equal(configOnly.oauth?.clientId, 'cid');
+  // A record whose config cannot drive a sign-in degrades to the password
+  // path rather than locking the mailbox behind a flow that can never run.
+  const broken = normalisePreferences({
+    gmailAccounts: [{ address: 'me@gmail.com', auth: 'oauth', oauth: { accessToken: 'at', authUrl: 'nope' } } as never],
+  }).gmailAccounts[0]!;
+  assert.equal(broken.auth, 'app-password');
+  // Tokens without any config are not credentials at all.
+  const tokenOnly = normalisePreferences({
+    gmailAccounts: [{ address: 'me@gmail.com', oauth: { accessToken: 'at' } } as never],
+  }).gmailAccounts[0]!;
+  assert.equal(tokenOnly.auth, 'app-password');
+  // A password account never grows an oauth record.
+  const plain = normalisePreferences({
+    gmailAccounts: [{ address: 'me@gmail.com', appPassword: 'x' } as never],
+  }).gmailAccounts[0]!;
+  assert.equal(plain.auth, 'app-password');
+  assert.equal(plain.oauth, undefined);
+});
+
 test('the Gmail link pins the account session and the message id', () => {
   assert.equal(
     gmailOpenUrl({ id: 'tag:gmail.google.com,2004:18f3ab02cd', title: 'Hi', alternate: '' }, 'me@gmail.com'),

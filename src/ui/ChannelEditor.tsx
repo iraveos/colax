@@ -17,9 +17,11 @@ import {
   type Tag,
 } from '../vault/channels.ts';
 import { MAX_APP_BACKGROUND_BYTES } from '../vault/types.ts';
+import { EMPTY_SECURITY } from '../crypto/security.ts';
 import { readImageFile } from './card-art.ts';
 import { useDraftAutoSave } from './hooks.ts';
 import { Modal, Toggle } from './primitives.tsx';
+import { SecurityForm } from './SecurityForm.tsx';
 import type { GmailAccount } from '../vault/storage.ts';
 import {
   CloudIcon,
@@ -103,6 +105,7 @@ export function ChannelEditor({
 }) {
   const [draft, setDraft] = useState<Channel>(() => channel ?? createChannel('', seed));
   const [newTag, setNewTag] = useState('');
+  const [tab, setTab] = useState<'appearance' | 'tags' | 'security'>('appearance');
   const [imageUrl, setImageUrl] = useState(
     channel?.backgroundImage?.startsWith('http') ? channel.backgroundImage : '',
   );
@@ -162,6 +165,16 @@ export function ChannelEditor({
 
   const Icon = ICON_SET[draft.icon] ?? LayersIcon;
 
+  /**
+   * What the tag filter means, spelled out. The folder's main tags apply to
+   * every channel in it, so what actually narrows a channel is the tags added on
+   * top of them — see channelTagFilter.
+   */
+  const tagsNote =
+    draft.tagIds.length === 0
+      ? "No tag filter: every login the Show setting above returns appears here. A folder's main tags still scope it."
+      : `Only logins carrying ${draft.tagIds.length === 1 ? 'this tag' : 'these tags'} appear here. In a folder its main tags apply to every channel, so it is the tags chosen on top of them that narrow the list.`;
+
   return (
     <Modal
       title={channel ? `Edit ${channel.name}` : 'New channel'}
@@ -210,6 +223,25 @@ export function ChannelEditor({
         <span className="channel-preview__count">{itemCount}</span>
       </div>
 
+      {/* The same three tabs a folder has, so the two editors read the same way
+          and a channel's tags are one click away instead of buried in a long
+          scroll. */}
+      <div className="field-row" style={{ marginBottom: 'var(--space-4)' }}>
+        <div className="segmented">
+          <button className="segmented__option" aria-pressed={tab === 'appearance'} onClick={() => setTab('appearance')}>
+            Appearance
+          </button>
+          <button className="segmented__option" aria-pressed={tab === 'tags'} onClick={() => setTab('tags')}>
+            Tags &amp; notes
+          </button>
+          <button className="segmented__option" aria-pressed={tab === 'security'} onClick={() => setTab('security')}>
+            Security
+          </button>
+        </div>
+      </div>
+
+      {tab === 'appearance' ? (
+      <>
       <div className="field">
         <label className="field__label" htmlFor="channel-name">
           Name
@@ -221,74 +253,6 @@ export function ChannelEditor({
           placeholder="Work logins"
           onChange={(event) => patch({ name: event.target.value })}
         />
-      </div>
-
-      <div className="field">
-        <span className="field__label">Show</span>
-        <div className="segmented segmented--wrap">
-          {KIND_OPTIONS.map((option) => (
-            <button
-              key={option.id}
-              className="segmented__option"
-              aria-pressed={draft.kind === option.id}
-              title={option.hint}
-              onClick={() => patch({ kind: option.id })}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="field">
-        <span className="field__label">Tags</span>
-        {tags.length === 0 ? (
-          <p className="field__hint">
-            No tags yet. Add them from a login&apos;s editor and they will appear here.
-          </p>
-        ) : (
-          <div className="tag-cloud">
-            {tags.map((tag) => (
-              <button
-                key={tag.id}
-                className="tag-chip"
-                aria-pressed={draft.tagIds.includes(tag.id)}
-                style={{ ['--tag-h' as string]: String(tag.hue) }}
-                onClick={() => toggleTag(tag.id)}
-              >
-                <span className="tag-chip__dot" />
-                {tag.name}
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="field-row" style={{ marginTop: 'var(--space-2)' }}>
-          <input
-            className="input"
-            value={newTag}
-            placeholder="New tag name"
-            aria-label="New tag name"
-            onChange={(event) => setNewTag(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter') return;
-              event.preventDefault();
-              addTag();
-            }}
-          />
-          <button
-            type="button"
-            className="btn btn--secondary btn--sm"
-            disabled={!newTag.trim() || !onCreateTag}
-            onClick={addTag}
-          >
-            + Tag
-          </button>
-        </div>
-        <p className="field__hint">
-          {draft.tagIds.length === 0
-            ? 'No tag filter — this channel shows everything the filter above returns.'
-            : `Only logins carrying ${draft.tagIds.length === 1 ? 'this tag' : 'these tags'} appear here.`}
-        </p>
       </div>
 
       <div className="field">
@@ -500,6 +464,81 @@ export function ChannelEditor({
           </div>
         ) : null}
       </div>
+      </>
+      ) : tab === 'tags' ? (
+      <>
+      <div className="field">
+        <span className="field__label">Show</span>
+        <div className="segmented segmented--wrap">
+          {KIND_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              className="segmented__option"
+              aria-pressed={draft.kind === option.id}
+              title={option.hint}
+              onClick={() => patch({ kind: option.id })}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="field">
+        <span className="field__label">Tags</span>
+        {tags.length === 0 ? (
+          <p className="field__hint">
+            No tags yet. Add them from a login&apos;s editor and they will appear here.
+          </p>
+        ) : (
+          <div className="tag-cloud">
+            {tags.map((tag) => (
+              <button
+                key={tag.id}
+                className="tag-chip"
+                aria-pressed={draft.tagIds.includes(tag.id)}
+                style={{ ['--tag-h' as string]: String(tag.hue) }}
+                onClick={() => toggleTag(tag.id)}
+              >
+                <span className="tag-chip__dot" />
+                {tag.name}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="field-row" style={{ marginTop: 'var(--space-2)' }}>
+          <input
+            className="input"
+            value={newTag}
+            placeholder="New tag name"
+            aria-label="New tag name"
+            onChange={(event) => setNewTag(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return;
+              event.preventDefault();
+              addTag();
+            }}
+          />
+          <button
+            type="button"
+            className="btn btn--secondary btn--sm"
+            disabled={!newTag.trim() || !onCreateTag}
+            onClick={addTag}
+          >
+            + Tag
+          </button>
+        </div>
+        <p className="field__hint">{tagsNote}</p>
+      </div>
+      </>
+      ) : (
+        <SecurityForm
+          security={draft.security ?? EMPTY_SECURITY}
+          onChange={(security) => patch({ security })}
+          onNotify={onNotify}
+          label={draft.name || 'channel'}
+        />
+      )}
     </Modal>
   );
 }

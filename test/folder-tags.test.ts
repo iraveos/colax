@@ -3,22 +3,28 @@ import assert from 'node:assert/strict';
 import {
   applyChannel,
   channelSeedFromFolder,
+  channelTagFilter,
   createChannel,
   createFolder,
-  effectiveChannelTagIds,
   normaliseFolders,
+  parentFolderFor,
+  type SidebarEntry,
 } from '../src/vault/channels.ts';
 import { DEFAULT_PREFERENCES, normalisePreferences } from '../src/vault/storage.ts';
 import { emptyItem } from '../src/vault/types.ts';
 
 /**
- * Folder tags and their inheritance.
+ * Folder tags and how they narrow a channel.
  *
- * The complaint these pin down: creating a login in a folder filed it under a
- * provider tag picked off its email address, and the folder's own tags were
- * ignored. A folder's main tags apply to every channel in it, its alternate
- * tags are the fallback for children with no tags of their own, and a channel
- * inside a folder is narrowed by both.
+ * The complaint these pin down came in two parts. First: creating a login in a
+ * folder filed it under a provider tag picked off its email address, and the
+ * folder's own tags were ignored. Second, and the one the shape below is really
+ * about: with every tag read as one OR'd bag, a folder's *main* tag alone
+ * satisfied every channel in it, so an "Albion" folder with an EU channel and a
+ * West channel listed both servers under each. The main tags are a requirement
+ * (a scope applied to every channel) and only the tags a channel adds *beyond*
+ * them narrow it — the subtraction matters because a channel created in a
+ * folder is seeded with the main tags and would otherwise still match on them.
  */
 
 const folder = (over: Partial<ReturnType<typeof createFolder>> = {}) =>
@@ -32,26 +38,94 @@ test('a folder is created with empty tags, notes and a visible notes button', ()
   assert.equal(fresh.notesHidden, false);
 });
 
-test('main tags always apply; alternate tags are only a fallback', () => {
+test('main tags are required; only tags beyond them narrow the channel', () => {
   const target = folder();
-  // A channel with its own tags keeps them, plus the folder's main tags.
-  assert.deepEqual(effectiveChannelTagIds({ tagIds: ['tg_own'] }, target), ['tg_main', 'tg_own']);
-  // A channel with none borrows the folder's alternate set.
-  assert.deepEqual(effectiveChannelTagIds({ tagIds: [] }, target), ['tg_main', 'tg_alt']);
-  // Outside a folder nothing is inherited.
-  assert.deepEqual(effectiveChannelTagIds({ tagIds: ['tg_own'] }, null), ['tg_own']);
+  // A channel with an extra tag narrows by that tag, inside the folder's scope.
+  assert.deepEqual(channelTagFilter({ tagIds: ['tg_own'] }, target), {
+    required: ['tg_main'],
+    anyOf: ['tg_own'],
+  });
+  // The seeded shape: a channel created in the folder already carries the main
+  // tag, so adding a slice tag leaves [tg_main, tg_own]. The main tag must not
+  // count as narrowing, or it satisfies the test on its own.
+  assert.deepEqual(channelTagFilter({ tagIds: ['tg_main', 'tg_own'] }, target), {
+    required: ['tg_main'],
+    anyOf: ['tg_own'],
+  });
+  // A channel carrying only the main tags lists the folder's whole scope.
+  assert.deepEqual(channelTagFilter({ tagIds: ['tg_main'] }, target), {
+    required: ['tg_main'],
+    anyOf: [],
+  });
+  // A channel with none narrows by the folder's alternate set instead.
+  assert.deepEqual(channelTagFilter({ tagIds: [] }, target), {
+    required: ['tg_main'],
+    anyOf: ['tg_alt'],
+  });
+  // Outside a folder there is nothing to require.
+  assert.deepEqual(channelTagFilter({ tagIds: ['tg_own'] }, null), { required: [], anyOf: ['tg_own'] });
 });
 
-test('a channel inside a folder is narrowed by the folder tags', () => {
+test('a channel inside a folder needs the folder tag and one of its own', () => {
   const target = folder();
   const items = [
     emptyItem('a', 1),
     { ...emptyItem('b', 1), tags: ['tg_alt'] },
-    { ...emptyItem('c', 1), tags: ['tg_nothing'] },
+    { ...emptyItem('c', 1), tags: ['tg_main'] },
+    { ...emptyItem('d', 1), tags: ['tg_main', 'tg_alt'] },
+    { ...emptyItem('e', 1), tags: ['tg_nothing'] },
   ];
   const untyped = createChannel('Everything', { tagIds: [] });
   const listed = applyChannel(untyped, items, 180, target).map((item) => item.id);
-  assert.deepEqual(listed, ['b'], 'only the login carrying the folder tag is in the folder channel');
+  // 'b' has the alternate tag but not the folder's main one, so it is not in the
+  // folder at all; 'c' is in the folder but carries nothing that narrows it.
+  assert.deepEqual(listed, ['d'], 'the folder tag scopes, the alternate tag narrows');
+});
+
+test('an EU channel and a West channel never list each other’s logins', () => {
+  // The reported case: Albion folder, main tag albion, a channel per server.
+  const albion = createFolder('Albion', { id: 'fd_al', tagIds: ['tg_albion'] });
+  const eu = createChannel('EU', { tagIds: ['tg_eu'] });
+  const west = createChannel('West', { tagIds: ['tg_west'] });
+  const items = [
+    { ...emptyItem('eu1', 1), tags: ['tg_albion', 'tg_eu'] },
+    { ...emptyItem('west1', 1), tags: ['tg_albion', 'tg_west'] },
+    // A login the EU channel's tag would otherwise drag into the Albion folder.
+    { ...emptyItem('stray', 1), tags: ['tg_eu'] },
+  ];
+  assert.deepEqual(applyChannel(eu, items, 180, albion).map((item) => item.id), ['eu1']);
+  assert.deepEqual(applyChannel(west, items, 180, albion).map((item) => item.id), ['west1']);
+});
+
+test('a channel seeded from the folder still narrows once a slice tag is added', () => {
+  // The workflow as the editor performs it: "new channel in this folder" copies
+  // the folder's main tag, then the user ticks the server tag on top. Before the
+  // subtraction the copied "albion" matched on its own and the EU channel listed
+  // the West logins anyway.
+  const albion = createFolder('Albion', { id: 'fd_al', tagIds: ['tg_albion'] });
+  const eu = createChannel('EU', { ...channelSeedFromFolder(albion), tagIds: ['tg_albion', 'tg_eu'] });
+  const west = createChannel('West', { ...channelSeedFromFolder(albion), tagIds: ['tg_albion', 'tg_west'] });
+  const items = [
+    { ...emptyItem('eu1', 1), tags: ['tg_albion', 'tg_eu'] },
+    { ...emptyItem('west1', 1), tags: ['tg_albion', 'tg_west'] },
+  ];
+  assert.deepEqual(applyChannel(eu, items, 180, albion).map((item) => item.id), ['eu1']);
+  assert.deepEqual(applyChannel(west, items, 180, albion).map((item) => item.id), ['west1']);
+});
+
+test('a channel’s parent folder is found from the sidebar tree', () => {
+  const albion = createFolder('Albion', { id: 'fd_al', tagIds: ['tg_albion'] });
+  const other = createFolder('Other', { id: 'fd_other' });
+  const sidebar: SidebarEntry[] = [
+    { kind: 'channel', id: 'all' },
+    { kind: 'folder', id: 'fd_al', children: [{ kind: 'channel', id: 'ch_eu' }] },
+    { kind: 'folder', id: 'fd_other', children: [{ kind: 'channel', id: 'ch_x' }] },
+  ];
+  assert.equal(parentFolderFor(sidebar, [albion, other], 'ch_eu')?.id, 'fd_al');
+  // A channel at the root has no parent to scope it by.
+  assert.equal(parentFolderFor(sidebar, [albion, other], 'all'), undefined);
+  // A folder id with no stored folder returns nothing rather than throwing.
+  assert.equal(parentFolderFor(sidebar, [other], 'ch_eu'), undefined);
 });
 
 test('a new channel in a folder copies the folder its look and its main tags', () => {

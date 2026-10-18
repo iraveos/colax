@@ -1,8 +1,16 @@
 /**
  * Sidebar channels and the tag catalogue.
  *
- * A channel is a saved view over the vault. Four ship built in (all, favorites,
- * needs attention, weak or reused); the rest are user defined.
+ * A channel is a saved view over the vault. Four ship built in (all logins,
+ * dashboard, mail, history); the rest are user defined.
+ *
+ * Favorites, Needs attention and Weak or reused used to be rows of their own
+ * beside All logins. They are now *sections* of it — the tab strip inside the
+ * main channel — because they were never really separate places: they were
+ * subsets of the same list, and three near-identical rows made the rail longer
+ * without adding a decision. The kinds stay valid, so a channel somebody makes
+ * with `kind: 'favorites'` still works exactly as it did; only the shipped rows
+ * went away (see ALL_LOGIN_TABS and normaliseChannels).
  *
  * Every channel is fully editable — name, icon, colour, accent theme, background
  * image and tags — including the built-ins. The only invariant is that the `all`
@@ -53,6 +61,78 @@ export const CHANNEL_KIND_LABELS: Record<ChannelKind, string> = {
   history: 'History',
 };
 
+/**
+ * Kinds that render a purpose-built screen instead of the login list.
+ *
+ * These three are ordinary scrolling pages, which is why the shell must not
+ * freeze their overflow the way it does for the Flow and Orbit list views.
+ */
+export const CHANNEL_SCREEN_KINDS: ChannelKind[] = ['dashboard', 'mail', 'history'];
+
+/** A tab inside the merged All logins channel. */
+export type AllLoginTab = 'all' | 'favorites' | 'attention' | 'weak';
+
+/**
+ * The sections of the single "All logins" channel, in tab order.
+ *
+ * These four kinds used to be four sidebar rows. They are the same list with a
+ * different filter, which is what a tab strip is for, so they became one row
+ * with four tabs: the rail states where you are once instead of four times, and
+ * the main channel is where the vault's own summary of itself lives.
+ */
+export const ALL_LOGIN_TABS: { kind: AllLoginTab; label: string }[] = [
+  { kind: 'all', label: 'All' },
+  { kind: 'favorites', label: 'Favorites' },
+  { kind: 'attention', label: 'Needs attention' },
+  { kind: 'weak', label: 'Weak or reused' },
+];
+
+const ALL_LOGIN_TAB_KINDS = new Set<string>(ALL_LOGIN_TABS.map((tab) => tab.kind));
+
+/** Whether a kind is one of the merged sections rather than a screen of its own. */
+export function isAllLoginTab(kind: ChannelKind): kind is AllLoginTab {
+  return ALL_LOGIN_TAB_KINDS.has(kind);
+}
+
+/**
+ * The shipped rows the tab strip replaced.
+ *
+ * Their stored channels are dropped on load rather than left beside the tabs.
+ * Only the shipped ids are listed: an id is only ever `all`/`favorites`/
+ * `attention`/`weak` for a preset, since everything a user makes is `ch_…`.
+ */
+const RETIRED_CHANNEL_IDS = new Set(['favorites', 'attention', 'weak']);
+
+/**
+ * Whether an id belonged to one of the rows the tab strip replaced.
+ *
+ * Used to sweep the retired ids out of stored lists that still refer to them —
+ * `hiddenChannels`, for instance — so nothing renders a row for a channel that
+ * cannot be opened.
+ */
+export function isRetiredChannelId(id: string): boolean {
+  return RETIRED_CHANNEL_IDS.has(id);
+}
+
+/**
+ * Where one of the merged sections lives for this vault.
+ *
+ * A channel the user made with one of those kinds is a real channel and wins:
+ * their own "Favorites" row keeps working. Otherwise the section is the tab of
+ * All logins that stands in for it. Every caller that used to jump to one of the
+ * retired ids — the dashboard tiles, the background menu — goes through this, so
+ * none of them can point at a channel that no longer exists.
+ */
+export function sectionTarget(
+  channels: readonly Pick<Channel, 'id' | 'kind'>[],
+  tab: AllLoginTab,
+): { channelId: string; tab?: AllLoginTab } {
+  const own = channels.find((channel) => channel.kind === tab);
+  if (own && own.id !== 'all') return { channelId: own.id };
+  const main = channels.find((channel) => channel.kind === 'all') ?? channels[0];
+  return { channelId: main?.id ?? 'all', tab };
+}
+
 export interface Channel {
   id: string;
   name: string;
@@ -93,6 +173,12 @@ export interface Channel {
    * id that no longer exists behaves as 'all' rather than showing nothing.
    */
   mailAccount: string;
+  /**
+   * Optional second factor required to browse this channel, exactly like a
+   * folder's. Empty on every shipped channel and on anything stored before the
+   * field existed, so nothing gains a gate it did not ask for.
+   */
+  security: LoginSecurity;
 }
 
 export interface Tag {
@@ -169,20 +255,69 @@ export function createFolder(name: string, patch: Partial<Folder> = {}): Folder 
 }
 
 /**
- * The tags a channel stands for once its parent folder is taken into account.
+ * How a channel's tags narrow its list once its parent folder is accounted for.
  *
- * The folder's main tags always apply. The alternate tags are only a fallback:
- * a channel that already carries tags keeps them (plus the main ones), so
- * choosing tags on a channel overrides the folder's default rather than
- * fighting with it. Outside a folder this is just the channel's own tags.
+ * `required` is the folder's main set: those tags apply to *every* channel in
+ * the folder, so a login must carry all of them to be in the folder at all.
+ *
+ * `anyOf` is the narrowing set, and it is what makes a channel more specific
+ * than its folder: a login needs at least one of these, and an empty list means
+ * "no narrowing". Critically, it holds only the tags the channel adds *beyond*
+ * the folder's main set — the main tags are already required, so treating them
+ * as narrowing too would let them satisfy the test on their own.
+ *
+ * Splitting the two is the whole point, and the subtraction is why. Reading
+ * every tag as one OR'd bag (the original behaviour) meant a folder's main tag
+ * alone satisfied every channel in it: an "Albion" folder with an EU channel and
+ * a West channel listed both servers' logins under each. Subtracting the main
+ * set fixes the same bug where it actually bites: a channel created inside a
+ * folder is *seeded* with the folder's main tags, so the moment "eu" is added
+ * its own tags are [albion, eu] — and without the subtraction "albion" would
+ * still match a West-only login.
+ *
+ * So, inside a folder:
+ *   - the main tags are required;
+ *   - any extra tag the channel carries narrows it to that slice;
+ *   - a channel carrying only the main tags narrows to nothing, i.e. it lists
+ *     the folder's whole scope;
+ *   - a channel with no tags at all falls back to the folder's alternate set,
+ *     which is the only thing that set is for.
+ *
+ * Outside a folder there is nothing to require and the channel's own tags are
+ * the whole filter.
  */
-export function effectiveChannelTagIds(
+export function channelTagFilter(
   channel: Pick<Channel, 'tagIds'>,
   folder?: Pick<Folder, 'tagIds' | 'altTagIds'> | null,
-): string[] {
-  if (!folder) return channel.tagIds;
-  const inherited = channel.tagIds.length > 0 ? channel.tagIds : folder.altTagIds;
-  return [...new Set([...folder.tagIds, ...inherited])];
+): { required: string[]; anyOf: string[] } {
+  if (!folder) return { required: [], anyOf: channel.tagIds };
+
+  const main = new Set(folder.tagIds);
+  const extra = channel.tagIds.filter((tagId) => !main.has(tagId));
+  const anyOf = extra.length > 0 ? extra : channel.tagIds.length === 0 ? folder.altTagIds : [];
+  return { required: folder.tagIds, anyOf };
+}
+
+/**
+ * The folder a channel is filed under, from the sidebar tree.
+ *
+ * Everywhere a channel is filtered — its list, its badge, a count in Settings —
+ * the parent folder has to travel with it, because a channel inside a folder is
+ * scoped by the folder's main tags. A count computed without the parent is
+ * answering a different question than the row it is drawn on.
+ */
+export function parentFolderFor(
+  sidebar: SidebarEntry[],
+  folders: Folder[],
+  channelId: string,
+): Folder | undefined {
+  for (const row of sidebar) {
+    if (row.kind !== 'folder') continue;
+    if (row.children.some((child) => child.kind === 'channel' && child.id === channelId)) {
+      return folders.find((folder) => folder.id === row.id);
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -553,16 +688,15 @@ export function selectableIds(entries: SidebarEntry[]): string[] {
 const DEFAULT_CHANNEL_HUE = 212;
 
 export const BUILTIN_CHANNELS: Channel[] = [
-  { id: 'all', name: 'All logins', kind: 'all', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: DEFAULT_CHANNEL_HUE, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
-  { id: 'favorites', name: 'Favorites', kind: 'favorites', tagIds: [], builtin: true, locked: false, icon: 'star', hue: 44, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
-  { id: 'attention', name: 'Needs attention', kind: 'attention', tagIds: [], builtin: true, locked: false, icon: 'flag', hue: 8, accent: 'clay', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
-  { id: 'weak', name: 'Weak or reused', kind: 'weak', tagIds: [], builtin: true, locked: false, icon: 'shield', hue: 152, accent: 'sage', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
-  { id: 'dashboard', name: 'Dashboard', kind: 'dashboard', tagIds: [], builtin: true, locked: true, icon: 'grid', hue: 268, accent: 'dusk', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all' },
-  { id: 'mail', name: 'Mail', kind: 'mail', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: 205, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all' },
+  { id: 'all', name: 'All logins', kind: 'all', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: DEFAULT_CHANNEL_HUE, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all', security: EMPTY_SECURITY },
+  // Favorites, Needs attention and Weak or reused are tabs inside `all` now —
+  // see ALL_LOGIN_TABS. Their kinds are still valid for channels anyone makes.
+  { id: 'dashboard', name: 'Dashboard', kind: 'dashboard', tagIds: [], builtin: true, locked: true, icon: 'grid', hue: 268, accent: 'dusk', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all', security: EMPTY_SECURITY },
+  { id: 'mail', name: 'Mail', kind: 'mail', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: 205, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all', security: EMPTY_SECURITY },
   // The change log is structural like the other two summary screens: there is
   // exactly one, it cannot be deleted, and it can still be renamed, recoloured,
   // moved into a folder or hidden like any other row.
-  { id: 'history', name: 'History', kind: 'history', tagIds: [], builtin: true, locked: true, icon: 'clock', hue: 28, accent: 'clay', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all' },
+  { id: 'history', name: 'History', kind: 'history', tagIds: [], builtin: true, locked: true, icon: 'clock', hue: 28, accent: 'clay', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all', security: EMPTY_SECURITY },
 ];
 
 /** Icon keys the sidebar knows how to draw. */
@@ -610,7 +744,9 @@ function pickFreeHue(existing: Tag[]): number {
  * Applies a channel to the vault.
  *
  * The `kind` picks the base set; `tagIds` then narrows it, so tags work on any
- * channel rather than only on purpose-built tag channels.
+ * channel rather than only on purpose-built tag channels. Inside a folder the
+ * folder's main tags are a further requirement and the channel's own tags are
+ * the narrowing set — see channelTagFilter.
  *
  * `weak` is derived rather than stored: it means a reused password, or one that
  * has not been changed in a long time.
@@ -671,12 +807,17 @@ export function applyChannel(
       list = items;
   }
 
-  // A channel inside a folder is narrowed by the folder's tags as well; see
-  // effectiveChannelTagIds for why the folder's alternate tags are a fallback.
-  const filterTags = effectiveChannelTagIds(channel, folder);
-  if (filterTags.length === 0) return list;
-  const wanted = new Set(filterTags);
-  return list.filter((item) => item.tags.some((tagId) => wanted.has(tagId)));
+  // A channel inside a folder is scoped by the folder's main tags and narrowed
+  // by its own; see channelTagFilter for why the two are not one OR'd bag.
+  const { required, anyOf } = channelTagFilter(channel, folder);
+  if (required.length === 0 && anyOf.length === 0) return list;
+  return list.filter((item) => {
+    const carried = new Set(item.tags);
+    // Every one of the folder's main tags has to be present...
+    if (required.some((tagId) => !carried.has(tagId))) return false;
+    // ...and then at least one of the channel's own, when it has any.
+    return anyOf.length === 0 || anyOf.some((tagId) => carried.has(tagId));
+  });
 }
 
 /**
@@ -731,6 +872,10 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
     if (!raw || typeof raw !== 'object') continue;
     const id = typeof raw.id === 'string' ? raw.id : '';
     if (!id || seen.has(id)) continue;
+    // The three merged rows are gone as channels; their content is the tabs of
+    // All logins now. Dropping the stored copy here is what stops a reload from
+    // resurrecting them beside the tab strip they were folded into.
+    if (RETIRED_CHANNEL_IDS.has(id)) continue;
     seen.add(id);
 
     const preset = defaults.get(id);
@@ -762,6 +907,10 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
       locked: id === 'all' || kind === 'dashboard' || kind === 'mail' || kind === 'history',
       showMail: raw.showMail !== false,
       mailAccount: typeof raw.mailAccount === 'string' && raw.mailAccount ? raw.mailAccount : 'all',
+      // Shared helper — a channel's factor must survive a reload for the same
+      // reason a folder's does, and rebuilding the block by hand is how
+      // passcode-only factors were silently dropped elsewhere.
+      security: normaliseSecurity(raw.security),
     });
   }
 
@@ -843,6 +992,7 @@ export function createChannel(name: string, patch: Partial<Channel> = {}): Chann
     backgroundDim: DEFAULT_BACKGROUND_LOOK.dim,
     showMail: true,
     mailAccount: 'all',
+    security: EMPTY_SECURITY,
     ...safe,
     // A new channel is never one of the shipped ones, whatever the caller passed.
     builtin: false,

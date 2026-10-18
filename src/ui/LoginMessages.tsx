@@ -99,7 +99,12 @@ export function LoginMessages({
     item.mailFilter ?? 'auto',
     accounts
       .filter((account) => account.enabled && hasMailCreds(account))
-      .map((account) => `${account.id}|${normMailAddress(account.address).toLowerCase()}|${credHash(normAppPassword(account.appPassword))}`)
+      .map(
+        (account) =>
+          `${account.id}|${normMailAddress(account.address).toLowerCase()}|${credHash(
+            normAppPassword(account.appPassword) || account.oauth?.refreshToken || account.oauth?.accessToken || '',
+          )}`,
+      )
       .sort(),
   ]);
   const lastLoadKey = useRef<string | null>(null);

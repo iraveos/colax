@@ -11,6 +11,7 @@ import type { VaultHeader } from '../crypto/vault-crypto.ts';
 
 import {
   ensureDefaultTags,
+  isRetiredChannelId,
   normaliseChannels,
   normaliseFolders,
   normaliseSidebar,
@@ -1093,6 +1094,10 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.showUnassignedChannel = Boolean(merged.showUnassignedChannel);
   merged.hiddenChannels = Array.isArray(merged.hiddenChannels)
     ? [...new Set(merged.hiddenChannels.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+        // Favorites, Needs attention and Weak or reused are tabs of All logins
+        // now, so a stored hide entry for one of them would show in Settings ›
+        // Hidden as a row that hides nothing and cannot be restored.
+        .filter((id) => !isRetiredChannelId(id))
     : [];
   merged.hiddenFolders = Array.isArray(merged.hiddenFolders)
     ? [...new Set(merged.hiddenFolders.filter((id): id is string => typeof id === 'string' && id.length > 0))]
