@@ -1,16 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { AnimatedList } from '../components/react-bits/AnimatedList.tsx';
-import { CircularCarousel, type CarouselItem } from '../components/react-bits/CircularCarousel.tsx';
-import { avatarSrc, backgroundSrc, itemBackgroundStyle, itemStyle, toCarouselItems } from './card-art.ts';
+import { avatarSrc, backgroundSrc, itemBackgroundStyle, itemStyle } from './card-art.ts';
 import { EmptyState } from './primitives.tsx';
 import {
-  CheckIcon,
   ClockIcon,
   CopyIcon,
   DotsIcon,
   EditIcon,
-  ExternalIcon,
   EyeIcon,
   EyeOffIcon,
   FlagIcon,
@@ -18,7 +15,6 @@ import {
   InboxIcon,
   KeyShieldIcon,
   StarIcon,
-  TrashIcon,
 } from './icons.tsx';
 import { accentOf, hostnameOf, isWeakPassword, relativeTime, staleDaysFor, type VaultItem } from '../vault/types.ts';
 import { loginShowsMail, maskEmail } from '../vault/site-intel.ts';
@@ -69,8 +65,6 @@ export interface ViewActions {
   tags: Tag[];
   /** Draws those chips; off hides them without losing the tags themselves. */
   showTagChips: boolean;
-  /** Orbit only: labels each node with the login's title and email. */
-  showOrbitLabels?: boolean;
   /** List only: group rows under their first letter. */
   showLetterGroups?: boolean;
   /** Show the first letters of email addresses only. Copying is unaffected. */
@@ -839,7 +833,7 @@ export function AnimatedListView({
               </div>
               <div className="card-row__secret-row">
                 <code className="card-row__password">{show ? item.password || '—' : maskOf(item)}</code>
-                {/* Parity with the Grid and Carousel views: the copy lives on
+                {/* Parity with the Grid view: the copy lives on
                     the password row itself, like the username's. Revealing
                     stays the only gated action — a copy is a copy, the menu's
                     "Copy password" never asked for the factor either. */}
@@ -908,7 +902,7 @@ export function AnimatedListView({
                   only rendered for a login with a password, so half the cards
                   had it and half did not — which reads as a bug, not a state.
                   Each row now carries its own copy icons (username above, the
-                  password's beside the mask), matching Grid and Carousel. */}
+                  password's beside the mask), matching Grid. */}
             </div>
           </div>
         );
@@ -932,202 +926,7 @@ export function AnimatedListView({
 }
 
 /* ==========================================================================
-   View 2 — Orbit
-   ========================================================================== */
-
-export function CarouselView({
-  items,
-  duplicateIds,
-  showHealthBadges,
-  staleDays,
-  onCopy,
-  onEdit,
-  onDelete,
-  onOpenUrl,
-onSelect,
-  onItemMenu,
-  tags,
-  showTagChips,
-  showOrbitLabels,
-  cardSize,
-}: CommonViewProps) {
-  const [active, setActive] = useState(0);
-  // The one login whose password the user has chosen to reveal. Null means every
-  // password is masked, which is the default.
-  const [revealedId, setRevealedId] = useState<string | null>(null);
-  // A login with its own second factor has to clear it before its password shows.
-  const [gateItem, setGateItem] = useState<VaultItem | null>(null);
-
-  const index = Math.min(active, Math.max(items.length - 1, 0));
-  const current = items[index] as VaultItem | undefined;
-
-  useEffect(() => {
-    if (revealedId && !items.some((item) => item.id === revealedId)) setRevealedId(null);
-  }, [items, revealedId]);
-
-  if (!current) return null;
-
-  const cards: CarouselItem[] = toCarouselItems(items);
-  const show = revealedId === current.id;
-  const itemTags = tags.filter((tag) => current.tags.includes(tag.id));
-  const photo = backgroundSrc(current);
-  const secured = isSecured(current.security);
-
-  return (
-    <div className="carousel-view">
-      <div className="carousel-view__stage">
-        <CircularCarousel
-          items={cards}
-          preset="orbit"
-          intro="rise"
-          cardWidth={Math.round(cardSize.width * cardSize.scale)}
-          aspectRatio={cardSize.aspect}
-          cornerRadius={cardSize.radius}
-          autoplay="drift"
-          speed={9}
-          depthFade={0.22}
-          innerShade={0.92}
-          cardLabels={showOrbitLabels}
-          ariaLabel="Logins"
-          onChange={setActive}
-          onItemClick={(_, picked) => onSelect(items[picked] as VaultItem)}
-        />
-      </div>
-
-<div
-        // Remounting per login replays the entrance animation each time the
-        // ring lands on a different card.
-        key={current.id}
-        className="carousel-view__panel"
-        data-vault-item={current.id}
-        data-photo={photo ? '' : undefined}
-        style={{
-          ...itemStyle(current),
-          ...itemBackgroundStyle(current),
-          '--card-radius': `${cardSize.radius}px`,
-          '--card-surface': String(cardSize.surface),
-        } as React.CSSProperties}
-        onContextMenu={(event) => onItemMenu(event, current)}
-        onDoubleClick={(event) => {
-          // Same gesture as Flow and List: double-click anywhere on the panel
-          // opens the editor.
-          event.preventDefault();
-          onEdit(current);
-        }}
-      >
-        {photo ? <div className="item__art" aria-hidden="true" /> : null}
-        {photo ? <div className="carousel-view__scrim" aria-hidden="true" /> : null}
-
-        {/* Badges sit above the name, matching Flow, List and Grid. */}
-        <HealthBadges
-          item={current}
-          reused={duplicateIds.has(current.password) && current.password !== ''}
-          stale={isStale(current, staleDays)}
-          showHealthBadges={showHealthBadges}
-          tags={itemTags}
-          showTagChips={showTagChips}
-          secured={secured}
-        />
-
-<div className="carousel-view__head">
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="carousel-view__name">{labelOf(current)}</div>
-          </div>
-          {current.favorite ? <StarIcon width="16" height="16" filled style={{ color: 'var(--warn)' }} /> : null}
-        </div>
-
-        <div className="carousel-view__secret">
-          <div className="card-row__secret-row">
-            <span className="card-row__username">{current.username || hostnameOf(current.url) || 'No username'}</span>
-            {current.username ? (
-              <button
-                className="btn btn--icon"
-                aria-label="Copy username"
-                onClick={() => onCopy(current.username, 'Username', current)}
-              >
-                <CopyIcon />
-              </button>
-            ) : null}
-          </div>
-          {/* Re-keyed on the reveal state so the swap animates instead of cutting. */}
-          <div className="card-row__secret-row">
-            <code key={show ? 'shown' : 'masked'} className="carousel-view__pw">
-              {show ? current.password || '—' : maskOf(current)}
-            </code>
-            <button
-              className="btn btn--icon"
-              aria-label="Copy password"
-              disabled={!current.password}
-              onClick={() => onCopy(current.password, 'Password', current)}
-            >
-              <CopyIcon />
-            </button>
-            <button
-              className="btn btn--icon"
-              aria-label={show ? 'Hide password' : 'Reveal password'}
-              aria-pressed={show}
-              data-active={show || undefined}
-              onClick={() => {
-                if (!show && isSecured(current.security)) {
-                  setGateItem(current);
-                  return;
-                }
-                setRevealedId(show ? null : current.id);
-              }}
-            >
-              {show ? <EyeOffIcon /> : <EyeIcon />}
-            </button>
-          </div>
-        </div>
-
-        <div className="carousel-view__meta">
-          <button
-            className="btn btn--primary"
-            onClick={() => onCopy(current.password, 'Password', current)}
-            disabled={!current.password}
-          >
-            <CheckIcon width="14" height="14" />
-            Copy password
-          </button>
-          <button className="btn btn--secondary" onClick={() => onEdit(current)}>
-            <EditIcon width="14" height="14" />
-            Edit
-          </button>
-          {current.url ? (
-            <button className="btn btn--ghost" onClick={() => onOpenUrl(current)}>
-              <ExternalIcon width="14" height="14" />
-              Open site
-            </button>
-          ) : null}
-          <button className="btn btn--ghost btn--icon" aria-label="Delete" onClick={() => onDelete(current)}>
-            <TrashIcon width="14" height="14" />
-          </button>
-        </div>
-      </div>
-
-      {gateItem ? (
-        <SecurityGate
-          security={gateItem.security}
-          title={`Unlock ${labelOf(gateItem)}`}
-          hint="This login has its own second factor. Clear it to reveal the password."
-          onVerified={() => {
-            setRevealedId(gateItem.id);
-            setGateItem(null);
-          }}
-          onCancel={() => setGateItem(null)}
-        />
-      ) : null}
-
-      <p className="carousel-view__hint">
-        Drag or scroll to spin the ring · <span className="kbd">←</span> <span className="kbd">→</span> to step · right
-        click for more
-      </p>
-    </div>
-  );
-}
-
-/* ==========================================================================
-   View 3 — List
+   View 2 — List
    ========================================================================== */
 
 export function BasicView({
@@ -1324,7 +1123,7 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
 }
 
 /* ==========================================================================
-   View 4 — Grid
+   View 3 — Grid
    ========================================================================== */
 
 /**

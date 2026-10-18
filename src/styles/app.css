@@ -1,7 +1,7 @@
 /**
  * Application shell, cards, sidebar, settings and dialogs.
  *
- * Layout and surface tokens live in tokens.css; the vendored carousel styles live
+ * Layout and surface tokens live in tokens.css.
  * with their components.
  */
 .ambient{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;opacity:var(--ambient-strength, 1);transition:opacity var(--slow) var(--ease)}
@@ -186,7 +186,7 @@ to{transform:translate3d(-9%,-6%,0) scale(.94)}
 /* ---- Per-view card sizing ------------------------------------------------
    Each view publishes --card-scale / --card-max / --card-min-height /
    --card-radius / --card-surface from its own slice of preferences, so Flow,
-   List and Orbit are tuned independently. Defaults here match
+   List and Grid are tuned independently. Defaults here match
    DEFAULT_CARD_SIZE so a view rendered before its wrapper mounts still looks
    right.
 
@@ -521,7 +521,6 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 .label-override__row{display:flex;flex-direction:column;gap:var(--space-2)}
 .label-override__name{font-size:var(--text-xs);font-weight:620;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint)}
 .card-row__secret{border-radius:calc(var(--card-radius,var(--radius-lg)) - 2px)}
-[data-theme] .carousel-view__panel{border-radius:var(--card-radius,var(--radius-xl))}
 
 /* ---- Appearance panel ----------------------------------------------------
    A slide-over, not a modal. It is translucent on purpose and has no backdrop:
@@ -575,7 +574,7 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 /* Second-factor badge. Centred on the card's top edge, which is why it is
    positioned against .card-row rather than living inside the head row. */
 /* ---- Second-factor badge -------------------------------------------------
-   Shared by Flow, List, Grid and Orbit so it reads the same everywhere. It was
+   Shared by Flow, List and Grid so it reads the same everywhere. It was
    previously a bare glyph centred on the card's top edge with translate(-50%
    -42%), which pushed half of it outside the card and under the row above; the
    clipping is what made it look like a rendering fault rather than a status.
@@ -633,26 +632,6 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 .item__peek{flex-basis:100%;display:flex;align-items:center;padding:var(--space-3) var(--space-4);margin-top:var(--space-3);border-radius:var(--radius-md);background:var(--bg-deep);font-family:var(--font-mono);font-size:var(--text-sm);word-break:break-all;user-select:all;animation:expand var(--normal) var(--ease-out) both}
 @keyframes expand{0%{opacity:0;transform:translateY(-4px)}
 }
-.carousel-view{position:relative;display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
-.carousel-view__stage{position:relative;flex:1;min-height:0}
-.carousel-view__panel{flex-shrink:0;width:min(620px,calc(100% - var(--space-8)));margin:0 auto;padding:var(--space-4) var(--space-5);border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--glass-strong);backdrop-filter:blur(14px) saturate(140%);box-shadow:var(--card-shadow);animation:orbit-panel-in var(--normal) var(--ease-out) both;transition:border-color var(--normal) var(--ease),background var(--normal) var(--ease)}
-.carousel-view__panel:hover{border-color:var(--border-strong);background:var(--surface-raised)}
-/* Each ring step swaps the card in rather than cutting: the panel lifts and
-   settles, and the identity above the artwork leads it. */
-@keyframes orbit-panel-in{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
-.carousel-view__head{position:relative;z-index:2;display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3);animation:orbit-head-in 460ms var(--ease-out) both}
-@keyframes orbit-head-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.carousel-view__name{position:relative;z-index:2;flex:1;min-width:0;font-size:var(--text-lg);font-weight:620;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.carousel-view__username{position:relative;z-index:2;font-size:var(--text-sm);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.carousel-view__secret{position:relative;z-index:2;display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3);border-radius:var(--radius-md);background:var(--bg-deep);font-family:var(--font-mono);font-size:var(--text-sm);word-break:break-all;user-select:all;animation:orbit-rise var(--normal) var(--ease-out) both;animation-delay:60ms}
-@keyframes orbit-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.carousel-view__pw{flex:1;min-width:0;animation:orbit-pw var(--fast) var(--ease-out) both}
-@keyframes orbit-pw{from{opacity:0;filter:blur(3px);transform:translateX(-3px)}to{opacity:1;filter:blur(0);transform:translateX(0)}}
-/* A slow sheen across the artwork, so an idle Orbit panel still reads as alive. */
-.carousel-view__panel::after{content:"";position:absolute;inset:0;z-index:1;border-radius:inherit;pointer-events:none;background:linear-gradient(105deg,transparent 38%,hsl(0 0% 100% / .05) 50%,transparent 62%);background-size:280% 100%;animation:orbit-sheen 7.5s var(--ease) infinite}
-@keyframes orbit-sheen{0%,100%{background-position:180% 0}50%{background-position:-80% 0}}
-.carousel-view__meta{position:relative;z-index:2;display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-3);flex-wrap:wrap;animation:orbit-rise var(--normal) var(--ease-out) both;animation-delay:110ms}
-.carousel-view__hint{flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:var(--space-2);margin:var(--space-3) 0 var(--space-4);font-size:var(--text-xs);color:var(--text-faint)}
 .btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);border:1px solid transparent;border-radius:var(--radius-md);font-size:var(--text-sm);font-weight:560;white-space:nowrap;overflow:hidden;transition:background var(--fast) var(--ease),border-color var(--fast) var(--ease),color var(--fast) var(--ease),transform var(--fast) var(--ease-out),box-shadow var(--fast) var(--ease)}
 .btn:active:not(:disabled){transform:scale(.97)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
@@ -950,7 +929,7 @@ var(--ease),color var(--fast) var(--ease)}
 .view-menu__option:hover{background:var(--surface-hover)}
 .view-menu__option[aria-selected=true]{background:var(--grad-soft)}
 /* Each view gets its own gradient tile, so the four rows read by colour before
-   you read a word: blue Flow, violet Orbit, green List, amber Grid. The tile
+   you read a word: blue Flow, green List, amber Grid. The tile
    lifts on hover and rings when selected; unselected tiles sit slightly dimmed
    so the current view carries the glow, not every row at once. */
 .view-menu__icon{--view-h:212;display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,hsl(var(--view-h) 55% 52%),hsl(calc(var(--view-h) + 28) 48% 40%));color:#fff;flex-shrink:0;box-shadow:0 4px 14px -6px hsl(var(--view-h) 70% 50% / .55),inset 0 1px #ffffff38;opacity:.82;transition:opacity var(--fast) var(--ease),transform var(--fast) var(--ease-out),box-shadow var(--fast) var(--ease)}
@@ -1073,19 +1052,13 @@ to{transform:translate(0)}
 [data-theme=light] .card-row__secret{background:hsl(210 30% 96% / .62)}
 .card-row__secret-row .card-row__password{font-size:var(--text-base)}
 /* Tags on a card sit on the photo too, so they need their own weight. */
-.card-row .chip--tag,.carousel-view__panel .chip--tag,.item .chip--tag{box-shadow:none}
 .card-row>*,.item>*{position:relative;z-index:1}
-.card-row__scrim,.item__scrim,.carousel-view__scrim{position:absolute;inset:0;z-index:0;background:linear-gradient(180deg,var(--scrim-top, hsl(220 24% 7% / .86)),var(--scrim-bottom, hsl(220 26% 6% / .91))),linear-gradient(120deg,hsl(var(--item-h, 212) 40% 58% / .16),transparent 65%);pointer-events:none}
-.card-row__name,.card-row__meta,.item__title,.item__meta,.carousel-view__name,.carousel-view__username,.card-row__username{text-shadow:var(--on-photo-shadow)}
 .avatar--on-photo{box-shadow:inset 0 0 0 1px #ffffff47,0 2px 8px #00000059}
 .item{position:relative;overflow:hidden}
 .item__trigger,.item__peek{position:relative}
-.carousel-view__panel{position:relative;overflow:hidden}
 /* Only the real content is lifted. The blanket `> *` rule used to also catch
-   .item__art and .carousel-view__scrim and flip them to position:relative,
    which dropped the scrim into normal flow so the title and username were pushed
    below the photo instead of sitting on top of it. */
-.carousel-view__panel>*:not(.item__art):not(.carousel-view__scrim){position:relative;z-index:2}
 .card-row:before,.item:before{content:none}
 .item__art{position:absolute;inset:calc(var(--item-art-blur, 0px) * -1);z-index:0;background-image:var(--item-art, none);background-size:cover;background-position:center;filter:blur(var(--item-art-blur, 0px));pointer-events:none}
 .card-row>*:not(.item__art),.item>*:not(.item__art){position:relative;z-index:1}
@@ -1157,23 +1130,22 @@ to{transform:translate(0)}
    wrapper already pads, so the panel must not pad a second time. */
 .history--embedded{padding:0;margin:0;max-width:none;width:100%}
 
-/* The merged sections of All logins. Sticky because the list is the page: a long
-   vault scrolls under the strip instead of taking it away, and Flow/Orbit — which
-   pin their own height — get it as the row above their scroller. */
-/* The merged sections of All logins. Not sticky and unbacked: the ambient mesh
-   shows through everywhere else, and a sticky slab of --bg + blur over it read
-   as a hard dark band across the top of the page — so the strip now simply
-   scrolls with its list, and Flow/Orbit still get it as the row above their
-   scroller. */
+/* The scope's tab strip, one group of loose chips. Not sticky and unbacked:
+   the ambient mesh shows through everywhere else, and a sticky slab of --bg +
+   blur over it read as a hard dark band across the top of the page — so the
+   strip scrolls with its list, and Flow still gets it as the row above its
+   scroller. The surrounding pill was removed by request: the buttons stand
+   alone so the row reads as part of the page, not a banner above it. */
 .list-tabs{flex:none;display:flex;align-items:center;justify-content:center;gap:var(--space-3);flex-wrap:wrap;padding:var(--space-4) var(--space-6) var(--space-2)}
 /* The list column is centered (.content__inner), so a hard-left strip read as
-   broken — the pill now sits over the column. The group wraps like the strip
-   around it instead of clipping in an overflow scroller that cut the pill's
-   shadow and hid the scrollbar less. */
-.list-tabs__group{max-width:100%;flex-wrap:wrap;border-radius:var(--radius-md)}
-.list-tabs__option{white-space:nowrap}
+   broken — the chips sit over the column. The group wraps rather than clipping
+   in an overflow scroller that cut chip shadows. */
+.list-tabs__group{display:flex;align-items:center;gap:6px;max-width:100%;flex-wrap:wrap;border:none;background:none;padding:0}
+.list-tabs__option{display:inline-flex;align-items:center;gap:2px;white-space:nowrap;padding:5px 12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);font-size:var(--text-xs);font-weight:560;color:var(--text-muted);cursor:pointer;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),border-color var(--fast) var(--ease)}
+.list-tabs__option:hover{color:var(--text);background:var(--surface-hover)}
+.list-tabs__option[aria-pressed=true]{background:var(--grad-primary);border-color:transparent;color:#fff;box-shadow:0 4px 14px -6px hsl(var(--accent-h) 84% 50% / .7)}
 .list-tabs__count{margin-left:6px;padding:0 6px;border-radius:var(--radius-full);background:var(--surface-hover);font-size:10px;font-variant-numeric:tabular-nums;color:var(--text-faint)}
-.list-tabs__option[aria-pressed=true] .list-tabs__count{color:var(--text-soft)}
+.list-tabs__option[aria-pressed=true] .list-tabs__count{background:hsl(0 0% 100% / .18);color:#fff}
 @media (max-width:720px){.list-tabs{padding:var(--space-3) var(--space-4) var(--space-2)}}
 
 /* The bulk-edit bar for a live selection. Sticky to the foot of the scroller
@@ -1415,6 +1387,20 @@ to{transform:translate(0)}
 .sidebar[data-compact] .nav-item:hover{transform:none}
 .sidebar[data-compact] .sidebar__row:hover .nav-item{padding-right:0}
 .sidebar[data-compact] .nav-item__icon{opacity:1;color:hsl(var(--channel-h, 212) 52% 62%)}
+/* ---- Compact rail polish ----
+   The 60px rail is all icon, so every interaction must read without text:
+   squarer icon plates with a taller hit target, one consistent hover and
+   current treatment for channels and folders alike, centred affordances, and
+   rules that match the tighter rhythm. The folder chevron becomes noise at
+   this width — collapse stays available from the right-click menu. */
+.sidebar[data-compact] .nav-item{min-height:40px;gap:0;border-radius:var(--radius-md)}
+.sidebar[data-compact] .nav-item__icon{width:34px;height:34px;border-radius:var(--radius-md)}
+.sidebar[data-compact] .nav-item[aria-current=true]{background:var(--surface-hover)}
+.sidebar[data-compact] .nav-item__label,.sidebar[data-compact] .nav-item__chevron{display:none}
+.sidebar[data-compact] .nav-item__dot{bottom:4px}
+.sidebar[data-compact] .sidebar__rule{margin:var(--space-2) 12px}
+.sidebar[data-compact] .sidebar__add{align-self:center;margin-top:var(--space-2)}
+.sidebar[data-compact] .sidebar__empty{margin:var(--space-2);text-align:center}
 .sidebar__add{margin-top:var(--space-1);color:var(--text-faint)}
 .sidebar__empty{margin:var(--space-2) var(--space-3);font-size:var(--text-xs);line-height:1.55;color:var(--text-faint)}
 .sidebar__add:hover{color:var(--text)}
@@ -1549,7 +1535,6 @@ to{transform:translate(0)}
 /* A card carrying its own photo should not also wear the depth shadow: the
    blurred photo edge plus a dark shadow read as a mistake. Plain cards keep the
    Settings-controlled shadow. */
-.rb-animated-list__item:has([data-photo]),.item:has([data-photo]),.carousel-view__panel:has([data-photo]){box-shadow:none}
 
 /* Folder children are indented under their parent with a guide line. */
 .sidebar__folder-children{display:flex;flex-direction:column;gap:3px;margin-left:var(--space-4);padding-left:var(--space-3);border-left:1px solid var(--border);overflow:hidden;transition:max-height var(--normal) var(--ease),opacity var(--fast) var(--ease);background:inherit}
@@ -2247,3 +2232,26 @@ body.is-reordering,body.is-reordering *{user-select:none !important;cursor:grabb
 
 /* A tag the selection disagrees about: dashed ring, same tint as a full one. */
 .bulk__tags .chip[data-partial]{border-style:dashed;border-color:hsl(var(--tag-h, 212) 50% 58% / .55)}
+
+/* ---- Settings search ------------------------------------------------------
+   The rail's find box: filters the hand-built index and lists matching
+   sections; picking one jumps to its tab. Lives under the rail, so the tab
+   list stays put while searching. */
+.settings-window__search{margin:var(--space-2) var(--space-2) 0;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg);color:var(--text);font-size:var(--text-sm)}
+.settings-window__search:focus{outline:none;border-color:hsl(var(--accent-h) 55% 58% / .55);box-shadow:0 0 0 3px hsl(var(--accent-h) 55% 58% / .12)}
+.settings-window__search::placeholder{color:var(--text-faint)}
+.settings-window__results{display:flex;flex-direction:column;gap:2px;margin-top:var(--space-2);padding:0 var(--space-2);overflow-y:auto;max-height:280px}
+.settings-window__result{display:flex;flex-direction:column;align-items:flex-start;gap:1px;width:100%;padding:7px 10px;border:none;border-radius:var(--radius-md);background:none;color:var(--text-muted);cursor:pointer;text-align:left;font-size:var(--text-sm);transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.settings-window__result:hover{background:var(--surface-hover);color:var(--text)}
+.settings-window__result-label{font-weight:560;color:var(--text)}
+.settings-window__result-tab{font-size:var(--text-xs);color:var(--text-faint)}
+.settings-window__no-results{margin:var(--space-2);font-size:var(--text-xs);color:var(--text-faint)}
+
+/* ---- The stray ring around the body ---------------------------------------
+   Screenshot-reported glitch: a rounded outline around the whole content area,
+   "sometimes". Root cause: the global :focus-visible rule outlines whatever
+   holds focus, and in Chromium a big non-interactive surface — the pane, its
+   inner scroller, the shell itself — can pick up focus after certain
+   keyboard and dialog interactions, drawing a full-body rectangle. Real
+   controls keep their rings; only the full-size surfaces lose theirs. */
+.main:focus-visible,.content:focus-visible,.content__inner:focus-visible,[data-flow-scroll]:focus-visible,.rb-animated-list:focus-visible,.rb-animated-list__scroll:focus-visible,.sidebar:focus-visible,.shell:focus-visible,#root:focus-visible,body:focus-visible{outline:none}

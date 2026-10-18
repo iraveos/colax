@@ -3,6 +3,7 @@ import { estimateStrength } from '../crypto/passwords.ts';
 import { findReusedPasswords, hostnameOf, isWeakPassword, type VaultItem } from '../vault/types.ts';
 import {
   applyChannel,
+  composeRailOrder,
   createChannel,
   createTag,
   normaliseChannels,
@@ -28,6 +29,7 @@ import {
 } from '../vault/channels.ts';
 import {
   DEFAULT_DOCK_SLOTS,
+  DEFAULT_LIST_TABS,
   DEFAULT_PREFERENCES,
   freeDockSpot,
   MAX_DOCKS,
@@ -56,7 +58,7 @@ import { ContextMenu, hideChromeMenu, type ChromeElementId, type ContextMenuStat
 import { ChannelEditor } from './ChannelEditor.tsx';
 import { Alert, Modal, Toasts } from './primitives.tsx';
 import { BulkSecurityDialog, hasSecurityFactor, withoutSecurityFactor } from './BulkSecurityDialog.tsx';
-import { AnimatedListView, BasicView, CarouselView, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
+import { AnimatedListView, BasicView, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
 import { LoginMessages } from './LoginMessages.tsx';
 import { MailboxWindow } from './MailboxWindow.tsx';
 import { MailCenter } from './MailCenter.tsx';
@@ -71,6 +73,7 @@ import {
   applyAppearance,
   applyChannelAppearance,
   typingHasFocus,
+  type Toast,
 } from './hooks.ts';
 import { useSelection } from './useSelection.ts';
 import { applyBulkEdit, bulkMenu, type BulkEdit, type BulkField } from './bulk-edit.ts';
@@ -162,7 +165,23 @@ const POSITION_LABELS = {
 
 export function App() {
   const vault = useVault();
-  const { toasts, notify } = useToasts();
+  const { toasts: rawToasts, notify: rawNotify } = useToasts();
+  /**
+   * The notification switch reads the preference each render, so flipping the
+   * setting takes effect without an app restart. 'errors' keeps only the
+   * error-toned toasts; 'off' silences everything; 'all' is the old behaviour.
+   * The clipboard/shortcut plumbing below keeps calling `notify(...)` the same
+   * way it always has — the filter lives only here.
+   */
+  const notificationsLevel = vault.prefs.notifications ?? 'all';
+  const notify = useCallback(
+    (message: string, tone?: Toast['tone'], duration?: number, onSelect?: () => void) => {
+      if (notificationsLevel === 'off') return;
+      if (notificationsLevel === 'errors' && tone !== 'error') return;
+      rawNotify(message, tone, duration, onSelect);
+    },
+    [notificationsLevel, rawNotify],
+  );
   const { copy } = useClipboard(vault.prefs.clearClipboardSeconds, notify, vault.prefs.copyToasts);
   // False while the window is minimized, in the tray, or behind another app.
   // Drives the `data-quiet` attribute below; the polling loops read the same
@@ -530,6 +549,8 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
   // before stored preferences have loaded.
   const channels = useMemo(() => normaliseChannels(prefs.channels), [prefs.channels]);
   const folders = prefs.folders;
+  const channelLookup = useMemo(() => [...channels, UNASSIGNED], [channels]);
+
   const sidebarBase = useMemo(() => {
     // Stored tree, with the dashboard channel pinned to the top.
     const entries = normaliseSidebar(prefs.sidebar, channels, folders);
@@ -543,10 +564,16 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     if (prefs.showUnassignedChannel) {
       entries.push({ kind: 'channel', id: UNASSIGNED.id });
     }
-    return entries;
-  }, [prefs.sidebar, channels, folders, prefs.showUnassignedChannel]);
-
-  const channelLookup = useMemo(() => [...channels, UNASSIGNED], [channels]);
+    // Then the user's placements: rows marked top/bottom in the rail (per
+    // channel or per folder) split the flow into three stable blocks.
+    const channelsById = new Map(channelLookup.map((channel) => [channel.id, channel]));
+    const foldersById = new Map(folders.map((folder) => [folder.id, folder]));
+    return composeRailOrder(entries, (entry) => {
+      if (entry.kind === 'channel') return channelsById.get(entry.id)?.railPosition ?? 'middle';
+      if (entry.kind === 'folder') return foldersById.get(entry.id)?.railPosition ?? 'middle';
+      return 'middle';
+    });
+  }, [prefs.sidebar, channels, folders, prefs.showUnassignedChannel, channelLookup]);
 
   const activeFolder = useMemo(
     () => (activeId.startsWith('folder:') ? folders.find((folder) => folder.id === activeId.slice('folder:'.length)) ?? null : null),
@@ -594,8 +621,12 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     return { ...activeChannel, kind: allTab as Channel['kind'] };
   }, [activeChannel, allTab]);
 
-  /** Whether the merged tab strip belongs on screen at all. */
-  const showAllTabs = Boolean(!activeFolder && activeChannel && activeChannel.id === 'all');
+  /**
+   * Which strip configuration governs the current screen: the built-in All
+   * logins channel answers to the 'all' scope, a folder screen to its own, and
+   * any other channel to its id. Absent means no strip at all.
+   */
+  const scopeId = activeFolder ? `folder:${activeFolder.id}` : activeChannel ? activeChannel.id : 'all';
 
   /** The workspace whose drag order applies: a folder, a channel, or all. */
   const scopeKey = activeFolder ? `folder:${activeFolder.id}` : activeId;
@@ -816,27 +847,6 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     return counts;
   }, [channelLookup, vault.items, staleDays, folders, sidebarBase, prefs.history, getParentFolderForChannel]);
 
-  /**
-   * How many logins each merged tab holds, for the strip's counters.
-   *
-   * Counted through the same filter the list uses, from the same parent folder,
-   * so a tab can never advertise a number the list behind it would not show.
-   */
-  const tabCounts = useMemo(() => {
-    const counts: Partial<Record<AllLoginTab, number>> = {};
-    if (!activeChannel || activeChannel.id !== 'all') return counts;
-    const parent = getParentFolderForChannel(activeChannel.id);
-    for (const tab of ALL_LOGIN_TABS) {
-      counts[tab.kind] = applyChannel(
-        { ...activeChannel, kind: tab.kind },
-        vault.items,
-        staleDays,
-        parent,
-      ).length;
-    }
-    return counts;
-  }, [activeChannel, getParentFolderForChannel, staleDays, vault.items]);
-
   /* ---- Picking several channels at once ------------------------------------
      Ctrl/Cmd+click toggles one row in and out of the selection, Shift+click
      takes the run between the last row touched and this one, and a plain click
@@ -1033,6 +1043,155 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       activeChannel &&
       isSecured(activeChannel.security) &&
       !channelsUnlocked.has(activeChannel.id),
+  );
+
+  /* ---- The tab strip, configured per scope ---------------------------------
+      `prefs.listTabs` is a record keyed by scope — 'all', a channel id, or
+      'folder:<id>' — whose values are tab ids: built-ins are 'tab:all',
+      'tab:favorites', 'tab:attention' and 'tab:weak', and any channel id adds
+      that channel as a tab. An empty config hides the strip for that scope, so
+      the shipped default (only All logins, only the four built-ins) is simply
+      the one record the app starts with. Right-clicking a tab (or the strip)
+      opens the configuration menu. */
+  const stripTabs = useMemo(() => {
+    if (folderLocked || channelLocked) return [];
+    const config = prefs.listTabs[scopeId] ?? [];
+    const builtIn = new Map(ALL_LOGIN_TABS.map((tab) => [`tab:${tab.kind}`, tab.label]));
+    const tabs: { id: string; label: string; kind?: AllLoginTab; channel?: Channel }[] = [];
+    for (const id of config) {
+      const builtLabel = builtIn.get(id);
+      if (builtLabel) {
+        tabs.push({ id, label: builtLabel, kind: id.slice(4) as AllLoginTab });
+        continue;
+      }
+      const own = channelLookup.find((channel) => channel.id === id);
+      // A tab pointing at this scope's own channel is a button to nowhere.
+      if (own && own.id !== scopeId) tabs.push({ id, label: own.name, channel: own });
+    }
+    return tabs;
+  }, [prefs.listTabs, scopeId, channelLookup, folderLocked, channelLocked]);
+
+  /** Counts for every tab the strip would show. Zero-config scopes skip it. */
+  const stripCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    if (folderLocked || channelLocked) return counts;
+    if (activeChannel) {
+      const parent = getParentFolderForChannel(activeChannel.id);
+      for (const tab of ALL_LOGIN_TABS) {
+        counts[`tab:${tab.kind}`] = applyChannel(
+          { ...activeChannel, kind: tab.kind },
+          vault.items,
+          staleDays,
+          parent,
+        ).length;
+      }
+    }
+    for (const entry of stripTabs) {
+      if (entry.channel) {
+        counts[entry.id] = applyChannel(
+          entry.channel,
+          vault.items,
+          staleDays,
+          getParentFolderForChannel(entry.channel.id),
+        ).length;
+      }
+    }
+    return counts;
+  }, [folderLocked, channelLocked, activeChannel, stripTabs, vault.items, staleDays, getParentFolderForChannel]);
+
+  /** What pressing a strip tab does. */
+  const openStripTab = useCallback(
+    (id: string) => {
+      if (id.startsWith('tab:')) {
+        const kind = id.slice(4) as AllLoginTab;
+        // From All logins the tab swaps the section in place; from anywhere
+        // else it jumps to the section's channel — the user's own row if they
+        // made one, the All logins tab otherwise.
+        if (activeChannel?.id === 'all') setAllTab(kind);
+        else openSection(kind);
+        return;
+      }
+      openChannel(id);
+    },
+    [activeChannel, openSection, openChannel],
+  );
+
+  /** Writes one scope's strip configuration back to the preferences. */
+  const setStripTabs = useCallback(
+    (scope: string, tabs: string[]) => {
+      const next = { ...vault.prefs.listTabs, [scope]: tabs };
+      // An empty list means "hide the strip here", stored as an empty array so
+      // an explicit hide survives the round-trip.
+      void vault.updatePrefs({ listTabs: next });
+    },
+    [vault],
+  );
+
+  /** Whether a scope's strip differs from the shipped default. */
+  const stripIsDefault = useCallback(
+    (scope: string) => {
+      const tabs = vault.prefs.listTabs[scope] ?? [];
+      const fallback = DEFAULT_LIST_TABS[scope] ?? [];
+      return tabs.length === fallback.length && tabs.every((id, index) => id === fallback[index]);
+    },
+    [vault.prefs.listTabs],
+  );
+
+  /** The strip's right-click menu: hide a tab, add tabs, reset the strip. */
+  const stripMenu = useCallback(
+    (tabId: string | null): MenuItem[] => {
+      const current = (vault.prefs.listTabs[scopeId] ?? []).filter((id) => id !== tabId);
+      const addableLabels: { id: string; label: string }[] = [
+        ...ALL_LOGIN_TABS.map((tab) => ({ id: `tab:${tab.kind}`, label: tab.label })),
+        ...channelLookup
+          .filter((channel) => channel.id !== scopeId)
+          .map((channel) => ({ id: channel.id, label: channel.name })),
+      ];
+      const missing = addableLabels.filter((tab) => !current.includes(tab.id));
+      const items: MenuItem[] = [];
+      if (tabId) {
+        items.push({
+          kind: 'item',
+          label: 'Hide this tab',
+          onSelect: () => {
+            setStripTabs(scopeId, current);
+            notify('Tab hidden — right-click the strip to bring tabs back');
+          },
+        });
+        items.push({ kind: 'separator' });
+      }
+      items.push({
+        kind: 'submenu',
+        label: 'Add tabs…',
+        icon: <PlusIcon />,
+        heading: 'Add to this strip',
+        disabled: missing.length === 0 || current.length >= 8,
+        items: missing.map((tab) => ({
+          kind: 'item' as const,
+          label: tab.label,
+          icon: tab.id === 'tab:favorites' ? <StarIcon /> : tab.id === 'tab:attention' ? <FlagIcon /> : tab.id === 'tab:weak' ? <ShieldIcon /> : <LayersIcon />,
+          onSelect: () => {
+            setStripTabs(scopeId, [...(vault.prefs.listTabs[scopeId] ?? []), tab.id]);
+            notify(`"${tab.label}" added to this strip`);
+          },
+        })),
+      });
+      items.push({
+        kind: 'item',
+        label: 'Reset this strip',
+        icon: <RowsIcon />,
+        disabled: stripIsDefault(scopeId) || !vault.prefs.listTabs[scopeId],
+        onSelect: () => {
+          const next = { ...vault.prefs.listTabs };
+          if (scopeId in DEFAULT_LIST_TABS) next[scopeId] = [...DEFAULT_LIST_TABS[scopeId]!];
+          else delete next[scopeId];
+          void vault.updatePrefs({ listTabs: next });
+          notify('Strip reset');
+        },
+      });
+      return items;
+    },
+    [channelLookup, scopeId, setStripTabs, notify, stripIsDefault, vault.prefs.listTabs, vault],
   );
 
 const visible = useMemo(() => {
@@ -1655,6 +1814,17 @@ const visible = useMemo(() => {
           ],
         },
         {
+          kind: 'submenu',
+          label: 'Rail placement',
+          icon: <RowsIcon />,
+          heading: 'Where this row sits in the rail',
+          items: [
+            { kind: 'item' as const, label: 'Top', checked: channel.railPosition === 'top', onSelect: () => saveChannel({ ...channel, railPosition: 'top' }) },
+            { kind: 'item' as const, label: 'Middle', checked: channel.railPosition !== 'top' && channel.railPosition !== 'bottom', onSelect: () => saveChannel({ ...channel, railPosition: 'middle' }) },
+            { kind: 'item' as const, label: 'Bottom', checked: channel.railPosition === 'bottom', onSelect: () => saveChannel({ ...channel, railPosition: 'bottom' }) },
+          ],
+        },
+        {
           kind: 'item',
           label: 'Add separator above',
           icon: <RowsIcon />,
@@ -1742,6 +1912,17 @@ const visible = useMemo(() => {
         icon: <RowsIcon />,
         onSelect: () => toggleFolderCollapse(folder.id),
       },
+      {
+        kind: 'submenu',
+        label: 'Rail placement',
+        icon: <RowsIcon />,
+        heading: 'Where this row sits in the rail',
+        items: [
+          { kind: 'item' as const, label: 'Top', checked: folder.railPosition === 'top', onSelect: () => saveFolder({ ...folder, railPosition: 'top' }) },
+          { kind: 'item' as const, label: 'Middle', checked: folder.railPosition !== 'top' && folder.railPosition !== 'bottom', onSelect: () => saveFolder({ ...folder, railPosition: 'middle' }) },
+          { kind: 'item' as const, label: 'Bottom', checked: folder.railPosition === 'bottom', onSelect: () => saveFolder({ ...folder, railPosition: 'bottom' }) },
+        ],
+      },
       { kind: 'separator' },
       {
         kind: 'item',
@@ -1773,7 +1954,7 @@ const visible = useMemo(() => {
         onSelect: () => deleteFolder(folder.id),
       },
     ],
-    [deleteFolder, toggleFolderCollapse, prefs.hiddenFolders, vault, notify],
+    [deleteFolder, toggleFolderCollapse, prefs.hiddenFolders, saveFolder, vault, notify],
   );
 
   const separatorMenu = useCallback(
@@ -2050,7 +2231,7 @@ const visible = useMemo(() => {
    * "Expand on select" preference was on: one click on a card threw the whole
    * edit form up over the list you were scanning, which is not what a click on
    * a card means anywhere else in the app. Opening the editor is now the
-   * double-click gesture it is everywhere else (Flow, List, Grid and Orbit all
+   * double-click gesture it is everywhere else (Flow, List and Grid all
    * bind onDoubleClick to it), and this handler is left doing one job: copy the
    * password. The preference itself is retired below — see the note beside it in
    * storage, and Settings no longer offers it. The reuse warning is still a
@@ -3228,7 +3409,7 @@ onCreate={vault.create}
           persistent={vault.persistent}
           onNotify={notify}
         />
-        <Toasts toasts={toasts} />
+        <Toasts toasts={rawToasts} />
       </>
     );
   }
@@ -3245,7 +3426,7 @@ onCreate={vault.create}
           onVerified={() => setVaultVerified(true)}
           onCancel={() => vault.lock()}
         />
-        <Toasts toasts={toasts} />
+        <Toasts toasts={rawToasts} />
       </>
     );
   }
@@ -3255,8 +3436,8 @@ onCreate={vault.create}
   const pendingDelete = confirmDelete;
 
   /**
-   * True only for the Flow and Orbit *list* views, which own an inner scroller
-   * and need the pane's overflow frozen so the two do not fight over the wheel.
+   * True only for the Flow *list* view, which owns an inner scroller
+   * and needs the pane's overflow frozen so the two do not fight over the wheel.
    *
    * Everything else — List, Grid, the empty state, and the purpose-built
    * screens (Dashboard, Mail, History) — is an ordinary scrolling page and must
@@ -3265,7 +3446,7 @@ onCreate={vault.create}
    * has no scroller of its own, so nothing below the fold could be reached.
    */
   const selfScrollingView =
-    (view === 'animated' || view === 'carousel') &&
+    view === 'animated' &&
     !activeFolder &&
     !showEmpty &&
     !(activeChannel && CHANNEL_SCREEN_KINDS.includes(activeChannel.kind));
@@ -3557,9 +3738,9 @@ onCreate={vault.create}
                 </button>
               ) : null}
             </div>
-          </header>            {/* Flow and Orbit manage their own overflow: Flow's inner list scrolls,
-              Orbit's ring fills a bounded stage. Both need their height pinned
-              here so the flex chain is definite. List, Grid and the dashboard
+          </header>            {/* Flow manages its own overflow: its inner list scrolls,
+              so it needs its height pinned here so the flex chain is definite.
+              List, Grid and the dashboard
               are normal scrolling pages, so they must not inherit that. Hiding
               overflow here for Grid is what froze Grid scrolling: Grid has no
               inner scroller, so there was nowhere left to scroll. */}
@@ -3589,27 +3770,50 @@ onCreate={vault.create}
                 Weak or reused were three rows in the rail; they are four views
                 of one list, so they are tabs of it instead. The strip is the
                 first child of the scroll container and sticky, so a long list
-                scrolls under it rather than carrying it away, and Flow/Orbit —
-                which pin their own height — simply get it as the row above. */}
-            {showAllTabs && !folderLocked && !channelLocked ? (
+                scrolls under it rather than carrying it away, and Flow — which
+                pins its own height — simply gets it as the row above. */}
+            {/* The scope's configured tab strip (Configurable in prefs.listTabs).
+                The strip is the first child of the scroll container and sticky,
+                so a long list scrolls under it rather than carrying it away,
+                and Flow — which pins its own height — simply gets it as the
+                row above. Right-click a tab to hide it or open the config menu. */}
+            {stripTabs.length > 0 ? (
               <div className="list-tabs">
-                <div className="segmented list-tabs__group" role="tablist" aria-label="All logins sections">
-                  {ALL_LOGIN_TABS.map((tab) => {
-                    const active = allTab === tab.kind;
+                <div
+                  className="list-tabs__group"
+                  role="tablist"
+                  aria-label="Sections"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setMenu({ x: event.clientX, y: event.clientY, items: stripMenu(null) });
+                  }}
+                >
+                  {stripTabs.map((tab) => {
+                    const active = tab.kind && activeChannel?.id === 'all' ? allTab === tab.kind : false;
                     return (
                       <button
-                        key={tab.kind}
+                        key={tab.id}
                         type="button"
                         role="tab"
                         aria-selected={active}
                         aria-pressed={active}
-                        className="segmented__option list-tabs__option"
-                        title={describeChannel({ kind: tab.kind, tagIds: [] }, prefs.tags)}
-                        onClick={() => setAllTab(tab.kind)}
+                        className="list-tabs__option"
+                        title={
+                          tab.kind
+                            ? describeChannel({ kind: tab.kind, tagIds: [] }, prefs.tags)
+                            : `Open "${tab.channel!.name}" (right-click to configure this strip)`
+                        }
+                        onClick={() => openStripTab(tab.id)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setMenu({ x: event.clientX, y: event.clientY, items: stripMenu(tab.id) });
+                        }}
                       >
                         {tab.label}
                         <span className="list-tabs__count">
-                          {(tabCounts[tab.kind] ?? 0).toLocaleString()}
+                          {(stripCounts[tab.id] ?? 0).toLocaleString()}
                         </span>
                       </button>
                     );
@@ -3750,11 +3954,6 @@ onCreate={vault.create}
               <div data-vault-list data-flow-scroll>
                 <AnimatedListView {...commonProps} {...cardProps} />
               </div>
-            ) : view === 'carousel' ? (
-              // No data-vault-list wrapper: Orbit is a bounded flex column that
-              // owns its own stage, and an extra auto-height box in the chain
-              // collapses that stage to zero.
-              <CarouselView {...commonProps} {...cardProps} showOrbitLabels={prefs.showOrbitLabels} />
             ) : view === 'grid' ? (
               // Grid scrolls in the pane like List, so it gets the plain wrapper.
               <div data-vault-list>
@@ -3967,6 +4166,7 @@ onCreate={vault.create}
         onLock={vault.lock}
         onEditChannel={(channelId) => setEditingChannel(channelId)}
         onScrubTag={(tagId) => void scrubTag(tagId)}
+        onCreateTag={createTagNow}
         onOpenTuner={openTuner}
         onReset={async () => {
           // Goes through the hook, not the service: resetting only the service
@@ -4369,7 +4569,7 @@ onCreate={vault.create}
         </Modal>
       ) : null}
 
-      <Toasts toasts={toasts} />
+      <Toasts toasts={rawToasts} />
     </>
   );
 }

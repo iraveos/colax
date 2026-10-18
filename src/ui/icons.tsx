@@ -440,14 +440,6 @@ export const RowsIcon = (props: IconProps) => (
   </Icon>
 );
 
-export const OrbitIcon = (props: IconProps) => (
-  <Icon {...props}>
-    <circle cx="12" cy="12" r="3" />
-    <ellipse cx="12" cy="12" rx="9.6" ry="4.2" />
-    <ellipse cx="12" cy="12" rx="9.6" ry="4.2" transform="rotate(60 12 12)" />
-  </Icon>
-);
-
 export const DatabaseIcon = (props: IconProps) => (
   <Icon {...props}>
     <ellipse cx="12" cy="5.8" rx="7.6" ry="2.9" />

@@ -65,12 +65,20 @@ export const CHANNEL_KIND_LABELS: Record<ChannelKind, string> = {
  * Kinds that render a purpose-built screen instead of the login list.
  *
  * These three are ordinary scrolling pages, which is why the shell must not
- * freeze their overflow the way it does for the Flow and Orbit list views.
+ * freeze their overflow the way it does for the Flow list view.
  */
 export const CHANNEL_SCREEN_KINDS: ChannelKind[] = ['dashboard', 'mail', 'history'];
 
 /** A tab inside the merged All logins channel. */
 export type AllLoginTab = 'all' | 'favorites' | 'attention' | 'weak';
+
+/** Vertical placement of a sidebar row inside the rail. */
+export type RailPosition = 'top' | 'middle' | 'bottom';
+
+/** Whether a stored rail position is one we know. Absent stays absent. */
+export function normaliseRailPosition(raw: unknown): RailPosition | undefined {
+  return raw === 'top' || raw === 'middle' || raw === 'bottom' ? raw : undefined;
+}
 
 /**
  * The sections of the single "All logins" channel, in tab order.
@@ -179,6 +187,12 @@ export interface Channel {
    * field existed, so nothing gains a gate it did not ask for.
    */
   security: LoginSecurity;
+  /**
+   * Where the row sits in the rail: 'top' pins it above the flowing block,
+   * 'bottom' below it, and 'middle' (absent on stored rows) is the shipped
+   * order. Drag order inside a block is untouched.
+   */
+  railPosition?: RailPosition;
 }
 
 export interface Tag {
@@ -221,6 +235,8 @@ export interface Folder {
   notesHidden: boolean;
   /** Optional second factor required to browse the channels inside. */
   security: LoginSecurity;
+  /** Where the folder's row sits in the rail. Same sense as Channel.railPosition. */
+  railPosition?: RailPosition;
 }
 
 /** One row in the sidebar: a channel, a separator rule, or a folder. */
@@ -622,6 +638,7 @@ export function normaliseFolders(stored: Folder[] | undefined): Folder[] {
       // Shared helper — this used to rebuild the block inline without
       // passcode, silently unprotecting passcode-only folders on reload.
       security: normaliseSecurity(raw.security),
+      railPosition: normaliseRailPosition(raw.railPosition),
     });
   }
   return folders;
@@ -669,6 +686,36 @@ export function normaliseSidebar(stored: SidebarEntry[] | undefined, channels: C
     if (!usedFolders.has(folder.id)) entries.push({ kind: 'folder', id: folder.id, children: [] });
   }
   return entries;
+}
+
+/**
+ * Re-orders the sidebar so rows pinned 'top' come first and 'bottom' rows last.
+ *
+ * The split is stable: rows inside one block keep the drag order they already
+ * have, and rows without a position ('middle') stay exactly where the user
+ * arranged them. Applied at every level, so a folder's own placement moves its
+ * whole block while the channels inside keep theirs. Separators travel with the
+ * middle block.
+ *
+ * App layering note: the Dashboard's own pin and the Unassigned row are added
+ * before this runs, so a deliberate 'top' row genuinely wins the top.
+ */
+export function composeRailOrder(
+  entries: SidebarEntry[],
+  positionOf: (entry: SidebarEntry) => RailPosition,
+): SidebarEntry[] {
+  const rank = (entry: SidebarEntry) => {
+    const position = positionOf(entry);
+    return position === 'top' ? 0 : position === 'bottom' ? 2 : 1;
+  };
+  const reshape = (list: SidebarEntry[]): SidebarEntry[] => {
+    const mapped = list.map((entry) =>
+      entry.kind === 'folder' ? { ...entry, children: reshape(entry.children) } : entry,
+    );
+    // Array.prototype.sort is stable, so equal ranks keep their drag order.
+    return mapped.slice().sort((a, b) => rank(a) - rank(b));
+  };
+  return reshape(entries);
 }
 
 /** Rows selectable in the sidebar: channel ids, 'folder:<id>' and 'unassigned'. */
@@ -911,6 +958,7 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
       // reason a folder's does, and rebuilding the block by hand is how
       // passcode-only factors were silently dropped elsewhere.
       security: normaliseSecurity(raw.security),
+      railPosition: normaliseRailPosition(raw.railPosition),
     });
   }
 

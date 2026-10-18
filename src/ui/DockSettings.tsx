@@ -148,7 +148,7 @@ export function DockSlotsEditor({
   // inbox, then folders and channels alphabetically. Logins go through the
   // filter below instead — listing a whole vault here would bury everything.
   const present = new Set(slots.map((slot) => `${slot.kind}:${slot.ref || slot.kind}`));
-  const addableViews = (['animated', 'carousel', 'basic', 'grid'] as VaultView[]).filter(
+  const addableViews = (['animated', 'basic', 'grid'] as VaultView[]).filter(
     (view) => !present.has(`view:${view}`),
   );
   const addableInbox = present.has('inbox:') ? [] : ['inbox'];

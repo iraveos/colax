@@ -33,7 +33,7 @@ import {
 } from './optimize.ts';
 
 /** How the vault is laid out on screen. The choice is persisted. */
-export type VaultView = 'animated' | 'carousel' | 'basic' | 'grid';
+export type VaultView = 'animated' | 'basic' | 'grid';
 
 /** Light/dark, or follow the system. */
 export type ThemeMode = 'light' | 'dark' | 'system';
@@ -91,15 +91,51 @@ export interface CardSizePrefs {
 
 export const DEFAULT_CARD_SIZE: Record<VaultView, CardSizePrefs> = {
   animated: { scale: 1, width: 560, minHeight: 132, aspect: 1, surface: 1, radius: 14 },
-  // Orbit is a fixed width × aspect card, because its ring geometry is computed
-  // from the card width, so it sizes differently from the fluid views.
-  carousel: { scale: 1, width: 340, minHeight: 0, aspect: 1.35, surface: 1, radius: 20 },
   basic: { scale: 1, width: 900, minHeight: 64, aspect: 1, surface: 1, radius: 14 },
   // Grid reflows to whatever fits, so its width is the widest a single cell may
   // get before the track count drops. That is the one number worth tuning here:
   // raising it buys larger cards at the cost of columns.
   grid: { scale: 1, width: 340, minHeight: 96, aspect: 1, surface: 1, radius: 14 },
 };
+
+/**
+ * The shipped list-tab strip: the four merged sections of All logins.
+ *
+ * Configured per scope in `listTabs` (see below); every other channel and
+ * folder starts with no strip at all.
+ */
+export const DEFAULT_LIST_TABS: Record<string, string[]> = {
+  all: ['tab:all', 'tab:favorites', 'tab:attention', 'tab:weak'],
+};
+
+/** The built-in tab ids a strip may hold. */
+const LIST_TAB_IDS = new Set(['tab:all', 'tab:favorites', 'tab:attention', 'tab:weak']);
+
+/**
+ * Coerces a stored per-scope tab configuration.
+ *
+ * A tab id is either `tab:<kind>` for one of the built-ins or a channel id, so
+ * the strip can hold a jump to any channel. Entries pointing at channels that
+ * no longer exist are dropped rather than left as dead buttons, and a malformed
+ * record falls back to the shipped All-logins strip.
+ */
+export function normaliseListTabs(raw: unknown, channels: Pick<Channel, 'id'>[]): Record<string, string[]> {
+  const channelIds = new Set(channels.map((channel) => channel.id));
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_LIST_TABS };
+  const clean: Record<string, string[]> = {};
+  for (const [scope, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!scope || !Array.isArray(value)) continue;
+    // An empty list is kept: hiding a scope's strip entirely is a user choice,
+    // and dropping it here would resurrect the default on every reload.
+    clean[scope] = [...new Set(
+      value.filter(
+        (id): id is string =>
+          typeof id === 'string' && (LIST_TAB_IDS.has(id) || channelIds.has(id)),
+      ),
+    )];
+  }
+  return clean;
+}
 
 /**
  * One dock slot's configuration.
@@ -186,10 +222,9 @@ export function freeDockSpot(docks: { pos: { edge: string; fx: number; fy: numbe
 
 export const DEFAULT_DOCK_SLOTS: DockSlotConfig[] = [
   { kind: 'view', ref: 'animated', key: '1' },
-  { kind: 'view', ref: 'carousel', key: '2' },
-  { kind: 'view', ref: 'basic', key: '3' },
-  { kind: 'view', ref: 'grid', key: '4' },
-  { kind: 'inbox', ref: '', key: '5' },
+  { kind: 'view', ref: 'basic', key: '2' },
+  { kind: 'view', ref: 'grid', key: '3' },
+  { kind: 'inbox', ref: '', key: '4' },
 ];
 
 /**
@@ -617,24 +652,16 @@ export interface VaultPreferences {
    * about which key means what.
    */
   docks: DockState[];
-  /**
-   * Bookkeeping for the one-off Orbit repair below, not a setting anyone
-   * touches: true once a stored bar has been checked for the missing view.
-   * Without it, a user who deliberately removes the Orbit slot would find it
-   * back on the next launch, every launch.
-   */
-  orbitDockRestored?: boolean;
-  /**
-   * Per-login use counts: incremented on copy and on edit, read by the
-   * Frequently-used panel and the untouched-login scan.
-   *
-   * Plaintext like the rest of prefs — counts are not secret — and capped, so
-   * a deleted login's entry cannot grow the record forever. Entries for gone
-   * logins are pruned on write, not on load, because load cannot see the items.
-   */
   usage: Record<string, { count: number; at: number }>;
+  /** The tab strips, per scope. See 'listTabs *' helpers near DEFAULT_LIST_TABS. */
+  listTabs: Record<string, string[]>;
   /**
-   * Desktop shell settings. Read by Electron; inert on web, where there is no
+   * Which in-app toast notifications appear. 'all' is the shipped behaviour,
+   * 'errors' keeps only the failure toasts (and the confirmations that matter:
+   * anything sent with the 'error' tone), 'off' silences the lot.
+   */
+  notifications: 'all' | 'errors' | 'off';
+  /** Desktop shell settings. Read by Electron; inert on web, where there is no
    * tray, no autostart and no window chrome to manage. Kept in prefs (not in
    * the shell) so they back up and reset with everything else.
    */
@@ -653,8 +680,6 @@ export interface VaultPreferences {
   autoTagChannel: boolean;
   /** Shows the tag chips on each login card. */
   showTagChips: boolean;
-  /** Puts each login's title and email inside its own node in the Orbit ring. */
-  showOrbitLabels: boolean;
   /** Hides the hairline dividers inside the settings window. */
   hideDividers: boolean;
 
@@ -922,6 +947,8 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
     },
   ],
   usage: {},
+  listTabs: DEFAULT_LIST_TABS,
+  notifications: 'all',
   trayEnabled: true,
   closeToTray: true,
   launchAtLogin: false,
@@ -930,7 +957,6 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   showLockButton: true,
   autoTagChannel: false,
   showTagChips: true,
-  showOrbitLabels: true,
   hideDividers: false,
   passwordAgeDays: 180,
   emailAgeDays: 365,
@@ -1018,36 +1044,6 @@ export function normaliseDockPos(raw: unknown): DockPlacement {
 }
 
 /**
- * Puts the Orbit view back into a bar saved while Orbit was away from the app.
- *
- * The view shipped, was withdrawn, then came back — and a bar written in
- * between holds three view slots (Flow, List, Grid) with their keys 1, 2, 3.
- * Inserting Orbit straight after Flow lands the family back on 1–4, and
- * `normaliseDockSlots` renumbers the rest on its own: it hands out whichever
- * single-character key is still free whenever a stored one collides.
- *
- * Deliberately narrow: only a bar still holding *exactly* the three views the
- * Orbit-less build shipped — Flow, List, Grid, in that order — is touched. A
- * bar the user has since trimmed or rearranged is theirs, and a bar already
- * holding Orbit comes back unchanged, so this cannot double up or resurrect the
- * slot for someone who removed it on purpose.
- */
-function restoreOrbitSlot(raw: unknown): unknown {
-  if (!Array.isArray(raw) || raw.length >= MAX_DOCK_SLOTS) return raw;
-  const entries = raw as DockSlotConfig[];
-  const views = entries.filter(
-    (entry) => entry && typeof entry === 'object' && entry.kind === 'view',
-  );
-  const shipped = ['animated', 'basic', 'grid'] as const;
-  if (views.length !== shipped.length) return raw;
-  if (!shipped.every((ref, index) => views[index]?.ref === ref)) return raw;
-  const after = entries.indexOf(views[0]!);
-  const next = entries.slice();
-  next.splice(after + 1, 0, { kind: 'view', ref: 'carousel', key: '' });
-  return next;
-}
-
-/**
  * One bar's slots: at most MAX_DOCK_SLOTS, each with a valid kind, a valid
  * view ref, a unique single-character key, a short label and a safe icon.
  * Anything else falls back slot by slot, so a hand-edited or partially-written
@@ -1065,7 +1061,7 @@ export function normaliseDockSlots(raw: unknown): DockSlotConfig[] {
     const kind = (entry as { kind?: unknown }).kind;
     if (kind !== 'view' && kind !== 'channel' && kind !== 'folder' && kind !== 'login' && kind !== 'inbox' && kind !== 'mailbox') continue;
     const ref = typeof (entry as { ref?: unknown }).ref === 'string' ? (entry as { ref: string }).ref : '';
-    if (kind === 'view' && !(['animated', 'carousel', 'basic', 'grid'] as const).includes(ref as VaultView)) continue;
+    if (kind === 'view' && !(['animated', 'basic', 'grid'] as const).includes(ref as VaultView)) continue;
     if ((kind === 'channel' || kind === 'folder' || kind === 'login' || kind === 'mailbox') && !ref) continue;
     if (kind === 'inbox' && clean.some((slot) => slot.kind === 'inbox')) continue;
     if (clean.some((slot) => slot.kind === kind && slot.ref === ref)) continue;
@@ -1332,7 +1328,14 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     ['slate', 'sage', 'dusk', 'clay'] as const,
     DEFAULT_PREFERENCES.accent,
   );
-  merged.view = oneOf(merged.view, ['animated', 'carousel', 'basic', 'grid'] as const, DEFAULT_PREFERENCES.view);
+  // Orbit is gone: a vault saved on it lands back on Flow.
+  merged.view = oneOf(merged.view, ['animated', 'basic', 'grid'] as const, DEFAULT_PREFERENCES.view);
+  merged.notifications = oneOf(
+    merged.notifications,
+    ['all', 'errors', 'off'] as const,
+    DEFAULT_PREFERENCES.notifications,
+  );
+  merged.listTabs = normaliseListTabs(merged.listTabs, merged.channels);
   merged.sort = oneOf(
     merged.sort,
     ['title', 'recent', 'oldest', 'strength', 'username', 'manual'] as const,
@@ -1356,10 +1359,18 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   // just bake an arbitrary number into a card the user never sized.
   delete (merged as Partial<Record<'flowCardSize', unknown>>).flowCardSize;
 
+  // Orbit was removed in 1.0.62. Its view preference and the dock-repair
+  // bookkeeping that came back with it are stale keys now; deleting them here
+  // is what stops a restored theme backup from re-importing them forever.
+  delete (merged as Partial<Record<'showOrbitLabels' | 'orbitDockRestored', unknown>>).showOrbitLabels;
+  delete (merged as Partial<Record<'showOrbitLabels' | 'orbitDockRestored', unknown>>).orbitDockRestored;
+  // A stored carousel card-size entry is dead weight without the view.
+  delete (merged.cardSize as Partial<Record<'carousel', unknown>> | undefined)?.carousel;
+
   // Per-view card geometry. Each field is clamped individually rather than
   // taking the stored object wholesale, so a partially-written or hand-edited
   // record cannot leave a view with a zero width or a NaN radius.
-  const views: VaultView[] = ['animated', 'carousel', 'basic', 'grid'];
+  const views: VaultView[] = ['animated', 'basic', 'grid'];
   const storedCardSize = (merged.cardSize ?? {}) as Partial<Record<VaultView, Partial<CardSizePrefs>>>;
   const cardSize = {} as Record<VaultView, CardSizePrefs>;
   for (const view of views) {
@@ -1430,14 +1441,11 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
       ? ((stored as Partial<VaultPreferences>)!.docks as DockState[])
       : [];
     const clean: DockState[] = [];
-    // Set once the loop below has looked at every stored bar, so the repair runs
-    // a single time even if nothing else is ever saved.
-    const alreadyChecked = Boolean((stored as Partial<VaultPreferences> | undefined | null)?.orbitDockRestored);
     for (const entry of storedDocks.slice(0, MAX_DOCKS)) {
       if (!entry || typeof entry !== 'object') continue;
       const record = entry as unknown as Record<string, unknown>;
       const id = typeof record.id === 'string' && record.id ? record.id : newDockId();
-      const slots = normaliseDockSlots(alreadyChecked ? record.slots : restoreOrbitSlot(record.slots));
+      const slots = normaliseDockSlots(record.slots);
       if (slots.length === 0) continue;
       clean.push({
         id,
@@ -1455,7 +1463,6 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
       });
     }
     merged.docks = clean;
-    merged.orbitDockRestored = true;
     delete legacy.dockEnabled;
     delete legacy.dockSlots;
     delete legacy.dockPos;

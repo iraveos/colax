@@ -47,7 +47,8 @@ const THEME_KEYS = [
   'floatingChrome',
   'hideDividers',
   'showTagChips',
-  'showOrbitLabels',
+  'listTabs',
+  'notifications',
   // Background
   'backgroundImage',
   'backgroundOpacity',

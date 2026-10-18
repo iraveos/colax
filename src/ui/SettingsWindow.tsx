@@ -15,6 +15,82 @@ export interface SettingsTab {
   render: () => ReactNode;
 }
 
+/**
+ * The flat search index for the settings window.
+ *
+ * Every findable control is one entry: the tab it lives in, its name, and a few
+ * synonyms people type instead of the label. Render functions hold the real
+ * rows, so this list is maintained by hand — the ids must match the tab ids in
+ * Settings.tsx, and a new control only appears in search once someone lists it
+ * here. That is the price of searching panels that are functions, and it keeps
+ * the search from having to walk the DOM.
+ */
+const SEARCH_INDEX: { tab: string; label: string; words: string }[] = [
+  // Appearance
+  { tab: 'appearance', label: 'Theme', words: 'light dark system colour mode' },
+  { tab: 'appearance', label: 'Accent colour', words: 'slate sage dusk clay tint' },
+  { tab: 'appearance', label: 'Motion speed', words: 'animation instant languid transitions' },
+  { tab: 'appearance', label: 'Micro motion', words: 'animations small transitions' },
+  { tab: 'appearance', label: 'Ambient depth', words: 'glow mesh depth' },
+  { tab: 'appearance', label: 'Density', words: 'compact comfortable spacious spacing' },
+  { tab: 'appearance', label: 'Roundness', words: 'corner radius sharp' },
+  { tab: 'appearance', label: 'Card depth', words: 'shadow elevation' },
+  { tab: 'appearance', label: 'Text size', words: 'font scale bigger smaller' },
+  { tab: 'appearance', label: 'Reduce transparency', words: 'glass blur flat faster' },
+  { tab: 'appearance', label: 'High contrast', words: 'borders text contrast visibility' },
+  { tab: 'appearance', label: 'Background image', words: 'wallpaper photo backdrop opacity blur dim' },
+  { tab: 'appearance', label: 'Card appearance', words: 'card size width height radius surface tuner' },
+  { tab: 'appearance', label: 'Hide dividers', words: 'hairlines rules settings window' },
+  // Layout
+  { tab: 'layout', label: 'Vault view', words: 'flow list grid switch views' },
+  { tab: 'layout', label: 'Sort by', words: 'order name recent strength manual' },
+  { tab: 'layout', label: 'Show websites', words: 'urls domains display' },
+  { tab: 'layout', label: 'Pin favorites', words: 'starred section top' },
+  { tab: 'layout', label: 'Letter groups', words: 'alphabet grouping headings' },
+  { tab: 'layout', label: 'Tag chips', words: 'labels on cards show' },
+  { tab: 'layout', label: 'Sidebar labels', words: 'icons names rail' },
+  { tab: 'layout', label: 'Sidebar position', words: 'rail left right top bottom dock' },
+  { tab: 'layout', label: 'Compact sidebar', words: 'icons only narrow rail' },
+  { tab: 'layout', label: 'Floating chrome', words: 'pills detach buttons' },
+  { tab: 'layout', label: 'Channel layout', words: 'channels folders reorder rail' },
+  { tab: 'layout', label: 'Hide buttons', words: 'chrome visibility new login bulk add settings' },
+  { tab: 'layout', label: 'Unassigned channel', words: 'no tags row' },
+  // Hidden
+  { tab: 'hidden', label: 'Show hidden items', words: 'restore hidden channels folders buttons' },
+  // Security
+  { tab: 'security', label: 'Master password', words: 'change password enable disable passcode' },
+  { tab: 'security', label: 'Auto-lock', words: 'lock idle timer minutes' },
+  { tab: 'security', label: 'Clipboard', words: 'clear seconds copy capture auto save' },
+  { tab: 'security', label: 'Mask emails', words: 'usernames hidden dots' },
+  { tab: 'security', label: 'Confirmations', words: 'confirm export deletions' },
+  { tab: 'security', label: 'Copy toasts', words: 'notification confirmations after copying' },
+  { tab: 'security', label: 'Notifications', words: 'toasts errors off silence alerts' },
+  { tab: 'security', label: 'Second factor', words: 'vault security factor gate' },
+  // Alarms
+  { tab: 'alarms', label: 'Alarms', words: 'reminders clock notifications sound' },
+  // Data
+  { tab: 'data', label: 'Encrypted backup', words: 'export import vault restore json' },
+  { tab: 'data', label: 'CSV export', words: 'spreadsheet plaintext excel passwords' },
+  { tab: 'data', label: 'CSV import', words: 'spreadsheet from another tool mapping tags' },
+  { tab: 'data', label: 'Theme backup', words: 'look share layout channels' },
+  { tab: 'data', label: 'Storage', words: 'size usage how much' },
+  { tab: 'data', label: 'Reset vault', words: 'delete everything wipe start over' },
+  // Optimize
+  { tab: 'optimize', label: 'One-click profiles', words: 'balanced maximum savings restore look' },
+  { tab: 'optimize', label: 'Low-memory mode', words: 'max savings restart memory ram' },
+  { tab: 'optimize', label: 'Hardware acceleration', words: 'gpu frame work compositor' },
+  { tab: 'optimize', label: 'Spellcheck', words: 'typing red underlines dictionaries' },
+  { tab: 'optimize', label: 'Mail loading', words: 'inline images page size cache messages' },
+  // Desktop
+  { tab: 'desktop', label: 'Run at startup', words: 'autostart launch sign in windows' },
+  { tab: 'desktop', label: 'System tray', words: 'icon clock minimize' },
+  { tab: 'desktop', label: 'Minimise to tray on close', words: 'close button hide quit' },
+  { tab: 'desktop', label: 'Mute all sounds', words: 'silent alarms chimes audio' },
+  // About
+  { tab: 'about', label: 'About', words: 'version update changelog credits' },
+  { tab: 'about', label: 'Keyboard shortcuts', words: 'keys cheatsheet help' },
+];
+
 export function SettingsWindow({
   open,
   tabs,
@@ -87,6 +163,59 @@ export function SettingsWindow({
     onNavigate?.(id);
   }
 
+  /* ---- Settings search -----------------------------------------------------
+     Typing filters the hand-built index in the rail; picking a result jumps to
+     its tab. The rail keeps the tab list, so a search never hides where you
+     can still go — the results appear under the box instead. */
+  const [settingsQuery, setSettingsQuery] = useState('');
+  const needle = settingsQuery.trim().toLowerCase();
+  const searchResults =
+    needle.length === 0
+      ? []
+      : SEARCH_INDEX.filter((entry) => `${entry.label} ${entry.words}`.toLowerCase().includes(needle)).slice(0, 12);
+  const tabLabel = (id: string) => tabs.find((tab) => tab.id === id)?.label ?? id;
+  const searchMenu = (
+    <>
+      <input
+        type="search"
+        className="settings-window__search"
+        placeholder="Search settings…"
+        aria-label="Search settings"
+        value={settingsQuery}
+        onChange={(event) => setSettingsQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation();
+            setSettingsQuery('');
+          }
+        }}
+      />
+      {needle !== '' ? (
+        <div className="settings-window__results" role="list" aria-label="Search results">
+          {searchResults.length === 0 ? (
+            <p className="settings-window__no-results">No matching settings</p>
+          ) : (
+            searchResults.map((entry, index) => (
+              <button
+                key={`${entry.tab}-${entry.label}-${index}`}
+                type="button"
+                role="listitem"
+                className="settings-window__result"
+                onClick={() => {
+                  select(entry.tab);
+                  setSettingsQuery('');
+                }}
+              >
+                <span className="settings-window__result-label">{entry.label}</span>
+                <span className="settings-window__result-tab">{tabLabel(entry.tab)}</span>
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
+    </>
+  );
+
   const active = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
 
   return (
@@ -116,6 +245,7 @@ export function SettingsWindow({
                 <span className="settings-window__dot" aria-hidden="true" />
                 Settings
               </div>
+              {searchMenu}
               <nav className="settings-window__tabs" role="tablist" aria-orientation="vertical">
                 {tabs.map((tab) => (
                   <button

@@ -26,7 +26,6 @@ function accentGradient(accent: string): string {
 
 const VIEW_LABELS: Record<VaultView, string> = {
   animated: 'Flow',
-  carousel: 'Orbit',
   basic: 'List',
   grid: 'Grid',
 };
@@ -99,7 +98,6 @@ export function AppearancePanel({
     [cardSize, onCardSizeChange],
   );
 
-  const isOrbit = view === 'carousel';
   const isList = view === 'basic';
 
   // Clicking anywhere outside closes the panel. It has no backdrop by design
@@ -150,33 +148,18 @@ export function AppearancePanel({
             hint={
               isList
                 ? 'The measure of the list. Text gets harder to read past about 100 characters.'
-                : isOrbit
-                  ? 'How much of the ring is visible. Wider cards mean fewer in view at once.'
-                  : 'How wide each card is allowed to grow.'
+                : 'How wide each card is allowed to grow.'
             }
             value={cardSize.width}
-            min={isOrbit ? 220 : 280}
-            max={isOrbit ? 520 : 1200}
+            min={280}
+            max={1200}
             step={10}
             suffix="px"
             onChange={(width) => set({ width })}
           />
 
-          {isOrbit ? (
-            <Slider
-              id="tuner-aspect"
-              label="Height"
-              hint="A multiple of the width. Taller suits a photo, squarer suits a title."
-              value={cardSize.aspect}
-              min={0.6}
-              max={2.2}
-              step={0.05}
-              suffix="×"
-              onChange={(aspect) => set({ aspect })}
-            />
-          ) : (
-            <Slider
-              id="tuner-min-height"
+          <Slider
+            id="tuner-min-height"
               label="Minimum height"
               hint="A floor, not a cap: a card with a photo or a long title still grows past it."
               value={cardSize.minHeight}
@@ -186,7 +169,6 @@ export function AppearancePanel({
               suffix="px"
               onChange={(minHeight) => set({ minHeight })}
             />
-          )}
 
           <Slider
             id="tuner-radius"

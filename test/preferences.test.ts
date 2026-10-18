@@ -54,7 +54,7 @@ test('a hand-edited null record cannot crash normalisation', () => {
   // through. Deleting a retired key off null, or reading a slot off a null
   // dock, must fall back rather than throw and take the vault down on open.
   const out = normalisePreferences({ cardSize: null, viewLabelsByView: null, docks: [null] } as never);
-  assert.deepEqual(Object.keys(out.cardSize).sort(), ['animated', 'basic', 'carousel', 'grid']);
+  assert.deepEqual(Object.keys(out.cardSize).sort(), ['animated', 'basic', 'grid']);
   assert.equal(out.view, DEFAULT_PREFERENCES.view);
 });
 

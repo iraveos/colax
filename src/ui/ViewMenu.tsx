@@ -5,7 +5,7 @@
  * compete with New login for attention:
  *
  *   - right-clicking empty content opens the view list at the pointer, and
- *   - Ctrl+1..4 jumps straight to one, and
+ *   - Ctrl+1..3 jumps straight to one, and
  *   - dock view slots jump with one key each.
  *
  * All three render the same options, so they cannot drift apart.
@@ -14,7 +14,7 @@
 import { motion } from 'motion/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { VaultView, ViewLabels } from '../vault/storage.ts';
-import { GridIcon, LayersIcon, RowsIcon, SquaresIcon } from './icons.tsx';
+import { LayersIcon, RowsIcon, SquaresIcon } from './icons.tsx';
 
 export const VIEW_OPTIONS: {
   id: VaultView;
@@ -22,13 +22,12 @@ export const VIEW_OPTIONS: {
   hint: string;
   Icon: typeof LayersIcon;
   shortcut: string;
-  /** Tile hue: Flow blue, Orbit violet, List green, Grid amber. */
+  /** Tile hue: Flow blue, List green, Grid amber. */
   hue: number;
 }[] = [
   { id: 'animated', label: 'Flow', hint: 'Spring-animated cards', Icon: LayersIcon, shortcut: '1', hue: 212 },
-  { id: 'carousel', label: 'Orbit', hint: '3D carousel ring', Icon: GridIcon, shortcut: '2', hue: 268 },
-  { id: 'basic', label: 'List', hint: 'Plain grouped list', Icon: RowsIcon, shortcut: '3', hue: 152 },
-  { id: 'grid', label: 'Grid', hint: 'Responsive card grid', Icon: SquaresIcon, shortcut: '4', hue: 32 },
+  { id: 'basic', label: 'List', hint: 'Plain grouped list', Icon: RowsIcon, shortcut: '2', hue: 152 },
+  { id: 'grid', label: 'Grid', hint: 'Responsive card grid', Icon: SquaresIcon, shortcut: '3', hue: 32 },
 ];
 
 /**
@@ -80,7 +79,7 @@ function ViewOptionList({
             aria-checked={selected}
             className="view-menu__option"
             data-selected={selected || undefined}
-            title={`${option.label} (Ctrl+${option.shortcut})`}
+            title={option.label}
             onClick={() => onPick(option.id)}
           >
             <span
@@ -101,11 +100,7 @@ function ViewOptionList({
                   <path d="m4.5 12.5 5 5 10-11" />
                 </svg>
               </span>
-            ) : (
-              <span className="view-menu__kbd" aria-hidden="true">
-                ⌃{option.shortcut}
-              </span>
-            )}
+            ) : null}
           </button>
         );
       })}

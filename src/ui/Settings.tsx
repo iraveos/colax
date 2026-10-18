@@ -47,7 +47,7 @@ import {
 import { formatBytes, useEfficiency } from './useEfficiency.ts';
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import { buildStamp, getPlatform } from '../lib/platform.ts';
-import { applyChannel, parentFolderFor } from '../vault/channels.ts';
+import { applyChannel, parentFolderFor, type Tag } from '../vault/channels.ts';
 import { HIDDEN_BUTTON_LABELS } from './context-menu.tsx';
 import { DockSlotsEditor } from './DockSettings.tsx';
 import {
@@ -128,7 +128,6 @@ export const REMINDER_OPTIONS = {
 
 const VIEWS: { id: VaultView; label: string; hint: string; icon: ReactNode }[] = [
   { id: 'animated', label: 'Flow', hint: 'Spring-animated cards', icon: <LayersIcon /> },
-  { id: 'carousel', label: 'Orbit', hint: '3D carousel ring', icon: <GridIcon /> },
   { id: 'basic', label: 'List', hint: 'Plain grouped list', icon: <RowsIcon /> },
   { id: 'grid', label: 'Grid', hint: 'Responsive card grid', icon: <SquaresIcon /> },
 ];
@@ -148,15 +147,13 @@ const SORTS: { id: SortMode; label: string }[] = [
  * Every view multiplies its geometry by `scale`, so the numbers here are
  * multiplied by it too — otherwise the menu and the panel would disagree about
  * what a card looks like. Flow, List and Grid treat width as a cap and height as
- * a floor, so they read differently from Orbit, whose card is a fixed
- * width × aspect.
+ * a floor.
  *
  * Shared between Settings and the context menu, which had drifted into two
  * different formats for the same value.
  */
-export function cardSizeSummary(view: VaultView, size: CardSizePrefs): string {
+export function cardSizeSummary(_view: VaultView, size: CardSizePrefs): string {
   const width = Math.round(size.width * size.scale);
-  if (view === 'carousel') return `${width} × ${Math.round(width * size.aspect)}px`;
   return `${width}px wide, ${Math.round(size.minHeight)}px min`;
 }
 
@@ -211,6 +208,11 @@ export function Settings(props: {
   onEditChannel?: (channelId: string | 'new') => void;
   onScrubTag?: (tagId: string) => void;
   /**
+   * Creates a tag by name (or returns the existing one), for the CSV import's
+   * tag mapping. Absent, unknown tag names import untagged.
+   */
+  onCreateTag?: (name: string) => Tag | null;
+  /**
    * Opens the appearance panel, optionally switching to a view first so the
    * sliders act on the view the user just clicked rather than the one that
    * happened to be open.
@@ -219,7 +221,7 @@ export function Settings(props: {
 }) {
   const {
     open, onClose, tab, hideDividers, prefs, service, protection, items, onUpdate, onNotify, onLock, onReset,
-    onEditChannel, onScrubTag, onOpenTuner,
+    onEditChannel, onScrubTag, onOpenTuner, onCreateTag,
   } = props;
   const [changing, setChanging] = useState(false);
   const [enabling, setEnabling] = useState(false);
@@ -428,7 +430,26 @@ export function Settings(props: {
   function exportCsv() {
     // Deliberately plaintext: the point is to move logins into another tool.
     const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
-    const header = ['name', 'url', 'username', 'password', 'notes', 'favorite', 'created'];
+    const tagNames = (item: VaultItem) =>
+      item.tags
+        .map((id) => prefs.tags.find((tag) => tag.id === id)?.name ?? '')
+        .filter(Boolean)
+        .join(';');
+    const header = [
+      'name',
+      'url',
+      'username',
+      'password',
+      'notes',
+      'tags',
+      'favorite',
+      'needsAttention',
+      'accentHue',
+      'backgroundImage',
+      'avatarImage',
+      'created',
+      'updated',
+    ];
     const rows = items.map((item) =>
       [
         item.title,
@@ -436,8 +457,14 @@ export function Settings(props: {
         item.username,
         item.password,
         item.notes,
+        tagNames(item),
         String(item.favorite),
+        String(item.needsAttention),
+        item.accentHue === null ? '' : String(item.accentHue),
+        item.backgroundImage ?? '',
+        item.avatarImage ?? '',
         new Date(item.createdAt).toISOString(),
+        new Date(item.updatedAt).toISOString(),
       ]
         .map(escape)
         .join(','),
@@ -458,7 +485,7 @@ export function Settings(props: {
     try {
       const text = await file.text();
       const lines = text.split(/\r?\n/).filter(Boolean);
-      const parsed = lines.slice(1).map((line) => {
+      const parseLine = (line: string): string[] => {
         const cells: string[] = [];
         let current = '';
         let quoted = false;
@@ -476,19 +503,69 @@ export function Settings(props: {
         }
         cells.push(current);
         return cells;
-      });
-      for (const [index, cells] of parsed.entries()) {
-        await service.addItem({
-          title: cells[0] ?? '',
-          url: cells[1] ?? '',
-          username: cells[2] ?? '',
-          password: cells[3] ?? '',
-          notes: cells[4] ?? '',
-          favorite: cells[5] === 'true',
+      };
+      // Column-driven read: a file exported by this app carries the full set,
+      // one from another tool carries whatever it has. A column name the file
+      // omits simply falls back to its empty default.
+      const header = lines[0] ? parseLine(lines[0]).map((name) => name.trim().toLowerCase()) : [];
+      const column = (name: string) => header.indexOf(name);
+      const at = {
+        name: column('name'),
+        url: column('url'),
+        username: column('username'),
+        password: column('password'),
+        notes: column('notes'),
+        tags: column('tags'),
+        favorite: column('favorite'),
+        needsAttention: column('needsattention'),
+        accentHue: column('accenthue'),
+        backgroundImage: column('backgroundimage'),
+        avatarImage: column('avatarimage'),
+        created: column('created'),
+        updated: column('updated'),
+      };
+      const pick = (cells: string[], index: number) => (index >= 0 ? (cells[index] ?? '') : '');
+      // Tag names resolve against the catalogue; missing names are created when
+      // App gave us a factory, otherwise the login imports untagged.
+      const tagIdFor = (name: string): string | null => {
+        const trimmed = name.trim();
+        if (!trimmed) return null;
+        const existing = prefs.tags.find(
+          (tag) => tag.name.trim().toLowerCase() === trimmed.toLowerCase(),
+        );
+        if (existing) return existing.id;
+        return onCreateTag?.(trimmed)?.id ?? null;
+      };
+      let imported = 0;
+      for (const line of lines.slice(1)) {
+        const cells = parseLine(line);
+        const rawTags = pick(cells, at.tags)
+          .split(';')
+          .map(tagIdFor)
+          .filter((id): id is string => Boolean(id));
+        const createdAt = Date.parse(pick(cells, at.created));
+        const updatedAt = Date.parse(pick(cells, at.updated));
+        const hueText = pick(cells, at.accentHue).trim();
+        const saved = await service.addItem({
+          title: pick(cells, at.name),
+          url: pick(cells, at.url),
+          username: pick(cells, at.username),
+          password: pick(cells, at.password),
+          notes: pick(cells, at.notes),
+          favorite: pick(cells, at.favorite).toLowerCase() === 'true',
+          needsAttention: pick(cells, at.needsAttention).toLowerCase() === 'true',
+          accentHue: hueText === '' ? null : Number(hueText) || null,
+          backgroundImage: pick(cells, at.backgroundImage),
+          avatarImage: pick(cells, at.avatarImage),
+          tags: rawTags,
+          ...(Number.isFinite(createdAt) ? { createdAt } : {}),
+          ...(Number.isFinite(updatedAt) ? { updatedAt } : {}),
         });
-        if (index % 25 === 0) setImportingCsv(true);
+        void saved;
+        imported += 1;
+        if (imported % 25 === 0) setImportingCsv(true);
       }
-      onNotify(`Imported ${parsed.length} logins`);
+      onNotify(`Imported ${imported} logins`);
     } catch (cause) {
       onNotify(cause instanceof Error ? cause.message : 'Import failed', 'error');
     } finally {
@@ -849,13 +926,6 @@ export function Settings(props: {
           </Row>
 <Row label="Show websites" hint="Display the site under each login.">
             <Toggle label="Show websites" checked={prefs.showUrls} onChange={(showUrls) => set({ showUrls })} />
-          </Row>
-          <Row label="Label orbit nodes" hint="Puts each login's title and email inside its own card in the Orbit ring.">
-            <Toggle
-              label="Label orbit nodes"
-              checked={prefs.showOrbitLabels}
-              onChange={(showOrbitLabels) => set({ showOrbitLabels })}
-            />
           </Row>
           <Row label="Pin favorites" hint="Keep favorites in their own section at the top.">
             <Toggle
@@ -1443,6 +1513,20 @@ export function Settings(props: {
                   checked={prefs.copyToasts}
                   onChange={(copyToasts) => set({ copyToasts })}
                 />
+              </Row>
+              <Row label="Notifications" hint="Which in-app toasts appear. Errors are always failures like a failed export or a rejected password." stacked>
+                <div className="segmented segmented--wrap">
+                  {(['all', 'errors', 'off'] as const).map((level) => (
+                    <button
+                      key={level}
+                      className="segmented__option"
+                      aria-pressed={(prefs.notifications ?? 'all') === level}
+                      onClick={() => set({ notifications: level })}
+                    >
+                      {level === 'all' ? 'All toasts' : level === 'errors' ? 'Errors only' : 'Off'}
+                    </button>
+                  ))}
+                </div>
               </Row>
             </>
           ) : null}

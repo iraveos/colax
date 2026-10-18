@@ -1,14 +1,12 @@
 /**
- * Card artwork for the carousel view.
+ * Card artwork and per-login image helpers.
  *
- * The upstream CircularCarousel renders <img> elements, so each login needs an
- * image. A login can supply its own background photo; otherwise we generate a
- * gradient card from its own accent hue. Both are self-contained data URIs, so
- * nothing identifying leaves the device.
+ * A login can supply its own background photo; otherwise a gradient card can be
+ * generated from its accent hue. Both are self-contained data URIs, so nothing
+ * identifying leaves the device.
  */
 
-import type { CarouselItem } from '../components/react-bits/CircularCarousel.tsx';
-import { MAX_IMAGE_EDGE, accentOf, hostnameOf, isAllowedImageSrc, type VaultItem } from '../vault/types.ts';
+import { MAX_IMAGE_EDGE, accentOf, isAllowedImageSrc, type VaultItem } from '../vault/types.ts';
 
 function toDataUri(svg: string): string {
   return `data:image/svg+xml,${encodeURIComponent(svg.replace(/\s{2,}/g, ' ').trim())}`;
@@ -37,12 +35,9 @@ export function cardArt(item: VaultItem, width = 600, height = 600): string {
   const hue = accentOf(item);
   const hue2 = (hue + 38) % 360;
 
-  // This art is used as the ring card's background, and the ring draws the
-  // title and subtitle on top of it in HTML. It used to bake a 150px initial
-  // and the hostname into the SVG as well, so every card showed its hostname
-  // twice and had a giant translucent letter sitting behind the label. The art
-  // is now purely abstract: gradient, sheen and a soft vignette, and the text
-  // is the renderer's job.
+  // The art is purely abstract: gradient, sheen and a soft vignette. It tried
+  // baking a 150px initial and the hostname into the SVG once, which painted
+  // every card with a giant translucent letter behind labels drawn on top.
   const svg = `
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 600 600">
   <defs>
@@ -70,22 +65,6 @@ export function cardArt(item: VaultItem, width = 600, height = 600): string {
   <rect width="600" height="600" fill="url(#v)"/>
 </svg>`;
   return toDataUri(svg);
-}
-
-export function toCarouselItem(item: VaultItem): CarouselItem {
-  const label = item.title || item.url || 'Untitled';
-  return {
-    src: backgroundSrc(item) ?? cardArt(item),
-    alt: label,
-    title: label,
-    // The orbit label prefers the saved address and falls back to the hostname,
-    // so a card names itself with whatever the user actually recognises.
-    subtitle: item.username || hostnameOf(item.url) || undefined,
-  };
-}
-
-export function toCarouselItems(items: VaultItem[]): CarouselItem[] {
-  return items.map(toCarouselItem);
 }
 
 /* ---- Style helpers used by the list views ------------------------------ */

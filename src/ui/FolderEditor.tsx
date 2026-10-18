@@ -5,6 +5,7 @@ import {
   createFolder,
   type ChannelAccent,
   type Folder,
+  type RailPosition,
   type Tag,
 } from '../vault/channels.ts';
 import { MAX_APP_BACKGROUND_BYTES } from '../vault/types.ts';
@@ -38,6 +39,13 @@ const ICON_SET: Record<string, typeof InboxIcon> = {
   grid: GridIcon,
   folder: FolderIcon,
 };
+
+/** Where the folder's row sits in the rail, for the editor's segmented control. */
+const RAIL_PLACEMENT_OPTIONS: { id: RailPosition; label: string; hint: string }[] = [
+  { id: 'top', label: 'Top', hint: 'Pinned above the flowing rows' },
+  { id: 'middle', label: 'Middle', hint: 'In the flow, where you placed it' },
+  { id: 'bottom', label: 'Bottom', hint: 'Pinned below the flowing rows' },
+];
 
 const ACCENT_HUES: Record<string, number> = { slate: 212, sage: 152, dusk: 268, clay: 28 };
 
@@ -225,6 +233,26 @@ export function FolderEditor({
                 );
               })}
             </div>
+          </div>
+
+          <div className="field">
+            <span className="field__label">Rail placement</span>
+            <div className="segmented segmented--wrap">
+              {RAIL_PLACEMENT_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  className="segmented__option"
+                  aria-pressed={(draft.railPosition ?? 'middle') === option.id}
+                  title={option.hint}
+                  onClick={() => patch({ railPosition: option.id === 'middle' ? undefined : option.id })}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <p className="field__hint">
+              Where this row sits in the sidebar: pinned above the flowing rows, in them, or pinned below.
+            </p>
           </div>
 
           <div className="field">

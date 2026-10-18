@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { freeDockSpot, normalisePreferences, DEFAULT_PREFERENCES, MAX_DOCKS, MAX_DOCK_SLOTS, type DockState } from '../src/vault/storage.ts';
+import { freeDockSpot, normalisePreferences, DEFAULT_PREFERENCES, MAX_DOCKS, MAX_DOCK_SLOTS } from '../src/vault/storage.ts';
 import { normaliseItem, emptyItem } from '../src/vault/types.ts';
 
 /** A mutable copy of the defaults, so a test can corrupt one field. */
@@ -8,13 +8,13 @@ const base = () => structuredClone(DEFAULT_PREFERENCES) as unknown as Record<str
 
 const firstSlots = (stored: Record<string, unknown>) => normalisePreferences(stored).docks[0]?.slots ?? [];
 
-test('dock slots default to the four views plus inbox', () => {
+test('dock slots default to the three views plus inbox', () => {
   const out = normalisePreferences(base());
   assert.equal(out.docks.length, 1);
   assert.equal(out.docks[0]?.enabled, true);
   assert.deepEqual(
     firstSlots(base()).map((slot) => `${slot.kind}:${slot.ref || slot.kind}:${slot.key}`),
-    ['view:animated:1', 'view:carousel:2', 'view:basic:3', 'view:grid:4', 'inbox:inbox:5'],
+    ['view:animated:1', 'view:basic:2', 'view:grid:3', 'inbox:inbox:4'],
   );
 });
 
@@ -36,7 +36,7 @@ test('an unknown kind is dropped, not kept', () => {
   assert.equal(out[0]?.ref, 'animated');
 });
 
-test('an orbit slot survives normalisation', () => {
+test('a retired Orbit slot is dropped and the rest keep their keys', () => {
   const stored = base();
   stored.docks = [
     {
@@ -51,71 +51,21 @@ test('an orbit slot survives normalisation', () => {
     },
   ];
   const out = firstSlots(stored);
-  assert.ok(out.some((slot) => slot.ref === 'carousel'), 'the orbit slot is kept');
-  assert.ok(out.some((slot) => slot.ref === 'animated'));
-  assert.ok(out.some((slot) => slot.ref === 'basic'));
-});
-
-/** A bar of the shape that was written while Orbit was out of the app. */
-const orbitlessSlots = (): DockState => ({
-  id: 'main',
-  enabled: true,
-  pos: { edge: 'bottom', fx: 0.5, fy: 0.94 },
-  slots: [
-    { kind: 'view', ref: 'animated', key: '1' },
-    { kind: 'view', ref: 'basic', key: '2' },
-    { kind: 'view', ref: 'grid', key: '3' },
-    { kind: 'inbox', ref: '', key: '4' },
-  ],
-});
-
-test('a bar saved while Orbit was gone gets the view back', () => {
-  const stored = base();
-  stored.docks = [orbitlessSlots()];
+  assert.ok(!out.some((slot) => slot.ref === 'carousel'), 'the orbit slot is gone');
   assert.deepEqual(
-    firstSlots(stored).map((slot) => `${slot.kind}:${slot.ref || slot.kind}:${slot.key}`),
-    ['view:animated:1', 'view:carousel:2', 'view:basic:3', 'view:grid:4', 'inbox:inbox:5'],
-    'Orbit returns between Flow and List, and the keys renumber around it',
+    out.map((slot) => `${slot.kind}:${slot.ref || slot.kind}:${slot.key}`),
+    ['view:animated:1', 'view:basic:3'],
+    'the surviving slots keep the keys their owner learned',
   );
-});
-
-test('the Orbit repair runs once, so deleting the slot again sticks', () => {
-  const repaired = normalisePreferences({ ...base(), docks: [orbitlessSlots()] });
-  assert.equal(repaired.orbitDockRestored, true, 'the check is recorded in the preferences it returns');
-  // What the dock settings write after the user removes the slot themselves:
-  // the same bar with carousel gone, now carrying the bookkeeping flag.
-  const afterDelete = normalisePreferences({
-    ...repaired,
-    docks: [{ ...orbitlessSlots(), slots: orbitlessSlots().slots.slice(0, 3) }],
-  });
-  assert.ok(
-    !afterDelete.docks[0]?.slots.some((slot) => slot.ref === 'carousel'),
-    'a bar the user has since edited is left alone',
-  );
-});
-
-test('a bar that already had Orbit is not given a second one', () => {
-  const stored = base();
-  stored.docks = [
-    {
-      ...orbitlessSlots(),
-      slots: [
-        { kind: 'view', ref: 'animated', key: '1' },
-        { kind: 'view', ref: 'carousel', key: '2' },
-        { kind: 'view', ref: 'basic', key: '3' },
-        { kind: 'view', ref: 'grid', key: '4' },
-      ],
-    },
-  ];
-  const refs = firstSlots(stored).filter((slot) => slot.ref === 'carousel');
-  assert.equal(refs.length, 1);
 });
 
 test('a bar with no view slots at all is left untouched', () => {
   const stored = base();
   stored.docks = [
     {
-      ...orbitlessSlots(),
+      id: 'main',
+      enabled: true,
+      pos: { edge: 'bottom', fx: 0.5, fy: 0.94 },
       slots: [
         { kind: 'channel', ref: 'ch_work', key: '1' },
         { kind: 'inbox', ref: '', key: '2' },
@@ -132,9 +82,11 @@ test('an unknown view ref is dropped', () => {
   const stored = base();
   stored.docks = [{ id: 'main', enabled: true, pos: { edge: 'bottom', fx: 0.5, fy: 0.94 }, slots: [{ kind: 'view', ref: 'coverflow', key: '1' }] }];
   const out = normalisePreferences(stored);
+  // Every slot failed validation, so the bar is empty — and an all-empty set of
+  // bars falls back to the shipped defaults, which no longer include Orbit.
   assert.deepEqual(
     out.docks[0]?.slots.map((slot) => slot.ref),
-    ['animated', 'carousel', 'basic', 'grid', ''],
+    ['animated', 'basic', 'grid', ''],
   );
 });
 

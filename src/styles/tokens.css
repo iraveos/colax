@@ -213,7 +213,6 @@
     0 4px 10px -4px hsl(var(--shadow-h) 46% 2% / calc(0.5 * var(--card-depth)));
   --glow: 0 0 0 1px hsl(var(--accent-h) 44% 60% / 0.3), 0 12px 40px -12px hsl(var(--accent-h) 44% 60% / 0.4);
 
-  --carousel-fade: hsl(220 22% 7%);
 
   /* Scrim + text shadow for user-supplied photos. */
   --scrim-top: hsl(220 24% 7% / 0.86);
@@ -311,7 +310,6 @@
     0 4px 10px -4px hsl(var(--shadow-h) 40% 22% / calc(0.26 * var(--card-depth)));
   --glow: 0 0 0 1px hsl(var(--accent-h) 42% 48% / 0.22), 0 14px 40px -14px hsl(var(--accent-h) 42% 48% / 0.35);
 
-  --carousel-fade: hsl(210 30% 96%);
 
   --scrim-top: hsl(210 30% 96% / 0.84);
   --scrim-bottom: hsl(210 32% 94% / 0.89);
@@ -475,3 +473,6 @@ button {
 [data-density='spacious'] {
   --density: 1.22;
 }
+/* Big, non-interactive surfaces must never ring the whole body: see the
+   matching block at the end of app.css. */
+.main:focus-visible,.content:focus-visible,[data-flow-scroll]:focus-visible,.shell:focus-visible{outline:none}
