@@ -763,13 +763,15 @@ mod tests {
             item("2", "B"),
         ];
         let rows = build_sidebar(&items, "all", &VaultPreferences::default());
-        assert_eq!(rows.len(), 8); // 7 channels + 1 separator
+        assert_eq!(rows.len(), 5); // 4 channels + 1 separator
         let all = rows.iter().find(|r| r.id == "all").unwrap();
         assert_eq!(all.count, 2);
         assert!(all.selected);
-        let favorites = rows.iter().find(|r| r.id == "favorites").unwrap();
-        assert_eq!(favorites.count, 1);
-        assert!(!favorites.selected);
+        // Favorites, Needs attention and Weak or reused are tabs of All
+        // logins now, so they are gone from the rail — no rows, no counts.
+        assert!(!rows.iter().any(|r| r.id == "favorites"));
+        assert!(!rows.iter().any(|r| r.id == "attention"));
+        assert!(!rows.iter().any(|r| r.id == "weak"));
         // Exactly one row is selected at a time.
         assert_eq!(rows.iter().filter(|r| r.selected).count(), 1);
         // A hairline separates the filtered lists from the three summary
@@ -778,8 +780,8 @@ mod tests {
         assert_eq!(rows[dash - 1].kind, 2);
         assert!(rows[dash - 1].id.is_empty(), "a separator is not selectable");
         assert_eq!(rows.iter().filter(|r| r.kind == 2).count(), 1);
-        // Counts still line up: 8 rows, 7 channels.
-        assert_eq!(rows.iter().filter(|r| r.kind == 0).count(), 7);
+        // Counts still line up: 5 rows, 4 channels.
+        assert_eq!(rows.iter().filter(|r| r.kind == 0).count(), 4);
     }
 
     #[test]
@@ -809,7 +811,12 @@ mod tests {
         // Query narrows the channel's output.
         assert_eq!(build_cards(&items, &all, &prefs, "bank").len(), 1);
 
-        let favs = channel_by_id(&prefs, "favorites");
+        // Favorites is a merged tab now, so it is not a channel row with an id
+        // any more; the tab view is the All-logins channel with the kind swapped.
+        let favs = Channel {
+            kind: ChannelKind::Favorites,
+            ..Channel::default()
+        };
         let cards = build_cards(&items, &favs, &prefs, "");
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].label, "Mail");

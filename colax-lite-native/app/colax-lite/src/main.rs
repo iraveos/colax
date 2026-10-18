@@ -516,33 +516,35 @@ fn lock_screen_for(engine: &VaultEngine) -> Screen {
 /// Port of `ViewEmptyState`'s `title`/`text` (`views.tsx:1607-1621`), in the
 /// TS's own order: a query that matched nothing outranks the channel's own
 /// empty state, so "nothing here yet" can never be mistaken for "your search
-/// found nothing". Only the two channels the TS names get their own copy
-/// (`favorites` and `weak`); every other channel -- the dashboard, the mail
-/// channel, a user's own channel -- reads the vault-empty line, exactly as the
-/// TS's shared fallback does.
-fn cards_empty_state(query: &str, channel_id: &str) -> (String, String) {
+/// found nothing". The three merged sections — the tabs of All logins — get
+/// their own copy (`slot` is then the tab's kind); a user's own channel of
+/// that kind opens as a real row and gets the same copy by channel id,
+/// exactly as the web does through `screen`.
+fn cards_empty_state(query: &str, slot: &str) -> (String, String) {
     if !query.is_empty() {
         return (
             "No matches".to_string(),
             format!("Nothing matches \"{query}\" here. Try a different search."),
         );
     }
-    if channel_id == "favorites" {
-        return (
+    match slot {
+        "favorites" => (
             "No favorites yet".to_string(),
             "Star a login to pin it to the top of every view.".to_string(),
-        );
-    }
-    if channel_id == "weak" {
-        return (
+        ),
+        "attention" => (
+            "Nothing flagged".to_string(),
+            "Logins you flag for follow-up collect here.".to_string(),
+        ),
+        "weak" => (
             "Nothing needs attention".to_string(),
             "No reused or long-untouched passwords. Nice.".to_string(),
-        );
+        ),
+        _ => (
+            "Your vault is empty".to_string(),
+            "Add your first login and it will be encrypted on this device straight away.".to_string(),
+        ),
     }
-    (
-        "Your vault is empty".to_string(),
-        "Add your first login and it will be encrypted on this device straight away.".to_string(),
-    )
 }
 
 /// Rebuilds the visible rows from the engine and the current query.
@@ -557,9 +559,25 @@ fn cards_empty_state(query: &str, channel_id: &str) -> (String, String) {
 fn refresh_items(ui: &MainWindow, state: &Shared) {
     let query = ui.get_search_text().to_lowercase();
     let channel_id = ui.get_active_channel().to_string();
+    let all_tab = ui.get_all_tab().to_string();
     let guard = state.borrow();
     let prefs = items::prefs_from(guard.engine.preferences());
     let channel = items::channel_by_id(&prefs, &channel_id);
+    // The merged sections are tabs of the main channel, not rows: the list
+    // reads the All-logins channel with the tab's kind swapped in (App.tsx
+    // `listChannel`), while the channel itself — tags, look, name — stays
+    // what it is. Any other channel, or the strip's "All" tab, lists as-is.
+    let tab_kind = match all_tab.as_str() {
+        "favorites" => ChannelKind::Favorites,
+        "attention" => ChannelKind::Attention,
+        "weak" => ChannelKind::Weak,
+        _ => ChannelKind::All,
+    };
+    let on_a_tab = channel.id == "all" && tab_kind != ChannelKind::All;
+    let mut list_channel = channel.clone();
+    if on_a_tab {
+        list_channel.kind = tab_kind.clone();
+    }
     // The dashboard replaces the whole pane, and it reads every item — so
     // it is computed here, while the engine is already open, and applied
     // after the guard drops like everything else on this path.
@@ -569,9 +587,34 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     // panel is computed here too, while the engine is already open, and
     // applied after the guard drops.
     let is_history = channel.kind == ChannelKind::History;
-    let (cards, sidebar, total, dash, history) = match guard.engine.items() {
+    let (cards, sidebar, total, dash, history, tabs) = match guard.engine.items() {
         Some(items) => {
-            let cards = items::build_cards(items, &channel, &prefs, &query);
+            // The strip's tabs with their counts (App.tsx `tabCounts`): each
+            // tab is the All-logins channel with the section swapped in,
+            // counted through the filter the list itself uses, so a tab can
+            // never advertise a number the list behind it would not show.
+            let tabs: Vec<crate::ListTab> = if channel.id == "all" {
+                colax_core::ALL_LOGIN_TABS
+                    .iter()
+                    .map(|(kind, label)| {
+                        let mut view = channel.clone();
+                        view.kind = kind.clone();
+                        crate::ListTab {
+                            kind: kind.as_str().into(),
+                            label: (*label).into(),
+                            count: colax_core::apply_channel(
+                                &view,
+                                items,
+                                prefs.password_age_days as f64,
+                            )
+                            .len() as i32,
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let cards = items::build_cards(items, &list_channel, &prefs, &query);
             let sidebar = items::build_sidebar(items, &channel_id, &prefs);
             let dash = is_dashboard
                 .then(|| dashboard::build(items, &prefs, &prefs.usage, colax_core::util::now_ms()));
@@ -584,9 +627,16 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
                     colax_core::util::now_ms(),
                 )
             });
-            (cards, sidebar, items.len(), dash, history)
+            (cards, sidebar, items.len(), dash, history, tabs)
         }
-        None => (Vec::new(), items::build_sidebar(&[], &channel_id, &prefs), 0, None, None),
+        None => (
+            Vec::new(),
+            items::build_sidebar(&[], &channel_id, &prefs),
+            0,
+            None,
+            None,
+            Vec::new(),
+        ),
     };
     drop(guard);
 
@@ -602,11 +652,20 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     // nothing is a different problem from a view with nothing in it, and the
     // first line has to say which one the user is looking at. The native
     // search is vault-wide, so the TS's "Search entire vault" button has no
-    // scope to widen -- that is why the hint is advice, not an offer.
-    let (empty_title, empty_hint) = cards_empty_state(query.trim(), &channel.id);
+    // scope to widen -- that is why the hint is advice, not an offer. The
+    // key is the tab kind on a merged section, the channel's id otherwise.
+    let empty_slot = if on_a_tab {
+        tab_kind.as_str().to_string()
+    } else {
+        channel.id.clone()
+    };
+    let (empty_title, empty_hint) = cards_empty_state(query.trim(), &empty_slot);
 
     ui.set_cards(ModelRc::new(VecModel::from(cards)));
     ui.set_sidebar(ModelRc::new(VecModel::from(sidebar)));
+    ui.set_all_tabs(ModelRc::new(VecModel::from(tabs)));
+    // The strip lives on All logins alone (App.tsx `showAllTabs`).
+    ui.set_show_all_tabs(channel.id == "all");
     ui.set_count_label(label.into());
     ui.set_channel_name(channel.name.as_str().into());
     // The dashboard takes the pane; everything the list draws is simply
@@ -1359,7 +1418,19 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
     }
     if want == "channel-editor" {
         settings_ops::open(ui, state, "channels");
-        channels_ops::open(ui, state, "favorites");
+        // The editor walk needs a stored channel: the shipped `favorites`
+        // row is retired (tab strip), so one is created like a user would.
+        crate::channels_ops::open(ui, state, "new");
+        ui.set_channel_ed_name("Stars".into());
+        crate::channels_ops::name_edited(ui, state);
+        crate::channels_ops::save(ui, state);
+        let id = items::prefs_from(state.borrow().engine.preferences())
+            .channels
+            .iter()
+            .find(|channel| channel.name == "Stars")
+            .map(|channel| channel.id.clone())
+            .expect("the walk's channel is stored");
+        channels_ops::open(ui, state, &id);
         return;
     }
     if want == "channel-new" {
@@ -1373,7 +1444,19 @@ fn dev_screen(ui: &MainWindow, state: &Shared, tray: &Weak<AppTray>) {
     // scrolled so a screenshot can see what the walk can only dump.
     if want == "channel-editor-image" {
         settings_ops::open(ui, state, "channels");
-        channels_ops::open(ui, state, "favorites");
+        let id = {
+            crate::channels_ops::open(ui, state, "new");
+            ui.set_channel_ed_name("Stars".into());
+            crate::channels_ops::name_edited(ui, state);
+            crate::channels_ops::save(ui, state);
+            items::prefs_from(state.borrow().engine.preferences())
+                .channels
+                .iter()
+                .find(|channel| channel.name == "Stars")
+                .map(|channel| channel.id.clone())
+                .expect("the walk's channel is stored")
+        };
+        channels_ops::open(ui, state, &id);
         ui.set_channel_ed_image_url("https://example.com/backdrop.jpg".into());
         channels_ops::image_edited(ui, state);
         channels_ops::image_float(ui, state, "opacity", 0.8);
@@ -3521,6 +3604,27 @@ fn render_check(ui: &MainWindow, state: &Shared) -> i32 {
         refresh_items(ui, state);
         lines.push(format!("channel/{id}: {:?}", ui.get_channel_name()));
     }
+
+    // The merged sections (channels.ts ALL_LOGIN_TABS): the strip is a
+    // feature of All logins, so each tab is read on it — the model's tab
+    // count and the count pill, plus the empty state the section owns.
+    ui.set_active_channel("all".into());
+    for tab in ["all", "favorites", "attention", "weak"] {
+        ui.set_all_tab(tab.into());
+        refresh_items(ui, state);
+        let counts = ui.get_all_tabs();
+        let pill = (0..counts.row_count())
+            .filter_map(|i| counts.row_data(i))
+            .find(|row| row.kind == tab)
+            .map(|row| row.count)
+            .unwrap_or(-1);
+        lines.push(format!(
+            "strip/{tab}: tabs={} count={pill}",
+            counts.row_count()
+        ));
+    }
+    ui.set_all_tab("all".into());
+    refresh_items(ui, state);
 
     // Settings, every section and every tab: the dock manager lives in Layout.
     for section in ["", "layout", "desktop", "generator", "alarms", "security"] {
@@ -7172,6 +7276,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let st = state.clone();
             ui.on_channel_selected(move |_id| {
                 if let Some(ui) = weak.upgrade() {
+                    // Through open-section rather than an id-only switch so the
+                    // merged sections reset (App.tsx `openChannel`): clicking
+                    // All logins in the rail means the whole list, not
+                    // whichever section was left open last time.
+                    ui.set_all_tab("all".into());
                     // A new channel is a new scope: a query that meant
                     // something in the old one would silently filter the new
                     // one, so the box empties with the switch (App.tsx L167).
@@ -7180,6 +7289,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui.set_search_text("".into());
                     ui.set_history_query("".into());
                     ui.set_history_filter(0);
+                    refresh_items(&ui, &st);
+                }
+            });
+
+            // A dashboard tile, a merged-section tab, or anything else that
+            // jumps with a tab in hand (App.tsx `openChannel`): the tab is
+            // chosen by the jump, so a tile for Favorites opens All logins
+            // *on* Favorites, while an empty tab resets to the whole list.
+            let weak = ui.as_weak();
+            let st = state.clone();
+            ui.on_open_section(move |id, tab| {
+                if let Some(ui) = weak.upgrade() {
+                    let id = id.trim().to_string();
+                    if id.is_empty() {
+                        return;
+                    }
+                    // A tab that is not one of the strip's reads as no tab, so
+                    // a stale id cannot strand the list on a section.
+                    let tab = match tab.trim() {
+                        "all" => "all".to_string(),
+                        "favorites" => "favorites".to_string(),
+                        "attention" => "attention".to_string(),
+                        "weak" => "weak".to_string(),
+                        _ => String::new(),
+                    };
+                    ui.set_all_tab(if tab.is_empty() { "all".into() } else { tab.as_str().into() });
+                    // The same scope rules a rail click follows.
+                    ui.set_search_text("".into());
+                    ui.set_history_query("".into());
+                    ui.set_history_filter(0);
+                    ui.set_active_channel(id.as_str().into());
                     refresh_items(&ui, &st);
                 }
             });

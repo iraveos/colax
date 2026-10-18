@@ -2386,13 +2386,24 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
     debug_assert!(!ui.get_settings_chan_can_show_all());
     dump(ui, state, "settings41.shown-all");
 
-    // The shared editor on a stored channel. `favorites` is shipped, so its
-    // name and icon come from the document, and not `locked`, so the footer
-    // carries both Delete and Done.
-    crate::channels_ops::open(ui, state, "favorites");
-    debug_assert_eq!(ui.get_channel_ed_title().to_string(), "Edit Favorites");
+    // The shared editor on a stored channel. `favorites` used to be a shipped
+    // row this walk could lean on; the tab strip retired it (channels.ts), so
+    // the walk makes one of the user's own first — through the Add flow,
+    // like anything a user makes — and edits that.
+    crate::channels_ops::open(ui, state, "new");
+    ui.set_channel_ed_name("Stars".into());
+    crate::channels_ops::name_edited(ui, state);
+    crate::channels_ops::save(ui, state);
+    let walked = items::prefs_from(state.borrow().engine.preferences())
+        .channels
+        .iter()
+        .find(|channel| channel.name == "Stars")
+        .map(|channel| channel.id.clone())
+        .expect("the walk's channel is stored");
+    crate::channels_ops::open(ui, state, &walked);
+    debug_assert_eq!(ui.get_channel_ed_title().to_string(), "Edit Stars");
     debug_assert!(!ui.get_channel_ed_is_new() && ui.get_channel_ed_can_delete());
-    debug_assert_eq!(ui.get_channel_ed_kind_index(), 1, "Favorites is lit");
+    debug_assert_eq!(ui.get_channel_ed_kind_index(), 0, "All is lit");
     debug_assert_eq!(slint::Model::row_count(&ui.get_channel_ed_icons()), 10);
     debug_assert_eq!(slint::Model::row_count(&ui.get_channel_ed_accents()), 4);
     dump(ui, state, "settings42.editor");
@@ -2417,8 +2428,8 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
         let stored = prefs
             .channels
             .iter()
-            .find(|channel| channel.id == "favorites")
-            .expect("a shipped channel cannot vanish");
+            .find(|channel| channel.id == walked)
+            .expect("a stored channel cannot vanish");
         debug_assert_eq!(stored.name, "Starred");
         debug_assert_eq!(stored.kind, colax_core::ChannelKind::Attention);
         debug_assert_eq!(stored.tag_ids, vec![billing.clone()]);
@@ -2442,7 +2453,7 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
         items::prefs_from(state.borrow().engine.preferences())
             .channels
             .iter()
-            .find(|channel| channel.id == "favorites")
+            .find(|channel| channel.id == walked)
             .map(|channel| channel.background_image.clone())
             .unwrap_or_default(),
         "https://example.com/backdrop.jpg",
@@ -2480,7 +2491,7 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
         items::prefs_from(state.borrow().engine.preferences())
             .channels
             .len(),
-        7,
+        5,
         "a nameless channel is not added"
     );
     dump(ui, state, "settings46.new-refused");
@@ -2510,7 +2521,7 @@ pub fn dev(ui: &MainWindow, state: &Shared, tray: &slint::Weak<crate::AppTray>) 
         items::prefs_from(state.borrow().engine.preferences())
             .channels
             .len(),
-        7,
+        5,
         "Delete takes the channel out of the catalogue"
     );
     debug_assert_eq!(ui.get_active_channel().to_string(), "all");
