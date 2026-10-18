@@ -604,14 +604,24 @@ button.sec__glance:hover{border-color:var(--border-strong)}
 .card-row__media svg{opacity:.8}
 
 /* Pasted media in the login editor's notes panel: a thumbnail strip under the
-   textarea, each frame removable in place. Videos keep their own controls so a
-   frame can be checked before the save seals it. */
+   textarea. Clicking a thumb opens the full-size viewer (reorder and remove
+   live there too); the corner × is always visible so removing never needs the
+   viewer. Videos look like thumbs with a play badge and behave the same. */
 .notes-media{display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)}
-.notes-media__item{position:relative;width:108px;height:76px;border:1px solid var(--card-hairline);border-radius:var(--radius-md);overflow:hidden;background:var(--bg-deep)}
-.notes-media__thumb,.notes-media__video{width:100%;height:100%;object-fit:cover;display:block}
-.notes-media__video{background:#000}
-.notes-media__remove{position:absolute;top:3px;right:3px;width:20px;height:20px;padding:0;border-color:transparent;background:color-mix(in srgb,var(--surface-raised) 86%,transparent)}
-.notes-media__remove:hover{border-color:var(--border-strong)}
+.notes-media__item{position:relative;width:112px;height:84px;border:1px solid var(--card-hairline);border-radius:var(--radius-md);overflow:hidden;background:var(--bg-deep)}
+.notes-media__open{display:block;width:100%;height:100%;padding:0;border:none;background:none;cursor:zoom-in}
+.notes-media__thumb{width:100%;height:100%;object-fit:cover;display:block}
+.notes-media__play{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;font-size:20px;color:#fff;text-shadow:0 1px 8px #000e}
+.notes-media__remove{position:absolute;top:4px;right:4px;width:22px;height:22px;padding:0;border:1px solid var(--border-strong);background:color-mix(in srgb,var(--bg-deep) 78%,transparent)}
+.notes-media__remove:hover{background:var(--bg-deep)}
+
+/* The full-size viewer over the editor. */
+.notes-lightbox{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--space-3);padding:var(--space-6);background:#05060be0;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.notes-lightbox__close{position:absolute;top:var(--space-4);right:var(--space-4)}
+.notes-lightbox__stage{max-width:min(86vw,1000px);max-height:72vh;display:grid;place-items:center}
+.notes-lightbox__stage img,.notes-lightbox__stage video{max-width:min(86vw,1000px);max-height:72vh;border-radius:var(--radius-lg);border:1px solid var(--border-strong);box-shadow:var(--shadow-lg);background:#000}
+.notes-lightbox__bar{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;justify-content:center}
+.notes-lightbox__count{font-size:var(--text-xs);color:var(--text-faint);font-variant-numeric:tabular-nums;min-width:56px;text-align:center}
 /* The username now shares the password's treatment: monospaced, same size, so
    the two read as one credential block rather than a heading and a subheading. */
 .card-row__username{flex:1;min-width:0;font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:-.01em;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:all}

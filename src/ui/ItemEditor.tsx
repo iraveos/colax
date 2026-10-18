@@ -383,6 +383,8 @@ export function ItemEditor({
   const [showGenerator, setShowGenerator] = useState(false);
   const [saving, setSaving] = useState(false);
   const [section, setSection] = useState<string>('identity');
+  /** Which pasted image/video is open full-size, null when none is. */
+  const [viewingNote, setViewingNote] = useState<number | null>(null);
 
   /** True when this login has a factor that has not been cleared for the form. */
   const passwordLocked = Boolean(item && requiresVerification(item.security) && !verified);
@@ -393,6 +395,7 @@ export function ItemEditor({
     setShowGenerator(false);
     // A different login means a different set of fields worth looking at.
     setSection('identity');
+    setViewingNote(null);
   }, [item]);
 
   const patch = (next: Partial<VaultItem>) => setDraft((current) => ({ ...current, ...next }));
@@ -456,6 +459,44 @@ export function ItemEditor({
     event.preventDefault();
     void collectNoteMedia(files);
   };
+
+  /** Removes one attached media, keeping the viewer on a neighbouring one. */
+  const removeNoteMedia = (index: number) => {
+    const next = (draft.attachments ?? []).filter((_, kept) => kept !== index);
+    patch({ attachments: next });
+    if (!next.length) setViewingNote(null);
+    else setViewingNote(Math.min(index, next.length - 1));
+  };
+
+  /** Swaps one attached media with a neighbour, so the strip can be reordered. */
+  const moveNoteMedia = (index: number, direction: -1 | 1) => {
+    const list = [...(draft.attachments ?? [])];
+    const [moved] = list.splice(index, 1);
+    if (!moved) return;
+    list.splice(index + direction, 0, moved);
+    patch({ attachments: list });
+    setViewingNote(index + direction);
+  };
+
+  /** Capture-phase keys: Esc closes only the viewer, arrows step through, and
+      the editor's own Escape handling never sees the keypress. */
+  useEffect(() => {
+    if (viewingNote === null) return;
+    const count = draft.attachments?.length ?? 0;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setViewingNote(null);
+      } else if (event.key === 'ArrowLeft' && (viewingNote ?? 0) > 0) {
+        setViewingNote((viewingNote ?? 0) - 1);
+      } else if (event.key === 'ArrowRight' && (viewingNote ?? 0) < count - 1) {
+        setViewingNote((viewingNote ?? 0) + 1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [viewingNote, draft.attachments]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -778,21 +819,24 @@ export function ItemEditor({
         />
         {draft.attachments?.length ? (
           <div className="notes-media" role="list" aria-label="Media in the notes">
-            {draft.attachments.map((attachment) => (
-              <div className="notes-media__item" key={attachment.id}>
-                {attachment.mime.startsWith('video/') ? (
-                  <video className="notes-media__video" src={attachment.dataUrl} controls muted preload="metadata" />
-                ) : (
+            {draft.attachments.map((attachment, index) => (
+              <div className="notes-media__item" key={attachment.id} data-video={attachment.mime.startsWith('video/') || undefined}>
+                <button
+                  type="button"
+                  className="notes-media__open"
+                  onClick={() => setViewingNote(index)}
+                  title="View, reorder or remove"
+                  aria-label={`Open ${attachment.mime.startsWith('video/') ? 'video' : 'image'} ${index + 1} of ${draft.attachments!.length}`}
+                >
                   <img className="notes-media__thumb" src={attachment.dataUrl} alt="" loading="lazy" />
-                )}
+                </button>
+                {attachment.mime.startsWith('video/') ? <span className="notes-media__play" aria-hidden="true">▶</span> : null}
                 <button
                   type="button"
                   className="btn btn--icon notes-media__remove"
-                  aria-label="Remove media"
+                  aria-label={`Remove image/video ${index + 1} of ${draft.attachments!.length}`}
                   title="Remove from the notes"
-                  onClick={() =>
-                    patch({ attachments: draft.attachments!.filter((kept) => kept.id !== attachment.id) })
-                  }
+                  onClick={() => removeNoteMedia(index)}
                 >
                   <TrashIcon />
                 </button>
@@ -801,9 +845,52 @@ export function ItemEditor({
           </div>
         ) : null}
         <p className="field__note">
-          Paste (Ctrl+V) or drop images, GIFs and videos here. They are encrypted with the login and never leave
-          the device — History keeps no media, so restoring an older version of this login leaves the media out.
+          Paste (Ctrl+V) or drop images, GIFs and videos here. Click one to open it full size — reorder or remove it
+          from there, or the small × on its corner. Encrypted with the login, never leaves the device, and History
+          keeps no media, so restoring an older version leaves the media out.
         </p>
+        {/* Full-size viewer with the media's own actions: approve, reorder or
+            remove without hunting for the corner chip on the thumbnail. */}
+        {viewingNote !== null && draft.attachments?.[viewingNote] ? (
+          (() => {
+            const count = draft.attachments.length;
+            const attachment = draft.attachments[viewingNote]!;
+            const isVideo = attachment.mime.startsWith('video/');
+            return (
+              <div className="notes-lightbox" role="dialog" aria-label="Notes media" onClick={() => setViewingNote(null)}>
+                <button type="button" className="btn btn--icon notes-lightbox__close" aria-label="Close viewer" autoFocus onClick={(event) => { event.stopPropagation(); setViewingNote(null); }}>
+                  <XIcon />
+                </button>
+                <div className="notes-lightbox__stage" onClick={(event) => event.stopPropagation()}>
+                  {isVideo ? (
+                    <video src={attachment.dataUrl} controls autoPlay muted preload="metadata" />
+                  ) : (
+                    <img src={attachment.dataUrl} alt="" />
+                  )}
+                </div>
+                <div className="notes-lightbox__bar" onClick={(event) => event.stopPropagation()}>
+                  <button type="button" className="btn" disabled={viewingNote === 0} onClick={() => moveNoteMedia(viewingNote, -1)}>
+                    Move earlier
+                  </button>
+                  <span className="notes-lightbox__count">
+                    {viewingNote + 1} of {count}
+                  </span>
+                  <button type="button" className="btn" disabled={viewingNote === count - 1} onClick={() => moveNoteMedia(viewingNote, 1)}>
+                    Move later
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn--danger"
+                  onClick={(event) => { event.stopPropagation(); removeNoteMedia(viewingNote); }}
+                >
+                  <TrashIcon />
+                  Remove from notes
+                </button>
+              </div>
+            );
+          })()
+        ) : null}
       </div>
     ),
 
