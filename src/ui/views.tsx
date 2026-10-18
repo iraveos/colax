@@ -839,9 +839,24 @@ export function AnimatedListView({
               </div>
               <div className="card-row__secret-row">
                 <code className="card-row__password">{show ? item.password || '—' : maskOf(item)}</code>
-                {/* No copy button here on purpose: the labelled Copy below is
-                    the one obvious copy, and a second one for the same field
-                    is exactly the duplication to avoid. */}
+                {/* Parity with the Grid and Carousel views: the copy lives on
+                    the password row itself, like the username's. Revealing
+                    stays the only gated action — a copy is a copy, the menu's
+                    "Copy password" never asked for the factor either. */}
+                {!gone('card-copy-pass') ? (
+                  <button
+                    className="btn btn--icon"
+                    aria-label="Copy password"
+                    disabled={!item.password}
+                    {...hideAttrs('card-copy-pass', 'Copy-password button')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onCopy(item.password, 'Password', item);
+                    }}
+                  >
+                    <CopyIcon />
+                  </button>
+                ) : null}
                 {!gone('card-reveal') ? (
                   <button
                     className="btn btn--icon"
@@ -892,8 +907,8 @@ export function AnimatedListView({
               {/* The labelled Copy button that used to live here is gone. It
                   only rendered for a login with a password, so half the cards
                   had it and half did not — which reads as a bug, not a state.
-                  Copying a password is still one click: the right-click menu,
-                  the dock, and the editor's own copy control. */}
+                  Each row now carries its own copy icons (username above, the
+                  password's beside the mask), matching Grid and Carousel. */}
             </div>
           </div>
         );
