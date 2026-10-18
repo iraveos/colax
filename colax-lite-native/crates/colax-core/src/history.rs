@@ -103,6 +103,22 @@ fn same_content(a: &VaultItem, b: &VaultItem) -> bool {
             object.remove("updatedAt");
             object.remove("passwordUpdatedAt");
             object.remove("usernameUpdatedAt");
+            // Media counts by digest (storage.ts L344-349): the data URLs are
+            // megabytes and this runs on every edit of any login, so keeping
+            // only each one's length answers "did the media change" just as
+            // well as stringifying whole megabytes here.
+            if let Some(Value::Array(list)) = object.get_mut("attachments") {
+                for attachment in list.iter_mut() {
+                    if let Some(entry) = attachment.as_object_mut() {
+                        let len = entry
+                            .get("dataUrl")
+                            .and_then(Value::as_str)
+                            .map(str::len)
+                            .unwrap_or(0);
+                        entry.insert("dataUrl".into(), Value::from(len));
+                    }
+                }
+            }
         }
         value
     }
@@ -195,6 +211,16 @@ pub fn history_events_for(before: &[VaultItem], after: &[VaultItem], now: i64) -
         };
         (title, item.username.clone())
     };
+    // History snapshots go into prefs, and prefs live **unencrypted** on disk
+    // (storage.ts L452-458) — pasted media, however well encrypted in the
+    // item blob, must never copy into it. A restore keeps the text and loses
+    // the media; the editor's note says so at the point of paste, where the
+    // tradeoff is visible.
+    let snapshot = |item: &VaultItem| -> VaultItem {
+        let mut without = item.clone();
+        without.attachments = Vec::new();
+        without
+    };
     let mut events = Vec::new();
     for item in after {
         let Some(was) = previous.get(item.id.as_str()) else {
@@ -221,7 +247,7 @@ pub fn history_events_for(before: &[VaultItem], after: &[VaultItem], now: i64) -
                 item_id: item.id.clone(),
                 title,
                 username,
-                before: Some((*was).clone()),
+                before: Some(snapshot(was)),
             });
         }
     }
@@ -238,7 +264,7 @@ pub fn history_events_for(before: &[VaultItem], after: &[VaultItem], now: i64) -
             item_id: item.id.clone(),
             title,
             username,
-            before: Some(item.clone()),
+            before: Some(snapshot(item)),
         });
     }
     events
@@ -269,4 +295,128 @@ pub fn append_history(existing: &[HistoryEvent], additions: &[HistoryEvent]) -> 
         log.truncate(std::cmp::max(1, log.len() / 2));
     }
     log
+}
+
+/// The media rules from 1ec7515, pinned where they protect the boundaries:
+/// validation happens on *every load*, and a log snapshot never carries
+/// media, because prefs live outside the ciphertext.
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+    use crate::model::{
+        attachment_bytes, empty_item, is_note_media_mime, normalise_item,
+        normalise_note_attachments, note_media_budget, VaultAttachment, MAX_NOTE_ATTACHMENTS,
+        MAX_NOTE_ATTACHMENT_BYTES, MAX_NOTE_MEDIA_BYTES,
+    };
+
+    // Just inside the per-attachment cap once measured (base64 inflates by a
+    // third), so one alone fits and six together spend the item's whole
+    // budget.
+    fn attachment(id: &str, mime: &str) -> VaultAttachment {
+        VaultAttachment {
+            id: id.to_string(),
+            mime: mime.to_string(),
+            data_url: format!(
+                "data:{mime};base64,{}",
+                "A".repeat(MAX_NOTE_ATTACHMENT_BYTES / 3 * 4)
+            ),
+        }
+    }
+
+    #[test]
+    fn media_types_and_sizes_are_measured() {
+        assert!(is_note_media_mime("image/gif"));
+        assert!(is_note_media_mime("video/mp4"));
+        assert!(!is_note_media_mime("application/pdf"));
+        // base64 turns three bytes into four chars.
+        let url = format!("data:image/png;base64,{}", "A".repeat(120));
+        assert_eq!(attachment_bytes(&url), 90);
+        assert_eq!(attachment_bytes("data:image/png;base64"), 0);
+        assert_eq!(attachment_bytes("text/plain,hello"), 0);
+    }
+
+    #[test]
+    fn the_budget_counts_whats_already_there() {
+        // Six capped attachments spend the item's whole media budget, and a
+        // full slot list says the same however small the pieces are.
+        let six: Vec<VaultAttachment> = (0..6)
+            .map(|i| attachment(&format!("a{i}"), "image/png"))
+            .collect();
+        assert!(note_media_budget(&six).is_none());
+        let dozen: Vec<VaultAttachment> = (0..MAX_NOTE_ATTACHMENTS)
+            .map(|i| VaultAttachment {
+                id: format!("t{i}"),
+                mime: "image/png".into(),
+                data_url: "data:image/png;base64,AAAA".into(),
+            })
+            .collect();
+        assert!(note_media_budget(&dozen).is_none());
+        assert_eq!(
+            note_media_budget(&[]),
+            Some((MAX_NOTE_ATTACHMENTS, MAX_NOTE_MEDIA_BYTES))
+        );
+    }
+
+    #[test]
+    fn a_load_validates_media_rather_than_trusting_it() {
+        let stored = serde_json::json!([
+            {
+                "id": "good",
+                "mime": "image/gif",
+                "dataUrl": format!("data:image/gif;base64,{}", "A".repeat(1_200))
+            },
+            // A wrong dataUrl shape: never a renderer-showable attachment.
+            { "id": "bad-url", "mime": "image/png", "dataUrl": "https://example.com/a.png" },
+            // Not a media type, whatever else it claims.
+            { "id": "bad-mime", "mime": "application/zip", "dataUrl": "data:application/zip;base64,AAAA" },
+            // No id at all.
+            { "mime": "image/png", "dataUrl": "data:image/png;base64,AAAA" }
+        ]);
+        let kept = normalise_note_attachments(Some(&stored));
+        assert_eq!(kept.len(), 1, "only the clean attachment survives");
+        assert_eq!(kept[0].id, "good");
+        assert_eq!(kept[0].mime, "image/gif");
+        assert_eq!(normalise_note_attachments(None).len(), 0);
+    }
+
+    #[test]
+    fn a_history_event_never_carries_the_media() {
+        let was = empty_item("bank", 1_700_000_000_000);
+        let mut was = was;
+        // One at cap: the biggest thing a paste can make.
+        was.attachments.push(attachment("big", "image/gif"));
+        let mut is_ = was.clone();
+        is_.notes = "now with a note".into();
+        is_.updated_at = was.updated_at + 1_000;
+
+        let events = history_events_for(&[was], &[is_], 1_700_001_000_000);
+        assert_eq!(events.len(), 1);
+        let before = events[0]
+            .before
+            .as_ref()
+            .expect("an edit keeps the old shape");
+        assert!(
+            before.attachments.is_empty(),
+            "prefs are plaintext: the snapshot must not carry media"
+        );
+    }
+
+    #[test]
+    fn the_log_ignores_a_re_save_whose_media_did_not_change() {
+        let raw = serde_json::json!({
+            "id": "bank",
+            "title": "Bank",
+            "updatedAt": 1_700_000_001_000i64,
+            "attachments": [
+                { "id": "shot", "mime": "image/png", "dataUrl": format!("data:image/png;base64,{}", "A".repeat(90)) }
+            ]
+        });
+        let was = normalise_item(&raw, 1_700_000_000_000);
+        assert_eq!(was.attachments.len(), 1);
+        // A re-save whose only difference is the clock, with media re-read
+        // byte-identical: no event, the way a textless re-save is no change.
+        let mut same_media = was.clone();
+        same_media.updated_at += 1_000;
+        assert!(history_events_for(&[was], &[same_media], 1_700_000_002_000).is_empty());
+    }
 }

@@ -108,6 +108,105 @@ pub fn is_secured(security: &LoginSecurity) -> bool {
     security_level(security) != "none"
 }
 
+/// One piece of media attached to a login's notes (`VaultAttachment`,
+/// types.ts L118-124). `data_url` is always `data:<mime>;base64,…`, which is
+/// what a renderer can show directly.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultAttachment {
+    pub id: String,
+    pub mime: String,
+    pub data_url: String,
+}
+
+/// Notes-media caps (types.ts L130-141). Pasted media is stored verbatim —
+/// re-encoding destroys animated GIFs — so these bind the data URLs instead:
+/// base64 adds a third again to the raw bytes, which `attachment_bytes`
+/// accounts for. The generous budgets are bounded by the item being re-sealed
+/// as a whole on every edit, so one login with media must not become the vault.
+pub const MAX_NOTE_ATTACHMENT_BYTES: usize = 4_000_000;
+pub const MAX_NOTE_ATTACHMENTS: usize = 12;
+/// The whole item's media budget, so no single login can hold the vault.
+pub const MAX_NOTE_MEDIA_BYTES: usize = 20_000_000;
+
+/// Images (GIFs included) and short videos (`isNoteMediaMime`); other pasted
+/// types are ignored rather than stored.
+pub fn is_note_media_mime(mime: &str) -> bool {
+    mime.starts_with("image/") || mime.starts_with("video/")
+}
+
+/// Approximate original size of a `data:<mime>;base64,…` URL, in bytes
+/// (`attachmentBytes`). Base64 turns three bytes into four chars; the padding
+/// correction is not worth the round-trip on an approximate budget.
+pub fn attachment_bytes(data_url: &str) -> usize {
+    let base64_start = match data_url.find(',') {
+        Some(at) => at + 1,
+        None => return 0,
+    };
+    if !data_url.contains(";base64,") || base64_start < 2 {
+        return 0;
+    }
+    ((data_url.len() - base64_start) * 3) / 4
+}
+
+/// The media budget one more attachment has room for on top of `current`
+/// (`noteMediaBudget`): `None` means not even one more fits.
+pub fn note_media_budget(current: &[VaultAttachment]) -> Option<(usize, usize)> {
+    let used: usize = current
+        .iter()
+        .map(|attachment| attachment_bytes(&attachment.data_url))
+        .sum();
+    let slots = MAX_NOTE_ATTACHMENTS.saturating_sub(current.len());
+    let bytes = MAX_NOTE_MEDIA_BYTES.saturating_sub(used);
+    if slots > 0 && bytes > 0 {
+        Some((slots, bytes))
+    } else {
+        None
+    }
+}
+
+/// Pasted notes-media is validated rather than trusted: old builds and
+/// hand-edited vaults can carry anything in the array (`normaliseNoteAttachments`).
+/// Caps are enforced here a second time — at paste and again on every load.
+pub fn normalise_note_attachments(raw: Option<&Value>) -> Vec<VaultAttachment> {
+    let Some(Value::Array(entries)) = raw else {
+        return Vec::new();
+    };
+    let mut kept: Vec<VaultAttachment> = Vec::new();
+    let mut used: usize = 0;
+    for entry in entries {
+        if kept.len() >= MAX_NOTE_ATTACHMENTS {
+            break;
+        }
+        let Some(obj) = entry.as_object() else {
+            continue;
+        };
+        let id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
+        let mime = obj.get("mime").and_then(Value::as_str).unwrap_or_default();
+        let data_url = obj
+            .get("dataUrl")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if id.is_empty()
+            || !is_note_media_mime(mime)
+            || !data_url.starts_with(&format!("data:{mime};base64,"))
+        {
+            continue;
+        }
+        let bytes = attachment_bytes(data_url);
+        if bytes == 0 || bytes > MAX_NOTE_ATTACHMENT_BYTES || used + bytes > MAX_NOTE_MEDIA_BYTES {
+            continue;
+        }
+        kept.push(VaultAttachment {
+            id: id.to_string(),
+            mime: mime.to_string(),
+            data_url: data_url.to_string(),
+        });
+        used += bytes;
+    }
+    kept
+}
+
 /// A decrypted credential. Only ever held in memory while the vault is unlocked.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -121,8 +220,7 @@ pub struct VaultItem {
     pub totp_secret: String,
     pub favorite: bool,
     /// Marks the login as needing attention. Separate from `favorite`.
-    pub needs_attention: bool,
-    /// Whether this login shows its message expander. Opt-in per login: new
+    pub needs_attention: bool,    /// Whether this login shows its message expander. Opt-in per login: new
     /// logins start with it off (`empty_item`), while a record saved before the
     /// field existed reads as on (`normalise_item`) so the one-time
     /// linked-only pass is what switches unrelated logins off — a legacy `true`
@@ -131,9 +229,16 @@ pub struct VaultItem {
     /// Which messages the expander shows: `auto`, `matched` or `recent`.
     /// Anything else coerces to `auto`.
     pub mail_filter: String,
-    /// Ids from the global tag catalogue — ids rather than names so a tag can
+    /// Ids from the global tag catalogue - ids rather than names so a tag can
     /// be renamed everywhere at once.
     pub tags: Vec<String>,
+    /// Media pasted or dropped into the login's notes (`VaultItem.attachments`,
+    /// types.ts L52-60): photos, GIFs, short screen recordings. Rides inside
+    /// the encrypted item blob like the rest of the fields — unlike card art,
+    /// pasted media is kept verbatim, because re-encoding would flatten
+    /// animated GIFs.
+    #[serde(default)]
+    pub attachments: Vec<VaultAttachment>,
     pub security: LoginSecurity,
     /// Per-login accent hue; null derives one from the title.
     pub accent_hue: Option<f64>,
@@ -171,6 +276,7 @@ pub fn empty_item(id: &str, now: i64) -> VaultItem {
         show_mail: false,
         mail_filter: "auto".to_string(),
         tags: Vec::new(),
+        attachments: Vec::new(),
         security: LoginSecurity::default(),
         accent_hue: None,
         background_image: String::new(),
@@ -263,6 +369,9 @@ pub fn normalise_item(raw: &Value, now: i64) -> VaultItem {
             .collect(),
         _ => Vec::new(),
     };
+    // Pasted notes-media is validated rather than trusted: old builds and
+    // hand-edited vaults can carry anything in the array.
+    item.attachments = normalise_note_attachments(get("attachments"));
     item.needs_attention = get("needsAttention").is_some_and(js_truthy);
     // Off for a *new* login (`empty_item`), but a record saved before the field
     // existed reads as on: that record predates the per-login idea, and the

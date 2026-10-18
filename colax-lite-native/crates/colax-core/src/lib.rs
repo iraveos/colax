@@ -50,8 +50,10 @@ pub use history::{
     HistoryEvent, MAX_HISTORY_CHARS, MAX_HISTORY_EVENTS,
 };
 pub use model::{
-    empty_item, is_secured, is_weak_password, normalise_item, normalise_security, normalize_url,
-    security_level, stale_days_for, LoginSecurity, StoredItem, VaultItem,
+    attachment_bytes, empty_item, is_note_media_mime, is_secured, is_weak_password,
+    normalise_item, normalise_note_attachments, normalise_security, note_media_budget,
+    normalize_url, security_level, stale_days_for, LoginSecurity, StoredItem, VaultAttachment,
+    VaultItem, MAX_NOTE_ATTACHMENT_BYTES, MAX_NOTE_ATTACHMENTS, MAX_NOTE_MEDIA_BYTES,
 };
 pub use optimize::{
     apply_style, clean_profile_name, new_optimize_profile_id, normalise_optimize_profiles,
