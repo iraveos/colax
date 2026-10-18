@@ -618,7 +618,7 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
             let sidebar = items::build_sidebar(items, &channel_id, &prefs);
             let dash = is_dashboard
                 .then(|| dashboard::build(items, &prefs, &prefs.usage, colax_core::util::now_ms()));
-            let history = is_history.then(|| {
+            let history = (is_history || is_dashboard).then(|| {
                 history::build(
                     &prefs.history,
                     items,
@@ -672,6 +672,14 @@ fn refresh_items(ui: &MainWindow, state: &Shared) {
     // unused behind it, which is cheaper than a second screen branch.
     ui.set_show_dashboard(is_dashboard);
     ui.set_show_history(is_history);
+    // The log badge rides the dashboard's History tab, in events (`ViewBadge`)
+    // — computed while the engine was open, like everything else here.
+    let dash_history_count = if is_dashboard {
+        items::prefs_from(state.borrow().engine.preferences()).history.len()
+    } else {
+        0
+    };
+    ui.set_dash_history_count(dash_history_count as i32);
     if let Some(dash) = dash {
         dashboard::fill(ui, &dash);
     }
@@ -7281,6 +7289,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // All logins in the rail means the whole list, not
                     // whichever section was left open last time.
                     ui.set_all_tab("all".into());
+                    // TS's Dashboard remounts on the overview every arrival.
+                    ui.set_dash_tab(0);
                     // A new channel is a new scope: a query that meant
                     // something in the old one would silently filter the new
                     // one, so the box empties with the switch (App.tsx L167).
@@ -7315,6 +7325,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         _ => String::new(),
                     };
                     ui.set_all_tab(if tab.is_empty() { "all".into() } else { tab.as_str().into() });
+                    // TS's Dashboard remounts on the overview every arrival.
+                    ui.set_dash_tab(0);
                     // The same scope rules a rail click follows.
                     ui.set_search_text("".into());
                     ui.set_history_query("".into());

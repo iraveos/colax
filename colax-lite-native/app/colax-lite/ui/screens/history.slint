@@ -118,6 +118,11 @@ export component History inherits Flickable {
     in property <HistoryData> data;
     in property <int> filter: 0; // 0 all, 1 added, 2 edited, 3 deleted
     in-out property <string> query;
+    // Rendered inside another screen (the Dashboard's History tab) rather
+    // than as a channel's own page: `.history--embedded` (app.css L1133) only
+    // takes the outer padding and the page wrapper away — the panel is one
+    // component, so the tab and the channel can never drift apart.
+    in property <bool> embedded: false;
 
     callback query-edited();
     callback filter-changed(int);
@@ -127,11 +132,16 @@ export component History inherits Flickable {
     callback copy(value: string, label: string, item-id: string);
     callback forget(id: string);
 
+    property <length> side-pad: root.embedded ? 0px : 30px;
+    property <length> end-pad: root.embedded ? 0px : 34px;
+    property <length> top-pad: root.embedded ? 0px : 26px;
+    property <length> bottom-pad: root.embedded ? 24px : 24px;
+
     VerticalLayout {
-        padding-top: 26px;
-        padding-bottom: 24px;
-        padding-left: 30px;
-        padding-right: 34px;
+        padding-top: top-pad;
+        padding-bottom: bottom-pad;
+        padding-left: side-pad;
+        padding-right: end-pad;
         spacing: 20px;
 
         // ---- Header (`.history__head`) ----

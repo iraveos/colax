@@ -572,6 +572,9 @@ component list-tab inherits Rectangle {
     in property <string> label;
     in property <int> count;
     in property <bool> selected;
+    // The pill is a counter; a surface is allowed to hide it (the
+    // dashboard's History tab shows the badge only when events exist).
+    in property <bool> pill: true;
     callback picked();
 
     height: 32px;
@@ -600,6 +603,7 @@ component list-tab inherits Rectangle {
         Rectangle {
             // `.list-tabs__count` (app.css L1145): the pill. The width grows a
             // little with the count, clamped roughly to one-to-four digits.
+            visible: root.pill;
             width: (3px * Math.max(1, Math.min(root.count, 4))) + 8px;
             height: 14px;
             border-radius: 7px;
@@ -1179,6 +1183,14 @@ export component MainWindow inherits Window {
     in-out property <HistoryData> history-data;
     in-out property <string> history-query;
     in-out property <int> history-filter: 0;
+    // The dashboard's two halves. The change log used to be a channel of its
+    // own in the rail — it still is one, because `history` kinds stay valid —
+    // but the Dashboard carries a tab for it too (dash-screen__tabs, App.tsx
+    // `Dashboard`): the log sits one click from the overview it describes.
+    // Local rather than persisted; the overview on every arrival is what
+    // makes the screen a dashboard.
+    in-out property <int> dash-tab: 0; // 0 overview, 1 history
+    in property <int> dash-history-count: 0;
     in-out property <DashRing> dash-ring;
     in-out property <string> dash-sub: "";
     in-out property <bool> dash-empty: false;
@@ -2054,11 +2066,35 @@ export component MainWindow inherits Window {
                 width: root.rail-side ? parent.width - root.rail-w : parent.width;
                 height: root.rail-strip ? parent.height - root.rail-h : parent.height;
 
+                // ---- Overview / History (`.dash-screen__tabs`) ----------
+                // The tab strip is above the pane it switches, so switching
+                // never moves it. The badge rides the History tab only when
+                // there is something in the log (`dash-screen__count`).
+                if (root.show-dashboard) : HorizontalLayout {
+                    alignment: start;
+                    spacing: 6px;
+                    vertical-stretch: 0;
+
+                    list-tab {
+                        label: "Overview";
+                        selected: root.dash-tab == 0;
+                        picked => { root.dash-tab = 0; }
+                    }
+
+                    list-tab {
+                        label: "History";
+                        count: root.dash-history-count;
+                        pill: root.dash-history-count > 0;
+                        selected: root.dash-tab == 1;
+                        picked => { root.dash-tab = 1; }
+                    }
+                }
+
                 // The Command Center takes the whole pane when its channel is
                 // active — the toolbar and the grid go with the list, as they
                 // do in the TS, because the dashboard brings its own header
                 // and its own ways out.
-                if (root.show-dashboard) : Dashboard {
+                if (root.show-dashboard && root.dash-tab == 0) : Dashboard {
                     ring: root.dash-ring;
                     sub: root.dash-sub;
                     empty: root.dash-empty;
@@ -2102,8 +2138,12 @@ export component MainWindow inherits Window {
                     open-settings(section) => { root.dash-open-settings(section); }
                 }
                 // The History channel swaps in the same way — the rail and
-                // the shell stay, the pane's contents go (Task 7.2).
-                if (root.show-history) : History {
+                // the shell stay, the pane's contents go (Task 7.2). The
+                // dashboard's History tab renders the very same panel
+                // (`history--embedded`), one component so the two can never
+                // drift apart.
+                if (root.show-history || (root.show-dashboard && root.dash-tab == 1)) : History {
+                    embedded: root.show-dashboard;
                     data: root.history-data;
                     filter: root.history-filter;
                     query <=> root.history-query;
