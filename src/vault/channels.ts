@@ -104,6 +104,15 @@ export function isAllLoginTab(kind: ChannelKind): kind is AllLoginTab {
 const RETIRED_CHANNEL_IDS = new Set(['favorites', 'attention', 'weak']);
 
 /**
+ * The synthetic "no tags" channel.
+ *
+ * It is built on the fly rather than stored, so anything that validates ids
+ * against `channels` has to name it explicitly — the tab strip, for instance,
+ * can point a tab at it even though it never appears in the channel list.
+ */
+export const UNASSIGNED_CHANNEL_ID = 'unassigned';
+
+/**
  * Ids the app owns and must never store as channels.
  *
  * `unassigned` is a pseudo-channel built on the fly for logins with no tags at
@@ -113,7 +122,7 @@ const RETIRED_CHANNEL_IDS = new Set(['favorites', 'attention', 'weak']);
  * copy heals those vaults; `normaliseSidebar` then drops the orphaned tree
  * entry.
  */
-const RESERVED_CHANNEL_IDS = new Set(['unassigned']);
+const RESERVED_CHANNEL_IDS = new Set([UNASSIGNED_CHANNEL_ID]);
 
 /**
  * Whether an id belonged to one of the rows the tab strip replaced.

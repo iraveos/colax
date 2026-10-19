@@ -1437,6 +1437,42 @@ to{transform:translate(0)}
 .sidebar__empty{margin:var(--space-2) var(--space-3);font-size:var(--text-xs);line-height:1.55;color:var(--text-faint)}
 .sidebar__add:hover{color:var(--text)}
 
+/* ---- Floating chrome ----------------------------------------------------
+   Floating is not just "a transparent rail": the rail leaves the grid entirely
+   and overlays the page. A transparent rail that still owned a 272px column
+   left the column boundary as the one place a hairline or a composited
+   backdrop seam could appear, so the page still looked separated from the
+   channels even though the rail had no border. With the rail out of the grid,
+   .main spans the window and there is no boundary left to draw on. The inset
+   keeps content clear of the pills without putting a container around them. */
+@media(min-width:901px){
+  .shell[data-floating][data-rail=left],
+  .shell[data-floating][data-rail=right]{grid-template-columns:minmax(0,1fr)}
+  .shell[data-floating][data-rail=left] .main,
+  .shell[data-floating][data-rail=right] .main{grid-column:1;grid-row:1}
+  .shell[data-floating][data-rail=left] .main{padding-left:272px}
+  .shell[data-floating][data-rail=right] .main{padding-right:272px}
+  .shell[data-floating][data-compact-sidebar][data-rail=left] .main{padding-left:60px}
+  .shell[data-floating][data-compact-sidebar][data-rail=right] .main{padding-right:60px}
+  .shell[data-floating][data-sidebar-hidden] .main{padding-left:0;padding-right:0}
+  .shell[data-floating][data-rail=left] .sidebar,
+  .shell[data-floating][data-rail=right] .sidebar{position:absolute;top:0;bottom:0;width:272px;z-index:30;overflow:visible}
+  .shell[data-floating][data-rail=left] .sidebar{left:0}
+  .shell[data-floating][data-rail=right] .sidebar{right:0}
+  /* Compact is still a 60px plate. The width has to be repeated here because
+     an absolutely positioned box no longer takes its width from the grid. */
+  .shell[data-floating][data-rail=left] .sidebar[data-compact],
+  .shell[data-floating][data-rail=right] .sidebar[data-compact]{width:60px}
+  /* The list scrolls on its own and the aside must not clip it: `overflow` on
+     the aside would cut every row shadow at the rail edge, which is exactly the
+     vertical line that made the sidebar look walled off. The nav's clipping box
+     is widened with negative margins, so shadows fade out before it ends. */
+  .shell[data-floating][data-rail=left] .sidebar__nav,
+  .shell[data-floating][data-rail=right] .sidebar__nav{flex:0 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;margin-inline:-24px;padding-inline:24px;scrollbar-width:none}
+  .shell[data-floating][data-rail=left] .sidebar__nav::-webkit-scrollbar,
+  .shell[data-floating][data-rail=right] .sidebar__nav::-webkit-scrollbar{display:none}
+}
+
 /* The per-channel wrapper only exists to host the divider; the row and the rule
    must lay out as direct children of the nav. */
 /* The folder wrapper only exists to group a header with its children, so it

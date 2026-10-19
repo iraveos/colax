@@ -20,6 +20,7 @@ import {
   CHANNEL_ACCENTS,
   CHANNEL_ICONS,
   CHANNEL_SCREEN_KINDS,
+  UNASSIGNED_CHANNEL_ID,
   type AllLoginTab,
   type Channel,
   type Folder,
@@ -128,7 +129,7 @@ const SORT_LABELS: Record<SortMode, string> = {
 
 /** The always-present bucket for logins with no tag at all. */
 const UNASSIGNED: Channel = {
-  id: 'unassigned',
+  id: UNASSIGNED_CHANNEL_ID,
   name: 'Unassigned',
   kind: 'unassigned',
   tagIds: [],
@@ -1103,9 +1104,10 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
    * its own, so the strip that had just been used vanished. Carrying the
    * configuration over — only when the destination has never been configured —
    * means the strip stays exactly as it was, the clicked tab included, and its
-   * other tabs keep working. The tab for the channel just opened is rendered
-   * as the current one rather than being filtered out, so the set of tabs does
-   * not visibly change under the pointer.
+   * other tabs keep working. The channel the jump came from is appended as a
+   * back-tab, and the channel just opened is rendered as the current one rather
+   * than being filtered out, so the set of tabs does not visibly change under
+   * the pointer and the way back is still one click away.
    */
   const carryStripTo = useCallback(
     (to: string, via?: string) => {
@@ -1117,7 +1119,12 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
         if (source.length === 0) return;
         // The clicked tab is part of the source, so it lands in the copy too;
         // the extra check only matters if the source changed in between.
-        const next = via && !source.includes(via) ? [...source, via] : [...source];
+        const next = [...source];
+        if (via && !next.includes(via)) next.push(via);
+        // All logins and folders are not channels, so they cannot be tabs.
+        if (scopeId !== 'all' && !scopeId.startsWith('folder:') && !next.includes(scopeId)) {
+          next.push(scopeId);
+        }
         void vault.updatePrefs({ listTabs: { ...stored, [to]: next } });
         return;
       }

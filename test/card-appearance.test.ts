@@ -234,6 +234,20 @@ test('listTabs keeps known tabs and channels, drops the rest', () => {
   assert.equal('broken' in out.listTabs, false);
 });
 
+test('a tab pointing at the synthetic Unassigned row survives normalisation', () => {
+  // Unassigned is built on the fly, but it is a real rail row and a real tab
+  // target, so it must not be swept out with deleted channels.
+  const stored = base();
+  const out = normalisePreferences({
+    ...stored,
+    listTabs: { all: ['tab:all', 'unassigned'], ch_work: ['unassigned', 'tab:weak'] },
+    channels: [{ id: 'ch_work' }],
+  } as unknown as Parameters<typeof normalisePreferences>[0]);
+
+  assert.deepEqual(out.listTabs.all, ['tab:all', 'unassigned']);
+  assert.deepEqual(out.listTabs.ch_work, ['unassigned', 'tab:weak']);
+});
+
 test('a missing listTabs record falls back to the shipped strip', () => {
   const stored = base() as unknown as Record<string, unknown>;
   delete stored.listTabs;

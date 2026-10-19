@@ -16,6 +16,7 @@ import {
   normaliseFolders,
   normaliseSidebar,
   normaliseTags,
+  UNASSIGNED_CHANNEL_ID,
   type Channel,
   type ChannelAccent,
   type Folder,
@@ -118,8 +119,15 @@ export const DEFAULT_LIST_TABS: Record<string, string[]> = {
   all: ['tab:all', 'tab:favorites', 'tab:attention', 'tab:weak'],
 };
 
-/** The built-in tab ids a strip may hold. */
-const LIST_TAB_IDS = new Set(['tab:all', 'tab:favorites', 'tab:attention', 'tab:weak']);
+/**
+ * The non-channel tab ids a strip may hold.
+ *
+ * `unassigned` is a real tab target — it is in the rail and in the "Add tabs"
+ * list — but it is synthetic, so it can never pass the `channelIds` check
+ * below. Naming it here keeps a strip pointing at it from losing that tab the
+ * moment any preference is saved.
+ */
+const LIST_TAB_IDS = new Set(['tab:all', 'tab:favorites', 'tab:attention', 'tab:weak', UNASSIGNED_CHANNEL_ID]);
 
 /**
  * Coerces a stored per-scope tab configuration.
