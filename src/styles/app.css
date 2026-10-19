@@ -1157,7 +1157,15 @@ to{transform:translate(0)}
    broken — the chips sit over the column. The group wraps rather than clipping
    in an overflow scroller that cut chip shadows. */
 .list-tabs__group{display:flex;align-items:center;gap:6px;max-width:100%;flex-wrap:wrap;border:none;background:none;padding:0}
-.list-tabs__option{display:inline-flex;align-items:center;gap:2px;white-space:nowrap;padding:5px 12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);font-size:var(--text-xs);font-weight:560;color:var(--text-muted);cursor:pointer;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),border-color var(--fast) var(--ease)}
+.list-tabs__option{position:relative;display:inline-flex;align-items:center;gap:2px;white-space:nowrap;padding:5px 12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--glass);font-size:var(--text-xs);font-weight:560;color:var(--text-muted);cursor:grab;transition:background var(--fast) var(--ease),color var(--fast) var(--ease),border-color var(--fast) var(--ease),opacity var(--fast) var(--ease)}
+.list-tabs__option:active{cursor:grabbing}
+.list-tabs__option[data-dragging]{opacity:.35}
+/* The insertion caret sits in the 6px gap between chips: a full-height bar
+   marks exactly where the dragged tab will land, before or after the hovered
+   one, so a long row stays readable while reordering. */
+.list-tabs__option[data-drop=before]:before,.list-tabs__option[data-drop=after]:after{content:"";position:absolute;top:1px;bottom:1px;width:2px;border-radius:var(--radius-full);background:var(--grad-primary);box-shadow:0 0 8px hsl(var(--accent-h) 70% 60% / .55);pointer-events:none}
+.list-tabs__option[data-drop=before]:before{left:-4px}
+.list-tabs__option[data-drop=after]:after{right:-4px}
 .list-tabs__option:hover{color:var(--text);background:var(--surface-hover)}
 .list-tabs__option[aria-pressed=true]{background:var(--grad-primary);border-color:transparent;color:#fff;box-shadow:0 4px 14px -6px hsl(var(--accent-h) 84% 50% / .7)}
 .list-tabs__count{margin-left:6px;padding:0 6px;border-radius:var(--radius-full);background:var(--surface-hover);font-size:10px;font-variant-numeric:tabular-nums;color:var(--text-faint)}

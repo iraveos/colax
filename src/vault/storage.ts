@@ -181,6 +181,23 @@ export function mergeListTabs(
 }
 
 /**
+ * Moves one tab within a strip, dropping it before or after another tab.
+ *
+ * Drag-and-drop reorders the visible row, so the index of the target has to be
+ * read after the dragged tab is removed — otherwise moving a tab rightwards
+ * lands one slot short. Ids that are not both present are left untouched.
+ */
+export function moveListTab(tabs: string[], from: string, to: string, after: boolean): string[] {
+  if (from === to) return [...tabs];
+  const fromIndex = tabs.indexOf(from);
+  if (fromIndex < 0 || !tabs.includes(to)) return [...tabs];
+  const next = tabs.filter((id) => id !== from);
+  const target = next.indexOf(to);
+  next.splice(after ? target + 1 : target, 0, from);
+  return next;
+}
+
+/**
  * One dock slot's configuration.
  *
  * `ref` is a VaultView for kind 'view', a channel id for kind 'channel', a

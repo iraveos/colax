@@ -35,6 +35,7 @@ import {
   MAX_DOCKS,
   mergeListTabs,
   mergeMailCache,
+  moveListTab,
   newDockId,
 } from '../vault/storage.ts';
 import { captureToDraft, findSimilarTag, mailboxOwnedBy, mailboxUsable, planMailLinkedOnly, tagIdsForDraft } from '../vault/site-intel.ts';
@@ -295,6 +296,8 @@ export function App() {
   /** When creating a channel from a folder's menu, it lands in that folder. */
   const [newChannelFolder, setNewChannelFolder] = useState<string | null>(null);
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined);
+  /** The strip tab being dragged, and the tab/edge it would be dropped on. */
+  const [stripDrag, setStripDrag] = useState<{ id: string; over: string; after: boolean } | null>(null);
   const openSettings = useCallback((tab?: string) => {
     setSettingsTab(tab);
     setShowSettings(true);
@@ -1164,6 +1167,17 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       void vault.updatePrefs({ listTabs: next });
     },
     [vault],
+  );
+
+  /** Drops a dragged tab before or after another one in the visible strip. */
+  const reorderStripTab = useCallback(
+    (from: string, to: string, after: boolean) => {
+      const current = vault.prefs.listTabs[scopeId] ?? [];
+      const next = moveListTab(current, from, to, after);
+      if (next.length === current.length && next.every((id, index) => id === current[index])) return;
+      setStripTabs(scopeId, next);
+    },
+    [scopeId, setStripTabs, vault.prefs.listTabs],
   );
 
   /** Whether a scope's strip differs from the shipped default. */
@@ -3883,12 +3897,45 @@ onCreate={vault.create}
                         aria-selected={active}
                         aria-pressed={active}
                         className="list-tabs__option"
+                        draggable
+                        data-dragging={stripDrag?.id === tab.id || undefined}
+                        data-drop={
+                          stripDrag && stripDrag.id !== tab.id && stripDrag.over === tab.id
+                            ? stripDrag.after ? 'after' : 'before'
+                            : undefined
+                        }
                         title={
                           tab.kind
-                            ? describeChannel({ kind: tab.kind, tagIds: [] }, prefs.tags)
-                            : `Open "${tab.channel!.name}" (right-click to configure this strip)`
+                            ? `${describeChannel({ kind: tab.kind, tagIds: [] }, prefs.tags)} · drag to reorder`
+                            : `Open "${tab.channel!.name}" (right-click to configure, drag to reorder)`
                         }
                         onClick={() => openStripTab(tab.id)}
+                        onDragStart={(event) => {
+                          event.stopPropagation();
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('text/plain', tab.id);
+                          setStripDrag({ id: tab.id, over: tab.id, after: false });
+                        }}
+                        onDragOver={(event) => {
+                          if (!stripDrag || stripDrag.id === tab.id) return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = 'move';
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          const after = event.clientX > rect.left + rect.width / 2;
+                          if (stripDrag.over !== tab.id || stripDrag.after !== after) {
+                            setStripDrag({ ...stripDrag, over: tab.id, after });
+                          }
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          if (stripDrag && stripDrag.id !== tab.id) {
+                            const rect = event.currentTarget.getBoundingClientRect();
+                            reorderStripTab(stripDrag.id, tab.id, event.clientX > rect.left + rect.width / 2);
+                          }
+                          setStripDrag(null);
+                        }}
+                        onDragEnd={() => setStripDrag(null)}
                         onContextMenu={(event) => {
                           event.preventDefault();
                           event.stopPropagation();

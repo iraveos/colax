@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_PREFERENCES, mergeListTabs, normalisePreferences } from '../src/vault/storage.ts';
+import { DEFAULT_PREFERENCES, mergeListTabs, moveListTab, normalisePreferences } from '../src/vault/storage.ts';
 
 /** A mutable copy of the defaults, so a test can corrupt one field. */
 const base = () => structuredClone(DEFAULT_PREFERENCES) as unknown as Record<string, unknown>;
@@ -280,6 +280,22 @@ test('a tab jump keeps a destination strip whose order already covers the source
     mergeListTabs(['tab:all', 'ch_work'], ['ch_work', 'tab:all', 'tab:weak'], 'ch_work'),
     ['ch_work', 'tab:all', 'tab:weak'],
   );
+});
+
+test('dragging a tab reorders it before or after the tab it is dropped on', () => {
+  const tabs = ['tab:all', 'ch_work', 'tab:favorites', 'ch_mail'];
+  // Forward: the target index is read after the dragged tab is removed.
+  assert.deepEqual(moveListTab(tabs, 'tab:all', 'tab:favorites', true), ['ch_work', 'tab:favorites', 'tab:all', 'ch_mail']);
+  // Backward: dropping on the left half lands before the target.
+  assert.deepEqual(moveListTab(tabs, 'ch_mail', 'ch_work', false), ['tab:all', 'ch_mail', 'ch_work', 'tab:favorites']);
+  assert.deepEqual(moveListTab(tabs, 'ch_work', 'ch_mail', true), ['tab:all', 'tab:favorites', 'ch_mail', 'ch_work']);
+});
+
+test('a drag onto itself or an unknown id never changes the strip', () => {
+  const tabs = ['tab:all', 'ch_work'];
+  assert.deepEqual(moveListTab(tabs, 'tab:all', 'tab:all', true), tabs);
+  assert.deepEqual(moveListTab(tabs, 'tab:all', 'gone', false), tabs);
+  assert.deepEqual(moveListTab(tabs, 'gone', 'tab:all', false), tabs);
 });
 
 test('a missing listTabs record falls back to the shipped strip', () => {
