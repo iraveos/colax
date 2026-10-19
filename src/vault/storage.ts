@@ -101,7 +101,9 @@ export interface CardSizePrefs {
 }
 
 export const DEFAULT_CARD_SIZE: Record<VaultView, CardSizePrefs> = {
-  animated: { scale: 1, width: 560, minHeight: 132, aspect: 1, surface: 1, radius: 14 },
+  // The shipped Flow card: wide, short and softly rounded. A new vault opens
+  // on Flow, so this is the card most people see first.
+  animated: { scale: 1.1, width: 890, minHeight: 60, aspect: 1, surface: 1, radius: 28 },
   basic: { scale: 1, width: 900, minHeight: 64, aspect: 1, surface: 1, radius: 14 },
   // Grid reflows to whatever fits, so its width is the widest a single cell may
   // get before the track count drops. That is the one number worth tuning here:
@@ -112,12 +114,25 @@ export const DEFAULT_CARD_SIZE: Record<VaultView, CardSizePrefs> = {
 /**
  * The shipped list-tab strip: the four merged sections of All logins.
  *
- * Configured per scope in `listTabs` (see below); every other channel and
- * folder starts with no strip at all.
+ * This is also the strip every channel and folder inherits until it is given
+ * a configuration of its own, so tabs do not disappear just because a scope
+ * has never been visited. A scope stores an empty list to hide its strip.
  */
 export const DEFAULT_LIST_TABS: Record<string, string[]> = {
   all: ['tab:all', 'tab:favorites', 'tab:attention', 'tab:weak'],
 };
+
+/**
+ * The tabs a scope actually shows.
+ *
+ * A scope with no record of its own inherits the shipped All-logins strip, so
+ * channels and folders are not left without tabs just because nobody has
+ * configured them yet. An explicit empty array is preserved: that is how a
+ * scope says "hide the strip here".
+ */
+export function listTabsFor(listTabs: Record<string, string[]>, scope: string): string[] {
+  return listTabs[scope] ?? DEFAULT_LIST_TABS.all ?? [];
+}
 
 /**
  * The non-channel tab ids a strip may hold.
@@ -960,6 +975,16 @@ export interface VaultPreferences {
   confirmDeletes: boolean;
 }
 
+/**
+ * The shipped look and behavior of a brand-new vault.
+ *
+ * The appearance half of this record is the program's default theme: compact
+ * spacing, soft high-roundness surfaces, deep card shadows, wide short Flow
+ * cards, calm (no micro) motion, a vertically centred rail, a flat list without
+ * letter headings and a divider-free settings window. It deliberately carries no channels, folders, tags, sidebar
+ * rows, docks, hidden buttons or saved looks — those describe one person's
+ * vault, not the program's style.
+ */
 export const DEFAULT_PREFERENCES: VaultPreferences = {
   theme: 'system',
   accent: 'slate',
@@ -969,14 +994,13 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   // at 1 ("Normal") and, at this user's request, moves at full speed by
   // default — a languid default is the thing they complained about.
   motionSpeed: 2,
-  // On: the small transitions are what make the controls feel like controls.
-  // Nothing here is on a timer — they only run in response to the pointer or a
-  // state change — so the cost is a few compositor frames per interaction.
-  microMotion: true,
+  // Off: the shipped look is calm, so controls change state without a small
+  // transition of their own. The larger entrance animations still run.
+  microMotion: false,
   ambient: 1,
-  density: 'comfortable',
-  roundness: 1,
-  cardDepth: 0.4,
+  density: 'compact',
+  roundness: 1.4,
+  cardDepth: 1,
   optimizeProfiles: [],
   optimizeSnapshot: null,
   activeOptimizeProfile: '',
@@ -986,7 +1010,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   viewLabels: 'both',
   viewLabelsByView: {},
   sidebarPosition: 'left',
-  railAlign: 'top',
+  railAlign: 'middle',
   textScale: 100,
   reduceTransparency: false,
   highContrast: true,
@@ -1020,7 +1044,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   showLockButton: true,
   autoTagChannel: false,
   showTagChips: true,
-  hideDividers: false,
+  hideDividers: true,
   passwordAgeDays: 180,
   emailAgeDays: 365,
   emailCheckDays: 90,
@@ -1043,7 +1067,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   showHideSidebarButton: true,
   showSidebar: true,
   autoTagDomain: true,
-  showLetterGroups: true,
+  showLetterGroups: false,
   clipboardCapture: false,
   clipboardAutoSave: false,
   maskEmails: true,
@@ -1218,7 +1242,10 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.autoTagDomain = Boolean(merged.autoTagDomain);
   // Opt-out, like the other helpful defaults: only a real `false` turns it off.
   merged.autoTagReused = merged.autoTagReused !== false;
-  merged.showLetterGroups = merged.showLetterGroups !== false;
+  merged.showLetterGroups =
+    typeof merged.showLetterGroups === 'boolean'
+      ? merged.showLetterGroups
+      : DEFAULT_PREFERENCES.showLetterGroups;
   merged.clipboardCapture = Boolean(merged.clipboardCapture);
   merged.clipboardAutoSave = Boolean(merged.clipboardAutoSave);
   merged.maskEmails = merged.maskEmails !== false;
@@ -1410,9 +1437,10 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   // Floor of 1, not 0.25: the sub-normal end of this scale was the "Languid"
   // setting, and a vault stored with it would otherwise keep dragging for good.
   merged.motionSpeed = clampRange(merged.motionSpeed, 1, 2, DEFAULT_PREFERENCES.motionSpeed);
-  // Only an explicit false turns micro-animations off, so a record from before
-  // the switch existed (no field at all) keeps them, like a fresh vault.
-  merged.microMotion = merged.microMotion !== false;
+  // Only a real boolean counts; a record with no field (or a hostile value)
+  // takes the shipped look, which keeps micro-animations off.
+  merged.microMotion =
+    typeof merged.microMotion === 'boolean' ? merged.microMotion : DEFAULT_PREFERENCES.microMotion;
   merged.history = normaliseHistory(merged.history);
 
   // Flow card width used to be one global percentage of the content column,
@@ -1467,7 +1495,11 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   }
   merged.viewLabelsByView = viewLabelsByView;
   merged.sidebarPosition = oneOf(merged.sidebarPosition, ['left', 'right', 'top', 'bottom'] as const, 'left');
-  merged.railAlign = oneOf(merged.railAlign, ['top', 'middle', 'bottom'] as const, 'top');
+  merged.railAlign = oneOf(
+    merged.railAlign,
+    ['top', 'middle', 'bottom'] as const,
+    DEFAULT_PREFERENCES.railAlign,
+  );
 
   // Use counts: plain objects with numeric fields only, capped at 200 by
   // recency so the record cannot grow without bound. Pruning by id happens on

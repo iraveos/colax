@@ -18,9 +18,8 @@
 // cycle whose module-level constants could evaluate before the defaults exist.
 import type { Density, VaultPreferences } from './storage.ts';
 
-/** The shipped card depth. Mirrored from storage's defaults, which import the
- *  full-detail style below for these same fields, so the two cannot drift. */
-const DEFAULT_CARD_DEPTH = 0.4;
+/** The shipped card depth, kept in step with DEFAULT_PREFERENCES.cardDepth. */
+const DEFAULT_CARD_DEPTH = 1;
 const DEFAULT_BACKGROUND = { opacity: 0.35, blur: 0, dim: 0.25 };
 
 /**
@@ -80,10 +79,12 @@ export const FULL_DETAIL_STYLE: OptimizeStyle = {
   // step with DEFAULT_PREFERENCES so "restore my look" restores the speed the
   // app ships with rather than half-speed.
   motionSpeed: 2,
-  microMotion: true,
+  // Kept in step with DEFAULT_PREFERENCES: the shipped look has no micro
+  // transitions, but it does keep the larger entrance animations.
+  microMotion: false,
   ambient: 1,
   reduceTransparency: false,
-  density: 'comfortable',
+  density: 'compact',
   cardDepth: DEFAULT_CARD_DEPTH,
   backgroundImage: '',
   backgroundOpacity: DEFAULT_BACKGROUND.opacity,
@@ -102,9 +103,9 @@ export const BALANCED_STYLE: OptimizeStyle = {
   // transition *at the same time as* cutting animation: the profile was called
   // "Balanced" and felt like a slow-motion mode.
   motionSpeed: 1,
-  // The small transitions stay: they are what the profile is trading down from,
-  // and they cost a few frames per interaction rather than per second.
-  microMotion: true,
+  // The shipped look already has the small transitions off; Balanced keeps
+  // that calm baseline and trims the larger motion and glow instead.
+  microMotion: false,
   ambient: 0.3,
   reduceTransparency: true,
   cardDepth: 0.4,
@@ -287,14 +288,17 @@ export function readStyle(raw: unknown): OptimizeStyle | null {
   if (!raw || typeof raw !== 'object') return null;
   const record = raw as Partial<Record<keyof OptimizeStyle, unknown>>;
   const density: Density =
-    record.density === 'compact' || record.density === 'spacious' ? record.density : 'comfortable';
+    record.density === 'compact' || record.density === 'spacious'
+      ? record.density
+      : FULL_DETAIL_STYLE.density;
   const mailRaw = record.mailRefreshSeconds;
   return {
     motion: clamp(record.motion, 0, 1, FULL_DETAIL_STYLE.motion),
     motionSpeed: clamp(record.motionSpeed, 1, 2, FULL_DETAIL_STYLE.motionSpeed),
     // A profile saved before this switch existed has no field; it restores the
-    // full-detail behavior (on) rather than silently turning animations off.
-    microMotion: record.microMotion !== false,
+    // full-detail behavior, which now matches the shipped calm look.
+    microMotion:
+      typeof record.microMotion === 'boolean' ? record.microMotion : FULL_DETAIL_STYLE.microMotion,
     ambient: clamp(record.ambient, 0, 1, FULL_DETAIL_STYLE.ambient),
     reduceTransparency: record.reduceTransparency === true,
     density,

@@ -15,6 +15,7 @@ const {
 } = await import('../src/vault/storage.ts');
 const { accentOf, hueFor, isAllowedImageSrc, MAX_BACKGROUND_BYTES, MAX_APP_BACKGROUND_BYTES, MAX_IMAGE_EDGE, emptyItem } =
   await import('../src/vault/types.ts');
+const { DEFAULT_TAG_SEEDS } = await import('../src/vault/channels.ts');
 
 test('an empty store yields the defaults', () => {
   const prefs = normalisePreferences(undefined);
@@ -33,6 +34,60 @@ test('the shipped look is full, instant, high-contrast and floating', () => {
   assert.equal(prefs.reduceTransparency, false, 'transparency stays on');
   assert.equal(prefs.highContrast, true);
   assert.equal(prefs.floatingChrome, true);
+});
+
+test('the shipped theme is compact, soft, deep and calm', () => {
+  const prefs = normalisePreferences(undefined);
+  assert.equal(prefs.microMotion, false, 'no micro transitions');
+  assert.equal(prefs.density, 'compact');
+  assert.equal(prefs.roundness, 1.4);
+  assert.equal(prefs.cardDepth, 1);
+  assert.equal(prefs.railAlign, 'middle');
+  assert.equal(prefs.hideDividers, true);
+  assert.equal(prefs.showLetterGroups, false);
+  assert.deepEqual(prefs.cardSize.animated, {
+    scale: 1.1,
+    width: 890,
+    minHeight: 60,
+    aspect: 1,
+    surface: 1,
+    radius: 28,
+  });
+});
+
+test('the default theme carries no personal furniture', () => {
+  // The shipped record itself contains no channels, tags, folders or rows.
+  // Normalisation then adds the app's built-in rows, never the theme author's.
+  assert.deepEqual(DEFAULT_PREFERENCES.channels, []);
+  assert.deepEqual(DEFAULT_PREFERENCES.tags, []);
+  assert.deepEqual(DEFAULT_PREFERENCES.folders, []);
+  assert.deepEqual(DEFAULT_PREFERENCES.sidebar, []);
+  const prefs = normalisePreferences(undefined);
+  for (const key of ['folders', 'hiddenChannels', 'hiddenFolders', 'hiddenButtons', 'manualOrder', 'optimizeProfiles', 'history', 'alarms'] as const) {
+    assert.deepEqual(prefs[key], [], `${key} starts empty`);
+  }
+  // Only the built-in channel rows and their functional tags: nothing the
+  // theme's author made.
+  assert.equal(prefs.channels.every((channel) => channel.builtin === true), true);
+  assert.equal(
+    prefs.sidebar.every(
+      (entry) =>
+        entry.kind === 'channel' &&
+        prefs.channels.some((channel) => channel.id === entry.id && channel.builtin === true),
+    ),
+    true,
+  );
+  assert.equal(
+    prefs.tags.every((tag) => DEFAULT_TAG_SEEDS.some((seed) => seed.name === tag.name)),
+    true,
+  );
+  assert.deepEqual(prefs.usage, {});
+  // The built-in tabs are the only strip that ships; every other scope inherits
+  // it at render time rather than storing a copy.
+  assert.deepEqual(prefs.listTabs, DEFAULT_PREFERENCES.listTabs);
+  for (const key of ['showNewChannelButton', 'showNewLoginButton', 'showBulkAddButton', 'showSettingsButton', 'showHideSidebarButton', 'showLockButton'] as const) {
+    assert.equal(prefs[key], true, `${key} stays visible`);
+  }
 });
 
 test('the mail and look passes are stamped, not assumptions', () => {

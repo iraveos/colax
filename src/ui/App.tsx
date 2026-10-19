@@ -32,6 +32,7 @@ import {
   DEFAULT_LIST_TABS,
   DEFAULT_PREFERENCES,
   freeDockSpot,
+  listTabsFor,
   MAX_DOCKS,
   mergeListTabs,
   mergeMailCache,
@@ -1045,23 +1046,30 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       `prefs.listTabs` is a record keyed by scope — 'all', a channel id, or
       'folder:<id>' — whose values are tab ids: built-ins are 'tab:all',
       'tab:favorites', 'tab:attention' and 'tab:weak', and any channel id adds
-      that channel as a tab. An empty config hides the strip for that scope, so
-      the shipped default (only All logins, only the four built-ins) is simply
-      the one record the app starts with. Right-clicking a tab (or the strip)
-      opens the configuration menu. */
+      that channel as a tab. A scope with no record inherits the shipped four
+      tabs, so every channel and folder shows a strip without having to be
+      configured first; an empty array is the explicit "hide it here" value.
+      Right-clicking a tab (or the strip) opens the configuration menu. */
+  const configuredStrip = useCallback(
+    (scope: string): string[] => listTabsFor(prefs.listTabs, scope),
+    [prefs.listTabs],
+  );
+
   const stripTabs = useMemo(() => {
     if (folderLocked || channelLocked) return [];
-    const config = prefs.listTabs[scopeId] ?? [];
+    const config = configuredStrip(scopeId);
     const builtIn = new Map(ALL_LOGIN_TABS.map((tab) => [`tab:${tab.kind}`, tab.label]));
     const tabs: { id: string; label: string; kind?: AllLoginTab; channel?: Channel; active: boolean }[] = [];
     for (const id of config) {
       const builtLabel = builtIn.get(id);
       if (builtLabel) {
         const kind = id.slice(4) as AllLoginTab;
-        // On All logins the current section is a tab; elsewhere a built-in
-        // tab is a jump target, so it only reads as current when the open
-        // channel is of that kind.
-        const active = activeChannel?.id === 'all' ? allTab === kind : activeChannel?.kind === kind;
+        // On All logins the current section is a tab; elsewhere a built-in tab
+        // is a jump target. A tag channel also has kind 'all', so comparing
+        // kinds alone would light up "All" on every channel; compare the
+        // channel the tab actually opens instead.
+        const targetId = sectionTarget(channels, kind).channelId;
+        const active = activeChannel?.id === 'all' ? allTab === kind : activeChannel?.id === targetId;
         tabs.push({ id, label: builtLabel, kind, active });
         continue;
       }
@@ -1071,9 +1079,9 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       }
     }
     return tabs;
-  }, [prefs.listTabs, scopeId, channelLookup, folderLocked, channelLocked, activeChannel, allTab]);
+  }, [configuredStrip, scopeId, channelLookup, channels, folderLocked, channelLocked, activeChannel, allTab]);
 
-  /** Counts for every tab the strip would show. Zero-config scopes skip it. */
+  /** Counts for every tab the strip shows. */
   const stripCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     if (folderLocked || channelLocked) return counts;
@@ -1118,8 +1126,11 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     (to: string, via?: string) => {
       if (to === scopeId) return;
       const stored = vault.prefs.listTabs;
-      const source = stored[scopeId] ?? [];
-      const existing = stored[to] ?? [];
+      const source = configuredStrip(scopeId);
+      // The destination's effective strip, not merely its stored record: an
+      // unconfigured scope inherits the shipped four tabs, and those must be
+      // part of the union rather than silently dropped by the first jump.
+      const existing = configuredStrip(to);
       // All logins and folders are not channels, so they cannot be tabs.
       const back = scopeId !== 'all' && !scopeId.startsWith('folder:') ? scopeId : undefined;
       const merged = mergeListTabs(source, existing, via, back);
@@ -1133,7 +1144,7 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       }
       void vault.updatePrefs({ listTabs: { ...stored, [to]: merged } });
     },
-    [scopeId, vault],
+    [configuredStrip, scopeId, vault],
   );
 
   /** What pressing a strip tab does. */
@@ -1172,20 +1183,24 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
   /** Drops a dragged tab before or after another one in the visible strip. */
   const reorderStripTab = useCallback(
     (from: string, to: string, after: boolean) => {
-      const current = vault.prefs.listTabs[scopeId] ?? [];
+      // Reordering an inherited strip writes the whole effective order into
+      // this scope, so the drag persists without disturbing any other scope.
+      const current = configuredStrip(scopeId);
       const next = moveListTab(current, from, to, after);
       if (next.length === current.length && next.every((id, index) => id === current[index])) return;
       setStripTabs(scopeId, next);
     },
-    [scopeId, setStripTabs, vault.prefs.listTabs],
+    [configuredStrip, scopeId, setStripTabs],
   );
 
-  /** Whether a scope's strip differs from the shipped default. */
+  /** Whether a scope already shows the shipped strip, so Reset would do nothing. */
   const stripIsDefault = useCallback(
     (scope: string) => {
-      const tabs = vault.prefs.listTabs[scope] ?? [];
-      const fallback = DEFAULT_LIST_TABS[scope] ?? [];
-      return tabs.length === fallback.length && tabs.every((id, index) => id === fallback[index]);
+      const tabs = vault.prefs.listTabs[scope];
+      // A channel or folder with no record inherits the shipped strip already.
+      if (scope !== 'all') return tabs === undefined;
+      const fallback = DEFAULT_LIST_TABS.all ?? [];
+      return !tabs || (tabs.length === fallback.length && tabs.every((id, index) => id === fallback[index]));
     },
     [vault.prefs.listTabs],
   );
@@ -1193,7 +1208,7 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
   /** The strip's right-click menu: hide a tab, add tabs, reset the strip. */
   const stripMenu = useCallback(
     (tabId: string | null): MenuItem[] => {
-      const current = (vault.prefs.listTabs[scopeId] ?? []).filter((id) => id !== tabId);
+      const current = configuredStrip(scopeId).filter((id) => id !== tabId);
       const addableLabels: { id: string; label: string }[] = [
         ...ALL_LOGIN_TABS.map((tab) => ({ id: `tab:${tab.kind}`, label: tab.label })),
         // The current scope's own channel is addable too: a tab pointing at
@@ -1225,7 +1240,7 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
           label: tab.label,
           icon: tab.id === 'tab:favorites' ? <StarIcon /> : tab.id === 'tab:attention' ? <FlagIcon /> : tab.id === 'tab:weak' ? <ShieldIcon /> : <LayersIcon />,
           onSelect: () => {
-            setStripTabs(scopeId, [...(vault.prefs.listTabs[scopeId] ?? []), tab.id]);
+            setStripTabs(scopeId, [...configuredStrip(scopeId), tab.id]);
             notify(`"${tab.label}" added to this strip`);
           },
         })),
@@ -1234,7 +1249,7 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
         kind: 'item',
         label: 'Reset this strip',
         icon: <RowsIcon />,
-        disabled: stripIsDefault(scopeId) || !vault.prefs.listTabs[scopeId],
+        disabled: stripIsDefault(scopeId),
         onSelect: () => {
           const next = { ...vault.prefs.listTabs };
           if (scopeId in DEFAULT_LIST_TABS) next[scopeId] = [...DEFAULT_LIST_TABS[scopeId]!];
@@ -1245,7 +1260,7 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       });
       return items;
     },
-    [channelLookup, scopeId, setStripTabs, notify, stripIsDefault, vault.prefs.listTabs, vault],
+    [channelLookup, configuredStrip, scopeId, setStripTabs, notify, stripIsDefault, vault.prefs.listTabs, vault],
   );
 
 const visible = useMemo(() => {

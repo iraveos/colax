@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_PREFERENCES, mergeListTabs, moveListTab, normalisePreferences } from '../src/vault/storage.ts';
+import { DEFAULT_PREFERENCES, listTabsFor, mergeListTabs, moveListTab, normalisePreferences } from '../src/vault/storage.ts';
 
 /** A mutable copy of the defaults, so a test can corrupt one field. */
 const base = () => structuredClone(DEFAULT_PREFERENCES) as unknown as Record<string, unknown>;
@@ -303,6 +303,29 @@ test('a missing listTabs record falls back to the shipped strip', () => {
   delete stored.listTabs;
   const out = normalisePreferences(stored as Parameters<typeof normalisePreferences>[0]);
   assert.deepEqual(out.listTabs, DEFAULT_PREFERENCES.listTabs);
+});
+
+test('an unconfigured channel or folder inherits the shipped strip', () => {
+  // The familiar bug: a channel or folder was opened for the first time and
+  // showed no tabs at all, because only `all` had a record. Scopes without one
+  // now fall back to the four shipped tabs.
+  assert.deepEqual(listTabsFor({}, 'all'), DEFAULT_PREFERENCES.listTabs.all);
+  assert.deepEqual(listTabsFor({}, 'ch_work'), DEFAULT_PREFERENCES.listTabs.all);
+  assert.deepEqual(listTabsFor({}, 'folder:f1'), DEFAULT_PREFERENCES.listTabs.all);
+  // A scope's own strip wins, and an explicit empty list still hides the strip.
+  assert.deepEqual(listTabsFor({ 'folder:f1': ['tab:favorites'] }, 'folder:f1'), ['tab:favorites']);
+  assert.deepEqual(listTabsFor({ 'folder:f1': [] }, 'folder:f1'), []);
+});
+
+test('carrying a strip into an inherited scope keeps the shipped tabs', () => {
+  const source = ['tab:all', 'ch_work'];
+  const inherited = listTabsFor({}, 'folder:f1');
+  const merged = mergeListTabs(source, inherited, 'ch_work', 'ch_home');
+  for (const id of DEFAULT_PREFERENCES.listTabs.all ?? []) {
+    assert.equal(merged.includes(id), true, `${id} survives the jump`);
+  }
+  assert.equal(merged.includes('ch_work'), true);
+  assert.equal(merged.includes('ch_home'), true);
 });
 
 test('notifications only accepts the three known levels', () => {

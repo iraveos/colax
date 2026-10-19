@@ -33,9 +33,9 @@ const stored = (patch: Record<string, unknown>): Record<string, unknown> => ({
   ...patch,
 });
 
-test('rail alignment defaults to top', () => {
-  assert.equal(normalisePreferences(stored({})).railAlign, 'top');
-  assert.equal(DEFAULT_PREFERENCES.railAlign, 'top');
+test('rail alignment defaults to the shipped middle placement', () => {
+  assert.equal(normalisePreferences(stored({})).railAlign, 'middle');
+  assert.equal(DEFAULT_PREFERENCES.railAlign, 'middle');
 });
 
 test('rail alignment accepts the three known values', () => {
@@ -44,9 +44,9 @@ test('rail alignment accepts the three known values', () => {
   }
 });
 
-test('an unknown rail alignment falls back to top', () => {
-  assert.equal(normalisePreferences(stored({ railAlign: 'sideways' })).railAlign, 'top');
-  assert.equal(normalisePreferences(stored({ railAlign: 42 })).railAlign, 'top');
+test('an unknown rail alignment falls back to the shipped placement', () => {
+  assert.equal(normalisePreferences(stored({ railAlign: 'sideways' })).railAlign, 'middle');
+  assert.equal(normalisePreferences(stored({ railAlign: 42 })).railAlign, 'middle');
 });
 
 test('a stored copy of the synthetic Unassigned row is dropped on load', () => {

@@ -187,14 +187,14 @@ test('the animation-speed floor moved up so "Languid" cannot come back', () => {
   assert.equal(DEFAULT_PREFERENCES.motionSpeed, 2, 'and the shipped default stays at Instant');
 });
 
-test('micro-animations default on, and only an explicit no turns them off', () => {
-  assert.equal(DEFAULT_PREFERENCES.microMotion, true);
-  // A record saved before the switch existed has no field at all: it keeps the
-  // animations rather than silently losing them on the first launch after the
-  // update.
-  assert.equal(normalisePreferences({}).microMotion, true);
+test('micro-animations ship off, and only a real boolean is trusted', () => {
+  assert.equal(DEFAULT_PREFERENCES.microMotion, false);
+  // A record saved before the switch existed has no field at all: it takes the
+  // shipped calm look rather than silently turning a different look on.
+  assert.equal(normalisePreferences({}).microMotion, false);
+  assert.equal(normalisePreferences({ microMotion: true }).microMotion, true);
   assert.equal(normalisePreferences({ microMotion: false }).microMotion, false);
-  assert.equal(normalisePreferences({ microMotion: 'no' } as never).microMotion, true, 'only a real boolean counts');
+  assert.equal(normalisePreferences({ microMotion: 'no' } as never).microMotion, false, 'only a real boolean counts');
 });
 
 test('a channel gained its own background look, and old records keep the app one', () => {

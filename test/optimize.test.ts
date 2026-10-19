@@ -26,15 +26,16 @@ test('the counter can reach its own total, and shipped defaults score honest', (
   // "maximum savings" has to be able to turn it off and count it.
   assert.equal(OPTIMISATION_COUNT, 10, 'ten switches, ten countable savings');
   const base = prefs();
-  // Shipped defaults score exactly two, and both are facts the panel shows as
-  // locked switches: no full-bleed photo is being repainted, and no mailbox is
-  // connected so nothing polls in the background. The old panel could not say
-  // that — it hid the rows, or counted a saving it had not made.
-  assert.equal(optimisationsOn(base), 2, 'no picture to repaint, no mailbox polling');
+  // Shipped defaults score exactly four: the calm look already has
+  // micro-animations off and compact spacing, and both are facts the panel
+  // shows as locked switches alongside no full-bleed photo and no mailbox
+  // polling. The old panel could not say that — it hid the rows, or counted a
+  // saving it had not made.
+  assert.equal(optimisationsOn(base), 4, 'calm motion, compact spacing, no picture, no mailbox polling');
   const saved = { ...base, ...stylePatch(base, MAX_SAVINGS_STYLE) };
   assert.equal(optimisationsOn(saved), OPTIMISATION_COUNT, 'maximum savings reaches the total');
-  assert.equal(optimisationsOn({ ...base, ...stylePatch(base, FULL_DETAIL_STYLE) }), 2);
-  assert.equal(optimisationsOn({ ...base, ...stylePatch(base, BALANCED_STYLE) }) > 2, true);
+  assert.equal(optimisationsOn({ ...base, ...stylePatch(base, FULL_DETAIL_STYLE) }), 4);
+  assert.equal(optimisationsOn({ ...base, ...stylePatch(base, BALANCED_STYLE) }) > 4, true);
 });
 
 test('a style round-trips through the preferences it describes', () => {
@@ -57,13 +58,29 @@ test('a style round-trips through the preferences it describes', () => {
   assert.equal(snapshot.mailRefreshSeconds, null, 'a plain snapshot never claims a mail cadence');
 });
 
+test('the full-detail style tracks the shipped look it promises to restore', () => {
+  // "Reset optimisations" restores this style to the live preferences, so its
+  // fields must match what a brand-new vault starts with.
+  assert.equal(FULL_DETAIL_STYLE.motion, DEFAULT_PREFERENCES.motion);
+  assert.equal(FULL_DETAIL_STYLE.motionSpeed, DEFAULT_PREFERENCES.motionSpeed);
+  assert.equal(FULL_DETAIL_STYLE.microMotion, DEFAULT_PREFERENCES.microMotion);
+  assert.equal(FULL_DETAIL_STYLE.ambient, DEFAULT_PREFERENCES.ambient);
+  assert.equal(FULL_DETAIL_STYLE.reduceTransparency, DEFAULT_PREFERENCES.reduceTransparency);
+  assert.equal(FULL_DETAIL_STYLE.density, DEFAULT_PREFERENCES.density);
+  assert.equal(FULL_DETAIL_STYLE.cardDepth, DEFAULT_PREFERENCES.cardDepth);
+  assert.equal(FULL_DETAIL_STYLE.backgroundImage, DEFAULT_PREFERENCES.backgroundImage);
+  assert.equal(FULL_DETAIL_STYLE.backgroundOpacity, DEFAULT_PREFERENCES.backgroundOpacity);
+  assert.equal(FULL_DETAIL_STYLE.backgroundBlur, DEFAULT_PREFERENCES.backgroundBlur);
+  assert.equal(FULL_DETAIL_STYLE.backgroundDim, DEFAULT_PREFERENCES.backgroundDim);
+});
+
 test('a profile never rewrites the mail cadence it did not measure', () => {
   const account = { id: newGmailAccountId(), address: 'me@gmail.com', appPassword: 'x', enabled: true, refreshSeconds: 0 };
   const base = normalisePreferences({ gmailAccounts: [account] });
   // "Off" is a deliberate choice; a profile carrying null must leave it alone,
   // which the old panel got wrong by always writing a number back.
   assert.equal(stylePatch(base, FULL_DETAIL_STYLE).gmailAccounts, undefined);
-  assert.equal(optimisationsOn(base), 1, 'an account set to Off is a real, deliberate saving');
+  assert.equal(optimisationsOn(base), 3, 'calm motion and compact spacing plus an account set to Off');
   const stretched = stylePatch(base, MAX_SAVINGS_STYLE);
   assert.equal(stretched.gmailAccounts?.[0]?.refreshSeconds, 900);
 });
@@ -107,7 +124,7 @@ test('a stored style is clamped field by field, never trusted', () => {
   );
   assert.equal(hostile!.ambient, 1);
   assert.equal(hostile!.reduceTransparency, false, 'only a real boolean counts');
-  assert.equal(hostile!.density, 'comfortable');
+  assert.equal(hostile!.density, 'compact');
   assert.equal(hostile!.cardDepth, 0);
   assert.equal(hostile!.backgroundImage, '', 'a script URL can never become a background');
   assert.equal(hostile!.backgroundOpacity, 1);
