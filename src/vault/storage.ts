@@ -156,6 +156,31 @@ export function normaliseListTabs(raw: unknown, channels: Pick<Channel, 'id'>[])
 }
 
 /**
+ * The strip a tab jump should show on arrival.
+ *
+ * The strip used to be carried only into scopes that had never been
+ * configured, so landing on All logins kept its shipped four tabs and dropped
+ * every channel tab the jump came from. The destination is now the union of
+ * the strip being used and the one already there: source order first, so the
+ * row that was on screen does not reshuffle, then any destination-only tabs.
+ * `via` (the clicked tab) and `back` (the channel the jump came from) are
+ * appended when missing, so neither direction of the jump loses its tab.
+ */
+export function mergeListTabs(
+  source: string[],
+  destination: string[],
+  via?: string,
+  back?: string,
+): string[] {
+  const merged = source.some((id) => !destination.includes(id))
+    ? [...source, ...destination.filter((id) => !source.includes(id))]
+    : [...destination];
+  if (via && !merged.includes(via)) merged.push(via);
+  if (back && !merged.includes(back)) merged.push(back);
+  return merged;
+}
+
+/**
  * One dock slot's configuration.
  *
  * `ref` is a VaultView for kind 'view', a channel id for kind 'channel', a

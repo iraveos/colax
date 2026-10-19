@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_PREFERENCES, normalisePreferences } from '../src/vault/storage.ts';
+import { DEFAULT_PREFERENCES, mergeListTabs, normalisePreferences } from '../src/vault/storage.ts';
 
 /** A mutable copy of the defaults, so a test can corrupt one field. */
 const base = () => structuredClone(DEFAULT_PREFERENCES) as unknown as Record<string, unknown>;
@@ -246,6 +246,40 @@ test('a tab pointing at the synthetic Unassigned row survives normalisation', ()
 
   assert.deepEqual(out.listTabs.all, ['tab:all', 'unassigned']);
   assert.deepEqual(out.listTabs.ch_work, ['unassigned', 'tab:weak']);
+});
+
+test('a tab jump keeps every tab from the strip it came from', () => {
+  const source = ['tab:all', 'tab:favorites', 'ch_work', 'ch_mail'];
+  // All logins has the shipped four tabs, none of the channel tabs. The jump
+  // must not replace them with the destination's own list.
+  const merged = mergeListTabs(source, ['tab:all', 'tab:favorites', 'tab:attention', 'tab:weak'], 'ch_work');
+  // Every source tab survives; the destination-only ones follow it.
+  assert.deepEqual(merged, [...source, 'tab:attention', 'tab:weak']);
+  for (const id of source) assert.ok(merged.includes(id), `${id} disappeared`);
+  // Every source tab is still there, and the destination-only ones follow.
+  assert.deepEqual(
+    mergeListTabs(source, ['tab:attention', 'tab:weak'], 'ch_work'),
+    ['tab:all', 'tab:favorites', 'ch_work', 'ch_mail', 'tab:attention', 'tab:weak'],
+  );
+});
+
+test('a tab jump adds the clicked tab and a back-tab once', () => {
+  assert.deepEqual(
+    mergeListTabs(['ch_work'], ['ch_work'], 'ch_work', 'ch_work'),
+    ['ch_work'],
+  );
+  assert.deepEqual(
+    mergeListTabs(['tab:all'], ['tab:all'], 'tab:favorites', 'ch_work'),
+    ['tab:all', 'tab:favorites', 'ch_work'],
+  );
+});
+
+test('a tab jump keeps a destination strip whose order already covers the source', () => {
+  // Nothing is missing, so the user's own order is left alone.
+  assert.deepEqual(
+    mergeListTabs(['tab:all', 'ch_work'], ['ch_work', 'tab:all', 'tab:weak'], 'ch_work'),
+    ['ch_work', 'tab:all', 'tab:weak'],
+  );
 });
 
 test('a missing listTabs record falls back to the shipped strip', () => {

@@ -33,6 +33,7 @@ import {
   DEFAULT_PREFERENCES,
   freeDockSpot,
   MAX_DOCKS,
+  mergeListTabs,
   mergeMailCache,
   newDockId,
 } from '../vault/storage.ts';
@@ -1100,41 +1101,34 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
   /**
    * Keeps the strip alive across a strip jump.
    *
-   * A tab that opens another channel used to land on a scope with no strip of
-   * its own, so the strip that had just been used vanished. Carrying the
-   * configuration over — only when the destination has never been configured —
-   * means the strip stays exactly as it was, the clicked tab included, and its
-   * other tabs keep working. The channel the jump came from is appended as a
-   * back-tab, and the channel just opened is rendered as the current one rather
-   * than being filtered out, so the set of tabs does not visibly change under
-   * the pointer and the way back is still one click away.
+   * A tab that opens another channel used to land on a scope with a different
+   * strip — or on All logins, whose shipped four tabs know nothing about the
+   * channel tabs the jump came from — so tabs vanished under the pointer. The
+   * destination strip is now the union of the source strip and whatever it
+   * already had, with the source order first so the visible row does not
+   * reshuffle. Nothing that was on screen can disappear; at most a tab the
+   * destination already owned is appended after the source ones. The channel
+   * the jump came from is appended as a back-tab, and the channel just opened
+   * is rendered as the current one rather than being filtered out.
    */
   const carryStripTo = useCallback(
     (to: string, via?: string) => {
       if (to === scopeId) return;
       const stored = vault.prefs.listTabs;
-      const own = Object.prototype.hasOwnProperty.call(stored, to);
       const source = stored[scopeId] ?? [];
-      if (!own) {
-        if (source.length === 0) return;
-        // The clicked tab is part of the source, so it lands in the copy too;
-        // the extra check only matters if the source changed in between.
-        const next = [...source];
-        if (via && !next.includes(via)) next.push(via);
-        // All logins and folders are not channels, so they cannot be tabs.
-        if (scopeId !== 'all' && !scopeId.startsWith('folder:') && !next.includes(scopeId)) {
-          next.push(scopeId);
-        }
-        void vault.updatePrefs({ listTabs: { ...stored, [to]: next } });
+      const existing = stored[to] ?? [];
+      // All logins and folders are not channels, so they cannot be tabs.
+      const back = scopeId !== 'all' && !scopeId.startsWith('folder:') ? scopeId : undefined;
+      const merged = mergeListTabs(source, existing, via, back);
+      // Skip the write when the union is exactly what is already stored;
+      // otherwise every jump would save the whole preference object.
+      if (
+        merged.length === existing.length &&
+        merged.every((id, index) => id === existing[index])
+      ) {
         return;
       }
-      // A destination configured under an older build may not name the channel
-      // the user just clicked. Keep that tab rather than silently swapping it
-      // out from under the pointer.
-      const existing = stored[to] ?? [];
-      if (via && !existing.includes(via)) {
-        void vault.updatePrefs({ listTabs: { ...stored, [to]: [...existing, via] } });
-      }
+      void vault.updatePrefs({ listTabs: { ...stored, [to]: merged } });
     },
     [scopeId, vault],
   );
