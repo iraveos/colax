@@ -393,6 +393,7 @@ export function ItemEditor({
   const [section, setSection] = useState<string>('identity');
   /** Which pasted image/video is open full-size, null when none is. */
   const [viewingNote, setViewingNote] = useState<number | null>(null);
+  const noteFileInput = useRef<HTMLInputElement>(null);
 
   /** True when this login has a factor that has not been cleared for the form. */
   const passwordLocked = Boolean(item && requiresVerification(item.security) && !verified);
@@ -853,20 +854,25 @@ export function ItemEditor({
           onFiles={(files) => void collectNoteFiles(files)}
         />
         <div className="notes-tools">
-          <label className="btn btn--secondary notes-tools__add">
+          <button
+            type="button"
+            className="btn btn--secondary"
+            onClick={() => noteFileInput.current?.click()}
+          >
             <UploadIcon width={14} height={14} />
             Attach files
-            <input
-              type="file"
-              multiple
-              hidden
-              onChange={(event) => {
-                const files = Array.from(event.currentTarget.files ?? []);
-                event.currentTarget.value = '';
-                if (files.length) void collectNoteFiles(files);
-              }}
-            />
-          </label>
+          </button>
+          <input
+            ref={noteFileInput}
+            type="file"
+            multiple
+            hidden
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = '';
+              if (files.length) void collectNoteFiles(files);
+            }}
+          />
           <span className="field__note">
             Paste, drop or upload any file — up to {Math.round(MAX_NOTE_ATTACHMENT_BYTES / 1_000_000)} MB each.
           </span>
