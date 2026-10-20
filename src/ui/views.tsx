@@ -84,6 +84,8 @@ interface CommonViewProps extends ViewActions {
   duplicateIds: Set<string>;
   showHealthBadges: boolean;
   showUrls: boolean;
+  /** Show the notes preview and attachment count on Flow cards. */
+  showNotes: boolean;
   staleDays: number;
   /** This view's own card geometry and colour, from Settings or the panel. */
   cardSize: CardSizePrefs;
@@ -645,6 +647,7 @@ export function AnimatedListView({
   items,
   duplicateIds,
   showHealthBadges,
+  showNotes,
   staleDays,
   showTagChips,
   cardSize,
@@ -869,7 +872,7 @@ export function AnimatedListView({
               </div>
             </div>
 
-            {(item.notes || item.attachments?.length) ? (
+            {showNotes && (item.notes || item.attachments?.length) ? (
               <div className="card-row__foot">
                 {item.notes ? (
                   <>

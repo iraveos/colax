@@ -58,6 +58,8 @@ const THEME_KEYS = [
   'view',
   'sort',
   'showUrls',
+  'showNotes',
+  'clickToCopy',
   'pinFavorites',
   'compactSidebar',
   'showSidebar',

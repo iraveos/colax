@@ -954,6 +954,26 @@ export function Settings(props: {
 <Row label="Show websites" hint="Display the site under each login.">
             <Toggle label="Show websites" checked={prefs.showUrls} onChange={(showUrls) => set({ showUrls })} />
           </Row>
+          <Row
+            label="Show notes on login cards"
+            hint="The notes preview and attachment count on each card. Notes stay editable, searchable and in the login itself."
+          >
+            <Toggle
+              label="Show notes on login cards"
+              checked={prefs.showNotes}
+              onChange={(showNotes) => set({ showNotes })}
+            />
+          </Row>
+          <Row
+            label="Click a login to copy its password"
+            hint="Turn this off to make copying deliberate. The copy buttons and right-click menu still work, and double-click still opens the editor."
+          >
+            <Toggle
+              label="Click a login to copy its password"
+              checked={prefs.clickToCopy}
+              onChange={(clickToCopy) => set({ clickToCopy })}
+            />
+          </Row>
           <Row label="Pin favorites" hint="Keep favorites in their own section at the top.">
             <Toggle
               label="Pin favorites"

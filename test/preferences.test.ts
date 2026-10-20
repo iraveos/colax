@@ -36,6 +36,20 @@ test('the shipped look is full, instant, high-contrast and floating', () => {
   assert.equal(prefs.floatingChrome, true);
 });
 
+test('notes previews and click-to-copy ship on, and only a real false turns them off', () => {
+  const fresh = normalisePreferences(undefined);
+  assert.equal(fresh.showNotes, true, 'cards show the notes preview by default');
+  assert.equal(fresh.clickToCopy, true, 'a single click keeps its fast path by default');
+
+  const off = normalisePreferences({ showNotes: false, clickToCopy: false });
+  assert.equal(off.showNotes, false);
+  assert.equal(off.clickToCopy, false);
+
+  // A hand-edited or half-written value must not switch either off by accident.
+  assert.equal(normalisePreferences({ showNotes: 'no' as never }).showNotes, true);
+  assert.equal(normalisePreferences({ clickToCopy: 0 as never }).clickToCopy, true);
+});
+
 test('the shipped theme is compact, soft, deep and calm', () => {
   const prefs = normalisePreferences(undefined);
   assert.equal(prefs.microMotion, false, 'no micro transitions');

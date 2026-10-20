@@ -2348,6 +2348,10 @@ const visible = useMemo(() => {
    */
   const openItem = useCallback(
     (item: VaultItem) => {
+      // A vault can opt out of the fast path entirely. The card buttons and
+      // menu still copy, and double-click still opens the editor; this only
+      // makes a plain click on the login itself inert.
+      if (!prefs.clickToCopy) return;
       const warnAboutReuse =
         prefs.warnOnReuse && item.password !== '' && duplicateIds.has(item.password) && vault.items.length > 1;
       if (!item.password) {
@@ -2365,6 +2369,7 @@ const visible = useMemo(() => {
       copy,
       notify,
       notifyReusedPasswords,
+      prefs.clickToCopy,
       prefs.warnOnReuse,
       duplicateIds,
       vault.items.length,
@@ -2492,7 +2497,8 @@ tags: prefs.tags,
           kind: 'item',
           label: 'Copy password',
           icon: <KeyIcon />,
-          shortcut: 'click',
+          // Only advertise the shortcut when a single click still copies.
+          shortcut: prefs.clickToCopy ? 'click' : undefined,
           disabled: !item.password,
           onSelect: () => {
             void copy(item.password, 'Password');
@@ -2596,7 +2602,7 @@ tags: prefs.tags,
     // out of this list froze the card menu's Card-size submenu on whatever the
     // sizes were at first render: it opened the tuner for the wrong view and
     // described numbers that no longer matched.
-    [copy, duplicateIds, toggleFavorite, toggleAttention, openUrl, requestDelete, requestEdit, cardSizeMenu, touchLogin],
+    [copy, duplicateIds, toggleFavorite, toggleAttention, openUrl, requestDelete, requestEdit, cardSizeMenu, touchLogin, prefs.clickToCopy],
   );
 
   const appMenu = useCallback((): MenuItem[] => {
@@ -3568,6 +3574,7 @@ onCreate={vault.create}
     duplicateIds,
     showHealthBadges: prefs.showHealthBadges,
     showUrls: prefs.showUrls,
+    showNotes: prefs.showNotes,
     staleDays,
     showLetterGroups: prefs.showLetterGroups,
     // Each view reads its own slice, so tuning one view never resizes another.

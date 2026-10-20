@@ -32,6 +32,8 @@ test('a theme round-trips through serialisation', () => {
   const source = prefs({
     accent: 'dusk',
     backgroundImage: 'https://example.com/bg.jpg',
+    showNotes: false,
+    clickToCopy: false,
     folders: [folder],
     channels: [channel],
     tags: [{ id: 'tg_work', name: 'work', hue: 12 }],
@@ -42,6 +44,8 @@ test('a theme round-trips through serialisation', () => {
 
   assert.equal(restored.accent, 'dusk');
   assert.equal(restored.backgroundImage, 'https://example.com/bg.jpg');
+  assert.equal(restored.showNotes, false, 'layout choices travel with the theme');
+  assert.equal(restored.clickToCopy, false);
   assert.deepEqual(restored.tags, [{ id: 'tg_work', name: 'work', hue: 12 }]);
   assert.deepEqual(restored.folders?.[0]?.tagIds, ['tg_work']);
   assert.deepEqual(restored.folders?.[0]?.altTagIds, ['tg_alt']);

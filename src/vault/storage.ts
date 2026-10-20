@@ -703,6 +703,13 @@ export interface VaultPreferences {
   sort: SortMode;
   /** Shows the URL alongside the username in rows. */
   showUrls: boolean;
+  /** Shows note previews and attachment counts on login cards. */
+  showNotes: boolean;
+  /**
+   * A plain click on a login copies its password. Off makes copying deliberate:
+   * the copy buttons and menu still work, and double-click still opens the editor.
+   */
+  clickToCopy: boolean;
   /** Pins favorites to a section above everything else. */
   pinFavorites: boolean;
   /**
@@ -1021,6 +1028,8 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   view: 'animated',
   sort: 'title',
   showUrls: true,
+  showNotes: true,
+  clickToCopy: true,
   pinFavorites: true,
   expandOnOpen: false,
   compactSidebar: false,
@@ -1232,7 +1241,10 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
   merged.showNewChannelButton = Boolean(merged.showNewChannelButton);
   merged.showCompactButton = Boolean(merged.showCompactButton);
   // Visibility switches default to shown: a missing key must never hide a
-  // button out from under the user.
+  // button out from under the user. The same rule keeps notes previews and the
+  // single-click copy fast path for every vault written before the switches.
+  merged.showNotes = merged.showNotes !== false;
+  merged.clickToCopy = merged.clickToCopy !== false;
   merged.showNewLoginButton = merged.showNewLoginButton !== false;
   merged.showBulkAddButton = merged.showBulkAddButton !== false;
   merged.showSettingsButton = merged.showSettingsButton !== false;
