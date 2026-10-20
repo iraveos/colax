@@ -7,7 +7,7 @@
  * section one click away and the height stable as fields are added.
  */
 
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { generatePassphrase, generatePassword, type GeneratorOptions } from '../crypto/passwords.ts';
 import { EMPTY_SECURITY, requiresVerification } from '../crypto/security.ts';
 import { SecurityForm } from './SecurityForm.tsx';
@@ -16,11 +16,13 @@ import {
   MAX_BACKGROUND_BYTES,
   MAX_IMAGE_EDGE,
   MAX_NOTE_ATTACHMENTS,
+  MAX_NOTE_ATTACHMENT_BYTES,
   MAX_NOTE_MEDIA_BYTES,
   attachmentBytes,
   fromDateInput,
   hueFor,
   isAllowedImageSrc,
+  isNoteMediaMime,
   relativeTime,
   toDateInput,
   type VaultItem,
@@ -28,7 +30,10 @@ import {
 import { createTag, type Tag } from '../vault/channels.ts';
 import { mailboxUsable } from '../vault/site-intel.ts';
 import { readImageFile } from './card-art.ts';
-import { mediaFilesFromTransfer, readNoteAttachment } from './note-media.ts';
+import { readNoteAttachment } from './note-media.ts';
+import { attachmentFileName, attachmentSizeLabel } from './attachment-label.ts';
+import { noteHtmlToText, sanitizeNoteHtml } from './note-html.ts';
+import { RichNotes } from './RichNotes.tsx';
 import { Alert, Modal, StrengthMeter, Toggle } from './primitives.tsx';
 import { formatLoginCompact } from './login-format.ts';
 import { markClipboardSelfWritten } from './useClipboardWatcher.ts';
@@ -42,6 +47,7 @@ import {
   EditIcon,
   EyeIcon,
   EyeOffIcon,
+  FileIcon,
   FlagIcon,
   KeyIcon,
   LockIcon,
@@ -49,6 +55,8 @@ import {
   ShieldIcon,
   TagIcon,
   TrashIcon,
+  DownloadIcon,
+  UploadIcon,
   XIcon,
   MailIcon,
   ShareIcon,
@@ -400,16 +408,26 @@ export function ItemEditor({
 
   const patch = (next: Partial<VaultItem>) => setDraft((current) => ({ ...current, ...next }));
 
+  const attachments = draft.attachments ?? [];
+  const mediaAttachments = attachments
+    .map((attachment, index) => ({ attachment, index }))
+    .filter(({ attachment }) => isNoteMediaMime(attachment.mime));
+  const fileAttachments = attachments
+    .map((attachment, index) => ({ attachment, index }))
+    .filter(({ attachment }) => !isNoteMediaMime(attachment.mime));
+  const mediaIndexes = mediaAttachments.map(({ index }) => index);
+  const viewingPosition = viewingNote === null ? -1 : mediaIndexes.indexOf(viewingNote);
+
   /**
-   * Media pasted or dropped into the notes: the files become attachments that
-   * the save seals inside the encrypted login, in the order pasted. A plain
-   * text paste (no media on the clipboard) never reaches here and keeps the
-   * default textarea behavior.
+   * Files pasted, dropped or uploaded into the notes become attachments that
+   * the save seals inside the encrypted login, in the order added. Text paste
+   * never reaches here: RichNotes keeps its formatting and only sends actual
+   * files down this path.
    */
-  const collectNoteMedia = async (files: File[]) => {
+  const collectNoteFiles = async (files: File[]) => {
     const existing = draft.attachments ?? [];
     if (existing.length >= MAX_NOTE_ATTACHMENTS) {
-      onNotify(`Notes hold the media limit (${MAX_NOTE_ATTACHMENTS}) — remove something first`);
+      onNotify(`Notes hold the attachment limit (${MAX_NOTE_ATTACHMENTS}) — remove something first`);
       return;
     }
     let used = existing.reduce((sum, attachment) => sum + attachmentBytes(attachment.dataUrl), 0);
@@ -417,14 +435,14 @@ export function ItemEditor({
     let rejected = '';
     for (const file of files) {
       if (working.length >= MAX_NOTE_ATTACHMENTS) {
-        rejected = `the ${MAX_NOTE_ATTACHMENTS}-media limit was reached first`;
+        rejected = `the ${MAX_NOTE_ATTACHMENTS}-attachment limit was reached first`;
         break;
       }
       try {
         const attachment = await readNoteAttachment(file);
         const bytes = attachmentBytes(attachment.dataUrl);
         if (used + bytes > MAX_NOTE_MEDIA_BYTES) {
-          rejected = 'the 20 MB notes-media budget was hit first';
+          rejected = `the ${Math.round(MAX_NOTE_MEDIA_BYTES / 1_000_000)} MB notes attachment budget was hit first`;
           break;
         }
         working = [...working, attachment];
@@ -446,52 +464,63 @@ export function ItemEditor({
     }
   };
 
-  const onNotesPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = mediaFilesFromTransfer(event.clipboardData);
-    if (!files.length) return; // Text: the textarea does what it always does.
-    event.preventDefault();
-    void collectNoteMedia(files);
-  };
-
-  const onNotesDrop = (event: DragEvent<HTMLTextAreaElement>) => {
-    const files = mediaFilesFromTransfer(event.dataTransfer);
-    if (!files.length) return;
-    event.preventDefault();
-    void collectNoteMedia(files);
-  };
-
-  /** Removes one attached media, keeping the viewer on a neighbouring one. */
+  /** Removes one attachment, keeping the viewer on a neighbouring picture. */
   const removeNoteMedia = (index: number) => {
     const next = (draft.attachments ?? []).filter((_, kept) => kept !== index);
     patch({ attachments: next });
-    if (!next.length) setViewingNote(null);
-    else setViewingNote(Math.min(index, next.length - 1));
+    if (viewingNote === null || !next.some((attachment) => isNoteMediaMime(attachment.mime))) {
+      setViewingNote(null);
+      return;
+    }
+    let nearest = -1;
+    for (let after = index; after < next.length; after += 1) {
+      if (isNoteMediaMime(next[after]!.mime)) {
+        nearest = after;
+        break;
+      }
+    }
+    if (nearest < 0) {
+      for (let before = Math.min(index - 1, next.length - 1); before >= 0; before -= 1) {
+        if (isNoteMediaMime(next[before]!.mime)) {
+          nearest = before;
+          break;
+        }
+      }
+    }
+    setViewingNote(nearest >= 0 ? nearest : null);
   };
 
-  /** Swaps one attached media with a neighbour, so the strip can be reordered. */
+  /** Swaps one attached picture with its nearest picture neighbour. */
   const moveNoteMedia = (index: number, direction: -1 | 1) => {
     const list = [...(draft.attachments ?? [])];
-    const [moved] = list.splice(index, 1);
-    if (!moved) return;
-    list.splice(index + direction, 0, moved);
+    const pictures = list
+      .map((attachment, at) => ({ attachment, at }))
+      .filter(({ attachment }) => isNoteMediaMime(attachment.mime));
+    const position = pictures.findIndex(({ at }) => at === index);
+    const target = pictures[position + direction];
+    if (position < 0 || !target) return;
+    [list[index], list[target.at]] = [list[target.at]!, list[index]!];
     patch({ attachments: list });
-    setViewingNote(index + direction);
+    setViewingNote(target.at);
   };
 
-  /** Capture-phase keys: Esc closes only the viewer, arrows step through, and
-      the editor's own Escape handling never sees the keypress. */
+  /** Capture-phase keys: Esc closes only the viewer, arrows step through the
+      pictures, and the editor's own Escape handling never sees the keypress. */
   useEffect(() => {
     if (viewingNote === null) return;
-    const count = draft.attachments?.length ?? 0;
+    const pictures = (draft.attachments ?? [])
+      .map((attachment, index) => ({ attachment, index }))
+      .filter(({ attachment }) => isNoteMediaMime(attachment.mime));
+    const position = pictures.findIndex(({ index }) => index === viewingNote);
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
         setViewingNote(null);
-      } else if (event.key === 'ArrowLeft' && (viewingNote ?? 0) > 0) {
-        setViewingNote((viewingNote ?? 0) - 1);
-      } else if (event.key === 'ArrowRight' && (viewingNote ?? 0) < count - 1) {
-        setViewingNote((viewingNote ?? 0) + 1);
+      } else if (event.key === 'ArrowLeft' && position > 0) {
+        setViewingNote(pictures[position - 1]!.index);
+      } else if (event.key === 'ArrowRight' && position >= 0 && position < pictures.length - 1) {
+        setViewingNote(pictures[position + 1]!.index);
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
@@ -502,7 +531,13 @@ export function ItemEditor({
     event.preventDefault();
     setSaving(true);
     try {
-      await onSave(draft);
+      // Store one sanitised HTML copy and its plain-text counterpart. The
+      // plain text is what cards, search and clipboard exports read, so it
+      // must be recomputed after sanitising rather than left as whatever the
+      // browser's innerText happened to say.
+      const notesHtml = draft.notesHtml ? sanitizeNoteHtml(draft.notesHtml) : '';
+      const notes = notesHtml ? noteHtmlToText(notesHtml) : (draft.notes ?? '');
+      await onSave({ ...draft, notes, notesHtml });
     } finally {
       setSaving(false);
     }
@@ -805,28 +840,51 @@ export function ItemEditor({
 
     notes: (
       <div className="field">
-        <label className="field__label" htmlFor="notes">
+        <div className="field__label" id="notes-label">
           Notes
-        </label>
-        <textarea
-          id="notes"
-          className="input"
-          value={draft.notes ?? ''}
-          onChange={(event) => patch({ notes: event.target.value })}
-          onPaste={onNotesPaste}
-          onDrop={onNotesDrop}
+        </div>
+        <RichNotes
+          resetKey={item?.id ?? 'new'}
+          html={draft.notesHtml}
+          text={draft.notes ?? ''}
           placeholder="Recovery codes, security questions, anything else"
+          labelledBy="notes-label"
+          onChange={({ html, text }) => patch({ notesHtml: html, notes: text })}
+          onFiles={(files) => void collectNoteFiles(files)}
         />
-        {draft.attachments?.length ? (
-          <div className="notes-media" role="list" aria-label="Media in the notes">
-            {draft.attachments.map((attachment, index) => (
-              <div className="notes-media__item" key={attachment.id} data-video={attachment.mime.startsWith('video/') || undefined}>
+        <div className="notes-tools">
+          <label className="btn btn--secondary notes-tools__add">
+            <UploadIcon width={14} height={14} />
+            Attach files
+            <input
+              type="file"
+              multiple
+              hidden
+              onChange={(event) => {
+                const files = Array.from(event.currentTarget.files ?? []);
+                event.currentTarget.value = '';
+                if (files.length) void collectNoteFiles(files);
+              }}
+            />
+          </label>
+          <span className="field__note">
+            Paste, drop or upload any file — up to {Math.round(MAX_NOTE_ATTACHMENT_BYTES / 1_000_000)} MB each.
+          </span>
+        </div>
+        {mediaAttachments.length ? (
+          <div className="notes-media" role="list" aria-label="Pictures and videos in the notes">
+            {mediaAttachments.map(({ attachment, index }, position) => (
+              <div
+                className="notes-media__item"
+                key={attachment.id}
+                data-video={attachment.mime.startsWith('video/') || undefined}
+              >
                 <button
                   type="button"
                   className="notes-media__open"
                   onClick={() => setViewingNote(index)}
-                  title="View, reorder or remove"
-                  aria-label={`Open ${attachment.mime.startsWith('video/') ? 'video' : 'image'} ${index + 1} of ${draft.attachments!.length}`}
+                  title="View, reorder or download"
+                  aria-label={`Open ${attachment.mime.startsWith('video/') ? 'video' : 'image'} ${position + 1} of ${mediaAttachments.length}`}
                 >
                   <img className="notes-media__thumb" src={attachment.dataUrl} alt="" loading="lazy" />
                 </button>
@@ -834,7 +892,7 @@ export function ItemEditor({
                 <button
                   type="button"
                   className="btn btn--icon notes-media__remove"
-                  aria-label={`Remove image/video ${index + 1} of ${draft.attachments!.length}`}
+                  aria-label={`Remove picture or video ${position + 1} of ${mediaAttachments.length}`}
                   title="Remove from the notes"
                   onClick={() => removeNoteMedia(index)}
                 >
@@ -844,16 +902,51 @@ export function ItemEditor({
             ))}
           </div>
         ) : null}
+        {fileAttachments.length ? (
+          <div className="notes-files" role="list" aria-label="Files in the notes">
+            {fileAttachments.map(({ attachment, index }) => (
+              <div className="notes-file" role="listitem" key={attachment.id}>
+                <span className="notes-file__icon" aria-hidden="true">
+                  <FileIcon />
+                </span>
+                <span className="notes-file__text">
+                  <span className="notes-file__name" title={attachmentFileName(attachment, index)}>
+                    {attachmentFileName(attachment, index)}
+                  </span>
+                  <span className="notes-file__meta">
+                    {attachmentSizeLabel(attachment)} · {attachment.mime}
+                  </span>
+                </span>
+                <a
+                  className="btn btn--icon"
+                  href={attachment.dataUrl}
+                  download={attachmentFileName(attachment, index)}
+                  title="Download"
+                  aria-label={`Download ${attachmentFileName(attachment, index)}`}
+                >
+                  <DownloadIcon />
+                </a>
+                <button
+                  type="button"
+                  className="btn btn--icon"
+                  title="Remove from the notes"
+                  aria-label={`Remove ${attachmentFileName(attachment, index)}`}
+                  onClick={() => removeNoteMedia(index)}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <p className="field__note">
-          Paste (Ctrl+V) or drop images, GIFs and videos here. Click one to open it full size — reorder or remove it
-          from there, or the small × on its corner. Encrypted with the login, never leaves the device, and History
-          keeps no media, so restoring an older version leaves the media out.
+          Formatting is kept when you paste text. Pictures, videos and other files are encrypted with the login and
+          never leave the device. History keeps no attachments, so restoring an older version leaves them out.
         </p>
-        {/* Full-size viewer with the media's own actions: approve, reorder or
-            remove without hunting for the corner chip on the thumbnail. */}
-        {viewingNote !== null && draft.attachments?.[viewingNote] ? (
+        {/* Full-size viewer with the picture's own actions: download, reorder
+            or remove without hunting for the corner chip on the thumbnail. */}
+        {viewingNote !== null && viewingPosition >= 0 && draft.attachments?.[viewingNote] ? (
           (() => {
-            const count = draft.attachments.length;
             const attachment = draft.attachments[viewingNote]!;
             const isVideo = attachment.mime.startsWith('video/');
             return (
@@ -869,15 +962,23 @@ export function ItemEditor({
                   )}
                 </div>
                 <div className="notes-lightbox__bar" onClick={(event) => event.stopPropagation()}>
-                  <button type="button" className="btn" disabled={viewingNote === 0} onClick={() => moveNoteMedia(viewingNote, -1)}>
+                  <button type="button" className="btn" disabled={viewingPosition === 0} onClick={() => moveNoteMedia(viewingNote, -1)}>
                     Move earlier
                   </button>
                   <span className="notes-lightbox__count">
-                    {viewingNote + 1} of {count}
+                    {viewingPosition + 1} of {mediaAttachments.length}
                   </span>
-                  <button type="button" className="btn" disabled={viewingNote === count - 1} onClick={() => moveNoteMedia(viewingNote, 1)}>
+                  <button type="button" className="btn" disabled={viewingPosition === mediaAttachments.length - 1} onClick={() => moveNoteMedia(viewingNote, 1)}>
                     Move later
                   </button>
+                  <a
+                    className="btn"
+                    href={attachment.dataUrl}
+                    download={attachmentFileName(attachment, viewingNote)}
+                  >
+                    <DownloadIcon width={14} height={14} />
+                    Download
+                  </a>
                 </div>
                 <button
                   type="button"

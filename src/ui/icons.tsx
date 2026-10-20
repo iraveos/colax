@@ -340,6 +340,13 @@ export const UploadIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const FileIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M6.5 3.5h7l4.5 4.5v12.5h-11.5z" />
+    <path d="M13.5 3.5V8h4.5" />
+  </Icon>
+);
+
 export const FlagIcon = ({ filled, ...props }: IconProps & { filled?: boolean }) => (
   <Icon fill={filled ? 'currentColor' : 'none'} {...props}>
     <path d="M5.5 21.5V3.5" />

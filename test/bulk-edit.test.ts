@@ -24,6 +24,13 @@ test('an untouched field is never written', () => {
   assert.equal(patch && 'password' in patch, false);
 });
 
+test('a bulk notes edit drops the old formatted copy', () => {
+  const before = item({ notes: 'plain', notesHtml: '<p><strong>plain</strong></p>' });
+  const patch = diffBulkEdit(before, { notes: 'new text' });
+  assert.equal(patch?.notes, 'new text');
+  assert.equal(patch?.notesHtml, '');
+});
+
 test('an empty BulkEdit produces no patch at all', () => {
   assert.equal(diffBulkEdit(item({ title: 'X' }), {}), undefined);
   assert.equal(countAffected([item({ title: 'X' })], {}), 0);

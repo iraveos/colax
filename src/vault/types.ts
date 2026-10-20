@@ -16,7 +16,18 @@ export interface VaultItem {
   username: string;
   password: string;
   url: string;
+  /**
+   * Plain-text form of the notes. Always present, even when `notesHtml` holds
+   * the formatted version: cards, search, clipboard exports and the history
+   * list all read this field and must never see markup.
+   */
   notes: string;
+  /**
+   * The formatted notes as sanitised HTML, when the user pasted or typed
+   * formatting. Absent on records written before rich notes existed; those
+   * fall back to the plain `notes` text.
+   */
+  notesHtml: string;
   totpSecret: string;
   favorite: boolean;
 
@@ -114,28 +125,31 @@ export const MAX_APP_BACKGROUND_BYTES = 8_000_000;
 export const MAX_IMAGE_EDGE = 1600;
 
 /**
- * One piece of media attached to a login's notes. `dataUrl` is always
- * `data:<mime>;base64,…`, which is what the renderer can show directly.
+ * One piece of media or file attached to a login's notes. `dataUrl` is always
+ * `data:<mime>;base64,…`, which is what the renderer can show or download
+ * directly. `name` is present on files attached by newer builds; older media
+ * records have only the mime to go on.
  */
 export interface VaultAttachment {
   id: string;
   mime: string;
   dataUrl: string;
+  name?: string;
 }
 
 /**
- * Notes-media caps. Pasted media is stored verbatim — canvas re-encoding
+ * Notes-attachment caps. Pasted media is stored verbatim — canvas re-encoding
  * destroys animated GIFs — so these bind the data URLs instead: base64 adds a
  * third again to the raw bytes, which `attachmentBytes` accounts for. The
  * generous budgets are bounded by the item being re-sealed and re-synced as a
- * whole on every edit, so one login with media must not become the vault.
+ * whole on every edit, so one login with attachments must not become the vault.
  */
 export const MAX_NOTE_ATTACHMENT_BYTES = 4_000_000;
 export const MAX_NOTE_ATTACHMENTS = 12;
 /** The whole item's media budget, so no single login can hold the vault. */
 export const MAX_NOTE_MEDIA_BYTES = 20_000_000;
 
-/** Images (GIFs included) and short videos; pasted text/file types outside this are ignored. */
+/** Images (GIFs included) and short videos; these get a preview, other files a download chip. */
 export function isNoteMediaMime(mime: string): boolean {
   if (typeof mime !== 'string') return false;
   return mime.startsWith('image/') || mime.startsWith('video/');
@@ -161,11 +175,11 @@ export function noteMediaBudget(
 }
 
 /**
- * Drops malformed, unsupported or over-budget pasted media when a record is
+ * Drops malformed, unsupported or over-budget attachments when a record is
  * read back (normaliseItem). An old build, a hand-edited vault or a future
  * format change can smuggle anything into the array — this is the one place
  * every load walks through, so the renderer below it only ever sees shapes it
- * can show.
+ * can show or download.
  */
 export function normaliseNoteAttachments(raw: unknown): VaultAttachment[] {
   if (!Array.isArray(raw)) return [];
@@ -175,13 +189,13 @@ export function normaliseNoteAttachments(raw: unknown): VaultAttachment[] {
     if (kept.length >= MAX_NOTE_ATTACHMENTS) break;
     const candidate = entry as Partial<VaultAttachment> | null;
     const dataUrl = typeof candidate?.dataUrl === 'string' ? candidate.dataUrl : '';
+    const mime = typeof candidate?.mime === 'string' ? candidate.mime : '';
     if (
       !candidate ||
       typeof candidate.id !== 'string' ||
       !candidate.id ||
-      typeof candidate.mime !== 'string' ||
-      !isNoteMediaMime(candidate.mime) ||
-      !dataUrl.startsWith(`data:${candidate.mime};base64,`)
+      !/^[\w.+-]+\/[\w.+-]+$/.test(mime) ||
+      !dataUrl.startsWith(`data:${mime};base64,`)
     ) {
       continue;
     }
@@ -189,7 +203,11 @@ export function normaliseNoteAttachments(raw: unknown): VaultAttachment[] {
     if (bytes === 0 || bytes > MAX_NOTE_ATTACHMENT_BYTES || used + bytes > MAX_NOTE_MEDIA_BYTES) {
       continue;
     }
-    kept.push({ id: candidate.id, mime: candidate.mime, dataUrl });
+    const name =
+      typeof candidate.name === 'string'
+        ? candidate.name.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 180)
+        : '';
+    kept.push({ id: candidate.id, mime, dataUrl, ...(name ? { name } : {}) });
     used += bytes;
   }
   return kept;
@@ -203,6 +221,7 @@ export function emptyItem(id: string, now: number = Date.now()): VaultItem {
     password: '',
     url: '',
     notes: '',
+    notesHtml: '',
     totpSecret: '',
     // Opt-in: a login with no security block is not nagged, and does not have
     // to stop working without one.
@@ -242,6 +261,8 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : created,
     passwordUpdatedAt: typeof raw.passwordUpdatedAt === 'number' ? raw.passwordUpdatedAt : created,
     usernameUpdatedAt: typeof raw.usernameUpdatedAt === 'number' ? raw.usernameUpdatedAt : created,
+    notes: typeof raw.notes === 'string' ? raw.notes : '',
+    notesHtml: typeof raw.notesHtml === 'string' ? raw.notesHtml : '',
     tags: Array.isArray(raw.tags) ? raw.tags.filter((tag): tag is string => typeof tag === 'string') : [],
     // Pasted notes-media is validated rather than trusted: old builds and
     // hand-edited vaults can carry anything in the array.

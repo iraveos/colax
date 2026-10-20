@@ -47,19 +47,26 @@ test('the media budget closes when the count or total is exhausted', () => {
   assert.equal(noteMediaBudget(full), null);
 });
 
-test('normaliseNoteAttachments keeps valid media and drops the rest', () => {
+test('normaliseNoteAttachments keeps valid media and files, dropping the rest', () => {
   const good = attachment('image/png', 1000, 'keep1');
   const gif = attachment('image/gif', 1000, 'keep2');
   const video = attachment('video/mp4', 1000, 'keep3');
+  const file: VaultAttachment = {
+    id: 'keep4',
+    mime: 'application/pdf',
+    dataUrl: mediaUrl('application/pdf', 1000),
+    name: 'recovery.pdf',
+  };
   const brokenMime = { id: 'bad1', mime: 'image/png', dataUrl: 'data:text/html;base64,AAAA' };
-  const notMedia = { id: 'bad2', mime: 'text/plain', dataUrl: 'data:text/plain;base64,AAAA' };
+  const badMime = { id: 'bad2', mime: 'not a mime', dataUrl: 'data:not a mime;base64,AAAA' };
   const oversized = attachment('image/png', MAX_NOTE_ATTACHMENT_BYTES + 5000, 'bad3');
   const junk = 'a string, not an attachment';
-  const out = normaliseNoteAttachments([good, gif, video, brokenMime, notMedia, oversized, junk, null]);
+  const out = normaliseNoteAttachments([good, gif, video, file, brokenMime, badMime, oversized, junk, null]);
   assert.deepEqual(
     out.map((kept) => kept.id),
-    ['keep1', 'keep2', 'keep3'],
+    ['keep1', 'keep2', 'keep3', 'keep4'],
   );
+  assert.equal(out[3]?.name, 'recovery.pdf');
 });
 
 test('the attachment count cap lands before a 13th media', () => {
@@ -84,10 +91,14 @@ test('the total budget drops what would overflow it', () => {
 test('normaliseItem sanitises an old or hand-edited record', () => {
   const base = normaliseItem({ id: 'x', attachments: [attachment('image/png', 100, 'ok')] });
   assert.equal(base.attachments?.length, 1);
+  assert.equal(base.notesHtml, '');
   assert.deepEqual(normaliseItem({ id: 'x', attachments: 'junk' as never }).attachments, []);
   assert.deepEqual(normaliseItem({ id: 'x' }).attachments, []);
-  // The empty shape carries the field, so callers never branch on undefined.
+  // The empty shape carries the fields, so callers never branch on undefined.
   assert.deepEqual(emptyItem('y').attachments, []);
+  assert.equal(emptyItem('y').notesHtml, '');
+  assert.equal(normaliseItem({ id: 'x', notesHtml: '<p>hi</p>' }).notesHtml, '<p>hi</p>');
+  assert.equal(normaliseItem({ id: 'x', notesHtml: 42 as never }).notesHtml, '');
 });
 
 test('history snapshots never carry the media', () => {

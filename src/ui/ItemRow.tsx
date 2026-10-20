@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { totpCode, totpSecondsRemaining } from '../crypto/totp.ts';
 import { hostnameOf, type VaultItem } from '../vault/types.ts';
 import { Avatar } from './primitives.tsx';
+import { attachmentFileName, attachmentSizeLabel } from './attachment-label.ts';
+import { RichNoteBody } from './RichNotes.tsx';
 import {
   CheckIcon,
   ClockIcon,
@@ -9,6 +11,7 @@ import {
   ExternalIcon,
   EyeIcon,
   EyeOffIcon,
+  FileIcon,
   KeyIcon,
   StarIcon,
   TrashIcon,
@@ -214,7 +217,37 @@ export function ItemRow({
             </div>
           ) : null}
 
-          {item.notes ? <div className="detail__notes">{item.notes}</div> : null}
+          {item.notes || item.notesHtml ? <RichNoteBody html={item.notesHtml} text={item.notes} /> : null}
+
+          {item.attachments?.length ? (
+            <div className="detail__attachments" role="list" aria-label="Attachments in the notes">
+              {item.attachments.map((attachment, index) => {
+                const name = attachmentFileName(attachment, index);
+                return (
+                  <a
+                    key={attachment.id}
+                    className="detail__attachment"
+                    href={attachment.dataUrl}
+                    download={name}
+                    role="listitem"
+                    title={`Download ${name}`}
+                  >
+                    {attachment.mime.startsWith('image/') ? (
+                      <img src={attachment.dataUrl} alt="" loading="lazy" />
+                    ) : attachment.mime.startsWith('video/') ? (
+                      <span className="detail__attachment-play" aria-hidden="true">
+                        ▶
+                      </span>
+                    ) : (
+                      <FileIcon width={14} height={14} />
+                    )}
+                    <span className="detail__attachment-name">{name}</span>
+                    <span className="detail__attachment-size">{attachmentSizeLabel(attachment)}</span>
+                  </a>
+                );
+              })}
+            </div>
+          ) : null}
 
           <div className="detail__actions">
             <button className="btn btn--secondary" onClick={onEdit}>

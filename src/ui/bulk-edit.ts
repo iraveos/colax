@@ -148,6 +148,9 @@ export function diffBulkEdit(item: VaultItem, edit: BulkEdit): Partial<VaultItem
   }
   if (edit.notes !== UNTOUCHED && edit.notes !== item.notes) {
     patch.notes = edit.notes;
+    // Bulk edit works in plain text; drop the old formatted copy so the new
+    // text is what the notes panel shows rather than a stale rich version.
+    patch.notesHtml = '';
     dirty = true;
   }
   // A password change is special: it also moves passwordUpdatedAt, otherwise the
