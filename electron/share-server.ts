@@ -808,6 +808,14 @@ export class ShareServer {
     }
     const share = snapshot.share;
     const ended = this.#endedReason(share);
+    const limitReason =
+      share.maxUses !== null && share.uses >= share.maxUses
+        ? 'This share has reached its device limit.'
+        : '';
+    // Approval shares are app-only. A browser has no device identity to
+    // approve, so serving it would bypass the owner's allowlist and leak the
+    // shared logins to anyone holding the link.
+    const browserEnded = ended || limitReason || (share.approval ? 'This share requires an approved device in Colax.' : '');
 
     /* ---- App API: redeem a code ---------------------------------------- */
     if (parts.length === 3 && parts[2] === 'redeem' && req.method === 'POST') {
@@ -833,21 +841,88 @@ export class ShareServer {
         sendJson(res, 403, { ok: false, error: 'PIN incorrect.' });
         return;
       }
-      if (share.maxUses !== null && share.uses >= share.maxUses) {
-        sendJson(res, 410, { ok: false, ended: true, error: 'This share has reached its use limit.' });
-        return;
-      }
       this.#clearFails(rateKey);
 
+      const now = Date.now();
       const deviceId = clean(body.deviceId, 80) || `dev_${randomId(12)}`;
       const deviceName = clean(body.deviceName, 120) || 'Colax device';
       const rawToken = randomId(32);
+      const existing = snapshot.share.devices.find((entry) => entry.id === deviceId);
+      if (existing && existing.revokedAt !== null) {
+        sendJson(res, 403, {
+          ok: false,
+          error: 'This device was removed by the owner. Ask for a new share code.',
+        });
+        return;
+      }
+
+      if (share.approval) {
+        const alreadyApproved = Boolean(existing && existing.approvedAt !== null);
+        if (!alreadyApproved && limitReason) {
+          sendJson(res, 410, { ok: false, ended: true, error: limitReason });
+          return;
+        }
+        // A pending device polls by re-redeeming. Keep its original token hash
+        // so the owner's approval does not arrive with a hash the recipient
+        // discarded; the first redeem after approval rotates and returns one.
+        const waiting = Boolean(existing && existing.approvedAt === null);
+        const device: ShareDevice = {
+          id: deviceId,
+          name: deviceName,
+          tokenHash: waiting ? existing!.tokenHash : tokenHash(rawToken),
+          createdAt: existing?.createdAt ?? now,
+          lastSeenAt: now,
+          approvedAt: alreadyApproved ? existing?.approvedAt ?? now : null,
+          lastIp: requestIp(req),
+          userAgent: clean(req.headers['user-agent'], 300),
+          revokedAt: null,
+        };
+        snapshot.share.devices = [
+          ...snapshot.share.devices.filter((entry) => entry.id !== deviceId),
+          device,
+        ].slice(-MAX_DEVICES);
+        // The owner sees one pending request, not a new activity row every
+        // time the recipient polls while waiting.
+        if (!existing || alreadyApproved) this.#record(snapshot, 'redeem', req, device);
+        if (!alreadyApproved) {
+          sendJson(res, 202, {
+            ok: true,
+            pending: true,
+            shareId: share.id,
+            shareName: share.name,
+            revision: share.revision,
+            fields: share.fields,
+            items: [],
+            deviceToken: waiting ? '' : rawToken,
+            deviceId,
+          });
+          return;
+        }
+        sendJson(res, 200, {
+          ok: true,
+          pending: false,
+          shareId: share.id,
+          shareName: share.name,
+          revision: share.revision,
+          fields: share.fields,
+          items: snapshot.items,
+          deviceToken: rawToken,
+          deviceId,
+        });
+        return;
+      }
+
+      if (limitReason) {
+        sendJson(res, 410, { ok: false, ended: true, error: limitReason });
+        return;
+      }
       const device: ShareDevice = {
         id: deviceId,
         name: deviceName,
         tokenHash: tokenHash(rawToken),
-        createdAt: Date.now(),
-        lastSeenAt: Date.now(),
+        createdAt: existing?.createdAt ?? now,
+        lastSeenAt: now,
+        approvedAt: existing?.approvedAt ?? now,
         lastIp: requestIp(req),
         userAgent: clean(req.headers['user-agent'], 300),
         revokedAt: null,
@@ -862,6 +937,7 @@ export class ShareServer {
       this.#record(snapshot, 'redeem', req, device);
       sendJson(res, 200, {
         ok: true,
+        pending: false,
         shareId: share.id,
         shareName: share.name,
         revision: share.revision,
@@ -894,6 +970,16 @@ export class ShareServer {
         sendJson(res, 410, { ok: false, ended: true, error: ended });
         return;
       }
+      if (found.device.approvedAt === null) {
+        sendJson(res, 202, {
+          ok: false,
+          pending: true,
+          error: 'Waiting for the owner to approve this device.',
+        });
+        return;
+      }
+      // Approved devices keep receiving owner edits even after the device
+      // limit is full; the limit only stops new enrolments and browser views.
       this.#record(found.snapshot, 'sync', req, found.device);
       sendJson(res, 200, {
         ok: true,
@@ -910,11 +996,11 @@ export class ShareServer {
     /* ---- Browser: PIN gate --------------------------------------------- */
     const session = this.#sessionFor(req, share.id);
     if (share.auth === 'pin' && !session) {
+      if (browserEnded) {
+        sendHtml(res, 410, errorPage(410, 'Share ended', browserEnded));
+        return;
+      }
       if (req.method === 'POST' && parts.length === 2) {
-        if (ended) {
-          sendHtml(res, 410, errorPage(410, 'Share ended', ended));
-          return;
-        }
         if (!this.#allow(rateKey)) {
           sendHtml(res, 429, errorPage(429, 'Too many attempts', 'Try again in fifteen minutes.'));
           return;
@@ -963,8 +1049,8 @@ export class ShareServer {
       sendHtml(res, 405, errorPage(405, 'Method not allowed', 'This share is read-only.'));
       return;
     }
-    if (ended) {
-      sendHtml(res, 410, errorPage(410, 'Share ended', ended));
+    if (browserEnded) {
+      sendHtml(res, 410, errorPage(410, 'Share ended', browserEnded));
       return;
     }
 

@@ -48,6 +48,28 @@ export function newDeviceId(): string {
   return `dev_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
 }
 
+const DEVICE_ID_KEY = 'colax.share.deviceId';
+let fallbackDeviceId = '';
+
+/**
+ * One stable id per browser profile. Approval polling and re-entering a code
+ * after the owner approves must look like the same device, not a new request.
+ */
+export function shareDeviceIdentity(name: string): { id: string; name: string } {
+  let id = fallbackDeviceId;
+  try {
+    id = localStorage.getItem(DEVICE_ID_KEY) ?? id;
+    if (!id) {
+      id = newDeviceId();
+      localStorage.setItem(DEVICE_ID_KEY, id);
+    }
+  } catch {
+    if (!id) id = newDeviceId();
+  }
+  fallbackDeviceId = id;
+  return { id, name };
+}
+
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return bytesToHex(new Uint8Array(digest));
@@ -111,6 +133,7 @@ export async function createShareRecord(input: {
   fields?: Partial<ShareFields>;
   expiresAt?: number | null;
   maxUses?: number | null;
+  approval?: boolean;
 }): Promise<VaultShare> {
   const now = Date.now();
   const pin = normalisePin(input.pin);
@@ -130,6 +153,7 @@ export async function createShareRecord(input: {
     maxUses,
     uses: 0,
     revokedAt: null,
+    approval: input.approval === true,
     auth: pin ? 'pin' : 'code',
     pinHash: pinRecord.hash,
     pinSalt: pinRecord.salt,

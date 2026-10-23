@@ -14,6 +14,7 @@ import {
   normaliseBaseUrl,
   shareLinkFor,
   shareStatus,
+  shareTokenFor,
   type ShareFields,
   type ShareRedeemResult,
   type ShareServerConfig,
@@ -52,6 +53,7 @@ interface ShareFormValues {
   tagIds: string[];
   expiresAt: number | null;
   maxUses: number | null;
+  approval: boolean;
   pinMode: 'code' | 'pin';
   pin: string;
   fields: ShareFields;
@@ -87,7 +89,6 @@ export function SharingPanel({
   const [publicDraft, setPublicDraft] = useState(prefs.shareServer.publicUrl);
   const [qr, setQr] = useState('');
   const [entry, setEntry] = useState('');
-  const [host, setHost] = useState('');
   const [pin, setPin] = useState('');
   const [redeeming, setRedeeming] = useState(false);
   const [redeemError, setRedeemError] = useState('');
@@ -113,6 +114,7 @@ export function SharingPanel({
     : null;
   const revealedCode = revealShareId ? revealed[revealShareId] ?? '' : '';
   const revealLink = revealedShare && revealedCode && baseUrl ? shareLinkFor(baseUrl, revealedCode) : '';
+  const revealBlockedInBrowser = Boolean(revealedShare?.approval);
 
   useEffect(() => {
     if (!revealLink) {
@@ -167,6 +169,7 @@ export function SharingPanel({
       fields: values.fields,
       expiresAt: values.expiresAt,
       maxUses: values.maxUses,
+      approval: values.approval,
     });
     await onUpdate({ shares: [share, ...prefs.shares] });
     setRevealed((current) => ({ ...current, [share.id]: generated.code }));
@@ -211,6 +214,7 @@ export function SharingPanel({
       name: values.name.trim() || share.name,
       expiresAt: values.expiresAt,
       maxUses: values.maxUses,
+      approval: values.approval,
       auth: pinHash ? 'pin' : 'code',
       pinHash,
       pinSalt,
@@ -265,16 +269,41 @@ export function SharingPanel({
   }
 
   async function disconnectDevice(share: VaultShare, deviceId: string): Promise<void> {
+    const devices = share.devices.map((device) =>
+      device.id === deviceId ? { ...device, revokedAt: Date.now() } : device,
+    );
     const next = nextShareRevision({
       ...share,
-      devices: share.devices.map((device) =>
-        device.id === deviceId ? { ...device, revokedAt: Date.now() } : device,
-      ),
+      uses: share.approval
+        ? devices.filter((device) => device.approvedAt !== null && device.revokedAt === null).length
+        : share.uses,
+      devices,
     });
     await onUpdate({
       shares: prefs.shares.map((entryShare) => (entryShare.id === share.id ? next : entryShare)),
     });
     onNotify('Device disconnected');
+  }
+
+  async function approveDevice(share: VaultShare, deviceId: string): Promise<void> {
+    const device = share.devices.find((entry) => entry.id === deviceId);
+    if (!device || device.approvedAt !== null || device.revokedAt !== null) return;
+    if (share.maxUses !== null && share.uses >= share.maxUses) {
+      onNotify('The device limit is reached. Raise it before approving another device.', 'error');
+      return;
+    }
+    const devices = share.devices.map((entry) =>
+      entry.id === deviceId ? { ...entry, approvedAt: Date.now() } : entry,
+    );
+    const next = nextShareRevision({
+      ...share,
+      uses: devices.filter((entry) => entry.approvedAt !== null && entry.revokedAt === null).length,
+      devices,
+    });
+    await onUpdate({
+      shares: prefs.shares.map((entryShare) => (entryShare.id === share.id ? next : entryShare)),
+    });
+    onNotify('Device approved');
   }
 
   async function redeem(): Promise<void> {
@@ -289,14 +318,33 @@ export function SharingPanel({
       return;
     }
     setRedeeming(true);
+    const request = () =>
+      onRedeemShare({ entry: entry.trim(), host: '', pin: normalisePin(pin) });
     try {
-      const result = await onRedeemShare({ entry: entry.trim(), host: host.trim(), pin: normalisePin(pin) });
+      let result = await request();
+      if (result.ok && result.pending) {
+        setRedeemDone('Waiting for the owner to approve this device…');
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 3_000));
+          const next = await request();
+          if (next.ok && next.pending) continue;
+          if (!next.ok) {
+            setRedeemError(next.error || 'The owner did not approve this device.');
+            return;
+          }
+          result = next;
+          break;
+        }
+        if (result.ok && result.pending) {
+          setRedeemError('The owner has not approved this device yet. Try again later.');
+          return;
+        }
+      }
       if (!result.ok) {
         setRedeemError(result.error || 'That share could not be opened.');
         return;
       }
       setEntry('');
-      setHost('');
       setPin('');
       setRedeemDone(
         result.items.length === 1
@@ -539,6 +587,7 @@ export function SharingPanel({
                         <LockIcon width="10" height="10" />
                         {share.auth === 'pin' ? 'Code + PIN' : 'Code only'}
                       </span>
+                      {share.approval ? <span className="chip chip--muted">Approval</span> : null}
                     </div>
                     <div className="sharing__item-meta">
                       {count} login{count === 1 ? '' : 's'}
@@ -557,10 +606,11 @@ export function SharingPanel({
                       <div>
                         <span className="sharing__code-label">Code</span>
                         <code className="sharing__code-value">{formatShareCode(code)}</code>
+                        <span className="field__note">Copying includes the owner’s address.</span>
                       </div>
                       <button
                         className="btn btn--quiet btn--sm"
-                        onClick={() => void copy(formatShareCode(code), 'Code')}
+                        onClick={() => void copy(shareTokenFor(baseUrl, code), 'Code')}
                       >
                         <CopyIcon width="12" height="12" /> Copy
                       </button>
@@ -617,7 +667,7 @@ export function SharingPanel({
                   {open ? (
                     <div className="sharing__details">
                       <div>
-                        <h4 className="sharing__subtitle">Connected devices</h4>
+                        <h4 className="sharing__subtitle">Devices</h4>
                         {share.devices.length === 0 ? (
                           <p className="field__note">No device has redeemed this share yet.</p>
                         ) : (
@@ -629,17 +679,41 @@ export function SharingPanel({
                                   <span>
                                     {device.revokedAt
                                       ? 'Disconnected'
-                                      : `Last seen ${new Date(device.lastSeenAt).toLocaleString()}`}
+                                      : device.approvedAt === null
+                                        ? `Waiting for approval · requested ${new Date(device.createdAt).toLocaleString()}`
+                                        : `Last seen ${new Date(device.lastSeenAt).toLocaleString()}`}
                                     {device.lastIp ? ` · ${device.lastIp}` : ''}
                                   </span>
                                 </div>
                                 {!device.revokedAt ? (
-                                  <button
-                                    className="btn btn--ghost btn--sm"
-                                    onClick={() => void disconnectDevice(share, device.id)}
-                                  >
-                                    Disconnect
-                                  </button>
+                                  <div className="sharing__device-actions">
+                                    {device.approvedAt === null ? (
+                                      <>
+                                        <button
+                                          className="btn btn--primary btn--sm"
+                                          disabled={
+                                            share.maxUses !== null && share.uses >= share.maxUses
+                                          }
+                                          onClick={() => void approveDevice(share, device.id)}
+                                        >
+                                          Approve
+                                        </button>
+                                        <button
+                                          className="btn btn--ghost btn--sm"
+                                          onClick={() => void disconnectDevice(share, device.id)}
+                                        >
+                                          Reject
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        className="btn btn--ghost btn--sm"
+                                        onClick={() => void disconnectDevice(share, device.id)}
+                                      >
+                                        Disconnect
+                                      </button>
+                                    )}
+                                  </div>
                                 ) : null}
                               </li>
                             ))}
@@ -701,8 +775,8 @@ export function SharingPanel({
           <div>
             <h3 className="sec__title">Open a share</h3>
             <p className="sharing__meta">
-              Paste the link, or type the short code and the owner’s address. Imports arrive as linked
-              copies: the owner’s later edits replace the shared fields.
+              Paste the link or the code copied from the owner. Imports arrive as linked copies: the
+              owner’s later edits replace the shared fields.
             </p>
           </div>
         </div>
@@ -712,19 +786,9 @@ export function SharingPanel({
             <input
               id="share-redeem-entry"
               className="input"
-              placeholder="https://…/s/K7M4-9Q2X-P8R3 or K7M4-9Q2X-P8R3"
+              placeholder="Paste https://…/s/… or the copied code"
               value={entry}
               onChange={(event) => setEntry(event.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label className="field__label" htmlFor="share-redeem-host">Owner’s address (for a bare code)</label>
-            <input
-              id="share-redeem-host"
-              className="input"
-              placeholder="192.168.1.5:47821"
-              value={host}
-              onChange={(event) => setHost(event.target.value)}
             />
           </div>
           <div className="field">
@@ -814,12 +878,14 @@ export function SharingPanel({
               </button>
               {revealLink ? (
                 <>
-                  <button
-                    className="btn btn--secondary"
-                    onClick={() => getPlatform().openExternal(revealLink)}
-                  >
-                    <ExternalIcon width="14" height="14" /> Open in browser
-                  </button>
+                  {!revealBlockedInBrowser ? (
+                    <button
+                      className="btn btn--secondary"
+                      onClick={() => getPlatform().openExternal(revealLink)}
+                    >
+                      <ExternalIcon width="14" height="14" /> Open in browser
+                    </button>
+                  ) : null}
                   <button
                     className="btn btn--primary"
                     onClick={() => void copy(revealLink, 'Link')}
@@ -842,21 +908,37 @@ export function SharingPanel({
             </code>
             <button
               className="btn btn--secondary"
-              onClick={() => void copy(formatShareCode(revealedCode), 'Code')}
+              onClick={() =>
+                void copy(
+                  baseUrl ? shareTokenFor(baseUrl, revealedCode) : formatShareCode(revealedCode),
+                  'Code',
+                )
+              }
             >
               <CopyIcon width="13" height="13" /> Copy code
             </button>
+            <span className="field__note">
+              The copied code includes the owner’s address, so the recipient pastes it as one value and
+              never needs a separate host or port.
+            </span>
           </div>
           {baseUrl ? (
             <div className="sharing__reveal">
               <span className="sharing__code-label">Full link</span>
               <code className="sharing__code-value">{revealLink}</code>
               <span className="field__note">
-                The link includes the server address. A bare code still needs the owner’s address when it
-                is typed into another device. Any browser can open this link; importing it into Colax
-                desktop or the web build creates the linked copy that keeps updating.
+                The link and the copied code both include the owner’s address. Import it into Colax
+                desktop or the web build to create the linked copy that keeps updating.
               </span>
-              {qr ? (
+              {revealBlockedInBrowser ? (
+                <Alert tone="info">
+                  This share requires device approval, so the browser view is disabled. The recipient
+                  must import the link into Colax.
+                </Alert>
+              ) : (
+                <span className="field__note">Any browser can open this link read-only.</span>
+              )}
+              {qr && !revealBlockedInBrowser ? (
                 <div className="sharing__qr">
                   <img src={qr} alt="QR code for the share link" />
                   <span className="field__note">Scan with a phone camera to open the browser view.</span>
@@ -962,6 +1044,7 @@ function ShareForm({
   );
   const [expires, setExpires] = useState(dateValue(share?.expiresAt ?? null));
   const [maxUses, setMaxUses] = useState(share?.maxUses === null || share?.maxUses === undefined ? '' : String(share.maxUses));
+  const [approval, setApproval] = useState(share?.approval ?? false);
   const [pinMode, setPinMode] = useState<'code' | 'pin'>(share?.auth ?? 'code');
   const [pin, setPin] = useState('');
   const [fields, setFields] = useState<ShareFields>(
@@ -1019,6 +1102,7 @@ function ShareForm({
         tagIds,
         expiresAt: endOfDate(expires),
         maxUses: maxUses.trim() === '' ? null : Math.max(1, Math.round(Number(maxUses))),
+        approval,
         pinMode,
         pin,
         fields,
@@ -1169,6 +1253,19 @@ function ShareForm({
         ) : null}
       </div>
 
+      <div className="field">
+        <label className="field__label">Devices</label>
+        <Toggle
+          label="Approve new devices"
+          checked={approval}
+          onChange={setApproval}
+        />
+        <span className="field__hint">
+          New devices wait in Devices &amp; activity until you approve them. Browser links are disabled
+          for approval shares, and the link stops opening once the device limit is reached.
+        </span>
+      </div>
+
       <details className="sharing__advanced">
         <summary>Advanced rules</summary>
         <div className="sharing__grid">
@@ -1193,7 +1290,9 @@ function ShareForm({
               value={maxUses}
               onChange={(event) => setMaxUses(event.target.value.replace(/\D/g, '').slice(0, 4))}
             />
-            <span className="field__hint">How many devices may redeem the code.</span>
+            <span className="field__hint">
+              How many devices may be approved. The browser link also stops opening at this limit.
+            </span>
           </div>
         </div>
 

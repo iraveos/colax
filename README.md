@@ -180,6 +180,7 @@ web build can import it as a linked copy too. Only hosting needs the desktop app
 
 ### How it works
 
+There is no fixed number of share codes: create as many independent shares as you need.
 Issuing a share in **Settings → Sharing**:
 
 1. Turn on the **Sharing server**. It defaults to `127.0.0.1:47821`; choose **Local network**
@@ -189,12 +190,17 @@ Issuing a share in **Settings → Sharing**:
    app. The first run downloads Cloudflare's signed `cloudflared` helper (about 60 MB).
 3. Pick one or more **tags** to include every login carrying them. New logins tagged later
    join automatically; individual logins can still be added from the optional picker.
-4. Choose code-only or code + PIN. Expiry, device limit and the opt-in fields (notes, 2FA
-   seed, attachments) live under **Advanced rules**. Username, password, website and the
-   login's background/avatar/accent are always included.
-5. Copy the 12-character code or the full link, or scan the QR code with a phone. The code is
-   shown once. Colax stores only a SHA-256 hash of it, so a lost code is replaced with
-   **New code**, not recovered.
+4. Choose code-only or code + PIN. Turn on **Approve new devices** if every new device must
+   wait in **Devices & activity** before it can sync. Approval shares are app-only. Expiry,
+   device limit and the opt-in fields (notes, 2FA seed, attachments) live under **Advanced
+   rules**. Username, password, website and the login's background/avatar/accent are always
+   included.
+5. Copy the 12-character code or the full link, or scan the QR code with a phone. A copied
+   code includes the owner's address, so the recipient pastes one value — there is no host or
+   port field. The code is shown once; Colax stores only a SHA-256 hash, so a lost code is
+   replaced with **New code**, not recovered.
+6. Once the device limit is reached, the share page stops opening at all. Approved devices
+   keep syncing owner edits; new devices and browser views are refused.
 
 The recipient can either:
 
@@ -236,6 +242,9 @@ app endpoints are CORS-enabled, so the imported copy syncs on unlock, on the tim
   process memory, and is stopped and cleared on lock, reload, renderer exit or quit.
 - PINs are PBKDF2-HMAC-SHA-256 (210,000 iterations). Device tokens are random 32-byte values,
   stored only as hashes. Redemption and PIN entry are rate-limited per address and code.
+- Approval shares record a pending device but serve nothing until the owner approves it. They
+  are app-only, because a browser has no device identity to approve. Once the device limit is
+  reached, browser pages return an ended page rather than the shared logins.
 - The two app JSON endpoints (`redeem`, `sync`) allow cross-origin requests so the web build
   can import a share. They use no cookies: the share code and device bearer token are the
   authentication. Browser HTML pages remain same-origin and do not expose CORS.

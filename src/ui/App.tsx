@@ -91,7 +91,7 @@ import type {
   ShareSyncShareResult,
 } from '../lib/shares.ts';
 import { redeemShare } from '../lib/share-client.ts';
-import { makeShareLink, newDeviceId, sharedLoginPatch } from '../vault/shares.ts';
+import { makeShareLink, shareDeviceIdentity, sharedLoginPatch } from '../vault/shares.ts';
 import { useLinkedSync, useShareServer } from './useShares.ts';
 import {
   AlertIcon,
@@ -366,17 +366,19 @@ export function App() {
   const redeemShared = useCallback(
     async (input: { entry: string; host: string; pin: string }): Promise<ShareRedeemResult> => {
       const api = getPlatform().share;
-      const deviceId = newDeviceId();
+      const device = shareDeviceIdentity('Colax');
+      const deviceName = `${api ? 'Colax desktop' : 'Colax web'} · ${device.id.slice(-4).toUpperCase()}`;
       const result = api
-        ? await api.redeem({ ...input, deviceId, deviceName: 'Colax desktop' })
+        ? await api.redeem({ ...input, deviceId: device.id, deviceName })
         : await redeemShare({
             entry: input.entry,
             host: input.host,
             pin: input.pin,
-            deviceId,
-            deviceName: 'Colax web',
+            deviceId: device.id,
+            deviceName,
           });
       if (!result.ok) return result;
+      if (result.pending) return result;
       if (!result.deviceToken) {
         return { ...result, ok: false, error: 'The owner’s device did not return a device token.' };
       }
@@ -425,6 +427,9 @@ export function App() {
   /** Device and access events from this device's own share server. */
   const handleShareEvent = useCallback(
     (event: ShareServerEvent) => {
+      if (event.device && event.device.approvedAt === null && event.access.action === 'redeem') {
+        notify(`${event.device.name} is waiting for your approval`);
+      }
       void vault.updatePrefsWith((current) => ({
         shares: current.shares.map((share) => {
           if (share.id !== event.shareId) return share;
@@ -502,7 +507,7 @@ export function App() {
       });
       return { tagId, channelId };
     },
-    [vault.updatePrefsWith],
+    [notify, vault.updatePrefsWith],
   );
 
   const shareServerStatus = useShareServer({

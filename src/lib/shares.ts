@@ -10,7 +10,6 @@
 export const SHARE_CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 export const SHARE_CODE_LENGTH = 12;
 export const SHARE_CODE_GROUP = 4;
-export const MAX_SHARES = 100;
 export const MAX_SHARE_DEVICES = 50;
 export const MAX_SHARE_ACCESS = 250;
 export const DEFAULT_SHARE_PORT = 47821;
@@ -35,6 +34,8 @@ export interface ShareDevice {
   tokenHash: string;
   createdAt: number;
   lastSeenAt: number;
+  /** Null while a new device is waiting for the owner's approval. */
+  approvedAt: number | null;
   lastIp: string;
   userAgent: string;
   revokedAt: number | null;
@@ -66,6 +67,8 @@ export interface VaultShare {
   /** Successful device enrolments. Syncs do not count again. */
   uses: number;
   revokedAt: number | null;
+  /** New devices wait for the owner before they can sync. */
+  approval: boolean;
   auth: ShareAuthMode;
   pinHash: string;
   pinSalt: string;
@@ -169,6 +172,8 @@ export interface ShareRedeemInput {
 
 export interface ShareRedeemResult {
   ok: boolean;
+  /** True when the device was recorded but the owner has not approved it yet. */
+  pending: boolean;
   error: string;
   shareId: string;
   shareName: string;
@@ -280,6 +285,18 @@ export function shareLinkFor(baseUrl: string, code: string): string {
 }
 
 /**
+ * A one-piece code for people who copy the short form instead of the link.
+ * It keeps the host attached so the recipient never has to type a separate
+ * address; the 12 visible characters are still the secret.
+ */
+export function shareTokenFor(baseUrl: string, code: string): string {
+  const base = normaliseBaseUrl(baseUrl);
+  // Keep the scheme in the token: a public tunnel is HTTPS-only, and stripping
+  // it would make a pasted code try plain HTTP on the recipient.
+  return base ? `${formatShareCode(code)}@${base}` : formatShareCode(code);
+}
+
+/**
  * Reads what a person actually pastes. Accepts:
  *   https://host/s/ABCD-EFGH-JKLM
  *   ABCD-EFGH-JKLM@192.168.1.5:47821
@@ -361,6 +378,13 @@ function normaliseShareDevice(raw: unknown): ShareDevice | null {
     tokenHash,
     createdAt: cleanNumber(record.createdAt, Date.now()),
     lastSeenAt: cleanNumber(record.lastSeenAt, Date.now()),
+    // Records written before approval existed were enrolled immediately.
+    approvedAt:
+      record.approvedAt === undefined
+        ? cleanNumber(record.createdAt, Date.now())
+        : record.approvedAt === null
+          ? null
+          : cleanNumber(record.approvedAt, 0) || null,
     lastIp: cleanString(record.lastIp, 80),
     userAgent: cleanString(record.userAgent, 300),
     revokedAt: record.revokedAt === null ? null : cleanNumber(record.revokedAt, 0) || null,
@@ -417,6 +441,7 @@ export function normaliseVaultShare(raw: unknown, now = Date.now()): VaultShare 
     maxUses,
     uses: Math.max(0, Math.round(cleanNumber(record.uses, 0))),
     revokedAt: record.revokedAt === null ? null : cleanNumber(record.revokedAt, 0) || null,
+    approval: record.approval === true,
     auth: record.auth === 'pin' ? 'pin' : 'code',
     pinHash: cleanString(record.pinHash, 256),
     pinSalt: cleanString(record.pinSalt, 128),
@@ -434,8 +459,7 @@ export function normaliseShares(raw: unknown, now = Date.now()): VaultShare[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .map((entry) => normaliseVaultShare(entry, now))
-    .filter((entry): entry is VaultShare => entry !== null)
-    .slice(0, MAX_SHARES);
+    .filter((entry): entry is VaultShare => entry !== null);
 }
 
 export function normaliseSharedLink(raw: unknown): SharedLink | null {

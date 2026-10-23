@@ -10,6 +10,7 @@ import {
   normaliseShareServer,
   parseShareEntry,
   shareIsActive,
+  shareTokenFor,
   shareStatus,
   type VaultShare,
 } from '../src/lib/shares.ts';
@@ -51,6 +52,16 @@ test('share codes tolerate display grouping and reject bad characters', () => {
     code,
     baseUrl: 'https://host:47821',
   });
+  const token = shareTokenFor('http://192.168.1.5:47821', code);
+  assert.equal(token, `${formatShareCode(code)}@http://192.168.1.5:47821`);
+  assert.deepEqual(parseShareEntry(token), {
+    code,
+    baseUrl: 'http://192.168.1.5:47821',
+  });
+  assert.equal(
+    shareTokenFor('https://share.example.com', code),
+    `${formatShareCode(code)}@https://share.example.com`,
+  );
   assert.deepEqual(parseShareEntry(`${formatShareCode(code)}@192.168.1.5:47821`), {
     code,
     baseUrl: 'http://192.168.1.5:47821',
@@ -225,6 +236,7 @@ test('the share server pairs devices, propagates edits and honours revocation', 
           tokenHash,
           createdAt: Date.now(),
           lastSeenAt: Date.now(),
+          approvedAt: Date.now(),
           lastIp: '127.0.0.1',
           userAgent: 'test',
           revokedAt: null,
@@ -399,6 +411,89 @@ test('the shared client can redeem and sync the same way a browser does', async 
   }
 });
 
+test('approval shares wait for the owner, then release the approved device', async () => {
+  const server = new ShareServer();
+  const item = sampleItem('login-approval');
+  const code = makeShareCode().code;
+  const share = await createShareRecord({
+    name: 'Approved only',
+    code,
+    pin: '',
+    itemIds: [item.id],
+    approval: true,
+  });
+  try {
+    const status = await server.start({
+      enabled: true,
+      port: 0,
+      bind: 'local',
+      tunnel: 'off',
+      publicUrl: '',
+    });
+    server.sync([{ share, items: [sharedLoginFromItem(item, share.fields)] }]);
+    const pathCode = encodeURIComponent(formatShareCode(code));
+
+    // A browser has no device identity to approve, so the page stays empty.
+    const browser = await fetch(`${status.localUrl}/s/${pathCode}`);
+    assert.equal(browser.status, 410);
+    assert.match(await browser.text(), /approved device/i);
+
+    const pending = await fetch(`${status.localUrl}/s/${pathCode}/redeem`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceId: 'dev-approval', deviceName: 'New phone' }),
+    });
+    assert.equal(pending.status, 202);
+    const pendingBody = await pending.json() as {
+      pending: boolean;
+      deviceToken: string;
+      items: unknown[];
+    };
+    assert.equal(pendingBody.pending, true);
+    assert.equal(pendingBody.items.length, 0);
+    assert.ok(pendingBody.deviceToken.length > 20);
+
+    const pendingSync = await fetch(`${status.localUrl}/s/${pathCode}/sync`, {
+      headers: { authorization: `Bearer ${pendingBody.deviceToken}` },
+    });
+    assert.equal(pendingSync.status, 202);
+    assert.equal((await pendingSync.json() as { pending: boolean }).pending, true);
+
+    const tokenHash = createHash('sha256').update(pendingBody.deviceToken).digest('hex');
+    const approvedAt = Date.now();
+    server.sync([
+      {
+        share: nextShareRevision({
+          ...share,
+          uses: 1,
+          devices: [
+            {
+              id: 'dev-approval',
+              name: 'New phone',
+              tokenHash,
+              createdAt: approvedAt,
+              lastSeenAt: approvedAt,
+              approvedAt,
+              lastIp: '127.0.0.1',
+              userAgent: 'test',
+              revokedAt: null,
+            },
+          ],
+        }),
+        items: [sharedLoginFromItem(item, share.fields)],
+      },
+    ]);
+
+    const synced = await fetch(`${status.localUrl}/s/${pathCode}/sync`, {
+      headers: { authorization: `Bearer ${pendingBody.deviceToken}` },
+    });
+    assert.equal(synced.status, 200);
+    assert.equal((await synced.json() as { items: { title: string }[] }).items[0]?.title, item.title);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('a max-use share refuses the next device', async () => {
   const server = new ShareServer();
   const item = sampleItem('login-2');
@@ -427,6 +522,11 @@ test('a max-use share refuses the next device', async () => {
     });
     assert.equal(second.status, 410);
     assert.equal((await second.json() as { ended: boolean }).ended, true);
+    // The browser page is not a place to keep leaking credentials after the
+    // device limit has been reached.
+    const page = await fetch(`${status.localUrl}/s/${pathCode}`);
+    assert.equal(page.status, 410);
+    assert.match(await page.text(), /device limit/i);
   } finally {
     await server.stop();
   }

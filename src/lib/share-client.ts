@@ -23,6 +23,7 @@ import {
 function emptyRedeem(error: string): ShareRedeemResult {
   return {
     ok: false,
+    pending: false,
     error,
     shareId: '',
     shareName: '',
@@ -77,7 +78,9 @@ export async function redeemShare(input: ShareRedeemInput): Promise<ShareRedeemR
   const { code, baseUrl } = shareBase(input.entry, input.host);
   if (!code) return emptyRedeem('That does not look like a share code.');
   if (!baseUrl) {
-    return emptyRedeem('Enter the owner’s address too, for example 192.168.1.5:47821.');
+    return emptyRedeem(
+      'Paste the full link or the code copied from the owner. A copied code already includes the owner’s address.',
+    );
   }
   const url = `${baseUrl}/s/${encodeURIComponent(formatShareCode(code))}/redeem`;
   try {
@@ -90,9 +93,10 @@ export async function redeemShare(input: ShareRedeemInput): Promise<ShareRedeemR
         deviceName: input.deviceName,
       }),
     });
-    if (status === 200 && body.ok === true && Array.isArray(body.items)) {
+    if ((status === 200 || status === 202) && body.ok === true && Array.isArray(body.items)) {
       return {
         ok: true,
+        pending: body.pending === true,
         error: '',
         shareId: typeof body.shareId === 'string' ? body.shareId : '',
         shareName: typeof body.shareName === 'string' ? body.shareName : 'Shared logins',
