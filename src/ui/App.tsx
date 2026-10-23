@@ -4,6 +4,7 @@ import { findReusedPasswords, hostnameOf, isWeakPassword, type VaultItem } from 
 import {
   applyChannel,
   createChannel,
+  createFolder,
   createTag,
   normaliseChannels,
   normaliseSidebar,
@@ -89,6 +90,7 @@ import type {
   ShareServerEvent,
   ShareSyncShareResult,
 } from '../lib/shares.ts';
+import { redeemShare } from '../lib/share-client.ts';
 import { makeShareLink, newDeviceId, sharedLoginPatch } from '../vault/shares.ts';
 import { useLinkedSync, useShareServer } from './useShares.ts';
 import {
@@ -163,6 +165,41 @@ function stripChannel(rows: SidebarEntry[], id: string): SidebarEntry[] {
 
 function addSeparatorAtEnd(rows: SidebarEntry[]): SidebarEntry[] {
   return [...rows, { kind: 'separator', id: `sep_${Math.random().toString(36).slice(2, 8)}` }];
+}
+
+/** Stable ids keep a share's tag/channel from being duplicated on every sync. */
+function sharedTagId(shareId: string): string {
+  return `tg_shared_${shareId.replace(/[^a-z0-9]/gi, '').slice(-16)}`;
+}
+
+function sharedChannelId(shareId: string): string {
+  return `ch_shared_${shareId.replace(/[^a-z0-9]/gi, '').slice(-16)}`;
+}
+
+const SHARED_FOLDER_ID = 'fd_shared_logins';
+
+function addChannelToSharedFolder(
+  rows: SidebarEntry[],
+  folderId: string,
+  channelId: string,
+): SidebarEntry[] {
+  const present =
+    rows.some((row) => row.kind === 'channel' && row.id === channelId) ||
+    rows.some(
+      (row) =>
+        row.kind === 'folder' &&
+        row.children.some((child) => child.kind === 'channel' && child.id === channelId),
+    );
+  if (present) return rows;
+  const folder = rows.find((row) => row.kind === 'folder' && row.id === folderId);
+  if (!folder) {
+    return [...rows, { kind: 'folder', id: folderId, children: [{ kind: 'channel', id: channelId }] }];
+  }
+  return rows.map((row) =>
+    row.kind === 'folder' && row.id === folderId
+      ? { ...row, children: [...row.children, { kind: 'channel', id: channelId }] }
+      : row,
+  );
 }
 
 /** Human names for the rail positions, shared by the menu and Settings. */
@@ -277,10 +314,16 @@ export function App() {
         const template = copies[0]?.shareLink;
         if (!template) continue;
         const known = new Set(copies.map((copy) => copy.shareLink?.sourceItemId));
-        for (const shared of result.items) {
-          if (known.has(shared.id)) continue;
+        const fresh = result.items.filter((shared) => !known.has(shared.id));
+        if (fresh.length === 0) continue;
+        const { tagId } = await ensureSharedChannel(
+          result.shareId,
+          result.shareName || template.shareName,
+        );
+        for (const shared of fresh) {
           adds.push({
             ...sharedLoginPatch(shared, result.fields),
+            tags: [tagId],
             shareLink: makeShareLink({
               shareId: result.shareId,
               sourceItemId: shared.id,
@@ -323,30 +366,22 @@ export function App() {
   const redeemShared = useCallback(
     async (input: { entry: string; host: string; pin: string }): Promise<ShareRedeemResult> => {
       const api = getPlatform().share;
-      if (!api) {
-        return {
-          ok: false,
-          error: 'Sharing needs the Colax desktop app.',
-          shareId: '',
-          shareName: '',
-          ownerUrl: '',
-          code: '',
-          deviceToken: '',
-          revision: 0,
-          fields: { notes: true, totp: false, attachments: false },
-          items: [],
-        };
-      }
-      const result = await api.redeem({
-        ...input,
-        deviceId: newDeviceId(),
-        deviceName: 'Colax desktop',
-      });
+      const deviceId = newDeviceId();
+      const result = api
+        ? await api.redeem({ ...input, deviceId, deviceName: 'Colax desktop' })
+        : await redeemShare({
+            entry: input.entry,
+            host: input.host,
+            pin: input.pin,
+            deviceId,
+            deviceName: 'Colax web',
+          });
       if (!result.ok) return result;
       if (!result.deviceToken) {
         return { ...result, ok: false, error: 'The owner’s device did not return a device token.' };
       }
 
+      const { tagId } = await ensureSharedChannel(result.shareId, result.shareName);
       const existing = vault.service.items ?? vault.items;
       await vault.mutate(
         async () => {
@@ -358,6 +393,7 @@ export function App() {
             );
             const patch: Partial<VaultItem> = {
               ...sharedLoginPatch(shared, result.fields),
+              tags: [...new Set([...(copy?.tags ?? []), tagId])],
               shareLink: makeShareLink({
                 shareId: result.shareId,
                 sourceItemId: shared.id,
@@ -408,6 +444,63 @@ export function App() {
           };
         }),
       }));
+    },
+    [vault.updatePrefsWith],
+  );
+
+  /**
+   * Files a share under one tag and one channel named after the owner's share
+   * (which defaults to their machine name). The folder groups every share, so a
+   * recipient's rail stays tidy instead of growing a tag channel per login.
+   */
+  const ensureSharedChannel = useCallback(
+    async (shareId: string, shareName: string): Promise<{ tagId: string; channelId: string }> => {
+      const tagId = sharedTagId(shareId);
+      const channelId = sharedChannelId(shareId);
+      const name = shareName.trim() || 'Shared logins';
+      await vault.updatePrefsWith((current) => {
+        const existingTag = current.tags.find((tag) => tag.id === tagId);
+        const tag = existingTag ?? { ...createTag(name, current.tags), id: tagId, name };
+        const tags = existingTag ? current.tags : [...current.tags, tag];
+        const existingFolder = current.folders.find((folder) => folder.id === SHARED_FOLDER_ID);
+        const folder =
+          existingFolder ??
+          createFolder('Shared logins', {
+            id: SHARED_FOLDER_ID,
+            icon: 'layers',
+            hue: 212,
+            tagIds: [],
+            altTagIds: [],
+          });
+        const folders = existingFolder ? current.folders : [...current.folders, folder];
+        const existingChannel = current.channels.find((channel) => channel.id === channelId);
+        const channel =
+          existingChannel ??
+          createChannel(name, {
+            id: channelId,
+            kind: 'tags',
+            tagIds: [tagId],
+            icon: 'layers',
+            hue: tag.hue,
+            showMail: false,
+          });
+        const channels = existingChannel
+          ? existingChannel.tagIds.includes(tagId)
+            ? current.channels
+            : current.channels.map((entry) =>
+                entry.id === channelId
+                  ? { ...entry, tagIds: [...new Set([...entry.tagIds, tagId])] }
+                  : entry,
+              )
+          : [...current.channels, channel];
+        return {
+          tags,
+          folders,
+          channels,
+          sidebar: addChannelToSharedFolder(current.sidebar, SHARED_FOLDER_ID, channelId),
+        };
+      });
+      return { tagId, channelId };
     },
     [vault.updatePrefsWith],
   );
@@ -4826,6 +4919,10 @@ onCreate={vault.create}
                   username: editing.username,
                   password: editing.password,
                   url: editing.url,
+                  accentHue: editing.accentHue,
+                  backgroundImage: editing.backgroundImage,
+                  backgroundBlur: editing.backgroundBlur,
+                  avatarImage: editing.avatarImage,
                   ...(link.fields.notes
                     ? { notes: editing.notes, notesHtml: editing.notesHtml }
                     : {}),

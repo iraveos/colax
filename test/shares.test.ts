@@ -13,6 +13,7 @@ import {
   shareStatus,
   type VaultShare,
 } from '../src/lib/shares.ts';
+import { redeemShare, syncLinkedShares } from '../src/lib/share-client.ts';
 import { emptyItem } from '../src/vault/types.ts';
 import {
   buildShareSnapshots,
@@ -23,6 +24,7 @@ import {
   nextShareRevision,
   normalisePin,
   sharedLoginFromItem,
+  sharedLoginPatch,
   verifyPinHash,
 } from '../src/vault/shares.ts';
 
@@ -96,6 +98,41 @@ test('snapshots obey the exposed-fields rules', () => {
   assert.equal(snapshots[0]?.items[0]?.password, item.password);
 });
 
+test('a tag-selected share follows tag membership and carries appearance', async () => {
+  const work = {
+    ...sampleItem('login-tag-work'),
+    title: 'Work login',
+    tags: ['tg_work'],
+    accentHue: 42,
+    backgroundImage: 'https://images.example.com/desk.jpg',
+    backgroundBlur: 12,
+    avatarImage: 'data:image/png;base64,AAAA',
+  };
+  const home = { ...sampleItem('login-tag-home'), title: 'Home login', tags: ['tg_home'] };
+  const share = await createShareRecord({
+    name: 'Tag share',
+    code: makeShareCode().code,
+    pin: '',
+    itemIds: [],
+    tagIds: ['tg_work'],
+  });
+  const first = buildShareSnapshots([share], [work, home])[0]!;
+  assert.deepEqual(first.share.itemIds, ['login-tag-work']);
+  assert.equal(first.items.length, 1);
+  assert.equal(first.items[0]?.accentHue, 42);
+  assert.equal(first.items[0]?.backgroundBlur, 12);
+  assert.equal(first.items[0]?.backgroundImage, 'https://images.example.com/desk.jpg');
+  const patch = sharedLoginPatch(first.items[0]!);
+  assert.equal(patch.accentHue, 42);
+  assert.equal(patch.backgroundBlur, 12);
+  assert.equal(patch.avatarImage, 'data:image/png;base64,AAAA');
+
+  const later = { ...sampleItem('login-tag-later'), tags: ['tg_work'] };
+  const second = buildShareSnapshots([share], [work, home, later])[0]!;
+  assert.deepEqual(second.share.itemIds, ['login-tag-work', 'login-tag-later']);
+  assert.equal(second.items.length, 2);
+});
+
 test('the share server pairs devices, propagates edits and honours revocation', async () => {
   const server = new ShareServer();
   const item = sampleItem();
@@ -122,6 +159,17 @@ test('the share server pairs devices, propagates edits and honours revocation', 
     const base = status.localUrl;
     const pathCode = encodeURIComponent(formatShareCode(code));
 
+    const preflight = await fetch(`${base}/s/${pathCode}/redeem`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'http://localhost:5173',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get('access-control-allow-origin'), '*');
+
     const beforeSync = await fetch(`${base}/s/${pathCode}/redeem`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -145,6 +193,7 @@ test('the share server pairs devices, propagates edits and honours revocation', 
       body: JSON.stringify({ pin: '4821', deviceId: 'dev-1', deviceName: 'Laptop' }),
     });
     assert.equal(redeemed.status, 200);
+    assert.equal(redeemed.headers.get('access-control-allow-origin'), '*');
     const redeemedBody = await redeemed.json() as {
       ok: boolean;
       deviceToken: string;
@@ -302,6 +351,49 @@ test('a new code disconnects the old devices and resets the use count', async ()
     });
     assert.equal(fresh.status, 200);
     assert.equal((await fresh.json() as { ok: boolean }).ok, true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('the shared client can redeem and sync the same way a browser does', async () => {
+  const server = new ShareServer();
+  const item = sampleItem('login-client');
+  const code = makeShareCode().code;
+  const share = await createShareRecord({
+    name: 'Client share',
+    code,
+    pin: '',
+    itemIds: [item.id],
+  });
+  try {
+    const status = await server.start({
+      enabled: true,
+      port: 0,
+      bind: 'local',
+      tunnel: 'off',
+      publicUrl: '',
+    });
+    server.sync([{ share, items: [sharedLoginFromItem(item, share.fields)] }]);
+    const result = await redeemShare({
+      entry: `${status.localUrl}/s/${formatShareCode(code)}`,
+      host: '',
+      pin: '',
+      deviceId: 'web-device',
+      deviceName: 'Browser',
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.items[0]?.title, item.title);
+    const synced = await syncLinkedShares([
+      {
+        shareId: result.shareId,
+        ownerUrl: result.ownerUrl,
+        code: result.code,
+        deviceToken: result.deviceToken,
+      },
+    ]);
+    assert.equal(synced.results[0]?.items[0]?.password, item.password);
+    assert.equal(synced.results[0]?.ended, false);
   } finally {
     await server.stop();
   }

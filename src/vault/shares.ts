@@ -107,6 +107,7 @@ export async function createShareRecord(input: {
   code: string;
   pin: string;
   itemIds: string[];
+  tagIds?: string[];
   fields?: Partial<ShareFields>;
   expiresAt?: number | null;
   maxUses?: number | null;
@@ -134,6 +135,7 @@ export async function createShareRecord(input: {
     pinSalt: pinRecord.salt,
     pinIterations: pinRecord.iterations,
     itemIds: [...new Set(input.itemIds)].slice(0, 500),
+    tagIds: [...new Set(input.tagIds ?? [])].slice(0, 100),
     fields: { ...DEFAULT_SHARE_FIELDS, ...input.fields },
     revision: 1,
     devices: [],
@@ -172,6 +174,10 @@ export function sharedLoginFromItem(
     notes: fields.notes ? item.notes : '',
     totpSecret: fields.totp ? item.totpSecret : '',
     attachments: fields.attachments ? sharedAttachments(item) : [],
+    accentHue: item.accentHue,
+    backgroundImage: item.backgroundImage,
+    backgroundBlur: item.backgroundBlur,
+    avatarImage: item.avatarImage,
     updatedAt: item.updatedAt,
   };
 }
@@ -181,14 +187,25 @@ export function sharedLoginFromItem(
  * drop out; the share's next sync tells recipients that they have ended.
  */
 export function buildShareSnapshots(shares: VaultShare[], items: VaultItem[]): ShareSnapshot[] {
-  const byId = new Map(items.map((item) => [item.id, item]));
-  return shares.map((share) => ({
-    share,
-    items: share.itemIds
-      .map((id) => byId.get(id))
-      .filter((item): item is VaultItem => item !== undefined)
-      .map((item) => sharedLoginFromItem(item, share.fields)),
-  }));
+  return shares.map((share) => {
+    const tagIds = new Set(share.tagIds);
+    const selected = items.filter(
+      (item) =>
+        share.itemIds.includes(item.id) ||
+        (tagIds.size > 0 && item.tags.some((tagId) => tagIds.has(tagId))),
+    );
+    const selectedIds = new Set(selected.map((item) => item.id));
+    // Keep explicit ids that still exist even if an item has no tags; then the
+    // tag members. This is the effective set the server may serve.
+    const effectiveIds = [
+      ...share.itemIds.filter((id) => selectedIds.has(id)),
+      ...selected.map((item) => item.id).filter((id) => !share.itemIds.includes(id)),
+    ];
+    return {
+      share: { ...share, itemIds: effectiveIds },
+      items: selected.map((item) => sharedLoginFromItem(item, share.fields)),
+    };
+  });
 }
 
 export function sharedLoginPatch(
@@ -200,6 +217,10 @@ export function sharedLoginPatch(
     username: shared.username,
     password: shared.password,
     url: shared.url,
+    accentHue: shared.accentHue ?? null,
+    backgroundImage: shared.backgroundImage ?? '',
+    backgroundBlur: shared.backgroundBlur ?? 0,
+    avatarImage: shared.avatarImage ?? '',
   };
   // A field the owner chose not to expose is not authority over the copy. The
   // recipient may have added their own notes, TOTP seed or attachment, and an

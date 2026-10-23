@@ -175,9 +175,8 @@ loud accent names from an earlier version onto the current calm four.
 ## Sharing
 
 The **host** must use the desktop app, because a browser tab cannot listen on a socket.
-**Recipients can use any browser**: a share link opens a read-only page with the login, notes
-and optional attachments. The Colax desktop app is needed only for an imported copy that keeps
-syncing with later owner edits.
+**Recipients can use any browser**: the link opens a read-only page immediately, and the Colax
+web build can import it as a linked copy too. Only hosting needs the desktop app.
 
 ### How it works
 
@@ -188,10 +187,12 @@ Issuing a share in **Settings → Sharing**:
 2. Choose **Internet access → Cloudflare Quick Tunnel** if the recipient is outside your
    network. Colax creates a public HTTPS address that works in any browser and in the desktop
    app. The first run downloads Cloudflare's signed `cloudflared` helper (about 60 MB).
-3. Choose the logins, an optional expiry, a device limit, and whether the code is code-only
-   or code + PIN. Username, password and website are always exposed; notes are on by default;
-   2FA seeds and attachments are opt-in.
-4. Copy the 12-character code or the full link, or scan the QR code with a phone. The code is
+3. Pick one or more **tags** to include every login carrying them. New logins tagged later
+   join automatically; individual logins can still be added from the optional picker.
+4. Choose code-only or code + PIN. Expiry, device limit and the opt-in fields (notes, 2FA
+   seed, attachments) live under **Advanced rules**. Username, password, website and the
+   login's background/avatar/accent are always included.
+5. Copy the 12-character code or the full link, or scan the QR code with a phone. The code is
    shown once. Colax stores only a SHA-256 hash of it, so a lost code is replaced with
    **New code**, not recovered.
 
@@ -200,9 +201,13 @@ The recipient can either:
 - **Open the link in a browser** — no install, no account. Code-only shares open immediately;
   code + PIN asks for the PIN first.
 - **Import into Colax desktop** via **Settings → Sharing → Open a share**, pasting the link or
-  typing the code plus the owner's address. The imported logins carry a sealed link back to
-  their source and are refreshed on unlock, every two minutes, and by **Sync now**. Shared
-  fields are read-only in the editor; tags, appearance, flags and dates remain local.
+  typing the code plus the owner's address. Imports land in a **Shared logins** folder, in a
+  channel named after the share (the owner's machine name by default), and keep the owner's
+  background, avatar and accent. They carry a sealed link back to their source and are
+  refreshed on unlock, every two minutes, and by **Sync now**. Shared fields are read-only in
+  the editor; local tags, flags and dates remain yours.
+- **Import into the web build** the same way. Only *hosting* a share needs the desktop app;
+  opening a share link and importing it works in the browser, including linked-copy syncs.
 
 ### Server addresses
 
@@ -220,9 +225,10 @@ The recipient can either:
 ### Browser view
 
 The public link renders a small, read-only page. It uses escaped text, a strict CSP, no
-external scripts and no CORS surface. A browser sees the current share snapshot only; it does
-not get a device token and cannot sync changes by itself. Refresh the page to pull the latest
-owner version. For automatic updates, import the link into the Colax desktop app.
+external scripts and no CORS surface. A plain browser view sees the current snapshot only;
+refresh to pull the latest owner version. The Colax web build can also import the link: its
+app endpoints are CORS-enabled, so the imported copy syncs on unlock, on the timer and by
+**Sync now**, exactly like the desktop app.
 
 ### Security and limits
 
@@ -230,6 +236,9 @@ owner version. For automatic updates, import the link into the Colax desktop app
   process memory, and is stopped and cleared on lock, reload, renderer exit or quit.
 - PINs are PBKDF2-HMAC-SHA-256 (210,000 iterations). Device tokens are random 32-byte values,
   stored only as hashes. Redemption and PIN entry are rate-limited per address and code.
+- The two app JSON endpoints (`redeem`, `sync`) allow cross-origin requests so the web build
+  can import a share. They use no cookies: the share code and device bearer token are the
+  authentication. Browser HTML pages remain same-origin and do not expose CORS.
 - Browser pages use a strict CSP, render escaped text only, and never load external scripts.
 - Plain LAN links are **HTTP**, so passwords are on the wire in clear text. Use a trusted
   network, or use the built-in HTTPS tunnel. Anyone with the code (and PIN) is authorised by

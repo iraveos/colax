@@ -71,7 +71,7 @@ const SEARCH_INDEX: { tab: string; label: string; words: string }[] = [
   { tab: 'alarms', label: 'Alarms', words: 'reminders clock notifications sound' },
   // Sharing
   { tab: 'sharing', label: 'Share server', words: 'sharing lan port internet cloudflare tunnel public address browser qr' },
-  { tab: 'sharing', label: 'Share codes', words: 'share link pin expiry device limit revoke browser qr' },
+  { tab: 'sharing', label: 'Share codes', words: 'share link pin expiry device limit revoke browser qr tags channel folder' },
   { tab: 'sharing', label: 'Open a share', words: 'redeem import code link linked copy browser' },
   { tab: 'sharing', label: 'Connected devices', words: 'recipients access activity sync' },
   // Data

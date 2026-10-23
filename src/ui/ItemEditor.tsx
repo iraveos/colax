@@ -1107,8 +1107,8 @@ export function ItemEditor({
           >
             {linked ? (
               <Alert tone="info">
-                Shared by {linked.shareName}. The shared fields are read-only and follow the owner’s latest
-                version on sync. Your tags, appearance, flags and dates stay local.
+                Shared by {linked.shareName}. The shared fields, including the login’s appearance, follow
+                the owner’s latest version. Your tags, flags and dates stay local.
               </Alert>
             ) : null}
             {panels[section]}

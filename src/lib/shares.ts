@@ -70,8 +70,10 @@ export interface VaultShare {
   pinHash: string;
   pinSalt: string;
   pinIterations: number;
-  /** The source logins, by their local vault id. */
+  /** Explicit source logins, by their local vault id. */
   itemIds: string[];
+  /** Every login carrying one of these tags joins the share dynamically. */
+  tagIds: string[];
   fields: ShareFields;
   /** Incremented whenever the share's rules or source logins change. */
   revision: number;
@@ -110,6 +112,11 @@ export interface SharedLogin {
   notes: string;
   totpSecret: string;
   attachments: SharedAttachment[];
+  /** Appearance travels with the copy so a shared login still looks like itself. */
+  accentHue: number | null;
+  backgroundImage: string;
+  backgroundBlur: number;
+  avatarImage: string;
   updatedAt: number;
 }
 
@@ -139,6 +146,8 @@ export interface ShareServerStatus {
   running: boolean;
   port: number;
   host: string;
+  /** The owner's machine name, used as the default share/channel label. */
+  hostName: string;
   /** Desktop address, or the LAN address when bound to the network. */
   localUrl: string;
   /** Public HTTPS address: tunnel URL when running, else the manual URL. */
@@ -385,6 +394,9 @@ export function normaliseVaultShare(raw: unknown, now = Date.now()): VaultShare 
   const itemIds = Array.isArray(record.itemIds)
     ? [...new Set(record.itemIds.filter((value): value is string => typeof value === 'string' && value.length > 0))].slice(0, 500)
     : [];
+  const tagIds = Array.isArray(record.tagIds)
+    ? [...new Set(record.tagIds.filter((value): value is string => typeof value === 'string' && value.length > 0))].slice(0, 100)
+    : [];
   const devices = Array.isArray(record.devices)
     ? record.devices.map(normaliseShareDevice).filter((value): value is ShareDevice => value !== null).slice(0, MAX_SHARE_DEVICES)
     : [];
@@ -410,6 +422,7 @@ export function normaliseVaultShare(raw: unknown, now = Date.now()): VaultShare 
     pinSalt: cleanString(record.pinSalt, 128),
     pinIterations: Math.max(10_000, Math.round(cleanNumber(record.pinIterations, 210_000))),
     itemIds,
+    tagIds,
     fields: normaliseShareFields(record.fields),
     revision: Math.max(1, Math.round(cleanNumber(record.revision, 1))),
     devices,

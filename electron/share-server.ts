@@ -19,7 +19,7 @@
 
 import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { networkInterfaces } from 'node:os';
+import { hostname, networkInterfaces } from 'node:os';
 import {
   normaliseShareCode,
   type ShareAccess,
@@ -92,6 +92,13 @@ function clean(value: unknown, max: number): string {
     : '';
 }
 
+function cleanImage(value: unknown, max: number): string {
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  if (!text || text.length > max) return '';
+  return /^data:image\//i.test(text) || /^https?:\/\//i.test(text) ? text : '';
+}
+
 function cleanLogin(raw: SharedLogin): SharedLogin {
   return {
     id: clean(raw?.id, 100),
@@ -119,6 +126,16 @@ function cleanLogin(raw: SharedLogin): SharedLogin {
             dataUrl: entry.dataUrl,
           }))
       : [],
+    accentHue:
+      typeof raw?.accentHue === 'number' && Number.isFinite(raw.accentHue)
+        ? ((Math.round(raw.accentHue) % 360) + 360) % 360
+        : null,
+    backgroundImage: cleanImage(raw?.backgroundImage, 8_000_000),
+    backgroundBlur:
+      typeof raw?.backgroundBlur === 'number' && Number.isFinite(raw.backgroundBlur)
+        ? Math.max(0, Math.min(60, raw.backgroundBlur))
+        : 0,
+    avatarImage: cleanImage(raw?.avatarImage, 2_000_000),
     updatedAt: typeof raw?.updatedAt === 'number' ? raw.updatedAt : Date.now(),
   };
 }
@@ -230,8 +247,21 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
   res.end(html);
 }
 
+function appCors(res: ServerResponse): void {
+  // The desktop app has no Origin, while a browser-hosted Colax tab does. The
+  // code and device token are the authentication, so letting a cross-origin
+  // fetch reach these two JSON endpoints does not widen who can read a share.
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
+  res.setHeader('Access-Control-Max-Age', '600');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Vary', 'Origin');
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   securityHeaders(res);
+  appCors(res);
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(body));
@@ -382,6 +412,7 @@ export class ShareServer {
     running: false,
     port: 0,
     host: '',
+    hostName: hostname(),
     localUrl: '',
     publicUrl: '',
     error: '',
@@ -453,6 +484,7 @@ export class ShareServer {
         running: false,
         port,
         host,
+        hostName: this.#status.hostName,
         localUrl: '',
         publicUrl: clean(config.publicUrl, 500),
         error:
@@ -474,6 +506,7 @@ export class ShareServer {
       running: true,
       port: actualPort,
       host,
+      hostName: this.#status.hostName,
       localUrl: `http://${localHost}:${actualPort}`,
       publicUrl: clean(config.publicUrl, 500),
       error: '',
@@ -501,6 +534,7 @@ export class ShareServer {
       running: false,
       port: this.#status.port,
       host: this.#status.host,
+      hostName: this.#status.hostName,
       localUrl: '',
       publicUrl: this.#status.publicUrl,
       error: '',
@@ -722,6 +756,21 @@ export class ShareServer {
 
     if (parts[0] !== 's' || !parts[1]) {
       sendHtml(res, 404, errorPage(404, 'Not found', 'Unknown path.'));
+      return;
+    }
+
+    // Browser-hosted Colax redeems and syncs cross-origin. Preflight asks for
+    // these headers before the real request; do not leak whether the code
+    // exists at this stage.
+    if (
+      req.method === 'OPTIONS' &&
+      parts.length === 3 &&
+      (parts[2] === 'redeem' || parts[2] === 'sync')
+    ) {
+      securityHeaders(res);
+      appCors(res);
+      res.statusCode = 204;
+      res.end();
       return;
     }
 

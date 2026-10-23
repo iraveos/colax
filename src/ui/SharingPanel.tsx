@@ -30,6 +30,7 @@ import {
 } from '../vault/shares.ts';
 import type { VaultItem } from '../vault/types.ts';
 import type { VaultPreferences } from '../vault/storage.ts';
+import type { Tag } from '../vault/channels.ts';
 import type { Toast } from './hooks.ts';
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import {
@@ -48,6 +49,7 @@ import {
 interface ShareFormValues {
   name: string;
   itemIds: string[];
+  tagIds: string[];
   expiresAt: number | null;
   maxUses: number | null;
   pinMode: 'code' | 'pin';
@@ -149,7 +151,9 @@ export function SharingPanel({
   }
 
   async function submitCreate(values: ShareFormValues): Promise<string | null> {
-    if (values.itemIds.length === 0) return 'Pick at least one login to share.';
+    if (values.itemIds.length === 0 && values.tagIds.length === 0) {
+      return 'Pick a tag or at least one login to share.';
+    }
     if (values.pinMode === 'pin' && !/^\d{4,12}$/.test(normalisePin(values.pin))) {
       return 'A PIN needs 4 to 12 digits.';
     }
@@ -159,6 +163,7 @@ export function SharingPanel({
       code: generated.code,
       pin: values.pinMode === 'pin' ? values.pin : '',
       itemIds: values.itemIds,
+      tagIds: values.tagIds,
       fields: values.fields,
       expiresAt: values.expiresAt,
       maxUses: values.maxUses,
@@ -176,7 +181,9 @@ export function SharingPanel({
   }
 
   async function submitEdit(share: VaultShare, values: ShareFormValues): Promise<string | null> {
-    if (values.itemIds.length === 0) return 'Pick at least one login to share.';
+    if (values.itemIds.length === 0 && values.tagIds.length === 0) {
+      return 'Pick a tag or at least one login to share.';
+    }
     const typedPin = normalisePin(values.pin);
     if (values.pinMode === 'pin' && !typedPin && share.auth !== 'pin') {
       return 'A PIN needs 4 to 12 digits.';
@@ -209,6 +216,7 @@ export function SharingPanel({
       pinSalt,
       pinIterations,
       itemIds: values.itemIds,
+      tagIds: values.tagIds,
       fields: values.fields,
       revision: share.revision + 1,
       updatedAt: Date.now(),
@@ -273,7 +281,7 @@ export function SharingPanel({
     setRedeemError('');
     setRedeemDone('');
     if (!onRedeemShare) {
-      setRedeemError('Sharing needs the Colax desktop app.');
+      setRedeemError('Opening a share is unavailable in this build.');
       return;
     }
     if (!entry.trim()) {
@@ -308,13 +316,22 @@ export function SharingPanel({
 
   return (
     <div className="sharing">
-      <Alert tone="info">
-        Sharing is direct: the other device talks to this one. Colax does not run a central relay, and the
-        share server only works while this vault is unlocked. Turn on <strong>Internet access</strong> below
-        for a public HTTPS link that opens in any browser; leave it off for this device or your local
-        network.
-      </Alert>
+      {desktop ? (
+        <Alert tone="info">
+          Sharing is direct: the other device talks to this one. Colax does not run a central relay, and
+          the share server only works while this vault is unlocked. Turn on <strong>Internet access</strong>{' '}
+          below for a public HTTPS link that opens in any browser; leave it off for this device or your
+          local network.
+        </Alert>
+      ) : (
+        <Alert tone="info">
+          Opening a share works here. Paste the owner’s link or code below to import a linked copy.
+          To create and host a new share, use the Colax desktop app.
+        </Alert>
+      )}
 
+      {desktop ? (
+        <>
       <div className="sec__card">
         <div className="sharing__head">
           <div>
@@ -338,39 +355,9 @@ export function SharingPanel({
           />
         </div>
 
-        {!desktop ? (
-          <Alert tone="warn">The share server needs the Colax desktop app. Web builds can still edit shares, but cannot listen for connections.</Alert>
-        ) : null}
         {serverStatus.error ? <p className="sec__error">{serverStatus.error}</p> : null}
 
         <div className="sharing__grid">
-          <div className="field">
-            <label className="field__label" htmlFor="share-port">Port</label>
-            <input
-              id="share-port"
-              className="input input--port"
-              inputMode="numeric"
-              value={portDraft}
-              onChange={(event) => setPortDraft(event.target.value.replace(/\D/g, '').slice(0, 5))}
-              onBlur={() => {
-                const next = Number(portDraft);
-                if (Number.isFinite(next) && next >= 1024 && next <= 65535) saveServer({ port: next });
-                else setPortDraft(String(server.port));
-              }}
-            />
-          </div>
-          <div className="field">
-            <label className="field__label">Who can connect</label>
-            <Select
-              label="Who can connect"
-              value={server.bind}
-              options={[
-                { value: 'local', label: 'This device only', hint: '127.0.0.1' },
-                { value: 'lan', label: 'Local network', hint: 'Phones and other computers on your Wi-Fi' },
-              ]}
-              onChange={(bind) => saveServer({ bind: bind === 'lan' ? 'lan' : 'local' })}
-            />
-          </div>
           <div className="field">
             <label className="field__label">Internet access</label>
             <Select
@@ -393,25 +380,57 @@ export function SharingPanel({
             </span>
           </div>
           <div className="field">
-            <label className="field__label" htmlFor="share-public-url">Manual public address (optional)</label>
-            <input
-              id="share-public-url"
-              className="input"
-              placeholder="https://share.example.com"
-              value={publicDraft}
-              onChange={(event) => setPublicDraft(event.target.value)}
-              onBlur={() => {
-                const next = normaliseBaseUrl(publicDraft);
-                if (next !== server.publicUrl) saveServer({ publicUrl: next });
-                else setPublicDraft(next);
-              }}
+            <label className="field__label">Local network access</label>
+            <Toggle
+              label="Allow local network access"
+              checked={server.bind === 'lan'}
+              onChange={(checked) => saveServer({ bind: checked ? 'lan' : 'local' })}
             />
             <span className="field__hint">
-              A stable named tunnel or reverse proxy. A live Quick Tunnel address takes priority in copied
-              links.
+              Let devices on the same Wi-Fi connect directly, without the tunnel.
             </span>
           </div>
         </div>
+
+        <details className="sharing__advanced">
+          <summary>Advanced server options</summary>
+          <div className="sharing__grid">
+            <div className="field">
+              <label className="field__label" htmlFor="share-port">Port</label>
+              <input
+                id="share-port"
+                className="input input--port"
+                inputMode="numeric"
+                value={portDraft}
+                onChange={(event) => setPortDraft(event.target.value.replace(/\D/g, '').slice(0, 5))}
+                onBlur={() => {
+                  const next = Number(portDraft);
+                  if (Number.isFinite(next) && next >= 1024 && next <= 65535) saveServer({ port: next });
+                  else setPortDraft(String(server.port));
+                }}
+              />
+            </div>
+            <div className="field">
+              <label className="field__label" htmlFor="share-public-url">Manual public address (optional)</label>
+              <input
+                id="share-public-url"
+                className="input"
+                placeholder="https://share.example.com"
+                value={publicDraft}
+                onChange={(event) => setPublicDraft(event.target.value)}
+                onBlur={() => {
+                  const next = normaliseBaseUrl(publicDraft);
+                  if (next !== server.publicUrl) saveServer({ publicUrl: next });
+                  else setPublicDraft(next);
+                }}
+              />
+              <span className="field__hint">
+                A stable named tunnel or reverse proxy. A live Quick Tunnel address takes priority in
+                copied links.
+              </span>
+            </div>
+          </div>
+        </details>
 
         {server.enabled && server.tunnel === 'cloudflare' ? (
           <div className="sharing__tunnel">
@@ -498,6 +517,16 @@ export function SharingPanel({
               const status = shareStatus(share);
               const code = revealed[share.id];
               const open = openDetails === share.id;
+              const shareTagIds = new Set(share.tagIds ?? []);
+              const count = new Set([
+                ...share.itemIds,
+                ...items
+                  .filter((item) => item.tags.some((tagId) => shareTagIds.has(tagId)))
+                  .map((item) => item.id),
+              ]).size;
+              const tagNames = (share.tagIds ?? [])
+                .map((id) => prefs.tags.find((tag) => tag.id === id)?.name)
+                .filter((name): name is string => Boolean(name));
               return (
                 <li className="sharing__item" key={share.id}>
                   <div className="sharing__item-head">
@@ -512,7 +541,8 @@ export function SharingPanel({
                       </span>
                     </div>
                     <div className="sharing__item-meta">
-                      {share.itemIds.length} login{share.itemIds.length === 1 ? '' : 's'} · {share.uses}
+                      {count} login{count === 1 ? '' : 's'}
+                      {tagNames.length > 0 ? ` · tags: ${tagNames.join(', ')}` : ''} · {share.uses}
                       {share.maxUses === null ? ' uses' : ` of ${share.maxUses} uses`} ·{' '}
                       {share.expiresAt === null
                         ? 'no expiry'
@@ -663,6 +693,8 @@ export function SharingPanel({
           </ul>
         )}
       </div>
+        </>
+      ) : null}
 
       <div className="sec__card">
         <div className="sharing__head">
@@ -762,6 +794,8 @@ export function SharingPanel({
           key={form.mode === 'edit' ? form.share.id : 'new'}
           share={form.mode === 'edit' ? form.share : null}
           items={items}
+          tags={prefs.tags}
+          defaultName={serverStatus.hostName || 'Shared logins'}
           onSubmit={(values) =>
             form.mode === 'edit' ? submitEdit(form.share, values) : submitCreate(values)
           }
@@ -819,8 +853,8 @@ export function SharingPanel({
               <code className="sharing__code-value">{revealLink}</code>
               <span className="field__note">
                 The link includes the server address. A bare code still needs the owner’s address when it
-                is typed into another device. Any browser can open this link; the Colax desktop app adds
-                the linked copy that keeps updating.
+                is typed into another device. Any browser can open this link; importing it into Colax
+                desktop or the web build creates the linked copy that keeps updating.
               </span>
               {qr ? (
                 <div className="sharing__qr">
@@ -837,8 +871,8 @@ export function SharingPanel({
           )}
           {!desktop ? (
             <Alert tone="info">
-              The browser view works without the desktop app. Automatic linked-copy updates need the Colax
-              desktop app on the recipient’s device.
+              The browser view is read-only. Import this link into Colax to get a linked copy that keeps
+              updating.
             </Alert>
           ) : null}
         </Modal>
@@ -907,17 +941,24 @@ function endOfDate(value: string): number | null {
 function ShareForm({
   share,
   items,
+  tags,
+  defaultName,
   onSubmit,
   onClose,
 }: {
   share: VaultShare | null;
   items: VaultItem[];
+  tags: Tag[];
+  defaultName: string;
   onSubmit: (values: ShareFormValues) => Promise<string | null>;
   onClose: () => void;
 }) {
-  const [name, setName] = useState(share?.name ?? 'Shared logins');
+  const [name, setName] = useState(share?.name ?? defaultName);
   const [selected, setSelected] = useState<string[]>(
     (share?.itemIds ?? []).filter((id) => items.some((item) => item.id === id)),
+  );
+  const [tagIds, setTagIds] = useState<string[]>(
+    (share?.tagIds ?? []).filter((id) => tags.some((tag) => tag.id === id)),
   );
   const [expires, setExpires] = useState(dateValue(share?.expiresAt ?? null));
   const [maxUses, setMaxUses] = useState(share?.maxUses === null || share?.maxUses === undefined ? '' : String(share.maxUses));
@@ -944,19 +985,38 @@ function ShareForm({
       .sort((a, b) => a.title.localeCompare(b.title));
   }, [items, query]);
 
+  const selectedTagIds = new Set(tagIds);
+  const effectiveCount = new Set([
+    ...selected,
+    ...items
+      .filter((item) => item.tags.some((tagId) => selectedTagIds.has(tagId)))
+      .map((item) => item.id),
+  ]).size;
+
   function toggle(id: string): void {
     setSelected((current) =>
       current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id],
     );
   }
 
+  function toggleTag(id: string): void {
+    setTagIds((current) =>
+      current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id],
+    );
+  }
+
   async function submit(): Promise<void> {
+    if (effectiveCount === 0) {
+      setError('Pick a tag or login that currently has at least one login.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
       const message = await onSubmit({
         name,
         itemIds: selected,
+        tagIds,
         expiresAt: endOfDate(expires),
         maxUses: maxUses.trim() === '' ? null : Math.max(1, Math.round(Number(maxUses))),
         pinMode,
@@ -984,7 +1044,7 @@ function ShareForm({
           <button
             className="btn btn--primary"
             onClick={() => void submit()}
-            disabled={busy || selected.length === 0}
+            disabled={busy || effectiveCount === 0}
           >
             {busy ? <span className="spinner" /> : null}
             {share ? 'Save rules' : 'Create share'}
@@ -1006,73 +1066,81 @@ function ShareForm({
 
       <div className="field">
         <div className="sharing__field-head">
-          <label className="field__label">Logins in this share</label>
-          <span className="field__note">{selected.length} selected</span>
+          <label className="field__label">Include tags</label>
+          <span className="field__note">{effectiveCount} login{effectiveCount === 1 ? '' : 's'} in share</span>
         </div>
-        <div className="field-row">
-          <input
-            className="input"
-            placeholder="Filter logins…"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          <button
-            className="btn btn--secondary btn--sm"
-            onClick={() => setSelected((current) => [...new Set([...current, ...filtered.map((item) => item.id)])])}
-          >
-            Select shown
-          </button>
-          <button className="btn btn--ghost btn--sm" onClick={() => setSelected([])}>
-            Clear
-          </button>
-        </div>
-        <ul className="sharing__picker">
-          {filtered.length === 0 ? (
-            <li className="field__note">No matching logins.</li>
-          ) : (
-            filtered.map((item) => {
-              const checked = selected.includes(item.id);
+        {tags.length > 0 ? (
+          <div className="sharing__tags" role="group" aria-label="Tags to include">
+            {tags.map((tag) => {
+              const active = tagIds.includes(tag.id);
               return (
-                <li key={item.id}>
-                  <label className={`sharing__pick ${checked ? 'sharing__pick--on' : ''}`}>
-                    <input type="checkbox" checked={checked} onChange={() => toggle(item.id)} />
-                    <span>
-                      <strong>{item.title || 'Untitled login'}</strong>
-                      <small>{item.username || item.url || 'No username'}</small>
-                    </span>
-                    {checked ? <CheckIcon width="13" height="13" /> : null}
-                  </label>
-                </li>
+                <button
+                  key={tag.id}
+                  type="button"
+                  className={`chip ${active ? 'chip--accent' : 'chip--muted'}`}
+                  aria-pressed={active}
+                  onClick={() => toggleTag(tag.id)}
+                >
+                  {active ? <CheckIcon width="11" height="11" /> : null}
+                  {tag.name}
+                </button>
               );
-            })
-          )}
-        </ul>
+            })}
+          </div>
+        ) : (
+          <p className="field__note">No tags yet. Make one while editing a login, then share it here.</p>
+        )}
+        <span className="field__hint">
+          Every login with a selected tag joins automatically, including logins tagged later.
+        </span>
       </div>
 
+      <details className="sharing__advanced" open={tagIds.length === 0}>
+        <summary>Pick individual logins ({selected.length})</summary>
+        <div className="field">
+          <div className="field-row">
+            <input
+              className="input"
+              placeholder="Filter logins…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={() => setSelected((current) => [...new Set([...current, ...filtered.map((item) => item.id)])])}
+            >
+              Select shown
+            </button>
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setSelected([])}>
+              Clear
+            </button>
+          </div>
+          <ul className="sharing__picker">
+            {filtered.length === 0 ? (
+              <li className="field__note">No matching logins.</li>
+            ) : (
+              filtered.map((item) => {
+                const checked = selected.includes(item.id);
+                return (
+                  <li key={item.id}>
+                    <label className={`sharing__pick ${checked ? 'sharing__pick--on' : ''}`}>
+                      <input type="checkbox" checked={checked} onChange={() => toggle(item.id)} />
+                      <span>
+                        <strong>{item.title || 'Untitled login'}</strong>
+                        <small>{item.username || item.url || 'No username'}</small>
+                      </span>
+                      {checked ? <CheckIcon width="13" height="13" /> : null}
+                    </label>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        </div>
+      </details>
+
       <div className="sharing__grid">
-        <div className="field">
-          <label className="field__label" htmlFor="share-expiry">Expires</label>
-          <input
-            id="share-expiry"
-            className="input"
-            type="date"
-            value={expires}
-            onChange={(event) => setExpires(event.target.value)}
-          />
-          <span className="field__hint">Leave blank for no expiry.</span>
-        </div>
-        <div className="field">
-          <label className="field__label" htmlFor="share-max-uses">Device limit</label>
-          <input
-            id="share-max-uses"
-            className="input input--port"
-            inputMode="numeric"
-            placeholder="Unlimited"
-            value={maxUses}
-            onChange={(event) => setMaxUses(event.target.value.replace(/\D/g, '').slice(0, 4))}
-          />
-          <span className="field__hint">How many devices may redeem the code.</span>
-        </div>
         <div className="field">
           <label className="field__label">Protection</label>
           <Select
@@ -1101,41 +1169,70 @@ function ShareForm({
         ) : null}
       </div>
 
-      <div className="field">
-        <span className="field__label">What the code exposes</span>
-        <div className="sharing__checks">
-          <label>
+      <details className="sharing__advanced">
+        <summary>Advanced rules</summary>
+        <div className="sharing__grid">
+          <div className="field">
+            <label className="field__label" htmlFor="share-expiry">Expires</label>
             <input
-              type="checkbox"
-              checked={fields.notes}
-              onChange={(event) => setFields((current) => ({ ...current, notes: event.target.checked }))}
+              id="share-expiry"
+              className="input"
+              type="date"
+              value={expires}
+              onChange={(event) => setExpires(event.target.value)}
             />
-            Notes
-          </label>
-          <label>
+            <span className="field__hint">Leave blank for no expiry.</span>
+          </div>
+          <div className="field">
+            <label className="field__label" htmlFor="share-max-uses">Device limit</label>
             <input
-              type="checkbox"
-              checked={fields.totp}
-              onChange={(event) => setFields((current) => ({ ...current, totp: event.target.checked }))}
+              id="share-max-uses"
+              className="input input--port"
+              inputMode="numeric"
+              placeholder="Unlimited"
+              value={maxUses}
+              onChange={(event) => setMaxUses(event.target.value.replace(/\D/g, '').slice(0, 4))}
             />
-            2FA seed
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={fields.attachments}
-              onChange={(event) =>
-                setFields((current) => ({ ...current, attachments: event.target.checked }))
-              }
-            />
-            Attachments
-          </label>
+            <span className="field__hint">How many devices may redeem the code.</span>
+          </div>
         </div>
-        <span className="field__hint">
-          Username, password and website are always included. Notes are on by default; the two larger
-          fields are opt-in.
-        </span>
-      </div>
+
+        <div className="field">
+          <span className="field__label">What the code exposes</span>
+          <div className="sharing__checks">
+            <label>
+              <input
+                type="checkbox"
+                checked={fields.notes}
+                onChange={(event) => setFields((current) => ({ ...current, notes: event.target.checked }))}
+              />
+              Notes
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={fields.totp}
+                onChange={(event) => setFields((current) => ({ ...current, totp: event.target.checked }))}
+              />
+              2FA seed
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={fields.attachments}
+                onChange={(event) =>
+                  setFields((current) => ({ ...current, attachments: event.target.checked }))
+                }
+              />
+              Attachments
+            </label>
+          </div>
+          <span className="field__hint">
+            Username, password, website and the login’s appearance are always included. Notes are on by
+            default; the two larger fields are opt-in.
+          </span>
+        </div>
+      </details>
     </Modal>
   );
 }

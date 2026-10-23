@@ -12,6 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { syncLinkedShares } from '../lib/share-client.ts';
 import { getPlatform } from '../lib/platform.ts';
 import {
   type ShareServerConfig,
@@ -28,6 +29,7 @@ function stoppedStatus(error = ''): ShareServerStatus {
     running: false,
     port: 0,
     host: '',
+    hostName: '',
     localUrl: '',
     publicUrl: '',
     error,
@@ -56,10 +58,12 @@ export function useShareServer(input: {
     const shareKey = shares
       .map(
         (share) =>
-          `${share.id}:${share.updatedAt}:${share.revision}:${share.revokedAt}:${share.expiresAt}:${share.maxUses}:${share.itemIds.join(',')}:${share.fields.notes ? 1 : 0}${share.fields.totp ? 1 : 0}${share.fields.attachments ? 1 : 0}`,
+          `${share.id}:${share.updatedAt}:${share.revision}:${share.revokedAt}:${share.expiresAt}:${share.maxUses}:${share.itemIds.join(',')}:${share.tagIds.join(',')}:${share.fields.notes ? 1 : 0}${share.fields.totp ? 1 : 0}${share.fields.attachments ? 1 : 0}`,
       )
       .join('|');
-    const itemKey = items.map((item) => `${item.id}:${item.updatedAt}`).join('|');
+    const itemKey = items
+      .map((item) => `${item.id}:${item.updatedAt}:${item.tags.join(',')}`)
+      .join('|');
     return `${shareKey}#${itemKey}`;
   }, [shares, items]);
 
@@ -77,7 +81,7 @@ export function useShareServer(input: {
   useEffect(() => {
     const api = getPlatform().share;
     if (!api) {
-      setStatus(stoppedStatus('Sharing needs the Colax desktop app.'));
+      setStatus(stoppedStatus('Hosting a share needs the Colax desktop app.'));
       return;
     }
     if (!active) {
@@ -174,10 +178,6 @@ export function useLinkedSync(input: {
 
   const syncNow = useCallback(async (manual = false): Promise<number> => {
     const api = getPlatform().share;
-    if (!api) {
-      if (manual) errorRef.current?.('Sharing needs the Colax desktop app.');
-      return 0;
-    }
     const targets = linkedTargets(itemsRef.current);
     if (targets.length === 0) {
       if (manual) errorRef.current?.('There are no linked shares to sync.');
@@ -187,7 +187,7 @@ export function useLinkedSync(input: {
     busy.current = true;
     setSyncing(true);
     try {
-      const result = await api.syncLinked(targets);
+      const result = api ? await api.syncLinked(targets) : await syncLinkedShares(targets);
       // Include a successful empty snapshot too: the owner may have removed the
       // last login from an otherwise live share, and that must end the copy.
       const touched = result.results.filter(
