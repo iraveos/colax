@@ -385,6 +385,8 @@ export class ShareServer {
     localUrl: '',
     publicUrl: '',
     error: '',
+    tunnel: 'off',
+    tunnelError: '',
   };
   #snapshots = new Map<string, ShareSnapshot>();
   #sessions = new Map<string, BrowserSession>();
@@ -459,6 +461,8 @@ export class ShareServer {
             : cause instanceof Error
               ? cause.message
               : 'Could not start the share server.',
+        tunnel: 'off',
+        tunnelError: '',
       };
       return this.status();
     }
@@ -473,6 +477,8 @@ export class ShareServer {
       localUrl: `http://${localHost}:${actualPort}`,
       publicUrl: clean(config.publicUrl, 500),
       error: '',
+      tunnel: 'off',
+      tunnelError: '',
     };
     return this.status();
   }
@@ -498,6 +504,8 @@ export class ShareServer {
       localUrl: '',
       publicUrl: this.#status.publicUrl,
       error: '',
+      tunnel: 'off',
+      tunnelError: '',
     };
     return this.status();
   }

@@ -75,6 +75,13 @@ const platform: PlatformAPI = {
         ipcRenderer.removeListener('colax:share-event', listener as never);
       };
     },
+    onStatus: (callback: (status: ShareServerStatus) => void) => {
+      const listener = (_event: unknown, payload: ShareServerStatus) => callback(payload);
+      ipcRenderer.on('colax:share-status', listener as never);
+      return () => {
+        ipcRenderer.removeListener('colax:share-status', listener as never);
+      };
+    },
   },
   shell: {
     update: (settings: ShellSettings) => {

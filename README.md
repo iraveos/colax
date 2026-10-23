@@ -145,8 +145,9 @@ interface changes.
 - Encrypted backup export/restore (optionally re-keyed or made passwordless), CSV import/export
 - **Direct sharing** — create several independent codes for selected logins, add expiry, a
   device limit and an optional PIN, see who connected, then revoke without deleting the
-  recipient's copy. Recipient imports are linked: the owner's later edits replace the shared
-  fields on the next sync
+  recipient's copy. Recipients can open the link in any browser, or import it into Colax as a
+  linked copy. An opt-in Cloudflare Quick Tunnel provides a public HTTPS address; recipient
+  imports stay linked, so the owner's later edits replace the shared fields on the next sync
 - Diagnostics report and a one-click preference reset
 
 ## Settings
@@ -162,7 +163,7 @@ Tabs slide in from the side:
 | Vault password | Enable / change / remove, plus the active crypto parameters |
 | Security | Auto-lock, lock on blur, lock on tab hide, clipboard clearing, reveal, reuse warnings, export confirmation |
 | Alarms | Reminder labels, times and sounds |
-| Sharing | Local share server, codes, rules, devices, activity, redeem and linked-copy sync |
+| Sharing | Local server, internet tunnel, browser links, codes, rules, devices, activity and linked-copy sync |
 | Optimize | One-click resource profiles, launch-time Chromium switches and mail loading |
 | Data | Stored size, CSV export/import, theme backup, delete vault |
 | About | Version, offline confirmation, diagnostics copy, reset preferences |
@@ -173,38 +174,55 @@ loud accent names from an earlier version onto the current calm four.
 
 ## Sharing
 
-Sharing is **desktop-only** (the Electron app). A browser tab cannot listen on a socket or
-reach a LAN address without CORS, so Settings shows the panel but cannot host or redeem a
-share there.
+The **host** must use the desktop app, because a browser tab cannot listen on a socket.
+**Recipients can use any browser**: a share link opens a read-only page with the login, notes
+and optional attachments. The Colax desktop app is needed only for an imported copy that keeps
+syncing with later owner edits.
 
 ### How it works
 
 Issuing a share in **Settings → Sharing**:
 
 1. Turn on the **Sharing server**. It defaults to `127.0.0.1:47821`; choose **Local network**
-   only when other devices need to connect.
-2. Choose the logins, an optional expiry, a device limit, and whether the code is code-only
+   for direct Wi-Fi access when you want it.
+2. Choose **Internet access → Cloudflare Quick Tunnel** if the recipient is outside your
+   network. Colax creates a public HTTPS address that works in any browser and in the desktop
+   app. The first run downloads Cloudflare's signed `cloudflared` helper (about 60 MB).
+3. Choose the logins, an optional expiry, a device limit, and whether the code is code-only
    or code + PIN. Username, password and website are always exposed; notes are on by default;
    2FA seeds and attachments are opt-in.
-3. Copy the 12-character code or the full link. The code is shown once. Colax stores only a
-   SHA-256 hash of it, so a lost code is replaced with **New code**, not recovered.
+4. Copy the 12-character code or the full link, or scan the QR code with a phone. The code is
+   shown once. Colax stores only a SHA-256 hash of it, so a lost code is replaced with
+   **New code**, not recovered.
 
-The recipient opens **Settings → Sharing → Open a share**, pastes the link (or types the code
-plus the owner's address), and enters the PIN if one was set. The imported logins carry a
-sealed link back to their source. They are refreshed on unlock, every two minutes, and by
-**Sync now**. Shared fields are read-only in the editor; tags, appearance, flags and dates
-remain local.
+The recipient can either:
+
+- **Open the link in a browser** — no install, no account. Code-only shares open immediately;
+  code + PIN asks for the PIN first.
+- **Import into Colax desktop** via **Settings → Sharing → Open a share**, pasting the link or
+  typing the code plus the owner's address. The imported logins carry a sealed link back to
+  their source and are refreshed on unlock, every two minutes, and by **Sync now**. Shared
+  fields are read-only in the editor; tags, appearance, flags and dates remain local.
 
 ### Server addresses
 
 - **Same computer:** `http://127.0.0.1:47821`.
 - **Same Wi-Fi/LAN:** set the server to *Local network*; links use the machine's IPv4 address.
   Allow Colax through the firewall on private networks only.
-- **Across the internet:** keep the server on *Local network* and put a tunnel in front of
-  `http://127.0.0.1:47821`, then paste the tunnel's HTTPS URL into **Public address**. A named
-  Cloudflare Tunnel or a Tailscale/WireGuard address works; Colax does not run a relay.
-  `cloudflared tunnel --url http://127.0.0.1:47821` is enough for a quick test, but its URL
-  changes each run.
+- **Across the internet:** choose **Internet access → Cloudflare Quick Tunnel**. The public
+  link appears in Settings and is used by copied links and the QR code. It changes each time
+  the app restarts. Colax waits until Cloudflare's edge can actually reach the local server
+  before calling the tunnel ready.
+- **Stable or private internet address:** put a named Cloudflare Tunnel, Tailscale/WireGuard
+  address or your own reverse proxy in **Manual public address**. A live Quick Tunnel address
+  takes priority while it is running. Colax itself does not run a relay.
+
+### Browser view
+
+The public link renders a small, read-only page. It uses escaped text, a strict CSP, no
+external scripts and no CORS surface. A browser sees the current share snapshot only; it does
+not get a device token and cannot sync changes by itself. Refresh the page to pull the latest
+owner version. For automatic updates, import the link into the Colax desktop app.
 
 ### Security and limits
 
@@ -214,7 +232,13 @@ remain local.
   stored only as hashes. Redemption and PIN entry are rate-limited per address and code.
 - Browser pages use a strict CSP, render escaped text only, and never load external scripts.
 - Plain LAN links are **HTTP**, so passwords are on the wire in clear text. Use a trusted
-  network or an HTTPS tunnel. Anyone with the code (and PIN) is authorised by design.
+  network, or use the built-in HTTPS tunnel. Anyone with the code (and PIN) is authorised by
+  design.
+- **Cloudflare Quick Tunnel is a third-party path.** Traffic is HTTPS to Cloudflare's edge and
+  then through an encrypted tunnel to this device, but Cloudflare terminates TLS and can see
+  the plaintext of what it proxies. The account-less Quick Tunnel has no uptime guarantee and
+  a URL that changes on restart. Use a named tunnel or Tailscale when you need a stable,
+  end-to-end private path.
 - Revoking or deleting a share stops future syncs; it does not delete the recipient's last
   copy. Deleting the owner's source login leaves a copy marked *ended by owner*.
 - The owner's device must be online and unlocked for a recipient to sync. There is no central

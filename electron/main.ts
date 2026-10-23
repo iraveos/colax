@@ -23,6 +23,7 @@ import {
   normaliseShareServer,
   parseShareEntry,
   type ShareRedeemResult,
+  type ShareServerConfig,
   type ShareServerStatus,
   type ShareSnapshot,
   type ShareSyncResult,
@@ -32,6 +33,7 @@ import {
 import { closeMailConnections, fetchFullMail, listInboxMail } from './mail-imap.ts';
 import { connectOAuth } from './oauth.ts';
 import { ShareServer } from './share-server.ts';
+import { ShareTunnel, type ShareTunnelStatus } from './share-tunnel.ts';
 // Inlined as a data URL by esbuild (see scripts/electron-build.mjs), so the
 // tray icon needs no file path that differs between dev and packaged builds.
 import trayPng from '../public/colax-icon.png';
@@ -418,14 +420,15 @@ function createWindow(): BrowserWindow {
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
     // The renderer is the only copy of the unlocked snapshot. Never leave the
-    // listener up serving the last one after that document is gone.
-    void shareServer.stop();
+    // listener or its public tunnel up serving the last one after that
+    // document is gone.
+    void stopShareServer();
   });
   window.webContents.on('render-process-gone', () => {
-    void shareServer.stop();
+    void stopShareServer();
   });
   window.webContents.on('did-start-loading', () => {
-    void shareServer.stop();
+    void stopShareServer();
   });
 
   return window;
@@ -453,8 +456,67 @@ function sendToRenderer(channel: 'colax:tray-action', action: string): void {
 
 /** One listener for the process. The renderer supplies the snapshot after unlock. */
 const shareServer = new ShareServer((event) => {
-  mainWindow?.webContents.send('colax:share-event', event);
+  try {
+    mainWindow?.webContents.send('colax:share-event', event);
+  } catch {
+    // The renderer may be gone while a request is still completing.
+  }
 });
+
+/** Adds tunnel state to whatever the pure HTTP server reports. */
+function withTunnel(
+  status: ShareServerStatus,
+  tunnel: ShareTunnelStatus = shareTunnel.status(),
+): ShareServerStatus {
+  const publicUrl =
+    tunnel.state === 'running' && tunnel.url ? tunnel.url : status.publicUrl;
+  return {
+    ...status,
+    publicUrl,
+    tunnel: tunnel.state,
+    tunnelError: tunnel.error,
+  };
+}
+
+function publishShareStatus(
+  status: ShareServerStatus,
+  tunnel: ShareTunnelStatus = shareTunnel.status(),
+): void {
+  try {
+    mainWindow?.webContents.send('colax:share-status', withTunnel(status, tunnel));
+  } catch {
+    // The window can be gone while the tunnel is shutting down.
+  }
+}
+
+const shareTunnel = new ShareTunnel((tunnel) => {
+  publishShareStatus(shareServer.status(), tunnel);
+});
+
+async function startShareServer(config: ShareServerConfig): Promise<ShareServerStatus> {
+  if (!config.enabled) {
+    await shareTunnel.stop();
+    return withTunnel(await shareServer.stop());
+  }
+  const status = await shareServer.start(config);
+  if (!status.running) {
+    await shareTunnel.stop();
+    return withTunnel(status);
+  }
+  if (config.tunnel === 'cloudflare') {
+    // The helper runs on this machine, so loopback is the short path even when
+    // the HTTP listener is also bound to the LAN for other devices.
+    const tunnel = await shareTunnel.start(`http://127.0.0.1:${status.port}`);
+    return withTunnel({ ...status, publicUrl: tunnel.url || status.publicUrl }, tunnel);
+  }
+  await shareTunnel.stop();
+  return withTunnel(status);
+}
+
+async function stopShareServer(): Promise<ShareServerStatus> {
+  await shareTunnel.stop();
+  return withTunnel(await shareServer.stop());
+}
 
 function emptyRedeem(error: string): ShareRedeemResult {
   return {
@@ -754,14 +816,14 @@ void app.whenReady().then(() => {
     if (typeof url === 'string') void openExternal(url);
   });
   ipcMain.handle('colax:share-start', async (_event, input: unknown): Promise<ShareServerStatus> => {
-    const config = normaliseShareServer(input);
-    if (!config.enabled) return shareServer.stop();
-    return shareServer.start(config);
+    return startShareServer(normaliseShareServer(input));
   });
-  ipcMain.handle('colax:share-stop', () => shareServer.stop());
-  ipcMain.handle('colax:share-status', () => shareServer.status());
+  ipcMain.handle('colax:share-stop', () => stopShareServer());
+  ipcMain.handle('colax:share-status', () => withTunnel(shareServer.status()));
   ipcMain.handle('colax:share-sync', (_event, snapshots: unknown): ShareServerStatus => {
-    return shareServer.sync(Array.isArray(snapshots) ? (snapshots as ShareSnapshot[]) : []);
+    return withTunnel(
+      shareServer.sync(Array.isArray(snapshots) ? (snapshots as ShareSnapshot[]) : []),
+    );
   });
   ipcMain.handle('colax:share-redeem', (_event, input: unknown) => redeemShare(input));
   ipcMain.handle('colax:share-sync-linked', (_event, targets: unknown) => syncLinkedShares(targets));
@@ -977,5 +1039,5 @@ app.on('before-quit', () => {
   void closeMailConnections();
   // The share server must stop before the window's credentials would be lost.
   // It holds only the in-memory snapshot, so this is the whole cleanup.
-  void shareServer.stop();
+  void stopShareServer();
 });

@@ -7,6 +7,7 @@ import {
   formatShareCode,
   isShareCode,
   normaliseShareCode,
+  normaliseShareServer,
   parseShareEntry,
   shareIsActive,
   shareStatus,
@@ -52,6 +53,9 @@ test('share codes tolerate display grouping and reject bad characters', () => {
     code,
     baseUrl: 'http://192.168.1.5:47821',
   });
+  assert.equal(normaliseShareServer({}).tunnel, 'off');
+  assert.equal(normaliseShareServer({ tunnel: 'cloudflare' }).tunnel, 'cloudflare');
+  assert.equal(normaliseShareServer({ tunnel: 'nope' }).tunnel, 'off');
 });
 
 test('a share stores only a hash and a PBKDF2 PIN', async () => {
@@ -109,9 +113,12 @@ test('the share server pairs devices, propagates edits and honours revocation', 
       enabled: true,
       port: 0,
       bind: 'local',
+      tunnel: 'off',
       publicUrl: '',
     });
     assert.equal(status.running, true);
+    assert.equal(status.tunnel, 'off');
+    assert.equal(status.tunnelError, '');
     const base = status.localUrl;
     const pathCode = encodeURIComponent(formatShareCode(code));
 
@@ -253,7 +260,7 @@ test('a new code disconnects the old devices and resets the use count', async ()
     maxUses: 1,
   });
   try {
-    const status = await server.start({ enabled: true, port: 0, bind: 'local', publicUrl: '' });
+    const status = await server.start({ enabled: true, port: 0, bind: 'local', tunnel: 'off', publicUrl: '' });
     server.sync([{ share, items: [sharedLoginFromItem(item, share.fields)] }]);
     const oldPath = encodeURIComponent(formatShareCode(oldCode));
     const newPath = encodeURIComponent(formatShareCode(newCode));
@@ -312,7 +319,7 @@ test('a max-use share refuses the next device', async () => {
     maxUses: 1,
   });
   try {
-    const status = await server.start({ enabled: true, port: 0, bind: 'local', publicUrl: '' });
+    const status = await server.start({ enabled: true, port: 0, bind: 'local', tunnel: 'off', publicUrl: '' });
     server.sync([{ share, items: [sharedLoginFromItem(item, share.fields)] }]);
     const pathCode = encodeURIComponent(formatShareCode(code));
     const first = await fetch(`${status.localUrl}/s/${pathCode}/redeem`, {

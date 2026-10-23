@@ -17,6 +17,9 @@ export const DEFAULT_SHARE_PORT = 47821;
 
 export type ShareAuthMode = 'code' | 'pin';
 export type ShareServerBind = 'local' | 'lan';
+/** Internet exposure is an opt-in tunnel, not a port-forward instruction. */
+export type ShareTunnelMode = 'off' | 'cloudflare';
+export type ShareTunnelState = 'off' | 'starting' | 'running' | 'error';
 
 /** What a share is allowed to expose. Notes default on; the rest are opt-in. */
 export interface ShareFields {
@@ -80,7 +83,13 @@ export interface ShareServerConfig {
   enabled: boolean;
   port: number;
   bind: ShareServerBind;
-  /** Optional public URL used in copied links. Empty means local only. */
+  /**
+   * `cloudflare` starts a Quick Tunnel from this machine and fills in its
+   * ephemeral HTTPS address. `off` keeps sharing on the local network unless
+   * a manual public URL is set.
+   */
+  tunnel: ShareTunnelMode;
+  /** Optional manual public URL used in copied links when no tunnel is running. */
   publicUrl: string;
 }
 
@@ -130,9 +139,13 @@ export interface ShareServerStatus {
   running: boolean;
   port: number;
   host: string;
+  /** Desktop address, or the LAN address when bound to the network. */
   localUrl: string;
+  /** Public HTTPS address: tunnel URL when running, else the manual URL. */
   publicUrl: string;
   error: string;
+  tunnel: ShareTunnelState;
+  tunnelError: string;
 }
 
 export interface ShareRedeemInput {
@@ -196,6 +209,7 @@ export const DEFAULT_SHARE_SERVER: ShareServerConfig = {
   enabled: false,
   port: DEFAULT_SHARE_PORT,
   bind: 'local',
+  tunnel: 'off',
   publicUrl: '',
 };
 
@@ -313,6 +327,7 @@ export function normaliseShareServer(raw: unknown): ShareServerConfig {
     enabled: record.enabled === true,
     port: Number.isFinite(port) && port >= 1024 && port <= 65535 ? Math.round(port) : DEFAULT_SHARE_PORT,
     bind: record.bind === 'lan' ? 'lan' : 'local',
+    tunnel: record.tunnel === 'cloudflare' ? 'cloudflare' : 'off',
     publicUrl: normaliseBaseUrl(typeof record.publicUrl === 'string' ? record.publicUrl : ''),
   };
 }

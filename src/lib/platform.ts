@@ -220,6 +220,8 @@ export interface PlatformAPI {
     syncLinked(targets: ShareSyncTarget[]): Promise<ShareSyncResult>;
     /** Live device/access events from this device's own server. */
     onEvent(callback: (event: ShareServerEvent) => void): () => void;
+    /** Tunnel/server status changes that happen outside an IPC call. */
+    onStatus(callback: (status: ShareServerStatus) => void): () => void;
   };
   /**
    * Desktop shell controls. Absent on web — there is no tray, autostart or

@@ -7,6 +7,8 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import QRCode from 'qrcode';
+import { getPlatform } from '../lib/platform.ts';
 import {
   formatShareCode,
   normaliseBaseUrl,
@@ -35,6 +37,7 @@ import {
   ClockIcon,
   CopyIcon,
   EditIcon,
+  ExternalIcon,
   LockIcon,
   PlusIcon,
   ShareIcon,
@@ -80,6 +83,7 @@ export function SharingPanel({
   const [openDetails, setOpenDetails] = useState<string | null>(null);
   const [portDraft, setPortDraft] = useState(String(prefs.shareServer.port));
   const [publicDraft, setPublicDraft] = useState(prefs.shareServer.publicUrl);
+  const [qr, setQr] = useState('');
   const [entry, setEntry] = useState('');
   const [host, setHost] = useState('');
   const [pin, setPin] = useState('');
@@ -95,14 +99,37 @@ export function SharingPanel({
   }, [prefs.shareServer.publicUrl]);
 
   const server = prefs.shareServer;
-  const baseUrl =
-    normaliseBaseUrl(server.publicUrl) ||
-    normaliseBaseUrl(serverStatus.publicUrl) ||
-    normaliseBaseUrl(serverStatus.localUrl);
+  const publicBase =
+    normaliseBaseUrl(serverStatus.publicUrl) || normaliseBaseUrl(server.publicUrl);
+  const localBase = normaliseBaseUrl(serverStatus.localUrl);
+  // A public tunnel in the starting/error state must not hand out a
+  // localhost link: the recipient could never open it. A manual public URL
+  // remains a valid fallback while the helper is starting.
+  const baseUrl = publicBase || (server.tunnel === 'cloudflare' ? '' : localBase);
   const revealedShare = revealShareId
     ? prefs.shares.find((share) => share.id === revealShareId) ?? null
     : null;
   const revealedCode = revealShareId ? revealed[revealShareId] ?? '' : '';
+  const revealLink = revealedShare && revealedCode && baseUrl ? shareLinkFor(baseUrl, revealedCode) : '';
+
+  useEffect(() => {
+    if (!revealLink) {
+      setQr('');
+      return;
+    }
+    let live = true;
+    void QRCode.toDataURL(revealLink, { margin: 1, width: 220 })
+      .then((url) => {
+        if (live) setQr(url);
+      })
+      .catch(() => {
+        if (live) setQr('');
+      });
+    return () => {
+      live = false;
+    };
+  }, [revealLink]);
+
   const linked = useMemo(() => items.filter((item) => item.shareLink !== null), [items]);
   const activeShares = prefs.shares.filter((share) => shareStatus(share) === 'active');
   const desktop = typeof window !== 'undefined' && window.platform?.share !== undefined;
@@ -283,8 +310,9 @@ export function SharingPanel({
     <div className="sharing">
       <Alert tone="info">
         Sharing is direct: the other device talks to this one. Colax does not run a central relay, and the
-        share server only works while this vault is unlocked. For someone outside your network, point a
-        tunnel at the local port and put its public address below.
+        share server only works while this vault is unlocked. Turn on <strong>Internet access</strong> below
+        for a public HTTPS link that opens in any browser; leave it off for this device or your local
+        network.
       </Alert>
 
       <div className="sec__card">
@@ -344,7 +372,28 @@ export function SharingPanel({
             />
           </div>
           <div className="field">
-            <label className="field__label" htmlFor="share-public-url">Public address (optional)</label>
+            <label className="field__label">Internet access</label>
+            <Select
+              label="Internet access"
+              value={server.tunnel}
+              options={[
+                { value: 'off', label: 'Off', hint: 'This device or the local network only' },
+                {
+                  value: 'cloudflare',
+                  label: 'Cloudflare Quick Tunnel',
+                  hint: 'Public HTTPS link that works in any browser',
+                },
+              ]}
+              onChange={(tunnel) =>
+                saveServer({ tunnel: tunnel === 'cloudflare' ? 'cloudflare' : 'off' })
+              }
+            />
+            <span className="field__hint">
+              Automatic public access for a phone on mobile data or a recipient anywhere on the internet.
+            </span>
+          </div>
+          <div className="field">
+            <label className="field__label" htmlFor="share-public-url">Manual public address (optional)</label>
             <input
               id="share-public-url"
               className="input"
@@ -358,10 +407,54 @@ export function SharingPanel({
               }}
             />
             <span className="field__hint">
-              Set this when a tunnel forwards to the local port. Codes copied from this screen use it.
+              A stable named tunnel or reverse proxy. A live Quick Tunnel address takes priority in copied
+              links.
             </span>
           </div>
         </div>
+
+        {server.enabled && server.tunnel === 'cloudflare' ? (
+          <div className="sharing__tunnel">
+            <div className="sharing__tunnel-head">
+              <span className={`sharing__status ${serverStatus.tunnel === 'running' ? 'sharing__status--on' : ''}`} />
+              <strong>
+                {serverStatus.tunnel === 'running'
+                  ? 'Public link is live'
+                  : serverStatus.tunnel === 'error'
+                    ? 'Public link failed'
+                    : serverStatus.tunnel === 'starting'
+                      ? 'Opening a public link…'
+                      : 'Not started'}
+              </strong>
+              {serverStatus.tunnel === 'running' && serverStatus.publicUrl ? (
+                <button
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => void copy(serverStatus.publicUrl, 'Public link')}
+                >
+                  <CopyIcon width="13" height="13" /> Copy public link
+                </button>
+              ) : null}
+            </div>
+            {serverStatus.tunnel === 'running' ? (
+              <code className="sharing__code-value">{serverStatus.publicUrl}</code>
+            ) : null}
+            {serverStatus.tunnel === 'error' ? (
+              <p className="sec__error">{serverStatus.tunnelError || 'The tunnel could not start.'}</p>
+            ) : null}
+            {serverStatus.tunnel === 'starting' ? (
+              <p className="field__note">
+                The first run downloads Cloudflare’s signed tunnel helper (about 60 MB). Keep this window
+                open until the address appears.
+              </p>
+            ) : null}
+            <p className="field__note">
+              Traffic is HTTPS to Cloudflare’s edge, then through an encrypted tunnel to this device.
+              Cloudflare terminates TLS and the address changes when the app restarts. Use a code + PIN
+              for shares that leave your network. For a stable or end-to-end private path, use a named
+              tunnel or Tailscale under Manual public address.
+            </p>
+          </div>
+        ) : null}
 
         <div className="sharing__urls">
           {serverStatus.localUrl ? (
@@ -371,9 +464,11 @@ export function SharingPanel({
           ) : null}
           {baseUrl ? <span className="field__note">Links use {baseUrl}</span> : null}
           <span className="field__note">
-            {server.bind === 'lan'
-              ? 'Your firewall may ask once. Allow it on private networks only.'
-              : 'Only this computer can reach the server. Choose Local network to share across Wi-Fi.'}
+            {server.tunnel === 'cloudflare'
+              ? 'The public tunnel reaches the loopback server. “Who can connect” only controls direct LAN access.'
+              : server.bind === 'lan'
+                ? 'Your firewall may ask once. Allow it on private networks only.'
+                : 'Only this computer can reach the server. Choose Local network or Internet access to share further.'}
           </span>
         </div>
       </div>
@@ -683,13 +778,21 @@ export function SharingPanel({
               <button className="btn btn--secondary" onClick={() => setRevealShareId(null)}>
                 Done
               </button>
-              {baseUrl ? (
-                <button
-                  className="btn btn--primary"
-                  onClick={() => void copy(shareLinkFor(baseUrl, revealedCode), 'Link')}
-                >
-                  <CopyIcon width="14" height="14" /> Copy link
-                </button>
+              {revealLink ? (
+                <>
+                  <button
+                    className="btn btn--secondary"
+                    onClick={() => getPlatform().openExternal(revealLink)}
+                  >
+                    <ExternalIcon width="14" height="14" /> Open in browser
+                  </button>
+                  <button
+                    className="btn btn--primary"
+                    onClick={() => void copy(revealLink, 'Link')}
+                  >
+                    <CopyIcon width="14" height="14" /> Copy link
+                  </button>
+                </>
               ) : null}
             </>
           }
@@ -713,11 +816,18 @@ export function SharingPanel({
           {baseUrl ? (
             <div className="sharing__reveal">
               <span className="sharing__code-label">Full link</span>
-              <code className="sharing__code-value">{shareLinkFor(baseUrl, revealedCode)}</code>
+              <code className="sharing__code-value">{revealLink}</code>
               <span className="field__note">
                 The link includes the server address. A bare code still needs the owner’s address when it
-                is typed into another device.
+                is typed into another device. Any browser can open this link; the Colax desktop app adds
+                the linked copy that keeps updating.
               </span>
+              {qr ? (
+                <div className="sharing__qr">
+                  <img src={qr} alt="QR code for the share link" />
+                  <span className="field__note">Scan with a phone camera to open the browser view.</span>
+                </div>
+              ) : null}
             </div>
           ) : (
             <Alert tone="warn">
@@ -725,7 +835,12 @@ export function SharingPanel({
               copy the link.
             </Alert>
           )}
-          {!desktop ? <Alert tone="warn">The receiving app needs the desktop build.</Alert> : null}
+          {!desktop ? (
+            <Alert tone="info">
+              The browser view works without the desktop app. Automatic linked-copy updates need the Colax
+              desktop app on the recipient’s device.
+            </Alert>
+          ) : null}
         </Modal>
       ) : null}
 

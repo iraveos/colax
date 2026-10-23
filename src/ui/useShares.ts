@@ -31,6 +31,8 @@ function stoppedStatus(error = ''): ShareServerStatus {
     localUrl: '',
     publicUrl: '',
     error,
+    tunnel: 'off',
+    tunnelError: '',
   };
 }
 
@@ -64,7 +66,12 @@ export function useShareServer(input: {
   useEffect(() => {
     const api = getPlatform().share;
     if (!api || !active) return;
-    return api.onEvent((event) => eventRef.current(event));
+    const stopEvents = api.onEvent((event) => eventRef.current(event));
+    const stopStatus = api.onStatus((status) => setStatus(status));
+    return () => {
+      stopEvents();
+      stopStatus();
+    };
   }, [active]);
 
   useEffect(() => {
@@ -83,7 +90,21 @@ export function useShareServer(input: {
     }
 
     let cancelled = false;
-    setStatus((current) => ({ ...current, error: '', publicUrl: config.publicUrl }));
+    setStatus((current) => ({
+      ...current,
+      error: '',
+      // A prefs write (for example a new access-log row) can re-run this effect
+      // without actually reconfiguring anything. Do not flash "starting" over a
+      // tunnel that is already live.
+      tunnel:
+        config.tunnel === 'cloudflare'
+          ? current.tunnel === 'running'
+            ? 'running'
+            : 'starting'
+          : 'off',
+      tunnelError: '',
+      publicUrl: config.tunnel === 'cloudflare' ? current.publicUrl : config.publicUrl,
+    }));
     void api
       .start(config)
       .then((next) => {
@@ -108,7 +129,7 @@ export function useShareServer(input: {
     return () => {
       cancelled = true;
     };
-  }, [active, config.enabled, config.port, config.bind, config.publicUrl, config]);
+  }, [active, config.enabled, config.port, config.bind, config.tunnel, config.publicUrl]);
 
   useEffect(() => {
     const api = getPlatform().share;
