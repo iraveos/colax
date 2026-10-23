@@ -143,11 +143,15 @@ interface changes.
 - Favorites, search, five sort orders
 - Keyboard-first (`/`, `N`, `L`, `V`, `?`), auto-lock on idle/blur/tab-hide, clipboard auto-clear
 - Encrypted backup export/restore (optionally re-keyed or made passwordless), CSV import/export
+- **Direct sharing** — create several independent codes for selected logins, add expiry, a
+  device limit and an optional PIN, see who connected, then revoke without deleting the
+  recipient's copy. Recipient imports are linked: the owner's later edits replace the shared
+  fields on the next sync
 - Diagnostics report and a one-click preference reset
 
 ## Settings
 
-Nine tabs, each a panel that slides in from the side:
+Tabs slide in from the side:
 
 | Tab | What it holds |
 | --- | --- |
@@ -157,13 +161,71 @@ Nine tabs, each a panel that slides in from the side:
 | Generator | Default length and character sets |
 | Vault password | Enable / change / remove, plus the active crypto parameters |
 | Security | Auto-lock, lock on blur, lock on tab hide, clipboard clearing, reveal, reuse warnings, export confirmation |
-| Data | Stored size, CSV export/import, delete vault |
-| Backup | Encrypted export and restore |
+| Alarms | Reminder labels, times and sounds |
+| Sharing | Local share server, codes, rules, devices, activity, redeem and linked-copy sync |
+| Optimize | One-click resource profiles, launch-time Chromium switches and mail loading |
+| Data | Stored size, CSV export/import, theme backup, delete vault |
 | About | Version, offline confirmation, diagnostics copy, reset preferences |
 
 Preferences are stored unencrypted (they are not secret) and every value is re-validated on
 load, so hand-edited or stale data cannot break the UI. That includes migrating the six
 loud accent names from an earlier version onto the current calm four.
+
+## Sharing
+
+Sharing is **desktop-only** (the Electron app). A browser tab cannot listen on a socket or
+reach a LAN address without CORS, so Settings shows the panel but cannot host or redeem a
+share there.
+
+### How it works
+
+Issuing a share in **Settings → Sharing**:
+
+1. Turn on the **Sharing server**. It defaults to `127.0.0.1:47821`; choose **Local network**
+   only when other devices need to connect.
+2. Choose the logins, an optional expiry, a device limit, and whether the code is code-only
+   or code + PIN. Username, password and website are always exposed; notes are on by default;
+   2FA seeds and attachments are opt-in.
+3. Copy the 12-character code or the full link. The code is shown once. Colax stores only a
+   SHA-256 hash of it, so a lost code is replaced with **New code**, not recovered.
+
+The recipient opens **Settings → Sharing → Open a share**, pastes the link (or types the code
+plus the owner's address), and enters the PIN if one was set. The imported logins carry a
+sealed link back to their source. They are refreshed on unlock, every two minutes, and by
+**Sync now**. Shared fields are read-only in the editor; tags, appearance, flags and dates
+remain local.
+
+### Server addresses
+
+- **Same computer:** `http://127.0.0.1:47821`.
+- **Same Wi-Fi/LAN:** set the server to *Local network*; links use the machine's IPv4 address.
+  Allow Colax through the firewall on private networks only.
+- **Across the internet:** keep the server on *Local network* and put a tunnel in front of
+  `http://127.0.0.1:47821`, then paste the tunnel's HTTPS URL into **Public address**. A named
+  Cloudflare Tunnel or a Tailscale/WireGuard address works; Colax does not run a relay.
+  `cloudflared tunnel --url http://127.0.0.1:47821` is enough for a quick test, but its URL
+  changes each run.
+
+### Security and limits
+
+- The listener runs **only while the vault is unlocked**, holds the selected logins in main
+  process memory, and is stopped and cleared on lock, reload, renderer exit or quit.
+- PINs are PBKDF2-HMAC-SHA-256 (210,000 iterations). Device tokens are random 32-byte values,
+  stored only as hashes. Redemption and PIN entry are rate-limited per address and code.
+- Browser pages use a strict CSP, render escaped text only, and never load external scripts.
+- Plain LAN links are **HTTP**, so passwords are on the wire in clear text. Use a trusted
+  network or an HTTPS tunnel. Anyone with the code (and PIN) is authorised by design.
+- Revoking or deleting a share stops future syncs; it does not delete the recipient's last
+  copy. Deleting the owner's source login leaves a copy marked *ended by owner*.
+- The owner's device must be online and unlocked for a recipient to sync. There is no central
+  server and no offline relay.
+- Shared notes travel as plain text. Rich formatting and inline note images stay behind; use
+  the opt-in attachment field when a recipient needs the original file.
+- A linked copy is refreshed on unlock, every two minutes, and by **Sync now**. The first sync
+  after an offline period always pulls the complete share, so large opt-in attachments can
+  make that refresh slower.
+- **Google/OIDC sign-in is intentionally not part of sharing.** Authentication is the share
+  code, optionally plus a PIN; there is no account to sign in with.
 
 ## Honest limitations
 

@@ -73,6 +73,7 @@ export function RichNotes({
   labelledBy,
   onChange,
   onFiles,
+  readOnly,
 }: {
   /** A new item id (or "new") resets the DOM; ordinary re-renders must not. */
   resetKey: string;
@@ -82,6 +83,8 @@ export function RichNotes({
   labelledBy?: string;
   onChange: (next: { html: string; text: string }) => void;
   onFiles: (files: File[]) => void;
+  /** A shared note follows its owner; the recipient can read, not rewrite. */
+  readOnly?: boolean;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
 
@@ -127,12 +130,14 @@ export function RichNotes({
   };
 
   const onDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (readOnly) return;
     if (!Array.from(event.dataTransfer?.types ?? []).includes('Files')) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
   };
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (readOnly) return;
     const files = noteFilesFromTransfer(event.dataTransfer);
     if (!files.length) return;
     event.preventDefault();
@@ -141,27 +146,32 @@ export function RichNotes({
   };
 
   return (
-    <div className="rich-notes" onDragOver={onDragOver} onDrop={onDrop}>
+    <div
+      className={`rich-notes${readOnly ? ' rich-notes--readOnly' : ''}`}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <div
         ref={editorRef}
         className="rich-notes__editor rich-text"
-        contentEditable
+        contentEditable={!readOnly}
         suppressContentEditableWarning
         role="textbox"
         aria-multiline="true"
+        aria-readonly={readOnly || undefined}
         aria-labelledby={labelledBy}
         data-placeholder={placeholder}
         data-empty="true"
-        spellCheck
-        onInput={sync}
-        onPaste={onPaste}
+        spellCheck={!readOnly}
+        onInput={readOnly ? undefined : sync}
+        onPaste={readOnly ? undefined : onPaste}
         onBlur={() => {
           const editor = editorRef.current;
           if (!editor) return;
           const safe = sanitizeNoteHtml(editor.innerHTML);
           if (safe !== editor.innerHTML) editor.innerHTML = safe;
           updateEmpty(editor);
-          sync();
+          if (!readOnly) sync();
         }}
         onClick={(event) => {
           if ((event.target as HTMLElement).closest('a')) event.preventDefault();

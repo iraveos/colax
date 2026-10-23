@@ -320,10 +320,28 @@ const updatePrefs = useCallback(
       const next = normalisePreferences({ ...prefsRef.current, ...patch });
       prefsRef.current = next;
       setPrefs(next);
-      // No eager `applyAppearance` here either — same double-write as `restore`
+      // No eager `applyAppearance` here either - same double-write as `restore`
       // above, and the same one-frame flash whenever a channel supplied its own
       // background. The App effect applies the new appearance right after this
       // render, which is soon enough to feel immediate.
+      await service.savePreferences(next);
+    },
+    [service],
+  );
+
+  /**
+   * Like updatePrefs, but reads the latest preferences inside the callback.
+   *
+   * Share access events arrive while other preference writes are in flight. A
+   * caller that computed `shares` from a render snapshot would overwrite a
+   * newer device or access row with an older array; this form makes the merge
+   * happen against the ref the writer actually uses.
+   */
+  const updatePrefsWith = useCallback(
+    async (patch: (current: VaultPreferences) => Partial<VaultPreferences>) => {
+      const next = normalisePreferences({ ...prefsRef.current, ...patch(prefsRef.current) });
+      prefsRef.current = next;
+      setPrefs(next);
       await service.savePreferences(next);
     },
     [service],
@@ -347,6 +365,7 @@ const updatePrefs = useCallback(
     resetVault,
     recordUse,
     updatePrefs,
+    updatePrefsWith,
   };
 }
 

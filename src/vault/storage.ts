@@ -32,6 +32,13 @@ import {
   type OptimizeProfile,
   type OptimizeStyle,
 } from './optimize.ts';
+import {
+  DEFAULT_SHARE_SERVER,
+  normaliseShareServer,
+  normaliseShares,
+  type ShareServerConfig,
+  type VaultShare,
+} from '../lib/shares.ts';
 
 /** How the vault is laid out on screen. The choice is persisted. */
 export type VaultView = 'animated' | 'basic' | 'grid';
@@ -923,6 +930,16 @@ export interface VaultPreferences {
    */
   lookPresetMigrated: boolean;
 
+  // -- Sharing
+  /**
+   * Share codes, rules, connected devices and access logs. Only the hash of a
+   * code is stored, and only the ids of the source logins are held here; the
+   * selected credentials are sealed with the logins themselves.
+   */
+  shares: VaultShare[];
+  /** Local share server settings. Off until the user enables it. */
+  shareServer: ShareServerConfig;
+
   // -- History
   /**
    * What changed in the vault, newest first — the History channel's data.
@@ -1080,6 +1097,8 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   clipboardCapture: false,
   clipboardAutoSave: false,
   maskEmails: true,
+  shares: [],
+  shareServer: DEFAULT_SHARE_SERVER,
   alarms: [],
   vaultSecurity: EMPTY_SECURITY,
   autoLockMinutes: 5,
@@ -1222,6 +1241,8 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
         // sit in Settings › Hidden as a row that hides nothing.
         .filter((id) => id !== 'card-copy')
     : [];
+  merged.shares = normaliseShares(merged.shares);
+  merged.shareServer = normaliseShareServer(merged.shareServer);
   merged.manualOrder = Array.isArray(merged.manualOrder)
     ? [...new Set(merged.manualOrder.filter((id): id is string => typeof id === 'string' && id.length > 0))]
     : [];

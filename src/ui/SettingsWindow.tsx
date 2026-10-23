@@ -69,6 +69,11 @@ const SEARCH_INDEX: { tab: string; label: string; words: string }[] = [
   { tab: 'security', label: 'Second factor', words: 'vault security factor gate' },
   // Alarms
   { tab: 'alarms', label: 'Alarms', words: 'reminders clock notifications sound' },
+  // Sharing
+  { tab: 'sharing', label: 'Share server', words: 'sharing lan port tunnel public address receive' },
+  { tab: 'sharing', label: 'Share codes', words: 'share link pin expiry device limit revoke' },
+  { tab: 'sharing', label: 'Open a share', words: 'redeem import code link linked copy' },
+  { tab: 'sharing', label: 'Connected devices', words: 'recipients access activity sync' },
   // Data
   { tab: 'data', label: 'Encrypted backup', words: 'export import vault restore json' },
   { tab: 'data', label: 'CSV export', words: 'spreadsheet plaintext excel passwords' },
@@ -326,6 +331,8 @@ function describe(id: string): string {
       return 'Locking, clipboard and warnings';
     case 'optimize':
       return 'Trade eye-candy for memory, CPU and battery';
+    case 'sharing':
+      return 'Share logins directly with another device';
     case 'data':
       return 'Import, export and what is stored';
     case 'backup':

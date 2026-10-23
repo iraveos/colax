@@ -13,6 +13,16 @@
  */
 
 import type { MailOAuth, OAuthConnectInput, OAuthConnectResult } from './oauth.ts';
+import type {
+  ShareRedeemInput,
+  ShareRedeemResult,
+  ShareServerConfig,
+  ShareServerEvent,
+  ShareServerStatus,
+  ShareSnapshot,
+  ShareSyncResult,
+  ShareSyncTarget,
+} from './shares.ts';
 
 export type { OAuthConnectInput, OAuthConnectResult } from './oauth.ts';
 
@@ -189,6 +199,27 @@ export interface PlatformAPI {
      * The PKCE exchange happens entirely in the main process.
      */
     connect(input: OAuthConnectInput): Promise<OAuthConnectResult>;
+  };
+  /**
+   * Sharing between Colax installs.
+   *
+   * Absent on web — a browser tab cannot listen on a socket, and it cannot fetch
+   * a LAN address without CORS — so every call site feature-checks and explains
+   * that the desktop app is needed.
+   */
+  share?: {
+    /** Starts, or reconfigures, the local share server. */
+    start(config: ShareServerConfig): Promise<ShareServerStatus>;
+    stop(): Promise<ShareServerStatus>;
+    /** Replaces the in-memory snapshot the server may serve. */
+    sync(snapshots: ShareSnapshot[]): Promise<ShareServerStatus>;
+    status(): Promise<ShareServerStatus>;
+    /** Redeems a code against another device's server. */
+    redeem(input: ShareRedeemInput): Promise<ShareRedeemResult>;
+    /** Pulls updates for every linked copy, from each owner's server. */
+    syncLinked(targets: ShareSyncTarget[]): Promise<ShareSyncResult>;
+    /** Live device/access events from this device's own server. */
+    onEvent(callback: (event: ShareServerEvent) => void): () => void;
   };
   /**
    * Desktop shell controls. Absent on web — there is no tray, autostart or

@@ -397,6 +397,12 @@ export function ItemEditor({
 
   /** True when this login has a factor that has not been cleared for the form. */
   const passwordLocked = Boolean(item && requiresVerification(item.security) && !verified);
+  // An imported copy is a view of someone else's login. Its shared fields are
+  // read-only here; local tags, appearance, flags and dates remain the
+  // recipient's own. The owner's next sync is the authority.
+  const linked = item?.shareLink && item.shareLink.endedAt === null ? item.shareLink : null;
+  const notesShared = Boolean(linked?.fields.notes);
+  const attachmentsShared = Boolean(linked?.fields.attachments);
 
   useEffect(() => {
     setDraft(item ?? {});
@@ -560,6 +566,7 @@ export function ItemEditor({
             onChange={(event) => patch({ title: event.target.value })}
             placeholder="GitHub"
             autoFocus
+            readOnly={Boolean(linked)}
           />
         </div>
 
@@ -575,6 +582,7 @@ export function ItemEditor({
             placeholder="github.com"
             inputMode="url"
             spellCheck={false}
+            readOnly={Boolean(linked)}
           />
           <p className="field__note">
             The domain is what &ldquo;Open site&rdquo; uses, and it drives the icon and accent when those are left
@@ -598,6 +606,7 @@ export function ItemEditor({
             placeholder="you@example.com"
             autoComplete="off"
             spellCheck={false}
+            readOnly={Boolean(linked)}
           />
         </div>
 
@@ -614,6 +623,7 @@ export function ItemEditor({
               onChange={(event) => patch({ password: event.target.value })}
               autoComplete="new-password"
               spellCheck={false}
+              readOnly={Boolean(linked)}
             />
             <button
               type="button"
@@ -631,7 +641,12 @@ export function ItemEditor({
             >
               {passwordLocked ? <LockIcon /> : revealed ? <EyeOffIcon /> : <EyeIcon />}
             </button>
-            <button type="button" className="btn btn--secondary" onClick={() => setShowGenerator((g) => !g)}>
+            <button
+              type="button"
+              className="btn btn--secondary"
+              onClick={() => setShowGenerator((g) => !g)}
+              disabled={Boolean(linked)}
+            >
               <DiceIcon width="14" height="14" />
               Generate
             </button>
@@ -640,7 +655,7 @@ export function ItemEditor({
             <button
               type="button"
               className="btn btn--secondary"
-              disabled={!draft.username && !draft.password}
+              disabled={Boolean(linked) || (!draft.username && !draft.password)}
               title="Copy a short share block for this login"
               onClick={() => {
                 // Marked before writing: without this the clipboard watcher
@@ -851,30 +866,39 @@ export function ItemEditor({
           placeholder="Recovery codes, security questions, anything else"
           labelledBy="notes-label"
           onChange={({ html, text }) => patch({ notesHtml: html, notes: text })}
-          onFiles={(files) => void collectNoteFiles(files)}
+          onFiles={(files) => {
+            if (!attachmentsShared) void collectNoteFiles(files);
+          }}
+          readOnly={notesShared}
         />
         <div className="notes-tools">
-          <button
-            type="button"
-            className="btn btn--secondary"
-            onClick={() => noteFileInput.current?.click()}
-          >
-            <UploadIcon width={14} height={14} />
-            Attach files
-          </button>
-          <input
-            ref={noteFileInput}
-            type="file"
-            multiple
-            hidden
-            onChange={(event) => {
-              const files = Array.from(event.currentTarget.files ?? []);
-              event.currentTarget.value = '';
-              if (files.length) void collectNoteFiles(files);
-            }}
-          />
+          {!attachmentsShared ? (
+            <>
+              <button
+                type="button"
+                className="btn btn--secondary"
+                onClick={() => noteFileInput.current?.click()}
+              >
+                <UploadIcon width={14} height={14} />
+                Attach files
+              </button>
+              <input
+                ref={noteFileInput}
+                type="file"
+                multiple
+                hidden
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files ?? []);
+                  event.currentTarget.value = '';
+                  if (files.length) void collectNoteFiles(files);
+                }}
+              />
+            </>
+          ) : null}
           <span className="field__note">
-            Paste, drop or upload any file — up to {Math.round(MAX_NOTE_ATTACHMENT_BYTES / 1_000_000)} MB each.
+            {attachmentsShared
+              ? 'Files in the notes follow the owner’s copy.'
+              : `Paste, drop or upload any file — up to ${Math.round(MAX_NOTE_ATTACHMENT_BYTES / 1_000_000)} MB each.`}
           </span>
         </div>
         {mediaAttachments.length ? (
@@ -895,15 +919,17 @@ export function ItemEditor({
                   <img className="notes-media__thumb" src={attachment.dataUrl} alt="" loading="lazy" />
                 </button>
                 {attachment.mime.startsWith('video/') ? <span className="notes-media__play" aria-hidden="true">▶</span> : null}
-                <button
-                  type="button"
-                  className="btn btn--icon notes-media__remove"
-                  aria-label={`Remove picture or video ${position + 1} of ${mediaAttachments.length}`}
-                  title="Remove from the notes"
-                  onClick={() => removeNoteMedia(index)}
-                >
-                  <TrashIcon />
-                </button>
+                {!attachmentsShared ? (
+                  <button
+                    type="button"
+                    className="btn btn--icon notes-media__remove"
+                    aria-label={`Remove picture or video ${position + 1} of ${mediaAttachments.length}`}
+                    title="Remove from the notes"
+                    onClick={() => removeNoteMedia(index)}
+                  >
+                    <TrashIcon />
+                  </button>
+                ) : null}
               </div>
             ))}
           </div>
@@ -932,15 +958,17 @@ export function ItemEditor({
                 >
                   <DownloadIcon />
                 </a>
-                <button
-                  type="button"
-                  className="btn btn--icon"
-                  title="Remove from the notes"
-                  aria-label={`Remove ${attachmentFileName(attachment, index)}`}
-                  onClick={() => removeNoteMedia(index)}
-                >
-                  <TrashIcon />
-                </button>
+                {!attachmentsShared ? (
+                  <button
+                    type="button"
+                    className="btn btn--icon"
+                    title="Remove from the notes"
+                    aria-label={`Remove ${attachmentFileName(attachment, index)}`}
+                    onClick={() => removeNoteMedia(index)}
+                  >
+                    <TrashIcon />
+                  </button>
+                ) : null}
               </div>
             ))}
           </div>
@@ -1077,6 +1105,12 @@ export function ItemEditor({
             aria-labelledby={`editor-tab-${section}`}
             onSubmit={submit}
           >
+            {linked ? (
+              <Alert tone="info">
+                Shared by {linked.shareName}. The shared fields are read-only and follow the owner’s latest
+                version on sync. Your tags, appearance, flags and dates stay local.
+              </Alert>
+            ) : null}
             {panels[section]}
           </form>
         </div>

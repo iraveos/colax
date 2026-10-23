@@ -12,6 +12,16 @@
  */
 import { contextBridge, ipcRenderer } from 'electron';
 import type { EfficiencyState, FullMailInput, FullMailResult, InboxListInput, InboxListResult, OAuthConnectInput, OAuthConnectResult, PlatformAPI, RuntimeMemory, ShellSettings, TrayAction } from '../src/lib/platform.ts';
+import type {
+  ShareRedeemInput,
+  ShareRedeemResult,
+  ShareServerConfig,
+  ShareServerEvent,
+  ShareServerStatus,
+  ShareSnapshot,
+  ShareSyncResult,
+  ShareSyncTarget,
+} from '../src/lib/shares.ts';
 
 declare const COLAX_APP_VERSION: string;
 
@@ -44,6 +54,27 @@ const platform: PlatformAPI = {
     memory: () => ipcRenderer.invoke('colax:runtime-memory') as Promise<RuntimeMemory | null>,
     efficiency: (update?: { maxSavings?: boolean; gpu?: boolean }) =>
       ipcRenderer.invoke('colax:runtime-efficiency', update) as Promise<EfficiencyState>,
+  },
+  share: {
+    start: (config: ShareServerConfig): Promise<ShareServerStatus> =>
+      ipcRenderer.invoke('colax:share-start', config) as Promise<ShareServerStatus>,
+    stop: (): Promise<ShareServerStatus> =>
+      ipcRenderer.invoke('colax:share-stop') as Promise<ShareServerStatus>,
+    sync: (snapshots: ShareSnapshot[]): Promise<ShareServerStatus> =>
+      ipcRenderer.invoke('colax:share-sync', snapshots) as Promise<ShareServerStatus>,
+    status: (): Promise<ShareServerStatus> =>
+      ipcRenderer.invoke('colax:share-status') as Promise<ShareServerStatus>,
+    redeem: (input: ShareRedeemInput): Promise<ShareRedeemResult> =>
+      ipcRenderer.invoke('colax:share-redeem', input) as Promise<ShareRedeemResult>,
+    syncLinked: (targets: ShareSyncTarget[]): Promise<ShareSyncResult> =>
+      ipcRenderer.invoke('colax:share-sync-linked', targets) as Promise<ShareSyncResult>,
+    onEvent: (callback: (event: ShareServerEvent) => void) => {
+      const listener = (_event: unknown, payload: ShareServerEvent) => callback(payload);
+      ipcRenderer.on('colax:share-event', listener as never);
+      return () => {
+        ipcRenderer.removeListener('colax:share-event', listener as never);
+      };
+    },
   },
   shell: {
     update: (settings: ShellSettings) => {

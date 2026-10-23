@@ -13,5 +13,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["test", "src/crypto", "src/vault"]
+  "include": ["test", "src/crypto", "src/vault", "electron/share-server.ts"]
 }

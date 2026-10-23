@@ -48,6 +48,8 @@ import {
 import { formatBytes, useEfficiency } from './useEfficiency.ts';
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import { buildStamp, getPlatform } from '../lib/platform.ts';
+import type { ShareRedeemResult, ShareServerStatus } from '../lib/shares.ts';
+import { SharingPanel } from './SharingPanel.tsx';
 import { applyChannel, parentFolderFor, type Tag } from '../vault/channels.ts';
 import { HIDDEN_BUTTON_LABELS } from './context-menu.tsx';
 import { DockSlotsEditor } from './DockSettings.tsx';
@@ -67,6 +69,7 @@ import {
   MoonIcon,
   PaletteIcon,
   RowsIcon,
+  ShareIcon,
   ShieldIcon,
   SquaresIcon,
   SunIcon,
@@ -205,6 +208,13 @@ export function Settings(props: {
   onNotify: (message: string, tone?: Toast['tone']) => void;
   onLock: () => void;
   onReset: () => Promise<void>;
+  /** Live status of the local share server, owned by App. */
+  shareServerStatus: ShareServerStatus;
+  /** Redeems against another device; App imports the result. */
+  onRedeemShare?: (input: { entry: string; host: string; pin: string }) => Promise<ShareRedeemResult>;
+  /** Pulls updates for linked copies; resolves to the number touched. */
+  onSyncShared?: () => Promise<number>;
+  shareSyncing?: boolean;
   /** Opens the channel editor for one channel, or a blank one. */
   onEditChannel?: (channelId: string | 'new') => void;
   onScrubTag?: (tagId: string) => void;
@@ -222,6 +232,7 @@ export function Settings(props: {
 }) {
   const {
     open, onClose, tab, hideDividers, prefs, service, protection, items, onUpdate, onNotify, onLock, onReset,
+    shareServerStatus, onRedeemShare, onSyncShared, shareSyncing,
     onEditChannel, onScrubTag, onOpenTuner, onCreateTag,
   } = props;
   const [changing, setChanging] = useState(false);
@@ -1590,6 +1601,24 @@ export function Settings(props: {
           alarms={prefs.alarms}
           onChange={(alarms) => set({ alarms })}
           onNotify={onNotify}
+        />
+      ),
+    },
+
+    {
+      id: 'sharing',
+      label: 'Sharing',
+      icon: <ShareIcon />,
+      render: () => (
+        <SharingPanel
+          prefs={prefs}
+          items={items}
+          serverStatus={shareServerStatus}
+          onUpdate={onUpdate}
+          onNotify={onNotify}
+          onRedeemShare={onRedeemShare}
+          onSyncShared={onSyncShared}
+          shareSyncing={shareSyncing}
         />
       ),
     },

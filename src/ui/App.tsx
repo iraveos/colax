@@ -84,6 +84,13 @@ import { BulkAddDialog, BulkEditDialog } from './BulkEditDialog.tsx';
 import { formatLoginCompact, formatLoginForClipboard, formatLoginsForClipboard } from './login-format.ts';
 import { appActiveNow } from '../lib/activity.ts';
 import { getPlatform } from '../lib/platform.ts';
+import type {
+  ShareRedeemResult,
+  ShareServerEvent,
+  ShareSyncShareResult,
+} from '../lib/shares.ts';
+import { makeShareLink, newDeviceId, sharedLoginPatch } from '../vault/shares.ts';
+import { useLinkedSync, useShareServer } from './useShares.ts';
 import {
   AlertIcon,
   CheckIcon,
@@ -185,6 +192,240 @@ export function App() {
     },
     [notificationsLevel, rawNotify],
   );
+  /**
+   * Applies owner updates to linked copies.
+   *
+   * A sync returns the complete snapshot for each share. We update only copies
+   * whose revision moved, and mark copies whose source vanished as ended. Every
+   * write goes through vault.mutate so the change is undoable and re-sealed, but
+   * it does not write History rows: an owner's edit is not an action the
+   * recipient took.
+   */
+  const applySharedResults = useCallback(
+    async (results: ShareSyncShareResult[]) => {
+      // The service is authoritative; a render snapshot may be one edit behind
+      // when a background sync lands while the editor is open.
+      const existing = vault.service.items ?? vault.items;
+      const updates: { id: string; patch: Partial<VaultItem> }[] = [];
+      const adds: Partial<VaultItem>[] = [];
+      let changed = 0;
+      let ended = 0;
+
+      for (const result of results) {
+        const copies = existing.filter((item) => item.shareLink?.shareId === result.shareId);
+        if (result.ended) {
+          for (const copy of copies) {
+            if (!copy.shareLink || copy.shareLink.endedAt !== null) continue;
+            updates.push({
+              id: copy.id,
+              patch: {
+                shareLink: { ...copy.shareLink, endedAt: Date.now(), lastSyncAt: Date.now() },
+              },
+            });
+            ended += 1;
+          }
+          continue;
+        }
+        // A network failure with no payload is not "every login was removed".
+        if (result.error && result.items.length === 0) continue;
+
+        const source = new Map(result.items.map((item) => [item.id, item]));
+        for (const copy of copies) {
+          const link = copy.shareLink;
+          if (!link) continue;
+          // An ended copy is the recipient's own from then on. A still-live
+          // sibling copy must not drag it back into the share.
+          if (link.endedAt !== null) continue;
+          const shared = source.get(link.sourceItemId);
+          if (!shared) {
+            if (link.endedAt === null) {
+              updates.push({
+                id: copy.id,
+                patch: { shareLink: { ...link, endedAt: Date.now(), lastSyncAt: Date.now() } },
+              });
+              ended += 1;
+            }
+            continue;
+          }
+          if (
+            link.revision === result.revision &&
+            link.sourceUpdatedAt === shared.updatedAt &&
+            link.endedAt === null
+          ) {
+            continue;
+          }
+          updates.push({
+            id: copy.id,
+            patch: {
+              ...sharedLoginPatch(shared, result.fields),
+              shareLink: {
+                ...link,
+                shareName: result.shareName || link.shareName,
+                revision: result.revision,
+                fields: result.fields,
+                sourceUpdatedAt: shared.updatedAt,
+                lastSyncAt: Date.now(),
+                endedAt: null,
+              },
+            },
+          });
+          changed += 1;
+        }
+
+        // A copy deleted locally is not resurrected. A new login added to an
+        // existing share is imported, using the token from a sibling copy.
+        const template = copies[0]?.shareLink;
+        if (!template) continue;
+        const known = new Set(copies.map((copy) => copy.shareLink?.sourceItemId));
+        for (const shared of result.items) {
+          if (known.has(shared.id)) continue;
+          adds.push({
+            ...sharedLoginPatch(shared, result.fields),
+            shareLink: makeShareLink({
+              shareId: result.shareId,
+              sourceItemId: shared.id,
+              shareName: result.shareName || template.shareName,
+              ownerUrl: template.ownerUrl,
+              code: template.code,
+              deviceToken: template.deviceToken,
+              revision: result.revision,
+              fields: result.fields,
+              sourceUpdatedAt: shared.updatedAt,
+            }),
+          });
+          changed += 1;
+        }
+      }
+
+      if (updates.length === 0 && adds.length === 0) return;
+      await vault.mutate(
+        async () => {
+          for (const update of updates) await vault.service.updateItem(update.id, update.patch);
+          for (const draft of adds) await vault.service.addItem(draft);
+        },
+        { log: false },
+      );
+      if (ended > 0) {
+        notify(
+          ended === 1
+            ? 'A shared login was removed by its owner'
+            : `${ended} shared logins were removed by their owner`,
+        );
+      }
+      if (changed > 0) {
+        notify(changed === 1 ? 'Shared login updated' : `${changed} shared logins updated`);
+      }
+    },
+    [notify, vault],
+  );
+
+  /** Redeem a code and import every login in it as a linked copy. */
+  const redeemShared = useCallback(
+    async (input: { entry: string; host: string; pin: string }): Promise<ShareRedeemResult> => {
+      const api = getPlatform().share;
+      if (!api) {
+        return {
+          ok: false,
+          error: 'Sharing needs the Colax desktop app.',
+          shareId: '',
+          shareName: '',
+          ownerUrl: '',
+          code: '',
+          deviceToken: '',
+          revision: 0,
+          fields: { notes: true, totp: false, attachments: false },
+          items: [],
+        };
+      }
+      const result = await api.redeem({
+        ...input,
+        deviceId: newDeviceId(),
+        deviceName: 'Colax desktop',
+      });
+      if (!result.ok) return result;
+      if (!result.deviceToken) {
+        return { ...result, ok: false, error: 'The owner’s device did not return a device token.' };
+      }
+
+      const existing = vault.service.items ?? vault.items;
+      await vault.mutate(
+        async () => {
+          for (const shared of result.items) {
+            const copy = existing.find(
+              (item) =>
+                item.shareLink?.shareId === result.shareId &&
+                item.shareLink.sourceItemId === shared.id,
+            );
+            const patch: Partial<VaultItem> = {
+              ...sharedLoginPatch(shared, result.fields),
+              shareLink: makeShareLink({
+                shareId: result.shareId,
+                sourceItemId: shared.id,
+                shareName: result.shareName,
+                ownerUrl: result.ownerUrl,
+                code: result.code,
+                deviceToken: result.deviceToken,
+                revision: result.revision,
+                fields: result.fields,
+                sourceUpdatedAt: shared.updatedAt,
+              }),
+            };
+            if (copy) await vault.service.updateItem(copy.id, patch);
+            else await vault.service.addItem(patch);
+          }
+        },
+        { log: false },
+      );
+      notify(
+        result.items.length === 1
+          ? 'Imported 1 shared login'
+          : `Imported ${result.items.length} shared logins`,
+      );
+      return result;
+    },
+    [notify, vault],
+  );
+
+  /** Device and access events from this device's own share server. */
+  const handleShareEvent = useCallback(
+    (event: ShareServerEvent) => {
+      void vault.updatePrefsWith((current) => ({
+        shares: current.shares.map((share) => {
+          if (share.id !== event.shareId) return share;
+          const device = event.device;
+          const devices = device
+            ? [...share.devices.filter((entry) => entry.id !== device.id), device].slice(-50)
+            : share.devices;
+          const access = [
+            event.access,
+            ...share.access.filter((entry) => entry.id !== event.access.id),
+          ].slice(0, 250);
+          return {
+            ...share,
+            uses: Math.max(share.uses, event.uses),
+            devices,
+            access,
+          };
+        }),
+      }));
+    },
+    [vault.updatePrefsWith],
+  );
+
+  const shareServerStatus = useShareServer({
+    active: vault.status === 'unlocked',
+    config: vault.prefs.shareServer,
+    shares: vault.prefs.shares,
+    items: vault.items,
+    onEvent: handleShareEvent,
+  });
+  const linkedSync = useLinkedSync({
+    active: vault.status === 'unlocked',
+    items: vault.items,
+    apply: applySharedResults,
+    onError: (message) => notify(message, 'error'),
+  });
+
   const { copy } = useClipboard(vault.prefs.clearClipboardSeconds, notify, vault.prefs.copyToasts);
   // False while the window is minimized, in the tray, or behind another app.
   // Drives the `data-quiet` attribute below; the polling loops read the same
@@ -4317,6 +4558,10 @@ onCreate={vault.create}
         onUpdate={vault.updatePrefs}
         onNotify={notify}
         onLock={vault.lock}
+        shareServerStatus={shareServerStatus}
+        onRedeemShare={redeemShared}
+        onSyncShared={() => linkedSync.syncNow(true)}
+        shareSyncing={linkedSync.syncing}
         onEditChannel={(channelId) => setEditingChannel(channelId)}
         onScrubTag={(tagId) => void scrubTag(tagId)}
         onCreateTag={createTagNow}
@@ -4568,6 +4813,27 @@ onCreate={vault.create}
               touchLogin(created.id);
               notify('Login added');
             } else if (editing) {
+              if (editing.shareLink && editing.shareLink.endedAt === null) {
+                // The editor marks identity/credential fields read-only, but a
+                // paste, autofill or an older component could still produce a
+                // patch. The owner remains authoritative for every field the
+                // share exposes; a local-only note, seed or attachment stays
+                // the recipient's.
+                const link = editing.shareLink;
+                draft = {
+                  ...draft,
+                  title: editing.title,
+                  username: editing.username,
+                  password: editing.password,
+                  url: editing.url,
+                  ...(link.fields.notes
+                    ? { notes: editing.notes, notesHtml: editing.notesHtml }
+                    : {}),
+                  ...(link.fields.totp ? { totpSecret: editing.totpSecret } : {}),
+                  ...(link.fields.attachments ? { attachments: editing.attachments } : {}),
+                  shareLink: link,
+                };
+              }
               // A changed password is re-graded on the spot: a weak replacement
               // earns the weak badge and a needs-attention flag immediately,
               // rather than waiting for the next health scan to notice it.

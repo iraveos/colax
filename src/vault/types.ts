@@ -1,6 +1,7 @@
 import type { SealedBlob } from '../crypto/vault-crypto.ts';
 import { normaliseSecurity, type LoginSecurity } from '../crypto/security.ts';
 import { estimateStrength } from '../crypto/passwords.ts';
+import { normaliseSharedLink, type SharedLink } from '../lib/shares.ts';
 
 /** What actually sits in storage: the id in the clear, everything else as ciphertext. */
 export interface StoredItem {
@@ -53,6 +54,13 @@ export interface VaultItem {
    * its editor. Older records default to 'auto', preserving their behavior.
    */
   mailFilter: 'auto' | 'matched' | 'recent';
+
+  /**
+   * Present when this login was imported from someone else's share. It keeps
+   * the source link so later syncs can update the copy, and so the UI can say
+   * where it came from and whether the share has ended.
+   */
+  shareLink: SharedLink | null;
 
   /** Ids from the global tag catalogue. Ids rather than names so a tag can be renamed or recoloured everywhere at once. */
   tags: string[];
@@ -237,13 +245,14 @@ export function emptyItem(id: string, now: number = Date.now()): VaultItem {
     // the editor's Inbox section, next to the control that connected it.
     showMail: false,
     mailFilter: 'auto',
+    shareLink: null,
     tags: [],
     attachments: [],
     accentHue: null,
-backgroundImage: '',
-  backgroundBlur: 0,
-  avatarImage: '',
-  createdAt: now,
+    backgroundImage: '',
+    backgroundBlur: 0,
+    avatarImage: '',
+    createdAt: now,
     updatedAt: now,
     passwordUpdatedAt: now,
     usernameUpdatedAt: now,
@@ -263,6 +272,7 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     usernameUpdatedAt: typeof raw.usernameUpdatedAt === 'number' ? raw.usernameUpdatedAt : created,
     notes: typeof raw.notes === 'string' ? raw.notes : '',
     notesHtml: typeof raw.notesHtml === 'string' ? raw.notesHtml : '',
+    shareLink: normaliseSharedLink(raw.shareLink),
     tags: Array.isArray(raw.tags) ? raw.tags.filter((tag): tag is string => typeof tag === 'string') : [],
     // Pasted notes-media is validated rather than trusted: old builds and
     // hand-edited vaults can carry anything in the array.
