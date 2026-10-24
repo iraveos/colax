@@ -162,10 +162,12 @@ export function useShareServer(input: {
 export function useLinkedSync(input: {
   active: boolean;
   items: VaultItem[];
+  /** 0 disables the timer; the unlock sync and manual Sync now still work. */
+  intervalMinutes: number;
   apply: (results: ShareSyncShareResult[]) => Promise<void>;
   onError?: (message: string) => void;
 }) {
-  const { active, items, apply, onError } = input;
+  const { active, items, intervalMinutes, apply, onError } = input;
   const [syncing, setSyncing] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState(0);
   const itemsRef = useRef(items);
@@ -208,12 +210,16 @@ export function useLinkedSync(input: {
   useEffect(() => {
     if (!active) return;
     const first = setTimeout(() => void syncNow(false), 2_500);
-    const repeat = setInterval(() => void syncNow(false), 120_000);
+    if (intervalMinutes <= 0) return () => clearTimeout(first);
+    const repeat = setInterval(
+      () => void syncNow(false),
+      Math.max(1, Math.round(intervalMinutes)) * 60_000,
+    );
     return () => {
       clearTimeout(first);
       clearInterval(repeat);
     };
-  }, [active, syncNow]);
+  }, [active, intervalMinutes, syncNow]);
 
   return { syncNow, syncing, lastSyncAt };
 }

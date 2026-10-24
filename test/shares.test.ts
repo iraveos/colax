@@ -250,42 +250,27 @@ test('the share server pairs devices, propagates edits and honours revocation', 
     });
     assert.equal((await afterEdit.json() as { items: { password: string }[] }).items[0]?.password, 'new-password');
 
-    // The browser view is PIN-gated, escaped, and carries the strict policy.
-    const gate = await fetch(`${base}/s/${pathCode}`);
-    assert.equal(gate.status, 200);
-    const gateHtml = await gate.text();
-    assert.ok(gateHtml.includes('Enter PIN'));
-    const csrf = /name="csrf" value="([^"]+)"/.exec(gateHtml)?.[1] ?? '';
-    const gateCookie = (gate.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
-    assert.ok(csrf && gateCookie.startsWith('colax_gate='));
-
-    const auth = await fetch(`${base}/s/${pathCode}`, {
-      method: 'POST',
-      redirect: 'manual',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        cookie: gateCookie,
-      },
-      body: new URLSearchParams({ csrf, pin: '4821' }),
-    });
-    assert.equal(auth.status, 303);
-    const sessionCookie = (auth.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
-
-    const page = await fetch(`${base}/s/${pathCode}`, {
-      headers: { cookie: sessionCookie },
-    });
+    // The public URL is a dead end: no share name, title, username, password,
+    // note or even confirmation that this particular code exists.
+    const page = await fetch(`${base}/s/${pathCode}`);
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'none'/);
-    assert.ok((await page.text()).includes('Bank &lt;script&gt;alert(1)&lt;/script&gt;'));
+    const html = await page.text();
+    assert.ok(html.includes('Open this share in the Colax app'));
+    assert.equal(html.includes('Bank'), false);
+    assert.equal(html.includes('ada@example.com'), false);
+    assert.equal(html.includes(item.password), false);
+    assert.equal(html.includes('markup'), false);
 
-    const itemPage = await fetch(`${base}/s/${pathCode}/logins/${encodeURIComponent(item.id)}`, {
-      headers: { cookie: sessionCookie },
-    });
+    const itemPage = await fetch(`${base}/s/${pathCode}/logins/${encodeURIComponent(item.id)}`);
     assert.equal(itemPage.status, 200);
-    const html = await itemPage.text();
-    assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
-    assert.equal(html.includes('<script>alert(1)</script>'), false);
-    assert.ok(html.includes('&lt;b&gt;markup&lt;/b&gt;'));
+    const itemHtml = await itemPage.text();
+    assert.ok(itemHtml.includes('Open this share in the Colax app'));
+    assert.equal(itemHtml.includes(item.password), false);
+
+    const unknown = await fetch(`${base}/s/ZZZZ-ZZZZ-ZZZZ`);
+    assert.equal(unknown.status, 200);
+    assert.equal(await unknown.text(), html);
 
     // Revocation stops the next sync but returns a distinct "ended" answer.
     share = nextShareRevision({ ...share, revokedAt: Date.now() });
@@ -433,10 +418,13 @@ test('approval shares wait for the owner, then release the approved device', asy
     server.sync([{ share, items: [sharedLoginFromItem(item, share.fields)] }]);
     const pathCode = encodeURIComponent(formatShareCode(code));
 
-    // A browser has no device identity to approve, so the page stays empty.
+    // A browser has no device identity to approve, so the page stays neutral.
     const browser = await fetch(`${status.localUrl}/s/${pathCode}`);
-    assert.equal(browser.status, 410);
-    assert.match(await browser.text(), /approved device/i);
+    assert.equal(browser.status, 200);
+    const browserHtml = await browser.text();
+    assert.ok(browserHtml.includes('Open this share in the Colax app'));
+    assert.equal(browserHtml.includes('Approved only'), false);
+    assert.equal(browserHtml.includes(item.password), false);
 
     const pending = await fetch(`${status.localUrl}/s/${pathCode}/redeem`, {
       method: 'POST',
@@ -522,11 +510,12 @@ test('a max-use share refuses the next device', async () => {
     });
     assert.equal(second.status, 410);
     assert.equal((await second.json() as { ended: boolean }).ended, true);
-    // The browser page is not a place to keep leaking credentials after the
-    // device limit has been reached.
+    // The browser page never serves credentials, limit or no limit.
     const page = await fetch(`${status.localUrl}/s/${pathCode}`);
-    assert.equal(page.status, 410);
-    assert.match(await page.text(), /device limit/i);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.ok(html.includes('Open this share in the Colax app'));
+    assert.equal(html.includes(item.password), false);
   } finally {
     await server.stop();
   }

@@ -214,6 +214,8 @@ export function Settings(props: {
   onRedeemShare?: (input: { entry: string; host: string; pin: string }) => Promise<ShareRedeemResult>;
   /** Pulls updates for linked copies; resolves to the number touched. */
   onSyncShared?: () => Promise<number>;
+  /** Removes one imported copy; undo restores it. */
+  onRemoveLinkedCopy?: (item: VaultItem) => Promise<void>;
   shareSyncing?: boolean;
   /** Opens the channel editor for one channel, or a blank one. */
   onEditChannel?: (channelId: string | 'new') => void;
@@ -232,7 +234,7 @@ export function Settings(props: {
 }) {
   const {
     open, onClose, tab, hideDividers, prefs, service, protection, items, onUpdate, onNotify, onLock, onReset,
-    shareServerStatus, onRedeemShare, onSyncShared, shareSyncing,
+    shareServerStatus, onRedeemShare, onSyncShared, onRemoveLinkedCopy, shareSyncing,
     onEditChannel, onScrubTag, onOpenTuner, onCreateTag,
   } = props;
   const [changing, setChanging] = useState(false);
@@ -1618,6 +1620,7 @@ export function Settings(props: {
           onNotify={onNotify}
           onRedeemShare={onRedeemShare}
           onSyncShared={onSyncShared}
+          onRemoveLinkedCopy={onRemoveLinkedCopy}
           shareSyncing={shareSyncing}
         />
       ),

@@ -939,6 +939,15 @@ export interface VaultPreferences {
   shares: VaultShare[];
   /** Local share server settings. Off until the user enables it. */
   shareServer: ShareServerConfig;
+  /**
+   * `shareId|sourceItemId` keys the recipient deliberately removed. Sync uses
+   * these so a deleted linked copy is not silently resurrected.
+   */
+  shareDismissals: string[];
+  /** Minutes between automatic linked-copy syncs. 0 means manual only. */
+  shareSyncMinutes: number;
+  /** Show a toast when a new device is waiting for approval. */
+  shareNotifyApproval: boolean;
 
   // -- History
   /**
@@ -1099,6 +1108,9 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   maskEmails: true,
   shares: [],
   shareServer: DEFAULT_SHARE_SERVER,
+  shareDismissals: [],
+  shareSyncMinutes: 5,
+  shareNotifyApproval: true,
   alarms: [],
   vaultSecurity: EMPTY_SECURITY,
   autoLockMinutes: 5,
@@ -1243,6 +1255,14 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     : [];
   merged.shares = normaliseShares(merged.shares);
   merged.shareServer = normaliseShareServer(merged.shareServer);
+  merged.shareDismissals = Array.isArray(merged.shareDismissals)
+    ? [...new Set(merged.shareDismissals.filter((key): key is string => typeof key === 'string'))].slice(-5000)
+    : [];
+  merged.shareSyncMinutes =
+    typeof merged.shareSyncMinutes === 'number' && Number.isFinite(merged.shareSyncMinutes)
+      ? Math.max(0, Math.min(1440, Math.round(merged.shareSyncMinutes)))
+      : 5;
+  merged.shareNotifyApproval = merged.shareNotifyApproval !== false;
   merged.manualOrder = Array.isArray(merged.manualOrder)
     ? [...new Set(merged.manualOrder.filter((id): id is string => typeof id === 'string' && id.length > 0))]
     : [];

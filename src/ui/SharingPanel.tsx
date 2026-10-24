@@ -7,12 +7,9 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import QRCode from 'qrcode';
-import { getPlatform } from '../lib/platform.ts';
 import {
   formatShareCode,
   normaliseBaseUrl,
-  shareLinkFor,
   shareStatus,
   shareTokenFor,
   type ShareFields,
@@ -39,7 +36,6 @@ import {
   ClockIcon,
   CopyIcon,
   EditIcon,
-  ExternalIcon,
   LockIcon,
   PlusIcon,
   ShareIcon,
@@ -67,6 +63,7 @@ export function SharingPanel({
   onNotify,
   onRedeemShare,
   onSyncShared,
+  onRemoveLinkedCopy,
   shareSyncing,
 }: {
   prefs: VaultPreferences;
@@ -76,6 +73,7 @@ export function SharingPanel({
   onNotify: (message: string, tone?: Toast['tone']) => void;
   onRedeemShare?: (input: { entry: string; host: string; pin: string }) => Promise<ShareRedeemResult>;
   onSyncShared?: () => Promise<number>;
+  onRemoveLinkedCopy?: (item: VaultItem) => Promise<void>;
   shareSyncing?: boolean;
 }) {
   const [form, setForm] = useState<{ mode: 'create' } | { mode: 'edit'; share: VaultShare } | null>(null);
@@ -87,7 +85,6 @@ export function SharingPanel({
   const [openDetails, setOpenDetails] = useState<string | null>(null);
   const [portDraft, setPortDraft] = useState(String(prefs.shareServer.port));
   const [publicDraft, setPublicDraft] = useState(prefs.shareServer.publicUrl);
-  const [qr, setQr] = useState('');
   const [entry, setEntry] = useState('');
   const [pin, setPin] = useState('');
   const [redeeming, setRedeeming] = useState(false);
@@ -113,26 +110,6 @@ export function SharingPanel({
     ? prefs.shares.find((share) => share.id === revealShareId) ?? null
     : null;
   const revealedCode = revealShareId ? revealed[revealShareId] ?? '' : '';
-  const revealLink = revealedShare && revealedCode && baseUrl ? shareLinkFor(baseUrl, revealedCode) : '';
-  const revealBlockedInBrowser = Boolean(revealedShare?.approval);
-
-  useEffect(() => {
-    if (!revealLink) {
-      setQr('');
-      return;
-    }
-    let live = true;
-    void QRCode.toDataURL(revealLink, { margin: 1, width: 220 })
-      .then((url) => {
-        if (live) setQr(url);
-      })
-      .catch(() => {
-        if (live) setQr('');
-      });
-    return () => {
-      live = false;
-    };
-  }, [revealLink]);
 
   const linked = useMemo(() => items.filter((item) => item.shareLink !== null), [items]);
   const activeShares = prefs.shares.filter((share) => shareStatus(share) === 'active');
@@ -493,18 +470,7 @@ export function SharingPanel({
                       ? 'Opening a public link…'
                       : 'Not started'}
               </strong>
-              {serverStatus.tunnel === 'running' && serverStatus.publicUrl ? (
-                <button
-                  className="btn btn--secondary btn--sm"
-                  onClick={() => void copy(serverStatus.publicUrl, 'Public link')}
-                >
-                  <CopyIcon width="13" height="13" /> Copy public link
-                </button>
-              ) : null}
             </div>
-            {serverStatus.tunnel === 'running' ? (
-              <code className="sharing__code-value">{serverStatus.publicUrl}</code>
-            ) : null}
             {serverStatus.tunnel === 'error' ? (
               <p className="sec__error">{serverStatus.tunnelError || 'The tunnel could not start.'}</p>
             ) : null}
@@ -523,19 +489,25 @@ export function SharingPanel({
           </div>
         ) : null}
 
+        <div className="sharing__sync">
+          <span className="field__label">Notify when a device asks to connect</span>
+          <Toggle
+            label="Notify when a device asks to connect"
+            checked={prefs.shareNotifyApproval}
+            onChange={(shareNotifyApproval) => void onUpdate({ shareNotifyApproval })}
+          />
+          <span className="field__note">
+            Shows a toast when a new device is waiting for your approval.
+          </span>
+        </div>
+
         <div className="sharing__urls">
-          {serverStatus.localUrl ? (
-            <button className="btn btn--secondary btn--sm" onClick={() => void copy(serverStatus.localUrl, 'Local address')}>
-              <CopyIcon width="13" height="13" /> Copy local address
-            </button>
-          ) : null}
-          {baseUrl ? <span className="field__note">Links use {baseUrl}</span> : null}
           <span className="field__note">
             {server.tunnel === 'cloudflare'
-              ? 'The public tunnel reaches the loopback server. “Who can connect” only controls direct LAN access.'
+              ? 'The public tunnel reaches the loopback server. Local network access only controls direct Wi-Fi connections.'
               : server.bind === 'lan'
                 ? 'Your firewall may ask once. Allow it on private networks only.'
-                : 'Only this computer can reach the server. Choose Local network or Internet access to share further.'}
+                : 'Only this computer can reach the server. Enable Local network access or Internet access to share further.'}
           </span>
         </div>
       </div>
@@ -614,12 +586,7 @@ export function SharingPanel({
                       >
                         <CopyIcon width="12" height="12" /> Copy
                       </button>
-                      <button
-                        className="btn btn--secondary btn--sm"
-                        onClick={() => void copy(shareLinkFor(baseUrl, code), 'Link')}
-                      >
-                        <CopyIcon width="12" height="12" /> Copy link
-                      </button>
+
                     </div>
                   ) : null}
 
@@ -820,7 +787,7 @@ export function SharingPanel({
             <h3 className="sec__title">Linked copies in this vault</h3>
             <p className="sharing__meta">
               Shared fields are replaced by the owner’s latest version. Your tags, favourite flag and other
-              local details are kept.
+              local details are kept. Removing a copy never touches the owner’s login; Ctrl+Z restores it.
             </p>
           </div>
           <button
@@ -830,6 +797,24 @@ export function SharingPanel({
           >
             {shareSyncing ? <span className="spinner" /> : null} Sync now
           </button>
+        </div>
+        <div className="sharing__sync">
+          <span className="field__label">Auto-sync</span>
+          <Select
+            label="Auto-sync interval"
+            value={String(prefs.shareSyncMinutes)}
+            options={[
+              { value: '0', label: 'Manual only' },
+              { value: '1', label: 'Every minute' },
+              { value: '5', label: 'Every 5 minutes' },
+              { value: '10', label: 'Every 10 minutes' },
+              { value: '15', label: 'Every 15 minutes' },
+              { value: '30', label: 'Every 30 minutes' },
+              { value: '60', label: 'Every hour' },
+            ]}
+            onChange={(minutes) => void onUpdate({ shareSyncMinutes: Number(minutes) })}
+          />
+          <span className="field__note">Unlock and Sync now always work, even in Manual only.</span>
         </div>
         {linked.length === 0 ? (
           <p className="field__note">Nothing imported yet.</p>
@@ -844,9 +829,21 @@ export function SharingPanel({
                     {item.shareLink?.endedAt ? ' · ended by owner' : ' · linked'}
                   </span>
                 </div>
-                <span className={`chip ${item.shareLink?.endedAt ? 'chip--muted' : 'chip--accent'}`}>
-                  {item.shareLink?.endedAt ? 'ended' : 'live'}
-                </span>
+                <div className="sharing__linked-actions">
+                  <span className={`chip ${item.shareLink?.endedAt ? 'chip--muted' : 'chip--accent'}`}>
+                    {item.shareLink?.endedAt ? 'ended' : 'live'}
+                  </span>
+                  {onRemoveLinkedCopy ? (
+                    <button
+                      type="button"
+                      className="btn btn--ghost btn--sm"
+                      title="Remove this imported copy. Ctrl+Z restores it."
+                      onClick={() => void onRemoveLinkedCopy(item)}
+                    >
+                      Remove
+                    </button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -876,24 +873,18 @@ export function SharingPanel({
               <button className="btn btn--secondary" onClick={() => setRevealShareId(null)}>
                 Done
               </button>
-              {revealLink ? (
-                <>
-                  {!revealBlockedInBrowser ? (
-                    <button
-                      className="btn btn--secondary"
-                      onClick={() => getPlatform().openExternal(revealLink)}
-                    >
-                      <ExternalIcon width="14" height="14" /> Open in browser
-                    </button>
-                  ) : null}
-                  <button
-                    className="btn btn--primary"
-                    onClick={() => void copy(revealLink, 'Link')}
-                  >
-                    <CopyIcon width="14" height="14" /> Copy link
-                  </button>
-                </>
-              ) : null}
+              <button
+                className="btn btn--primary"
+                disabled={!baseUrl}
+                onClick={() =>
+                  void copy(
+                    baseUrl ? shareTokenFor(baseUrl, revealedCode) : formatShareCode(revealedCode),
+                    'Code',
+                  )
+                }
+              >
+                <CopyIcon width="14" height="14" /> Copy code
+              </button>
             </>
           }
         >
@@ -902,61 +893,26 @@ export function SharingPanel({
             new code, which disconnects the existing devices.
           </Alert>
           <div className="sharing__reveal">
-            <span className="sharing__code-label">Short code</span>
+            <span className="sharing__code-label">Share code</span>
             <code className="sharing__code-value sharing__code-value--large">
               {formatShareCode(revealedCode)}
             </code>
-            <button
-              className="btn btn--secondary"
-              onClick={() =>
-                void copy(
-                  baseUrl ? shareTokenFor(baseUrl, revealedCode) : formatShareCode(revealedCode),
-                  'Code',
-                )
-              }
-            >
-              <CopyIcon width="13" height="13" /> Copy code
-            </button>
             <span className="field__note">
               The copied code includes the owner’s address, so the recipient pastes it as one value and
               never needs a separate host or port.
             </span>
           </div>
           {baseUrl ? (
-            <div className="sharing__reveal">
-              <span className="sharing__code-label">Full link</span>
-              <code className="sharing__code-value">{revealLink}</code>
-              <span className="field__note">
-                The link and the copied code both include the owner’s address. Import it into Colax
-                desktop or the web build to create the linked copy that keeps updating.
-              </span>
-              {revealBlockedInBrowser ? (
-                <Alert tone="info">
-                  This share requires device approval, so the browser view is disabled. The recipient
-                  must import the link into Colax.
-                </Alert>
-              ) : (
-                <span className="field__note">Any browser can open this link read-only.</span>
-              )}
-              {qr && !revealBlockedInBrowser ? (
-                <div className="sharing__qr">
-                  <img src={qr} alt="QR code for the share link" />
-                  <span className="field__note">Scan with a phone camera to open the browser view.</span>
-                </div>
-              ) : null}
-            </div>
+            <Alert tone="info">
+              Browser links are disabled. This code only imports into the Colax app, where device
+              approval and the device limit are enforced.
+            </Alert>
           ) : (
             <Alert tone="warn">
-              No server address is available yet. Turn the sharing server on, or set a public address, then
-              copy the link.
+              The sharing server is off, so the copied code would have no address. Turn the server on
+              before sharing.
             </Alert>
           )}
-          {!desktop ? (
-            <Alert tone="info">
-              The browser view is read-only. Import this link into Colax to get a linked copy that keeps
-              updating.
-            </Alert>
-          ) : null}
         </Modal>
       ) : null}
 
@@ -1254,7 +1210,7 @@ function ShareForm({
       </div>
 
       <div className="field">
-        <label className="field__label">Devices</label>
+        <label className="field__label">Approve new devices</label>
         <Toggle
           label="Approve new devices"
           checked={approval}

@@ -145,9 +145,9 @@ interface changes.
 - Encrypted backup export/restore (optionally re-keyed or made passwordless), CSV import/export
 - **Direct sharing** — create several independent codes for selected logins, add expiry, a
   device limit and an optional PIN, see who connected, then revoke without deleting the
-  recipient's copy. Recipients can open the link in any browser, or import it into Colax as a
-  linked copy. An opt-in Cloudflare Quick Tunnel provides a public HTTPS address; recipient
-  imports stay linked, so the owner's later edits replace the shared fields on the next sync
+  recipient's copy. Recipients import it into Colax as a linked copy; public browser routes
+  never display credentials. An opt-in Cloudflare Quick Tunnel provides a public HTTPS address;
+  recipient imports stay linked, so the owner's later edits replace the shared fields on sync
 - Diagnostics report and a one-click preference reset
 
 ## Settings
@@ -163,7 +163,7 @@ Tabs slide in from the side:
 | Vault password | Enable / change / remove, plus the active crypto parameters |
 | Security | Auto-lock, lock on blur, lock on tab hide, clipboard clearing, reveal, reuse warnings, export confirmation |
 | Alarms | Reminder labels, times and sounds |
-| Sharing | Local server, internet tunnel, browser links, codes, rules, devices, activity and linked-copy sync |
+| Sharing | Local server, internet tunnel, app-only codes, rules, device approval, activity and linked-copy sync |
 | Optimize | One-click resource profiles, launch-time Chromium switches and mail loading |
 | Data | Stored size, CSV export/import, theme backup, delete vault |
 | About | Version, offline confirmation, diagnostics copy, reset preferences |
@@ -175,8 +175,9 @@ loud accent names from an earlier version onto the current calm four.
 ## Sharing
 
 The **host** must use the desktop app, because a browser tab cannot listen on a socket.
-**Recipients can use any browser**: the link opens a read-only page immediately, and the Colax
-web build can import it as a linked copy too. Only hosting needs the desktop app.
+Sharing is **app-to-app**: a public URL never displays a login, a username, a password or a share
+name. It only shows a neutral “open this in Colax” page. The Colax web build can import a share
+the same way the desktop app does; only hosting needs the desktop app.
 
 ### How it works
 
@@ -186,8 +187,8 @@ Issuing a share in **Settings → Sharing**:
 1. Turn on the **Sharing server**. It defaults to `127.0.0.1:47821`; choose **Local network**
    for direct Wi-Fi access when you want it.
 2. Choose **Internet access → Cloudflare Quick Tunnel** if the recipient is outside your
-   network. Colax creates a public HTTPS address that works in any browser and in the desktop
-   app. The first run downloads Cloudflare's signed `cloudflared` helper (about 60 MB).
+   network. Colax creates a public HTTPS address that another Colax app can reach from the
+   internet. The first run downloads Cloudflare's signed `cloudflared` helper (about 60 MB).
 3. Pick one or more **tags** to include every login carrying them. New logins tagged later
    join automatically; individual logins can still be added from the optional picker.
 4. Choose code-only or code + PIN. Turn on **Approve new devices** if every new device must
@@ -195,46 +196,49 @@ Issuing a share in **Settings → Sharing**:
    device limit and the opt-in fields (notes, 2FA seed, attachments) live under **Advanced
    rules**. Username, password, website and the login's background/avatar/accent are always
    included.
-5. Copy the 12-character code or the full link, or scan the QR code with a phone. A copied
-   code includes the owner's address, so the recipient pastes one value — there is no host or
-   port field. The code is shown once; Colax stores only a SHA-256 hash, so a lost code is
-   replaced with **New code**, not recovered.
-6. Once the device limit is reached, the share page stops opening at all. Approved devices
-   keep syncing owner edits; new devices and browser views are refused.
+5. Use **Copy code**. The copied code includes the owner's address, so the recipient pastes one
+   value — there is no host or port field and no share link to expose. The code is shown once;
+   Colax stores only a SHA-256 hash, so a lost code is replaced with **New code**, not
+   recovered.
+6. Once the device limit is reached, new devices are refused. Approved devices keep syncing
+   owner edits. The public URL never serves login data, so there is nothing to leak there.
 
-The recipient can either:
+The recipient imports in **Settings → Sharing → Open a share** by pasting the copied code,
+selecting **Open share**, and entering the PIN if required. Imports land in a **Shared logins**
+folder, in a channel named after the share (the owner's machine name by default), and keep the
+owner's background, avatar and accent. They carry a sealed link back to their source and sync
+on unlock, on the interval (default **5 minutes**), and by **Sync now**. Shared fields are
+read-only in the editor; local tags, flags and dates remain yours.
 
-- **Open the link in a browser** — no install, no account. Code-only shares open immediately;
-  code + PIN asks for the PIN first.
-- **Import into Colax desktop** via **Settings → Sharing → Open a share**, pasting the link or
-  typing the code plus the owner's address. Imports land in a **Shared logins** folder, in a
-  channel named after the share (the owner's machine name by default), and keep the owner's
-  background, avatar and accent. They carry a sealed link back to their source and are
-  refreshed on unlock, every two minutes, and by **Sync now**. Shared fields are read-only in
-  the editor; local tags, flags and dates remain yours.
-- **Import into the web build** the same way. Only *hosting* a share needs the desktop app;
-  opening a share link and importing it works in the browser, including linked-copy syncs.
+The Colax web build imports the same way. Only *hosting* a share needs the desktop app.
+
+A linked copy can be removed from **Settings → Sharing → Linked copies** without touching the
+owner's login. **Ctrl+Z** restores it; **Ctrl+Shift+Z** redoes the removal. Removed copies stay
+removed on later syncs until the code is explicitly imported again.
 
 ### Server addresses
 
 - **Same computer:** `http://127.0.0.1:47821`.
-- **Same Wi-Fi/LAN:** set the server to *Local network*; links use the machine's IPv4 address.
-  Allow Colax through the firewall on private networks only.
+- **Same Wi-Fi/LAN:** enable **Local network access**; copied codes use the machine's IPv4
+  address. Allow Colax through the firewall on private networks only.
 - **Across the internet:** choose **Internet access → Cloudflare Quick Tunnel**. The public
-  link appears in Settings and is used by copied links and the QR code. It changes each time
-  the app restarts. Colax waits until Cloudflare's edge can actually reach the local server
-  before calling the tunnel ready.
+  address is embedded in copied codes but is not shown or copied as a share link. It changes
+  each time the app restarts. Colax waits until Cloudflare's edge can actually reach the local
+  server before calling the tunnel ready.
 - **Stable or private internet address:** put a named Cloudflare Tunnel, Tailscale/WireGuard
   address or your own reverse proxy in **Manual public address**. A live Quick Tunnel address
   takes priority while it is running. Colax itself does not run a relay.
 
-### Browser view
+### Public URL
 
-The public link renders a small, read-only page. It uses escaped text, a strict CSP, no
-external scripts and no CORS surface. A plain browser view sees the current snapshot only;
-refresh to pull the latest owner version. The Colax web build can also import the link: its
-app endpoints are CORS-enabled, so the imported copy syncs on unlock, on the timer and by
-**Sync now**, exactly like the desktop app.
+Every browser route under `/s/…` returns the same neutral notice: “Open this share in the
+Colax app.” It confirms nothing about whether a code exists, and it never renders a share
+name, login, username, password, note or attachment. Only the app JSON endpoints (`redeem`
+and `sync`) return shared fields, and they require the code, PIN/device token and approval
+where configured. The web build uses those endpoints with CORS; browser HTML does not.
+
+Auto-sync runs on unlock and every **5 minutes** by default. Change it, or choose **Manual
+only**, in **Settings → Sharing → Linked copies**.
 
 ### Security and limits
 
@@ -242,13 +246,13 @@ app endpoints are CORS-enabled, so the imported copy syncs on unlock, on the tim
   process memory, and is stopped and cleared on lock, reload, renderer exit or quit.
 - PINs are PBKDF2-HMAC-SHA-256 (210,000 iterations). Device tokens are random 32-byte values,
   stored only as hashes. Redemption and PIN entry are rate-limited per address and code.
-- Approval shares record a pending device but serve nothing until the owner approves it. They
-  are app-only, because a browser has no device identity to approve. Once the device limit is
-  reached, browser pages return an ended page rather than the shared logins.
+- Approval shares record a pending device but serve nothing until the owner approves it.
+  Public browser routes never serve credentials for any share, approval or not.
 - The two app JSON endpoints (`redeem`, `sync`) allow cross-origin requests so the web build
   can import a share. They use no cookies: the share code and device bearer token are the
   authentication. Browser HTML pages remain same-origin and do not expose CORS.
-- Browser pages use a strict CSP, render escaped text only, and never load external scripts.
+- Browser routes use a strict CSP, render only a static notice, and never load external
+  scripts or shared data.
 - Plain LAN links are **HTTP**, so passwords are on the wire in clear text. Use a trusted
   network, or use the built-in HTTPS tunnel. Anyone with the code (and PIN) is authorised by
   design.
@@ -263,11 +267,23 @@ app endpoints are CORS-enabled, so the imported copy syncs on unlock, on the tim
   server and no offline relay.
 - Shared notes travel as plain text. Rich formatting and inline note images stay behind; use
   the opt-in attachment field when a recipient needs the original file.
-- A linked copy is refreshed on unlock, every two minutes, and by **Sync now**. The first sync
-  after an offline period always pulls the complete share, so large opt-in attachments can
-  make that refresh slower.
+- A linked copy is refreshed on unlock, on the auto-sync interval (default 5 minutes) and by
+  **Sync now**. The first sync after an offline period always pulls the complete share, so
+  large opt-in attachments can make that refresh slower.
 - **Google/OIDC sign-in is intentionally not part of sharing.** Authentication is the share
   code, optionally plus a PIN; there is no account to sign in with.
+
+### Where data lives on Windows
+
+- **Vault records and preferences:** `%APPDATA%\colax\IndexedDB\file__0.indexeddb.leveldb`
+  (usually `C:\Users\<you>\AppData\Roaming\colax\IndexedDB\file__0.indexeddb.leveldb`).
+  Logins are sealed AES-GCM blobs there; preferences hold non-secret UI state plus share
+  metadata such as code/PIN/token hashes.
+- **Cloudflare tunnel helper:** `%APPDATA%\colax\share-tunnel\cloudflared.exe`, downloaded on
+  first Internet sharing use.
+- **Browser build:** the browser profile for that site/origin, not the Electron folder.
+- **Backups:** wherever you chose to save the exported file. Colax does not upload a copy to a
+  central server.
 
 ## Honest limitations
 

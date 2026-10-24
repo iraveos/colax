@@ -774,14 +774,37 @@ export class ShareServer {
       return;
     }
 
+    const appRoute = parts.length === 3 && (parts[2] === 'redeem' || parts[2] === 'sync');
+    if (!appRoute) {
+      // Every browser route is a dead end. It confirms nothing about whether
+      // the code exists, shows no share name, and never renders a login. The
+      // app API below is the only path that returns shared fields.
+      sendHtml(
+        res,
+        200,
+        page(
+          'Private share',
+          '<h1>Private share</h1><div class="panel"><p>Open this share in the Colax app. Browser links do not display shared logins.</p></div>',
+        ),
+      );
+      return;
+    }
+    if (parts[2] === 'redeem' && req.method !== 'POST') {
+      sendJson(res, 405, { ok: false, error: 'Use POST for this endpoint.' });
+      return;
+    }
+    if (parts[2] === 'sync' && req.method !== 'GET') {
+      sendJson(res, 405, { ok: false, error: 'Use GET for this endpoint.' });
+      return;
+    }
+
     const code = parts[1];
     if (code.length > 40) {
-      sendHtml(res, 404, errorPage(404, 'Not found', 'That share code is not valid.'));
+      sendJson(res, 404, { ok: false, ended: true, error: 'That share code is not valid.' });
       return;
     }
     const snapshot = this.#findByCode(code);
     const rateKey = `${requestIp(req)}|${normaliseShareCode(code)}`;
-    const appRoute = parts.length === 3 && (parts[2] === 'redeem' || parts[2] === 'sync');
 
     if (!snapshot) {
       this.#fail(rateKey);

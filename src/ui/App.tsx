@@ -85,10 +85,11 @@ import { BulkAddDialog, BulkEditDialog } from './BulkEditDialog.tsx';
 import { formatLoginCompact, formatLoginForClipboard, formatLoginsForClipboard } from './login-format.ts';
 import { appActiveNow } from '../lib/activity.ts';
 import { getPlatform } from '../lib/platform.ts';
-import type {
-  ShareRedeemResult,
-  ShareServerEvent,
-  ShareSyncShareResult,
+import {
+  shareCopyKey,
+  type ShareRedeemResult,
+  type ShareServerEvent,
+  type ShareSyncShareResult,
 } from '../lib/shares.ts';
 import { redeemShare } from '../lib/share-client.ts';
 import { makeShareLink, shareDeviceIdentity, sharedLoginPatch } from '../vault/shares.ts';
@@ -314,7 +315,12 @@ export function App() {
         const template = copies[0]?.shareLink;
         if (!template) continue;
         const known = new Set(copies.map((copy) => copy.shareLink?.sourceItemId));
-        const fresh = result.items.filter((shared) => !known.has(shared.id));
+        const dismissed = new Set(vault.prefs.shareDismissals);
+        const fresh = result.items.filter(
+          (shared) =>
+            !known.has(shared.id) &&
+            !dismissed.has(shareCopyKey(result.shareId, shared.id)),
+        );
         if (fresh.length === 0) continue;
         const { tagId } = await ensureSharedChannel(
           result.shareId,
@@ -383,6 +389,13 @@ export function App() {
         return { ...result, ok: false, error: 'The owner’s device did not return a device token.' };
       }
 
+      // Re-entering a share is an explicit re-import, so dismissed copies are
+      // allowed back. A normal background sync never clears these.
+      await vault.updatePrefsWith((current) => ({
+        shareDismissals: current.shareDismissals.filter(
+          (key) => !key.startsWith(`${result.shareId}|`),
+        ),
+      }));
       const { tagId } = await ensureSharedChannel(result.shareId, result.shareName);
       const existing = vault.service.items ?? vault.items;
       await vault.mutate(
@@ -424,10 +437,32 @@ export function App() {
     [notify, vault],
   );
 
+  /** Removes an imported copy while leaving the owner's source untouched. */
+  const removeLinkedCopy = useCallback(
+    async (item: VaultItem) => {
+      const link = item.shareLink;
+      if (!link) return;
+      const key = shareCopyKey(link.shareId, link.sourceItemId);
+      await vault.updatePrefsWith((current) =>
+        current.shareDismissals.includes(key)
+          ? {}
+          : { shareDismissals: [...current.shareDismissals, key] },
+      );
+      await vault.mutate(() => vault.service.deleteItem(item.id));
+      notify('Shared copy removed. Ctrl+Z restores it.');
+    },
+    [notify, vault],
+  );
+
   /** Device and access events from this device's own share server. */
   const handleShareEvent = useCallback(
     (event: ShareServerEvent) => {
-      if (event.device && event.device.approvedAt === null && event.access.action === 'redeem') {
+      if (
+        event.device &&
+        event.device.approvedAt === null &&
+        event.access.action === 'redeem' &&
+        vault.prefs.shareNotifyApproval
+      ) {
         notify(`${event.device.name} is waiting for your approval`);
       }
       void vault.updatePrefsWith((current) => ({
@@ -507,7 +542,7 @@ export function App() {
       });
       return { tagId, channelId };
     },
-    [notify, vault.updatePrefsWith],
+    [notify, vault],
   );
 
   const shareServerStatus = useShareServer({
@@ -520,6 +555,7 @@ export function App() {
   const linkedSync = useLinkedSync({
     active: vault.status === 'unlocked',
     items: vault.items,
+    intervalMinutes: vault.prefs.shareSyncMinutes,
     apply: applySharedResults,
     onError: (message) => notify(message, 'error'),
   });
@@ -4659,6 +4695,7 @@ onCreate={vault.create}
         shareServerStatus={shareServerStatus}
         onRedeemShare={redeemShared}
         onSyncShared={() => linkedSync.syncNow(true)}
+        onRemoveLinkedCopy={removeLinkedCopy}
         shareSyncing={linkedSync.syncing}
         onEditChannel={(channelId) => setEditingChannel(channelId)}
         onScrubTag={(tagId) => void scrubTag(tagId)}

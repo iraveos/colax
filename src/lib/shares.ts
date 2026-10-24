@@ -289,6 +289,11 @@ export function shareLinkFor(baseUrl: string, code: string): string {
  * It keeps the host attached so the recipient never has to type a separate
  * address; the 12 visible characters are still the secret.
  */
+/** Stable key for "this source login was removed from this share". */
+export function shareCopyKey(shareId: string, sourceItemId: string): string {
+  return `${shareId}|${sourceItemId}`;
+}
+
 export function shareTokenFor(baseUrl: string, code: string): string {
   const base = normaliseBaseUrl(baseUrl);
   // Keep the scheme in the token: a public tunnel is HTTPS-only, and stripping
