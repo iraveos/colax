@@ -2364,6 +2364,8 @@ body.is-reordering,body.is-reordering *{user-select:none !important;cursor:grabb
 .settings-window__result:hover{background:var(--surface-hover);color:var(--text)}
 .settings-window__result-label{font-weight:560;color:var(--text)}
 .settings-window__result-detail{font-size:var(--text-xs);line-height:1.35;color:var(--text-muted);overflow-wrap:anywhere}
+.settings-search-hit{animation:settings-search-hit 1.8s var(--ease);border-radius:var(--radius-md);outline:2px solid hsl(var(--accent-h) 64% 60% / .8);outline-offset:3px}
+@keyframes settings-search-hit{0%{background:hsl(var(--accent-h) 64% 56% / .24)}100%{background:transparent}}
 .settings-window__result-tab{font-size:var(--text-xs);color:var(--text-faint)}
 .settings-window__no-results{margin:var(--space-2);font-size:var(--text-xs);color:var(--text-faint)}
 

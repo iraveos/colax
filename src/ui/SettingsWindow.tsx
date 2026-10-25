@@ -38,7 +38,6 @@ const SEARCH_INDEX: { tab: string; label: string; words: string; detail?: string
   { tab: 'appearance', label: 'Density', words: 'compact comfortable spacious spacing rows', detail: 'Compact · Comfortable · Spacious' },
   { tab: 'appearance', label: 'Reduce transparency', words: 'glass blur frosted flat faster', detail: 'On · Off' },
   { tab: 'appearance', label: 'High contrast', words: 'borders text visibility accessibility', detail: 'On · Off' },
-  { tab: 'appearance', label: 'Background image', words: 'wallpaper photo backdrop url upload opacity blur dim', detail: 'URL · Upload · Opacity · Blur · Dim' },
   { tab: 'appearance', label: 'Card appearance', words: 'card size width height radius surface tuner', detail: 'Width · Height · Radius · Surface' },
   { tab: 'appearance', label: 'Hide dividers', words: 'hairlines rules lines settings', detail: 'On · Off' },
   { tab: 'appearance', label: 'Floating controls', words: 'chrome pills detach buttons', detail: 'Attached · Floating' },
@@ -62,6 +61,21 @@ const SEARCH_INDEX: { tab: string; label: string; words: string; detail?: string
   { tab: 'layout', label: 'Hide buttons', words: 'chrome visibility new login bulk add settings lock sidebar', detail: 'New login · Bulk add · Settings · Lock · Sidebar · Dock' },
   // Hidden
   { tab: 'hidden', label: 'Show hidden items', words: 'restore hidden channels folders buttons bars', detail: 'Buttons · Channels · Folders · Show everything' },
+  // Background
+  { tab: 'background', label: 'Background image', words: 'wallpaper photo backdrop url upload remove app background', detail: 'Image URL · Upload · Remove' },
+  { tab: 'background', label: 'Image opacity', words: 'background transparency strength photo', detail: '0–100%' },
+  { tab: 'background', label: 'Blur', words: 'background soften photo blur', detail: '0–40px' },
+  { tab: 'background', label: 'Dim', words: 'background darken lighten veil', detail: '0–90%' },
+  // Channels
+  { tab: 'channels', label: 'Channels', words: 'sidebar views list manage channels folders', detail: 'All channels · Built-ins · Custom · Counts' },
+  { tab: 'channels', label: 'New channel', words: 'add channel create view', detail: 'Name · Icon · Colour · Theme · Image · Tags' },
+  { tab: 'channels', label: 'Edit channel', words: 'channel name icon colour theme image tags folder', detail: 'Name · Icon · Colour · Accent · Image · Tags · Folder' },
+  { tab: 'channels', label: 'Hide or show a channel', words: 'hide show eye sidebar rail', detail: 'Hide · Show · Show every channel' },
+  { tab: 'channels', label: 'Tags', words: 'tags labels new tag delete tag catalogue', detail: 'New tag · Rename · Delete · Used by channels' },
+  { tab: 'channels', label: 'Folders', words: 'folders group channels move', detail: 'Create · Rename · Move channels · Delete' },
+  // Generator
+  { tab: 'generator', label: 'Default password length', words: 'generator length characters size', detail: '8–64 characters' },
+  { tab: 'generator', label: 'Character sets', words: 'generator lowercase uppercase digits symbols look-alikes', detail: 'Lowercase · Uppercase · Digits · Symbols · Avoid look-alikes' },
   // Security
   { tab: 'security', label: 'Vault password', words: 'master password change enable remove passcode', detail: 'Enable · Change · Remove' },
   { tab: 'security', label: 'Auto-lock', words: 'lock idle timer minutes inactivity', detail: '1 min · 5 min · 15 min · 30 min · 1 hour · Never' },
@@ -96,9 +110,9 @@ const SEARCH_INDEX: { tab: string; label: string; words: string; detail?: string
   { tab: 'data', label: 'App version', words: 'version build update', detail: 'Version and build info' },
   { tab: 'data', label: 'Export as CSV', words: 'spreadsheet plaintext excel passwords', detail: 'Plaintext CSV' },
   { tab: 'data', label: 'Import from CSV', words: 'spreadsheet another tool mapping tags', detail: 'Name · URL · Username · Password · Notes' },
-  { tab: 'data', label: 'Encrypted backup', words: 'export import vault restore json', detail: 'Export · Restore' },
-  { tab: 'data', label: 'Theme backup', words: 'look share layout channels', detail: 'Export · Import' },
-  { tab: 'data', label: 'Restore from backup', words: 'replace import restore', detail: 'Replace current vault' },
+  { tab: 'backup', label: 'Encrypted backup', words: 'export import vault restore json ciphertext', detail: 'Export · Restore · Optional password' },
+  { tab: 'backup', label: 'Theme backup', words: 'look share layout channels export import', detail: 'Export · Import' },
+  { tab: 'backup', label: 'Restore from backup', words: 'replace import restore file', detail: 'Replace current vault' },
   { tab: 'data', label: 'Delete all data', words: 'reset vault wipe start over', detail: 'Delete vault' },
   // Optimize
   { tab: 'optimize', label: 'One-click profiles', words: 'balanced maximum savings restore look', detail: 'Balanced · Maximum savings · Restore look' },
@@ -199,6 +213,7 @@ export function SettingsWindow({
      can still go — the results appear under the box instead. */
   const [settingsQuery, setSettingsQuery] = useState('');
   const needle = settingsQuery.trim().toLowerCase();
+  const terms = needle.split(/\s+/).filter(Boolean);
   const searchResults =
     needle.length === 0
       ? []
@@ -206,12 +221,17 @@ export function SettingsWindow({
           const label = entry.label.toLowerCase();
           const words = entry.words.toLowerCase();
           const detail = entry.detail?.toLowerCase() ?? '';
-          if (!`${label} ${words} ${detail}`.includes(needle)) return null;
-          const score = label.startsWith(needle)
+          const haystack = `${label} ${words} ${detail}`;
+          // Match all words anywhere in the option name, synonyms or values.
+          // "default length" must find "Default password length" even though
+          // the two words are not adjacent there.
+          if (!terms.every((term) => haystack.includes(term))) return null;
+          const labelHasAllTerms = terms.every((term) => label.includes(term));
+          const score = labelHasAllTerms
             ? 4
             : label.includes(needle)
               ? 3
-              : words.includes(needle)
+              : terms.every((term) => words.includes(term))
                 ? 2
                 : 1;
           return { entry, score };
@@ -221,6 +241,51 @@ export function SettingsWindow({
           .slice(0, 20)
           .map((item) => item.entry);
   const tabLabel = (id: string) => tabs.find((tab) => tab.id === id)?.label ?? id;
+  const hitTimer = useRef<number | null>(null);
+
+  /** Opens the tab and scrolls the matching control into view with a short flash. */
+  function revealSetting(label: string): void {
+    if (hitTimer.current !== null) window.clearTimeout(hitTimer.current);
+    hitTimer.current = window.setTimeout(() => {
+      const panel = bodyRef.current;
+      if (!panel) return;
+      const needle = label.trim().toLowerCase();
+      const words = needle.split(/\s+/).filter((word) => word.length > 2);
+      const labels = [
+        ...panel.querySelectorAll<HTMLElement>(
+          '.setting__label, .field__label, .toggle-row__text, .sec__title, .tag-manager__row button, button',
+        ),
+      ];
+      let best: HTMLElement | null = null;
+      let bestScore = 0;
+      for (const element of labels) {
+        const text = (element.textContent ?? '').trim().toLowerCase();
+        if (!text) continue;
+        const score =
+          text === needle
+            ? 100
+            : text.startsWith(needle) || needle.startsWith(text)
+              ? 80
+              : words.filter((word) => text.includes(word)).length * 10;
+        if (score > bestScore) {
+          best = element;
+          bestScore = score;
+        }
+      }
+      const target =
+        bestScore >= 10
+          ? (best?.closest<HTMLElement>('.setting, .field, .sharing__sync, .toggle-row, .tag-manager__row') ?? best)
+          : null;
+      if (!target) return;
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      target.classList.remove('settings-search-hit');
+      // Restart the flash even when the same result is picked twice.
+      void target.offsetWidth;
+      target.classList.add('settings-search-hit');
+      window.setTimeout(() => target.classList.remove('settings-search-hit'), 1_800);
+    }, 160);
+  }
+
   const searchMenu = (
     <>
       <input
@@ -251,6 +316,7 @@ export function SettingsWindow({
                 onClick={() => {
                   select(entry.tab);
                   setSettingsQuery('');
+                  revealSetting(entry.label);
                 }}
               >
                 <span className="settings-window__result-label">{entry.label}</span>
