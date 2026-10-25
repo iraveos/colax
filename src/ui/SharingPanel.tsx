@@ -31,6 +31,7 @@ import type { VaultItem } from '../vault/types.ts';
 import type { VaultPreferences } from '../vault/storage.ts';
 import type { Tag } from '../vault/channels.ts';
 import type { Toast } from './hooks.ts';
+import { getPlatform } from '../lib/platform.ts';
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import {
   CheckIcon,
@@ -156,6 +157,12 @@ export function SharingPanel({
 
   function saveServer(patch: Partial<ShareServerConfig>): void {
     void onUpdate({ shareServer: { ...server, ...patch } });
+  }
+
+  function savePublicAddress(): void {
+    const next = normaliseBaseUrl(publicDraft);
+    setPublicDraft(next);
+    if (next !== server.publicUrl) saveServer({ publicUrl: next });
   }
 
   async function copy(value: string, label: string): Promise<void> {
@@ -494,22 +501,56 @@ export function SharingPanel({
             </div>
             <div className="field">
               <label className="field__label" htmlFor="share-public-url">Manual public address (optional)</label>
-              <input
-                id="share-public-url"
-                className="input"
-                placeholder="https://share.example.com"
-                value={publicDraft}
-                onChange={(event) => setPublicDraft(event.target.value)}
-                onBlur={() => {
-                  const next = normaliseBaseUrl(publicDraft);
-                  if (next !== server.publicUrl) saveServer({ publicUrl: next });
-                  else setPublicDraft(next);
-                }}
-              />
+              <div className="field-row">
+                <input
+                  id="share-public-url"
+                  className="input"
+                  placeholder="https://share.example.com"
+                  value={publicDraft}
+                  onChange={(event) => setPublicDraft(event.target.value)}
+                  onBlur={savePublicAddress}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm"
+                  onClick={savePublicAddress}
+                >
+                  Save
+                </button>
+              </div>
               <span className="field__hint">
-                A stable named tunnel or reverse proxy. A live Quick Tunnel address takes priority in
-                copied links.
+                A stable named tunnel or reverse proxy. Forward the full path, including any
+                <code> /prefix</code>, to <code>http://127.0.0.1:{server.port}</code>. The share
+                server must be on. A live Quick Tunnel address takes priority in copied links.
               </span>
+              {server.publicUrl ? (
+                <div className="sharing__urls">
+                  <button
+                    type="button"
+                    className="btn btn--quiet btn--sm"
+                    onClick={() =>
+                      getPlatform().openExternal(`${server.publicUrl}/s/connection-test`)
+                    }
+                  >
+                    Open test page
+                  </button>
+                  <span className="field__note">
+                    A neutral page should open. If it does not, the tunnel, proxy or firewall is not
+                    reaching this computer.
+                  </span>
+                </div>
+              ) : null}
+              {server.publicUrl && !server.enabled ? (
+                <span className="sec__error">
+                  The share server is off, so this address cannot answer yet.
+                </span>
+              ) : null}
             </div>
           </div>
         </details>

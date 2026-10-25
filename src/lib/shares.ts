@@ -313,8 +313,14 @@ export function parseShareEntry(entry: string, host = ''): { code: string; baseU
   if (/^https?:\/\//i.test(text)) {
     try {
       const url = new URL(text);
-      const match = url.pathname.match(/\/(?:s|share)\/([^/]+)/i);
-      return { code: normaliseShareCode(match?.[1] ?? ''), baseUrl: `${url.protocol}//${url.host}` };
+      // Keep any reverse-proxy path prefix (for example /colax/s/CODE) so the
+      // imported copy and its sync requests use the same public path.
+      const match = url.pathname.match(/^(.*?)\/(?:s|share)\/([^/]+)/i);
+      const prefix = (match?.[1] ?? '').replace(/\/+$/, '');
+      return {
+        code: normaliseShareCode(match?.[2] ?? ''),
+        baseUrl: normaliseBaseUrl(`${url.protocol}//${url.host}${prefix}`),
+      };
     } catch {
       return { code: '', baseUrl: normaliseBaseUrl(host) };
     }

@@ -52,6 +52,10 @@ test('share codes tolerate display grouping and reject bad characters', () => {
     code,
     baseUrl: 'https://host:47821',
   });
+  assert.deepEqual(parseShareEntry(`https://host:47821/colax/s/${formatShareCode(code)}`), {
+    code,
+    baseUrl: 'https://host:47821/colax',
+  });
   const token = shareTokenFor('http://192.168.1.5:47821', code);
   assert.equal(token, `${formatShareCode(code)}@http://192.168.1.5:47821`);
   assert.deepEqual(parseShareEntry(token), {
@@ -65,6 +69,10 @@ test('share codes tolerate display grouping and reject bad characters', () => {
   assert.deepEqual(parseShareEntry(`${formatShareCode(code)}@192.168.1.5:47821`), {
     code,
     baseUrl: 'http://192.168.1.5:47821',
+  });
+  assert.deepEqual(parseShareEntry(`${formatShareCode(code)}@https://host/colax`), {
+    code,
+    baseUrl: 'https://host/colax',
   });
   assert.equal(normaliseShareServer({}).tunnel, 'off');
   assert.equal(normaliseShareServer({ tunnel: 'cloudflare' }).tunnel, 'cloudflare');
@@ -257,6 +265,11 @@ test('the share server pairs devices, propagates edits and honours revocation', 
     assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'none'/);
     const html = await page.text();
     assert.ok(html.includes('Open this share in the Colax app'));
+
+    // A reverse proxy may preserve its path prefix instead of stripping it.
+    const prefixed = await fetch(`${base}/colax/s/${pathCode}`);
+    assert.equal(prefixed.status, 200);
+    assert.equal(await prefixed.text(), html);
     assert.equal(html.includes('Bank'), false);
     assert.equal(html.includes('ada@example.com'), false);
     assert.equal(html.includes(item.password), false);

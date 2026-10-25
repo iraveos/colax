@@ -752,7 +752,11 @@ export class ShareServer {
     this.#cleanup();
     const url = new URL(req.url, 'http://localhost');
     const path = url.pathname;
-    const parts = path.split('/').filter(Boolean);
+    let parts = path.split('/').filter(Boolean);
+    // A manual public address may include a reverse-proxy prefix. Accept both
+    // /prefix/s/CODE (proxy preserves the path) and /s/CODE (proxy strips it).
+    const shareIndex = parts.indexOf('s');
+    if (shareIndex > 0) parts = parts.slice(shareIndex);
 
     if (parts[0] !== 's' || !parts[1]) {
       sendHtml(res, 404, errorPage(404, 'Not found', 'Unknown path.'));

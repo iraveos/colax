@@ -229,8 +229,11 @@ removed on later syncs until the code is explicitly imported again.
   Colax waits until Cloudflare's edge can actually reach the local server before calling the
   tunnel ready.
 - **Stable or private internet address:** put a named Cloudflare Tunnel, Tailscale/WireGuard
-  address or your own reverse proxy in **Manual public address**. A live Quick Tunnel address
-  takes priority while it is running. Colax itself does not run a relay.
+  address or your own reverse proxy in **Manual public address**, then press **Save**. If the
+  proxy adds a path prefix, keep it (for example `https://example.com/colax`); copied links,
+  imported copies and sync requests preserve that prefix. **Open test page** opens a neutral
+  route through the proxy so you can confirm it reaches this computer. A live Quick Tunnel
+  address takes priority while it is running. Colax itself does not run a relay.
 
 ### Public URL
 
