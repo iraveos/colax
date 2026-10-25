@@ -25,7 +25,16 @@ export interface SettingsTab {
  * here. That is the price of searching panels that are functions, and it keeps
  * the search from having to walk the DOM.
  */
-const SEARCH_INDEX: { tab: string; label: string; words: string; detail?: string }[] = [
+const SEARCH_INDEX: {
+  tab: string;
+  label: string;
+  words: string;
+  detail?: string;
+  /** Text of the actual control to scroll to when the label differs. */
+  scroll?: string;
+  /** Sub-tab inside Sharing, so search lands on the right panel. */
+  section?: 'server' | 'codes' | 'devices' | 'receive' | 'copies';
+}[] = [
   // Appearance
   { tab: 'appearance', label: 'Theme', words: 'light dark system colour mode auto', detail: 'Light · Dark · System' },
   { tab: 'appearance', label: 'Accent colour', words: 'slate sage dusk clay tint palette', detail: 'Slate · Sage · Dusk · Clay' },
@@ -100,11 +109,12 @@ const SEARCH_INDEX: { tab: string; label: string; words: string; detail?: string
   // Alarms
   { tab: 'alarms', label: 'Alarms', words: 'reminders clock notifications sound', detail: 'Add · Time · Days · Sound' },
   // Sharing
-  { tab: 'sharing', label: 'Share server', words: 'sharing lan port internet cloudflare tunnel public address browser', detail: 'Internet: Off · Cloudflare Quick Tunnel · Local network: On/Off · Port · Manual public address' },
-  { tab: 'sharing', label: 'Share codes', words: 'sharing share code pin expiry device limit revoke tags channel folder approval', detail: 'Tags or individual logins · Code only / Code + PIN · Approve new devices · Expiry · Device limit · Notes / 2FA / Attachments' },
-  { tab: 'sharing', label: 'Open a share', words: 'sharing redeem import code link linked copy', detail: 'Paste link · Paste copied code · PIN' },
-  { tab: 'sharing', label: 'Linked copies', words: 'sharing imported shared copies sync now auto sync interval remove undo redo', detail: 'Auto-sync interval · Sync now · Remove copy · Ctrl+Z undo · Ctrl+Shift+Z redo' },
-  { tab: 'sharing', label: 'Devices and approval', words: 'sharing recipients access activity sync approve pending allowlist reject disconnect', detail: 'Pending devices · Approve · Reject · Disconnect · Access log · Notify approval' },
+  { tab: 'sharing', label: 'Share server', words: 'sharing lan port internet cloudflare tunnel public address local network notify approval', detail: 'Internet: Off · Cloudflare Quick Tunnel · Local network: On/Off · Port · Manual public address · Notify approval', scroll: 'Sharing server', section: 'server' },
+  { tab: 'sharing', label: 'Share codes', words: 'sharing share code live link pin expiry device limit revoke tags channel folder approval', detail: 'Copy code · Copy live link · Tags or individual logins · Code only / Code + PIN · Approve new devices · Expiry · Device limit · Notes / 2FA / Attachments', scroll: 'Share codes', section: 'codes' },
+  { tab: 'sharing', label: 'Open a share', words: 'sharing redeem import code link linked copy', detail: 'Paste link · Paste copied code · PIN', scroll: 'Open a share', section: 'receive' },
+  { tab: 'sharing', label: 'Linked copies', words: 'sharing imported shared copies sync now auto sync interval remove undo redo', detail: 'Auto-sync interval · Sync now · Remove copy · Ctrl+Z undo · Ctrl+Shift+Z redo', scroll: 'Auto-sync', section: 'copies' },
+  { tab: 'sharing', label: 'Devices and approval', words: 'sharing recipients access activity sync approve pending allowlist reject disconnect code link', detail: 'All code/link devices · Pending devices · Approve · Reject · Disconnect · Access log', scroll: 'Devices', section: 'devices' },
+  { tab: 'sharing', label: 'Device approval notifications', words: 'sharing notify toast alert new device connect approval', detail: 'On · Off', scroll: 'Notify when a device asks to connect', section: 'server' },
   // Data
   { tab: 'data', label: 'Stored logins', words: 'size usage how much storage', detail: 'Count and local size' },
   { tab: 'data', label: 'App version', words: 'version build update', detail: 'Version and build info' },
@@ -316,7 +326,16 @@ export function SettingsWindow({
                 onClick={() => {
                   select(entry.tab);
                   setSettingsQuery('');
-                  revealSetting(entry.label);
+                  if (entry.section) {
+                    window.setTimeout(() => {
+                      window.dispatchEvent(
+                        new CustomEvent('colax:settings-section', {
+                          detail: entry.section,
+                        }),
+                      );
+                    }, 60);
+                  }
+                  revealSetting(entry.scroll ?? entry.label);
                 }}
               >
                 <span className="settings-window__result-label">{entry.label}</span>

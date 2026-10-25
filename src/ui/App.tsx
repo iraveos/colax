@@ -924,6 +924,18 @@ useHotkeys(
   }, [vault, notify]);
 
 const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.items]);
+  const emailSuggestions = useMemo(() => {
+    const emails = new Set<string>();
+    for (const item of vault.items) {
+      const username = item.username.trim();
+      if (username.includes('@')) emails.add(username);
+    }
+    for (const account of vault.prefs.gmailAccounts) {
+      const address = account.address.trim();
+      if (address.includes('@')) emails.add(address);
+    }
+    return [...emails].sort((a, b) => a.localeCompare(b)).slice(0, 300);
+  }, [vault.items, vault.prefs.gmailAccounts]);
 
 // Normalised on read so the list is never empty, even for the first render
   // before stored preferences have loaded.
@@ -4915,6 +4927,7 @@ onCreate={vault.create}
 <ItemEditor
           item={editing === 'new' ? null : editing}
           tags={prefs.tags}
+          emailSuggestions={emailSuggestions}
           gmailAccounts={prefs.gmailAccounts}
           onGmailAccountsChange={(gmailAccounts) => void vault.updatePrefs({ gmailAccounts })}
           onCacheMail={viewActions.onCacheMail}

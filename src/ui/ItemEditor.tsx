@@ -145,6 +145,19 @@ export function Generator({
         </button>
       </div>
 
+      {value ? (
+        <button
+          type="button"
+          className="btn btn--primary btn--block"
+          style={{ margin: 'var(--space-4) 0' }}
+          onClick={() => onUse(value)}
+        >
+          Use this password
+        </button>
+      ) : (
+        <Alert tone="warn">Turn on at least one character set.</Alert>
+      )}
+
       <div className="field">
         <div className="slider-row">
           <input
@@ -194,19 +207,6 @@ export function Generator({
       )}
 
       <StrengthMeter password={value} />
-
-      {value ? (
-        <button
-          type="button"
-          className="btn btn--primary btn--block"
-          style={{ marginTop: 'var(--space-6)' }}
-          onClick={() => onUse(value)}
-        >
-          Use this password
-        </button>
-      ) : (
-        <Alert tone="warn">Turn on at least one character set.</Alert>
-      )}
     </>
   );
 }
@@ -347,6 +347,7 @@ export function ItemEditor({
   verified = true,
   onNotify,
   onCommitTags,
+  emailSuggestions = [],
   gmailAccounts,
   onGmailAccountsChange,
   onCacheMail,
@@ -378,6 +379,8 @@ export function ItemEditor({
   onNotify: (message: string) => void;
   /** Persists any tags the user created while editing. */
   onCommitTags: (tags: Tag[]) => void;
+  /** Email addresses already used in this vault, offered as suggestions. */
+  emailSuggestions?: string[];
   /** Connected mailboxes, shared across the app rather than per-login. */
   gmailAccounts: GmailAccount[];
   onGmailAccountsChange: (next: GmailAccount[]) => void;
@@ -403,6 +406,13 @@ export function ItemEditor({
   const linked = item?.shareLink && item.shareLink.endedAt === null ? item.shareLink : null;
   const notesShared = Boolean(linked?.fields.notes);
   const attachmentsShared = Boolean(linked?.fields.attachments);
+  const emailChoices = [
+    ...new Set(
+      [...emailSuggestions, ...gmailAccounts.map((account) => account.address.trim())].filter(
+        (address) => address.includes('@'),
+      ),
+    ),
+  ].slice(0, 300);
 
   useEffect(() => {
     setDraft(item ?? {});
@@ -607,7 +617,20 @@ export function ItemEditor({
             autoComplete="off"
             spellCheck={false}
             readOnly={Boolean(linked)}
+            list={emailChoices.length > 0 ? 'login-email-suggestions' : undefined}
           />
+          {emailChoices.length > 0 ? (
+            <>
+              <datalist id="login-email-suggestions">
+                {emailChoices.map((address) => (
+                  <option key={address} value={address} />
+                ))}
+              </datalist>
+              <span className="field__hint">
+                Start typing to reuse an email already in this vault.
+              </span>
+            </>
+          ) : null}
         </div>
 
         <div className="field">

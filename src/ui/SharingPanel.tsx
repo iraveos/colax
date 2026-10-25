@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   formatShareCode,
   normaliseBaseUrl,
+  shareLinkFor,
   shareStatus,
   shareTokenFor,
   type ShareFields,
@@ -83,6 +84,9 @@ export function SharingPanel({
     { kind: 'revoke' | 'delete' | 'new-code'; shareId: string } | null
   >(null);
   const [openDetails, setOpenDetails] = useState<string | null>(null);
+  const [section, setSection] = useState<'server' | 'codes' | 'devices' | 'receive' | 'copies'>(
+    'server',
+  );
   const [portDraft, setPortDraft] = useState(String(prefs.shareServer.port));
   const [publicDraft, setPublicDraft] = useState(prefs.shareServer.publicUrl);
   const [entry, setEntry] = useState('');
@@ -98,6 +102,23 @@ export function SharingPanel({
     setPublicDraft(prefs.shareServer.publicUrl);
   }, [prefs.shareServer.publicUrl]);
 
+  useEffect(() => {
+    const onSection = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      if (
+        detail === 'server' ||
+        detail === 'codes' ||
+        detail === 'devices' ||
+        detail === 'receive' ||
+        detail === 'copies'
+      ) {
+        setSection(detail);
+      }
+    };
+    window.addEventListener('colax:settings-section', onSection);
+    return () => window.removeEventListener('colax:settings-section', onSection);
+  }, []);
+
   const server = prefs.shareServer;
   const publicBase =
     normaliseBaseUrl(serverStatus.publicUrl) || normaliseBaseUrl(server.publicUrl);
@@ -110,10 +131,28 @@ export function SharingPanel({
     ? prefs.shares.find((share) => share.id === revealShareId) ?? null
     : null;
   const revealedCode = revealShareId ? revealed[revealShareId] ?? '' : '';
+  const revealLink =
+    revealedShare && revealedCode && baseUrl ? shareLinkFor(baseUrl, revealedCode) : '';
 
   const linked = useMemo(() => items.filter((item) => item.shareLink !== null), [items]);
   const activeShares = prefs.shares.filter((share) => shareStatus(share) === 'active');
   const desktop = typeof window !== 'undefined' && window.platform?.share !== undefined;
+  const allDevices = useMemo(
+    () =>
+      prefs.shares
+        .flatMap((share) => share.devices.map((device) => ({ share, device })))
+        .sort((a, b) => {
+          const pendingA = a.device.approvedAt === null && a.device.revokedAt === null ? 0 : 1;
+          const pendingB = b.device.approvedAt === null && b.device.revokedAt === null ? 0 : 1;
+          return pendingA - pendingB || b.device.lastSeenAt - a.device.lastSeenAt;
+        }),
+    [prefs.shares],
+  );
+  const currentSection = desktop
+    ? section
+    : section === 'copies'
+      ? 'copies'
+      : 'receive';
 
   function saveServer(patch: Partial<ShareServerConfig>): void {
     void onUpdate({ shareServer: { ...server, ...patch } });
@@ -339,28 +378,46 @@ export function SharingPanel({
     ? prefs.shares.find((share) => share.id === confirmAction.shareId) ?? null
     : null;
 
+  const sections = desktop
+    ? ([
+        { id: 'server', label: 'Server' },
+        { id: 'codes', label: 'Codes' },
+        { id: 'devices', label: 'Devices' },
+        { id: 'receive', label: 'Open a share' },
+        { id: 'copies', label: 'Linked copies' },
+      ] as const)
+    : ([
+        { id: 'receive', label: 'Open a share' },
+        { id: 'copies', label: 'Linked copies' },
+      ] as const);
+
   return (
     <div className="sharing">
-      {desktop ? (
-        <Alert tone="info">
-          Sharing is direct: the other device talks to this one. Colax does not run a central relay, and
-          the share server only works while this vault is unlocked. Turn on <strong>Internet access</strong>{' '}
-          below for a public HTTPS link that opens in any browser; leave it off for this device or your
-          local network.
-        </Alert>
-      ) : (
-        <Alert tone="info">
-          Opening a share works here. Paste the owner’s link or code below to import a linked copy.
-          To create and host a new share, use the Colax desktop app.
-        </Alert>
-      )}
+      <div className="subtabs sharing__tabs" role="tablist" aria-label="Sharing sections">
+        {sections.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            role="tab"
+            className="subtabs__tab"
+            aria-selected={currentSection === entry.id}
+            onClick={() => setSection(entry.id)}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </div>
 
-      {desktop ? (
+      {desktop && currentSection === 'server' ? (
         <>
-      <div className="sec__card">
-        <div className="sharing__head">
-          <div>
-            <h3 className="sec__title">Sharing server</h3>
+          <Alert tone="info">
+            Sharing is direct: the other device talks to this one. Colax does not run a central relay,
+            and the share server only works while this vault is unlocked.
+          </Alert>
+          <div className="sec__card">
+            <div className="sharing__head">
+              <div>
+                <h3 className="sec__title">Sharing server</h3>
             <p className="sharing__meta">
               {server.enabled
                 ? serverStatus.running
@@ -510,8 +567,12 @@ export function SharingPanel({
                 : 'Only this computer can reach the server. Enable Local network access or Internet access to share further.'}
           </span>
         </div>
-      </div>
+          </div>
+        </>
+      ) : null}
 
+      {desktop && currentSection === 'codes' ? (
+        <>
       <div className="sec__card">
         <div className="sharing__head">
           <div>
@@ -578,15 +639,22 @@ export function SharingPanel({
                       <div>
                         <span className="sharing__code-label">Code</span>
                         <code className="sharing__code-value">{formatShareCode(code)}</code>
-                        <span className="field__note">Copying includes the owner’s address.</span>
+                        <span className="field__note">
+                          Copy the code or the live app link. The browser page itself shows no data.
+                        </span>
                       </div>
                       <button
                         className="btn btn--quiet btn--sm"
                         onClick={() => void copy(shareTokenFor(baseUrl, code), 'Code')}
                       >
-                        <CopyIcon width="12" height="12" /> Copy
+                        <CopyIcon width="12" height="12" /> Copy code
                       </button>
-
+                      <button
+                        className="btn btn--secondary btn--sm"
+                        onClick={() => void copy(shareLinkFor(baseUrl, code), 'Live link')}
+                      >
+                        <CopyIcon width="12" height="12" /> Copy live link
+                      </button>
                     </div>
                   ) : null}
 
@@ -737,6 +805,80 @@ export function SharingPanel({
         </>
       ) : null}
 
+      {desktop && currentSection === 'devices' ? (
+        <div className="sec__card">
+          <div className="sharing__head">
+            <div>
+              <h3 className="sec__title">Devices</h3>
+              <p className="sharing__meta">
+                Every device that has redeemed a code or live link. Pending devices wait for approval.
+              </p>
+            </div>
+          </div>
+          {allDevices.length === 0 ? (
+            <p className="field__note">No device has redeemed a share yet.</p>
+          ) : (
+            <ul className="sharing__devices sharing__devices--all">
+              {allDevices.map(({ share, device }) => (
+                <li key={`${share.id}:${device.id}`}>
+                  <div>
+                    <strong>{device.name}</strong>
+                    <span>
+                      {share.name} ·{' '}
+                      {device.revokedAt
+                        ? 'Disconnected'
+                        : device.approvedAt === null
+                          ? `Waiting for approval · ${new Date(device.createdAt).toLocaleString()}`
+                          : `Last seen ${new Date(device.lastSeenAt).toLocaleString()}`}
+                      {device.lastIp ? ` · ${device.lastIp}` : ''}
+                    </span>
+                  </div>
+                  {!device.revokedAt ? (
+                    <div className="sharing__device-actions">
+                      {device.approvedAt === null ? (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn--primary btn--sm"
+                            disabled={share.maxUses !== null && share.uses >= share.maxUses}
+                            onClick={() => void approveDevice(share, device.id)}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn--ghost btn--sm"
+                            onClick={() => void disconnectDevice(share, device.id)}
+                          >
+                            Reject
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn--ghost btn--sm"
+                          onClick={() => void disconnectDevice(share, device.id)}
+                        >
+                          Disconnect
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+
+      {currentSection === 'receive' ? (
+        <>
+          {!desktop ? (
+            <Alert tone="info">
+              Opening a share works here. Paste the copied code below to import a linked copy. Creating
+              and hosting shares is done in the desktop app.
+            </Alert>
+          ) : null}
       <div className="sec__card">
         <div className="sharing__head">
           <div>
@@ -780,7 +922,11 @@ export function SharingPanel({
           </p>
         ) : null}
       </div>
+        </>
+      ) : null}
 
+      {currentSection === 'copies' ? (
+        <>
       <div className="sec__card">
         <div className="sharing__head">
           <div>
@@ -849,6 +995,8 @@ export function SharingPanel({
           </ul>
         )}
       </div>
+        </>
+      ) : null}
 
       {form ? (
         <ShareForm
@@ -873,6 +1021,14 @@ export function SharingPanel({
               <button className="btn btn--secondary" onClick={() => setRevealShareId(null)}>
                 Done
               </button>
+              {revealLink ? (
+                <button
+                  className="btn btn--secondary"
+                  onClick={() => void copy(revealLink, 'Live link')}
+                >
+                  <CopyIcon width="14" height="14" /> Copy live link
+                </button>
+              ) : null}
               <button
                 className="btn btn--primary"
                 disabled={!baseUrl}
@@ -902,10 +1058,20 @@ export function SharingPanel({
               never needs a separate host or port.
             </span>
           </div>
+          {revealLink ? (
+            <div className="sharing__reveal">
+              <span className="sharing__code-label">Live app link</span>
+              <code className="sharing__code-value">{revealLink}</code>
+              <span className="field__note">
+                The public page shows only a neutral notice. Import this link into Colax to get a live
+                copy that updates on sync.
+              </span>
+            </div>
+          ) : null}
           {baseUrl ? (
             <Alert tone="info">
-              Browser links are disabled. This code only imports into the Colax app, where device
-              approval and the device limit are enforced.
+              Only the Colax app can read shared logins. The browser page never shows data, and device
+              approval plus the device limit are enforced inside the app.
             </Alert>
           ) : (
             <Alert tone="warn">

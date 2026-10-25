@@ -131,11 +131,12 @@ interface changes.
   switchable from a dropdown beside *New login*, persisted across restarts
 - **Right-click anywhere** for a cascading context menu: per-login actions, or app-level
   view/sort/appearance submenus. Fully keyboard navigable.
-- **Settings as an in-page window** with nine tabs that slide in from the side
+- **Settings as an in-page window** with searchable tabs that slide in from the side
 - Calm four-colour accent palette, light/dark/system, density, roundness, text size,
   transparency and contrast controls
-- Password generator (random or passphrase) with unbiased character selection, with its
-  defaults exposed in Settings
+- Password generator (random or passphrase) with unbiased character selection, its primary
+  **Use this password** action kept above the options, and defaults exposed in Settings
+- New-login email field suggests addresses already used in the vault and connected mailboxes
 - Password strength meter with an offline-attack crack-time estimate
 - Reused-password and stale-password detection under **Needs attention**, with an optional
   warning before you open a site whose password is reused
@@ -143,11 +144,12 @@ interface changes.
 - Favorites, search, five sort orders
 - Keyboard-first (`/`, `N`, `L`, `V`, `?`), auto-lock on idle/blur/tab-hide, clipboard auto-clear
 - Encrypted backup export/restore (optionally re-keyed or made passwordless), CSV import/export
-- **Direct sharing** — create several independent codes for selected logins, add expiry, a
-  device limit and an optional PIN, see who connected, then revoke without deleting the
-  recipient's copy. Recipients import it into Colax as a linked copy; public browser routes
-  never display credentials. An opt-in Cloudflare Quick Tunnel provides a public HTTPS address;
-  recipient imports stay linked, so the owner's later edits replace the shared fields on sync
+- **Direct sharing** — separate Server, Codes, Devices, Open a share and Linked copies tabs;
+  create unlimited independent codes or live app links for tags or selected logins; add expiry,
+  a device limit, approval and an optional PIN; see every connected/pending device and revoke
+  without deleting the recipient's copy. Public browser routes never display credentials. An
+  opt-in Cloudflare Quick Tunnel provides a public HTTPS address; recipient imports stay linked,
+  so the owner's later edits replace the shared fields on sync
 - Diagnostics report and a one-click preference reset
 
 ## Settings
@@ -163,7 +165,7 @@ Tabs slide in from the side:
 | Vault password | Enable / change / remove, plus the active crypto parameters |
 | Security | Auto-lock, lock on blur, lock on tab hide, clipboard clearing, reveal, reuse warnings, export confirmation |
 | Alarms | Reminder labels, times and sounds |
-| Sharing | Local server, internet tunnel, app-only codes, rules, device approval, activity and linked-copy sync |
+| Sharing | Tabs for server, codes/live links, devices, receiving and linked-copy sync; rules, approval and activity |
 | Optimize | One-click resource profiles, launch-time Chromium switches and mail loading |
 | Data | Stored size, CSV export/import, theme backup, delete vault |
 | About | Version, offline confirmation, diagnostics copy, reset preferences |
@@ -181,8 +183,9 @@ the same way the desktop app does; only hosting needs the desktop app.
 
 ### How it works
 
-There is no fixed number of share codes: create as many independent shares as you need.
-Issuing a share in **Settings → Sharing**:
+There is no fixed number of share codes: create as many independent shares as you need. Sharing
+is split into **Server**, **Codes**, **Devices**, **Open a share** and **Linked copies** tabs.
+Issuing a share in **Settings → Sharing → Codes**:
 
 1. Turn on the **Sharing server**. It defaults to `127.0.0.1:47821`; choose **Local network**
    for direct Wi-Fi access when you want it.
@@ -196,10 +199,10 @@ Issuing a share in **Settings → Sharing**:
    device limit and the opt-in fields (notes, 2FA seed, attachments) live under **Advanced
    rules**. Username, password, website and the login's background/avatar/accent are always
    included.
-5. Use **Copy code**. The copied code includes the owner's address, so the recipient pastes one
-   value — there is no host or port field and no share link to expose. The code is shown once;
-   Colax stores only a SHA-256 hash, so a lost code is replaced with **New code**, not
-   recovered.
+5. Use **Copy code** or **Copy live link**. Both include the owner's address, so the recipient
+   pastes one value — there is no host or port field. The live link opens a neutral page in a
+   browser and is imported into Colax there. The code is shown once; Colax stores only a
+   SHA-256 hash, so a lost code is replaced with **New code**, not recovered.
 6. Once the device limit is reached, new devices are refused. Approved devices keep syncing
    owner edits. The public URL never serves login data, so there is nothing to leak there.
 
@@ -222,9 +225,9 @@ removed on later syncs until the code is explicitly imported again.
 - **Same Wi-Fi/LAN:** enable **Local network access**; copied codes use the machine's IPv4
   address. Allow Colax through the firewall on private networks only.
 - **Across the internet:** choose **Internet access → Cloudflare Quick Tunnel**. The public
-  address is embedded in copied codes but is not shown or copied as a share link. It changes
-  each time the app restarts. Colax waits until Cloudflare's edge can actually reach the local
-  server before calling the tunnel ready.
+  address is embedded in copied codes and live links. It changes each time the app restarts.
+  Colax waits until Cloudflare's edge can actually reach the local server before calling the
+  tunnel ready.
 - **Stable or private internet address:** put a named Cloudflare Tunnel, Tailscale/WireGuard
   address or your own reverse proxy in **Manual public address**. A live Quick Tunnel address
   takes priority while it is running. Colax itself does not run a relay.
@@ -237,8 +240,9 @@ name, login, username, password, note or attachment. Only the app JSON endpoints
 and `sync`) return shared fields, and they require the code, PIN/device token and approval
 where configured. The web build uses those endpoints with CORS; browser HTML does not.
 
-Auto-sync runs on unlock and every **5 minutes** by default. Change it, or choose **Manual
-only**, in **Settings → Sharing → Linked copies**.
+**Live links** make this convenient: paste the link into Colax and the imported copy updates
+from the owner. Auto-sync runs on unlock and every **5 minutes** by default. Change it, or
+choose **Manual only**, in **Settings → Sharing → Linked copies**.
 
 ### Security and limits
 

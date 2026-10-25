@@ -2384,6 +2384,8 @@ body.is-reordering,body.is-reordering *{user-select:none !important;cursor:grabb
    matching the rest of Settings, so the loudest thing on screen is the one
    action that matters at each step. */
 .sharing{display:flex;flex-direction:column;gap:var(--space-4)}
+.sharing__tabs{margin-bottom:0}
+.sharing__devices--all{max-height:420px;overflow-y:auto}
 .sharing__head{display:flex;align-items:flex-start;gap:var(--space-3)}
 .sharing__head>div:first-child{flex:1;min-width:0}
 .sharing__head>.toggle{margin-left:auto;flex-shrink:0}
