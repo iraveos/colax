@@ -319,9 +319,10 @@ choose **Manual only**, in **Settings → Sharing → Linked copies**.
 - **Temporary Mohmal inboxes need the desktop app and a live connection.** Mohmal controls the
   lifetime (about 45 minutes), and the hidden browser session belongs to this installation, so a
   backup restored on another machine can show the saved address but will not reopen that inbox.
-  The auto-renew scheduler runs in the main process while Colax is running, including when the
-  vault is locked, and stops when Colax quits; with the app closed, Mohmal's own timer still
-  expires the inbox. The app never sends Mohmal cookies through the share server.
+  The auto-renew scheduler starts when the vault is unlocked and runs in the main process while
+  Colax is running, including when the vault locks again; it stops when Colax quits. With the app
+  closed, Mohmal's own timer still expires the inbox. The app never sends Mohmal cookies through
+  the share server.
 - The clipboard clear is best-effort; browsers gate clipboard access behind permissions.
 - The suggested vault password is 7 words from a 150-word list plus 4 digits, which the
   strength meter scores at roughly 60 bits. That is decent, not bulletproof.
