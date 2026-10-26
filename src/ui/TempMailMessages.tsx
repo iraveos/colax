@@ -21,10 +21,13 @@ import { CopyIcon, InboxIcon } from './icons.tsx';
 
 export function TempMailMessages({
   mailbox,
+  inline = false,
   onNotify,
   onOpenExternal,
 }: {
   mailbox: TempMailbox;
+  /** Let the editor panel scroll the whole list instead of nesting a scroller. */
+  inline?: boolean;
   onNotify?: (message: string, tone?: 'ok' | 'error') => void;
   onOpenExternal?: (url: string) => void;
 }) {
@@ -38,6 +41,7 @@ export function TempMailMessages({
   const [expiresAt, setExpiresAt] = useState(mailbox.expiresAt);
   const requestRef = useRef(0);
   const detailRequestRef = useRef(0);
+  const detailRef = useRef<HTMLDivElement>(null);
 
   async function refresh(): Promise<void> {
     const api = getPlatform().tempMail;
@@ -110,11 +114,15 @@ export function TempMailMessages({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mailbox.address, mailbox.sessionKey]);
 
+  useEffect(() => {
+    if (detail) detailRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [detail]);
+
   const expiry = tempMailRemainingLabel({ ...mailbox, expiresAt });
   const count = messages?.length ?? 0;
 
   return (
-    <div className="temp-mail">
+    <div className={inline ? 'temp-mail temp-mail--inline' : 'temp-mail'}>
       <div className="temp-mail__head">
         <div className="temp-mail__identity">
           <span className="field__label">
@@ -171,6 +179,11 @@ export function TempMailMessages({
                   type="button"
                   className="msg__head"
                   aria-expanded={isOpen}
+                  aria-label={
+                    isOpen
+                      ? `Collapse: ${message.subject || '(no subject)'}`
+                      : `Expand: ${message.subject || '(no subject)'}`
+                  }
                   onClick={() => void open(message)}
                 >
                   <svg
@@ -187,11 +200,11 @@ export function TempMailMessages({
                   >
                     <path d="m9 6 6 6-6 6" />
                   </svg>
-                  <span className="msg__head-text">
-                    <span className="inbox__subject">
-                      {message.unread ? <span className="temp-mail__unread" aria-label="Unread" /> : null}
-                      {message.subject || '(no subject)'}
-                    </span>
+                  <span className="msg__head-text temp-mail__head-text">
+                    {message.unread ? (
+                      <span className="temp-mail__unread" aria-label="Unread" />
+                    ) : null}
+                    <span className="inbox__subject">{message.subject || '(no subject)'}</span>
                     <span className="inbox__meta">
                       {message.from || 'Unknown sender'}
                       {message.time ? ` · ${message.time}` : ''}
@@ -199,7 +212,7 @@ export function TempMailMessages({
                   </span>
                 </button>
                 {isOpen ? (
-                  <div className="login-messages__detail">
+                  <div ref={isOpen ? detailRef : undefined} className="login-messages__detail">
                     <dl className="msg__fields">
                       <div className="msg__field">
                         <dt>From</dt>

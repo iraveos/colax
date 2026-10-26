@@ -410,10 +410,10 @@ export function ItemEditor({
   /** Which pasted image/video is open full-size, null when none is. */
   const [viewingNote, setViewingNote] = useState<number | null>(null);
   const [tempMailBusy, setTempMailBusy] = useState(false);
-  const [tempInboxOpen, setTempInboxOpen] = useState(false);
   const [savedEmailsOpen, setSavedEmailsOpen] = useState(false);
   const [savedDraft, setSavedDraft] = useState('');
   const noteFileInput = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLFormElement>(null);
 
   /** True when this login has a factor that has not been cleared for the form. */
   const passwordLocked = Boolean(item && requiresVerification(item.security) && !verified);
@@ -447,6 +447,13 @@ export function ItemEditor({
     setSection('identity');
     setViewingNote(null);
   }, [item]);
+
+  // A new section starts at its top. Without this, switching from a long
+  // Credentials panel to Inbox could leave the messages scrolled past the
+  // heading, which reads as an empty panel.
+  useEffect(() => {
+    panelRef.current?.scrollTo({ top: 0 });
+  }, [section]);
 
   const patch = (next: Partial<VaultItem>) => setDraft((current) => ({ ...current, ...next }));
 
@@ -507,7 +514,6 @@ export function ItemEditor({
         tempMail: result.mailbox,
         showMail: true,
       });
-      setTempInboxOpen(true);
       onNotify(`Temporary inbox ready: ${result.mailbox.address}`);
     } catch (cause) {
       onNotify(
@@ -521,7 +527,6 @@ export function ItemEditor({
 
   function removeTempMailbox(): void {
     patch({ tempMail: null });
-    setTempInboxOpen(false);
     onNotify('Temporary inbox removed from this login. Messages stay at Mohmal until they expire.');
   }
 
@@ -661,6 +666,10 @@ export function ItemEditor({
   }
 
   const active = SECTIONS.find((entry) => entry.id === section) ?? SECTIONS[0];
+  const activeHint =
+    section === 'inbox' && draft.tempMail
+      ? 'Read and manage this login’s temporary Mohmal messages.'
+      : active.hint;
 
   const panels: Record<string, ReactNode> = {
     identity: (
@@ -888,18 +897,17 @@ export function ItemEditor({
                     hour: '2-digit',
                     minute: '2-digit',
                   })}
-                  . The Messages button on this login opens it.
+                  . The Messages button on this login opens it, and the Inbox tab shows it here.
                 </span>
               </div>
               <div className="temp-mail-status__actions">
                 <button
                   type="button"
                   className="btn btn--secondary btn--sm"
-                  aria-expanded={tempInboxOpen}
-                  onClick={() => setTempInboxOpen((open) => !open)}
+                  onClick={() => setSection('inbox')}
                 >
                   <MailIcon width="13" height="13" />
-                  {tempInboxOpen ? 'Hide messages' : 'Messages'}
+                  Messages
                 </button>
                 <button
                   type="button"
@@ -912,15 +920,6 @@ export function ItemEditor({
             </div>
           ) : null}
 
-          {tempInboxOpen && tempMail ? (
-            <div className="editor-embed temp-mail-embed">
-              <TempMailMessages
-                mailbox={tempMail}
-                onNotify={onNotify}
-                onOpenExternal={(url) => getPlatform().openExternal(url)}
-              />
-            </div>
-          ) : null}
         </div>
 
         <div className="field">
@@ -1098,15 +1097,45 @@ export function ItemEditor({
 
     appearance: <ThemePicker draft={draft} patch={patch} onNotify={onNotify} />,
 
-    inbox: (
+    inbox: draft.tempMail ? (
       <>
-        {draft.tempMail ? (
-          <Alert tone="info">
-            This login has a Mohmal temporary inbox. The Messages button in Credentials, and on
-            the login card outside the editor, opens it. The IMAP mailbox controls below apply
-            only if you connect a separate mailbox as well.
-          </Alert>
-        ) : null}
+        <Alert tone="info">
+          Messages from this login live in its Mohmal temporary inbox below. It is disposable
+          and expires after about 45 minutes; when it does, remove it in Credentials and create a
+          new address. The card&apos;s Messages button opens the same inbox in a window.
+        </Alert>
+        <div className="field">
+          <Toggle
+            label="Show messages on this login"
+            checked={draft.showMail === true}
+            onChange={(showMail) => patch({ showMail })}
+          />
+          <p className="field__note">
+            {draft.showMail === true
+              ? 'This login shows its Messages button. '
+              : 'Switched off here, so this login shows no Messages button. '}
+            A temporary inbox does not read any IMAP account. Remove it when you want the normal
+            mailbox controls back.
+          </p>
+        </div>
+        <TempMailMessages
+          mailbox={draft.tempMail}
+          inline
+          onNotify={onNotify}
+          onOpenExternal={(url) => getPlatform().openExternal(url)}
+        />
+        <div className="editor-actions">
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            onClick={removeTempMailbox}
+          >
+            Remove temporary inbox
+          </button>
+        </div>
+      </>
+    ) : (
+      <>
         <div className="field">
           <Toggle
             label="Show messages on this login"
@@ -1418,9 +1447,10 @@ export function ItemEditor({
         <div className="editor-window__main">
           <header className="editor-window__head">
             <h3 className="editor-window__title">{active.label}</h3>
-            <p className="editor-window__hint">{active.hint}</p>
+            <p className="editor-window__hint">{activeHint}</p>
           </header>
           <form
+            ref={panelRef}
             className="editor-window__panel"
             id={`editor-panel-${section}`}
             role="tabpanel"
