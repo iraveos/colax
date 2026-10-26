@@ -567,6 +567,7 @@ export function App() {
   // vault becomes readable again, without stamping the login as edited.
   useTempMailRenew({
     active: vault.status === 'unlocked',
+    clear: vault.status === 'absent',
     items: vault.items,
     onUpdates: async (updates) => {
       for (const update of updates) {

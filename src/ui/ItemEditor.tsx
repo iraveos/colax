@@ -996,7 +996,8 @@ export function ItemEditor({
                 </div>
                 <span className="field__hint">
                   Saved with this login. 0 turns automatic renewal off; choose 1–40 minutes. Mohmal
-                  resets the inbox to 45 minutes each time.
+                  resets the inbox to 45 minutes each time. It runs while Colax is open, even when
+                  the vault is locked.
                 </span>
               </div>
               <div className="temp-mail-status__actions">

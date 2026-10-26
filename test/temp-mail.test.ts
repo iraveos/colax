@@ -119,6 +119,8 @@ test('vault items round-trip temporary mailbox metadata', () => {
   assert.equal(empty.tempMail, null);
   const item = normaliseItem({ id: 'one', tempMail: rawMailbox }, 1_700_000_000_000);
   assert.equal(item.tempMail?.address, 'temp.user@emailnox.live');
+  assert.equal(item.tempMail?.autoRenewMinutes, 10);
+  assert.equal(item.tempMail?.lastRenewedAt, rawMailbox.createdAt);
   assert.equal(tempMailRemainingLabel(item.tempMail!, 1_700_000_300_000), '5 min left');
   assert.equal(tempMailRemainingLabel(item.tempMail!, 1_700_000_700_000), 'expired');
 });

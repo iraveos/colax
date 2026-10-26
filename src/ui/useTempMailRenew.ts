@@ -19,20 +19,32 @@ import type { VaultItem } from '../vault/types.ts';
 const SYNC_INTERVAL_MS = 30_000;
 
 export function useTempMailRenew(input: {
+  /** True while the vault is unlocked. Locking deliberately leaves schedules running. */
   active: boolean;
+  /** True on the create screen: there is no vault to own those inboxes anymore. */
+  clear?: boolean;
   items: VaultItem[];
   onUpdates: (updates: TempMailRenewUpdate[]) => Promise<void> | void;
   onError?: (message: string) => void;
 }): void {
-  const { active, items, onUpdates, onError } = input;
+  const { active, clear = false, items, onUpdates, onError } = input;
   const itemsRef = useRef(items);
   const updatesRef = useRef(onUpdates);
   const errorRef = useRef(onError);
   const syncing = useRef(false);
-  const hadSchedules = useRef(false);
   itemsRef.current = items;
   updatesRef.current = onUpdates;
   errorRef.current = onError;
+
+  const clearSchedules = useCallback(async () => {
+    const api = getPlatform().tempMail;
+    if (!api) return;
+    try {
+      await api.syncSchedules([]);
+    } catch {
+      // Nothing useful to show here; the next unlock or quit cleans up again.
+    }
+  }, []);
 
   const sync = useCallback(async () => {
     if (syncing.current) return;
@@ -78,14 +90,19 @@ export function useTempMailRenew(input: {
     .join('|');
 
   useEffect(() => {
+    if (clear) {
+      void clearSchedules();
+      return;
+    }
     if (!active) return;
-    const hasSchedules = itemsRef.current.some((item) => item.tempMail);
-    // Do not prune a main-process schedule merely because the first render
-    // after unlock has not received the decrypted items yet.
-    if (!hasSchedules && !hadSchedules.current) return;
-    hadSchedules.current = hasSchedules;
+    if (!itemsRef.current.some((item) => item.tempMail)) {
+      // A vault with no disposable inboxes must not leave a previous vault's
+      // schedule renewing in the background.
+      void clearSchedules();
+      return;
+    }
     void sync();
     const timer = window.setInterval(() => void sync(), SYNC_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [active, signature, sync]);
+  }, [active, clear, clearSchedules, signature, sync]);
 }
