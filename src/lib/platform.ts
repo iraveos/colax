@@ -225,6 +225,8 @@ export interface PlatformAPI {
      * one-shot auto-renew errors.
      */
     syncSchedules(schedules: TempMailSchedule[]): Promise<TempMailScheduleResult>;
+    /** Stops every auto-renewal, e.g. when the vault is removed. */
+    clearSchedules(): Promise<void>;
   };
   /**
    * Sharing between Colax installs.

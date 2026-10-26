@@ -141,7 +141,9 @@ interface changes.
   login, and keeps its messages behind a **Messages** button on the card. The inbox can be read
   in the editor or in a pop-up message window; it never exposes the Mohmal session to the page.
   Automatic renewal is on by default every 10 minutes, the interval is editable (0–40 minutes),
-  and **Renew now** resets Mohmal's 45-minute timer by hand.
+  and **Renew now** resets Mohmal's 45-minute timer by hand. For a login already in the vault,
+  changing the interval or creating/removing its inbox applies immediately; a brand-new login
+  only needs to be added once.
 - **Saved emails** — save addresses you reuse for signups, then let **Random saved** pick one
   when creating the next login; the list is managed from the same email row
 - Password strength meter with an offline-attack crack-time estimate

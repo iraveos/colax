@@ -464,10 +464,15 @@ export function syncTempMailSchedules(schedules: TempMailSchedule[]): TempMailSc
     incoming.set(mailbox.sessionKey, { itemId: schedule.itemId, mailbox });
   }
 
-  for (const [key, entry] of autoRenewals) {
-    if (incoming.has(key)) continue;
-    clearAutoRenewTimer(entry);
-    autoRenewals.delete(key);
+  // Only prune against a non-empty authoritative set. A lock can briefly
+  // clear the renderer's decrypted items, and an empty sync must never stop
+  // the schedules that are supposed to keep running through that lock.
+  if (incoming.size > 0) {
+    for (const [key, entry] of autoRenewals) {
+      if (incoming.has(key)) continue;
+      clearAutoRenewTimer(entry);
+      autoRenewals.delete(key);
+    }
   }
 
   const updates: TempMailRenewUpdate[] = [];
@@ -527,6 +532,11 @@ export function syncTempMailSchedules(schedules: TempMailSchedule[]): TempMailSc
 function stopTempMailAutoRenew(): void {
   for (const entry of autoRenewals.values()) clearAutoRenewTimer(entry);
   autoRenewals.clear();
+}
+
+/** Explicit reset (vault removed / no disposable inboxes left). */
+export function clearTempMailSchedules(): void {
+  stopTempMailAutoRenew();
 }
 
 /** Called when the app quits; partitions stay on disk so inboxes survive a restart. */

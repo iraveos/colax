@@ -25,6 +25,7 @@ import { redeemShare, syncLinkedShares } from '../src/lib/share-client.ts';
 import { closeMailConnections, fetchFullMail, listInboxMail } from './mail-imap.ts';
 import { connectOAuth } from './oauth.ts';
 import {
+  clearTempMailSchedules,
   createMohmalMailbox,
   destroyTempMailWindows,
   listMohmalMessages,
@@ -720,6 +721,7 @@ void app.whenReady().then(() => {
   ipcMain.handle('colax:temp-mail-sync', (_event, schedules: unknown) =>
     syncTempMailSchedules(Array.isArray(schedules) ? (schedules as TempMailSchedule[]) : []),
   );
+  ipcMain.handle('colax:temp-mail-clear', () => clearTempMailSchedules());
   ipcMain.handle('colax:mail-list', async (_event, input: unknown) => {
     try {
       if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };

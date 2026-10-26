@@ -82,6 +82,7 @@ const platform: PlatformAPI = {
         'colax:temp-mail-sync',
         schedules,
       ) as Promise<TempMailScheduleResult>,
+    clearSchedules: () => ipcRenderer.invoke('colax:temp-mail-clear') as Promise<void>,
   },
   runtime: {
     setSpellcheck: (enabled: boolean) => {

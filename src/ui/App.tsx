@@ -4982,6 +4982,11 @@ onCreate={vault.create}
               ? (vault.items.find((entry) => entry.id === editing.id)?.tempMail ?? null)
               : null
           }
+          onTempMailPersist={
+            editing && editing !== 'new'
+              ? (tempMail) => vault.updateTempMail(editing.id, tempMail)
+              : undefined
+          }
           gmailAccounts={prefs.gmailAccounts}
           onGmailAccountsChange={(gmailAccounts) => void vault.updatePrefs({ gmailAccounts })}
           onCacheMail={viewActions.onCacheMail}

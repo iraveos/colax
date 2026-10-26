@@ -31,23 +31,28 @@ export function useTempMailRenew(input: {
   const itemsRef = useRef(items);
   const updatesRef = useRef(onUpdates);
   const errorRef = useRef(onError);
+  const activeRef = useRef(active);
   const syncing = useRef(false);
   itemsRef.current = items;
   updatesRef.current = onUpdates;
   errorRef.current = onError;
+  activeRef.current = active;
 
   const clearSchedules = useCallback(async () => {
     const api = getPlatform().tempMail;
     if (!api) return;
     try {
-      await api.syncSchedules([]);
+      await api.clearSchedules();
     } catch {
       // Nothing useful to show here; the next unlock or quit cleans up again.
     }
   }, []);
 
   const sync = useCallback(async () => {
-    if (syncing.current) return;
+    // A lock can clear `items` while a 30s sync is queued. Never send that
+    // empty snapshot to the main process: it would prune the schedules that
+    // are supposed to keep renewing through the lock.
+    if (!activeRef.current || syncing.current) return;
     const api = getPlatform().tempMail;
     if (!api) return;
     syncing.current = true;
@@ -57,6 +62,7 @@ export function useTempMailRenew(input: {
         if (item.tempMail) schedules.push({ itemId: item.id, mailbox: item.tempMail });
       }
       const result = await api.syncSchedules(schedules);
+      if (!activeRef.current) return;
       if (!result.ok) {
         errorRef.current?.(result.error);
         return;
@@ -97,9 +103,10 @@ export function useTempMailRenew(input: {
     if (!active) return;
     if (!itemsRef.current.some((item) => item.tempMail)) {
       // A vault with no disposable inboxes must not leave a previous vault's
-      // schedule renewing in the background.
-      void clearSchedules();
-      return;
+      // schedule renewing. Wait out a one-render gap first: a lock/unlock can
+      // briefly hand us an empty item list that must not stop the scheduler.
+      const clearTimer = window.setTimeout(() => void clearSchedules(), 2_000);
+      return () => window.clearTimeout(clearTimer);
     }
     void sync();
     const timer = window.setInterval(() => void sync(), SYNC_INTERVAL_MS);

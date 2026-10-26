@@ -363,6 +363,8 @@ export function ItemEditor({
   onReusableEmailsChange,
   /** The saved item's current temp inbox, for renewals that happen while editing. */
   liveTempMail = null,
+  /** Persists temp-mail metadata immediately for an already-saved login. */
+  onTempMailPersist,
   gmailAccounts,
   onGmailAccountsChange,
   onCacheMail,
@@ -400,6 +402,7 @@ export function ItemEditor({
   reusableEmails?: string[];
   onReusableEmailsChange?: (next: string[]) => void;
   liveTempMail?: VaultItem['tempMail'];
+  onTempMailPersist?: (tempMail: VaultItem['tempMail']) => Promise<void> | void;
   /** Connected mailboxes, shared across the app rather than per-login. */
   gmailAccounts: GmailAccount[];
   onGmailAccountsChange: (next: GmailAccount[]) => void;
@@ -423,6 +426,7 @@ export function ItemEditor({
   const [savedDraft, setSavedDraft] = useState('');
   const noteFileInput = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLFormElement>(null);
+  const tempPersistChain = useRef<Promise<void>>(Promise.resolve());
 
   /** True when this login has a factor that has not been cleared for the form. */
   const passwordLocked = Boolean(item && requiresVerification(item.security) && !verified);
@@ -438,6 +442,9 @@ export function ItemEditor({
     isEmailLike(currentEmail) &&
     savedEmails.some((address) => address.toLowerCase() === currentEmail.toLowerCase());
   const tempMail = draft.tempMail ?? null;
+  const tempMailIsSaved = Boolean(
+    liveTempMail && tempMail && liveTempMail.sessionKey === tempMail.sessionKey,
+  );
   const emailChoices = [
     ...new Set(
       [
@@ -494,6 +501,25 @@ export function ItemEditor({
 
   const patch = (next: Partial<VaultItem>) => setDraft((current) => ({ ...current, ...next }));
 
+  /**
+   * Applies temp-mail metadata to the form and, for a login that is already
+   * in the vault, writes it through immediately. The background renewer only
+   * knows saved items, so waiting for "Save changes" would let a new inbox sit
+   * unscheduled while the editor is open.
+   */
+  function applyTempMail(nextMailbox: VaultItem['tempMail']): void {
+    patch({ tempMail: nextMailbox });
+    if (!onTempMailPersist) return;
+    // Serialize these metadata writes and let submit wait for them, so a
+    // quick "Save changes" cannot race an earlier temp-mail write and undo
+    // the rest of the draft.
+    tempPersistChain.current = tempPersistChain.current
+      .then(async () => {
+        await onTempMailPersist(nextMailbox);
+      })
+      .catch(() => undefined);
+  }
+
   function updateSavedEmails(next: string[]): void {
     onReusableEmailsChange?.(normaliseReusableEmails(next));
   }
@@ -546,11 +572,8 @@ export function ItemEditor({
         onNotify(result.error, 'error');
         return;
       }
-      patch({
-        username: result.mailbox.address,
-        tempMail: result.mailbox,
-        showMail: true,
-      });
+      patch({ username: result.mailbox.address, showMail: true });
+      applyTempMail(result.mailbox);
       onNotify(`Temporary inbox ready: ${result.mailbox.address}`);
     } catch (cause) {
       onNotify(
@@ -566,7 +589,7 @@ export function ItemEditor({
     const mailbox = draft.tempMail;
     if (!mailbox) return;
     const next = Math.max(0, Math.min(MOHMAL_MAX_RENEW_MINUTES, Math.round(minutes)));
-    patch({ tempMail: { ...mailbox, autoRenewMinutes: next } });
+    applyTempMail({ ...mailbox, autoRenewMinutes: next });
   }
 
   async function renewTempMailbox(): Promise<void> {
@@ -584,12 +607,10 @@ export function ItemEditor({
         onNotify(result.error, 'error');
         return;
       }
-      patch({
-        tempMail: {
-          ...mailbox,
-          expiresAt: result.expiresAt,
-          lastRenewedAt: result.renewedAt,
-        },
+      applyTempMail({
+        ...mailbox,
+        expiresAt: result.expiresAt,
+        lastRenewedAt: result.renewedAt,
       });
       onNotify('Temporary inbox renewed for another 45 minutes');
     } catch (cause) {
@@ -603,7 +624,7 @@ export function ItemEditor({
   }
 
   function removeTempMailbox(): void {
-    patch({ tempMail: null });
+    applyTempMail(null);
     onNotify('Temporary inbox removed from this login. Messages stay at Mohmal until they expire.');
   }
 
@@ -730,6 +751,7 @@ export function ItemEditor({
     event.preventDefault();
     setSaving(true);
     try {
+      await tempPersistChain.current;
       // Store one sanitised HTML copy and its plain-text counterpart. The
       // plain text is what cards, search and clipboard exports read, so it
       // must be recomputed after sanitising rather than left as whatever the
@@ -995,9 +1017,13 @@ export function ItemEditor({
                   <span className="field__hint">{tempMailNextRenewLabel(tempMail)}</span>
                 </div>
                 <span className="field__hint">
-                  Save the login to start automatic renewal. 0 turns it off; choose 1–40 minutes.
-                  Mohmal resets the inbox to 45 minutes each time. It runs while Colax is open after
-                  unlock, even when the vault is locked.
+                  {tempMail.autoRenewMinutes <= 0
+                    ? 'Automatic renewal is off. Use Renew now for a manual reset. '
+                    : tempMailIsSaved
+                      ? 'Automatic renewal is active for this saved login. '
+                      : 'Save the login to start automatic renewal. '}
+                  0 turns it off; choose 1–40 minutes. Mohmal resets the inbox to 45 minutes each
+                  time. It runs while Colax is open after unlock, even when the vault is locked.
                 </span>
               </div>
               <div className="temp-mail-status__actions">
