@@ -414,7 +414,9 @@ async function runAutoRenew(entry: AutoRenewEntry): Promise<void> {
   const key = entry.mailbox.sessionKey;
   if (autoRenewals.get(key) !== entry) return;
   if (entry.mailbox.autoRenewMinutes <= 0) return;
-  if (entry.mailbox.expiresAt <= Date.now() && !entry.catchUpAttempted) return;
+  // A timer that fired after a sleep may now be past the stored expiry. Make
+  // one attempt anyway, then stop if it fails instead of retrying forever.
+  if (entry.mailbox.expiresAt <= Date.now()) entry.catchUpAttempted = true;
   entry.running = true;
   try {
     const result = await renewMohmalMailbox(entry.mailbox.address, key);
