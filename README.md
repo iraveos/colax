@@ -139,7 +139,9 @@ interface changes.
 - New-login email field suggests addresses already used in the vault and connected mailboxes
 - **Mohmal temporary addresses** — one click creates a disposable inbox, fills it into the
   login, and keeps its messages behind a **Messages** button on the card. The inbox can be read
-  in the editor or in a pop-up message window; it never exposes the Mohmal session to the page
+  in the editor or in a pop-up message window; it never exposes the Mohmal session to the page.
+  Automatic renewal is on by default every 10 minutes, the interval is editable (0–40 minutes),
+  and **Renew now** resets Mohmal's 45-minute timer by hand.
 - **Saved emails** — save addresses you reuse for signups, then let **Random saved** pick one
   when creating the next login; the list is managed from the same email row
 - Password strength meter with an offline-attack crack-time estimate
@@ -317,7 +319,9 @@ choose **Manual only**, in **Settings → Sharing → Linked copies**.
 - **Temporary Mohmal inboxes need the desktop app and a live connection.** Mohmal controls the
   lifetime (about 45 minutes), and the hidden browser session belongs to this installation, so a
   backup restored on another machine can show the saved address but will not reopen that inbox.
-  The app never sends Mohmal cookies through the share server.
+  The auto-renew scheduler runs in the main process while Colax is running, including when the
+  vault is locked, and stops when Colax quits; with the app closed, Mohmal's own timer still
+  expires the inbox. The app never sends Mohmal cookies through the share server.
 - The clipboard clear is best-effort; browsers gate clipboard access behind permissions.
 - The suggested vault password is 7 words from a 150-word list plus 4 digits, which the
   strength meter scores at roughly 60 bits. That is decent, not bulletproof.

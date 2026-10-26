@@ -95,6 +95,7 @@ import {
 import { redeemShare } from '../lib/share-client.ts';
 import { makeShareLink, shareDeviceIdentity, sharedLoginPatch } from '../vault/shares.ts';
 import { useLinkedSync, useShareServer } from './useShares.ts';
+import { useTempMailRenew } from './useTempMailRenew.ts';
 import {
   AlertIcon,
   CheckIcon,
@@ -558,6 +559,26 @@ export function App() {
     items: vault.items,
     intervalMinutes: vault.prefs.shareSyncMinutes,
     apply: applySharedResults,
+    onError: (message) => notify(message, 'error'),
+  });
+
+  // Register Mohmal inboxes with the main-process renewer. The scheduler keeps
+  // running through auto-lock; this hook merges whatever it missed when the
+  // vault becomes readable again, without stamping the login as edited.
+  useTempMailRenew({
+    active: vault.status === 'unlocked',
+    items: vault.items,
+    onUpdates: async (updates) => {
+      for (const update of updates) {
+        const item = vault.items.find((entry) => entry.id === update.itemId);
+        if (!item?.tempMail || item.tempMail.sessionKey !== update.sessionKey) continue;
+        await vault.updateTempMail(item.id, {
+          ...item.tempMail,
+          expiresAt: update.expiresAt,
+          lastRenewedAt: update.lastRenewedAt,
+        });
+      }
+    },
     onError: (message) => notify(message, 'error'),
   });
 
@@ -4955,6 +4976,11 @@ onCreate={vault.create}
           emailSuggestions={emailSuggestions}
           reusableEmails={prefs.reusableEmails}
           onReusableEmailsChange={(reusableEmails) => void vault.updatePrefs({ reusableEmails })}
+          liveTempMail={
+            editing && editing !== 'new'
+              ? (vault.items.find((entry) => entry.id === editing.id)?.tempMail ?? null)
+              : null
+          }
           gmailAccounts={prefs.gmailAccounts}
           onGmailAccountsChange={(gmailAccounts) => void vault.updatePrefs({ gmailAccounts })}
           onCacheMail={viewActions.onCacheMail}
@@ -5011,6 +5037,27 @@ onCreate={vault.create}
                   ...(link.fields.totp ? { totpSecret: editing.totpSecret } : {}),
                   ...(link.fields.attachments ? { attachments: editing.attachments } : {}),
                   shareLink: link,
+                };
+              }
+              // The automatic renewer may have refreshed this inbox while the
+              // editor was open. Keep its newer expiry instead of overwriting
+              // it with the draft's older snapshot; the draft still owns the
+              // user edits to the interval and address.
+              const liveTempMail =
+                vault.items.find((entry) => entry.id === editing.id)?.tempMail ?? null;
+              if (
+                draft.tempMail &&
+                liveTempMail &&
+                draft.tempMail.address === liveTempMail.address &&
+                liveTempMail.lastRenewedAt > draft.tempMail.lastRenewedAt
+              ) {
+                draft = {
+                  ...draft,
+                  tempMail: {
+                    ...draft.tempMail,
+                    expiresAt: liveTempMail.expiresAt,
+                    lastRenewedAt: liveTempMail.lastRenewedAt,
+                  },
                 };
               }
               // A changed password is re-graded on the spot: a weak replacement

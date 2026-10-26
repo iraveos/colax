@@ -26,6 +26,9 @@ import type {
   TempMailCreateResult,
   TempMailListResult,
   TempMailReadResult,
+  TempMailRenewResult,
+  TempMailSchedule,
+  TempMailScheduleResult,
 } from '../src/lib/temp-mail.ts';
 
 declare const COLAX_APP_VERSION: string;
@@ -68,6 +71,17 @@ const platform: PlatformAPI = {
         sessionKey,
         id,
       ) as Promise<TempMailReadResult>,
+    renew: (address: string, sessionKey: string) =>
+      ipcRenderer.invoke(
+        'colax:temp-mail-renew',
+        address,
+        sessionKey,
+      ) as Promise<TempMailRenewResult>,
+    syncSchedules: (schedules: TempMailSchedule[]) =>
+      ipcRenderer.invoke(
+        'colax:temp-mail-sync',
+        schedules,
+      ) as Promise<TempMailScheduleResult>,
   },
   runtime: {
     setSpellcheck: (enabled: boolean) => {

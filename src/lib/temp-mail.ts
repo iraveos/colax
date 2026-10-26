@@ -8,6 +8,9 @@
  */
 
 export const MOHMAL_LIFETIME_MS = 45 * 60 * 1000;
+export const MOHMAL_DEFAULT_RENEW_MINUTES = 10;
+/** Renewing later than the lifetime would let the inbox lapse between calls. */
+export const MOHMAL_MAX_RENEW_MINUTES = 40;
 const MAX_EMAIL_LENGTH = 254;
 const MAX_REUSABLE_EMAILS = 100;
 const SESSION_KEY_RE = /^[a-f0-9]{16,64}$/i;
@@ -20,6 +23,13 @@ export interface TempMailbox {
   sessionKey: string;
   createdAt: number;
   expiresAt: number;
+  /**
+   * How often Colax should call Mohmal's Renew action. 0 turns the automatic
+   * renewal off; the user can still press Renew now.
+   */
+  autoRenewMinutes: number;
+  /** The last successful renewal, for restart catch-up and the next-due label. */
+  lastRenewedAt: number;
 }
 
 export interface TempMailMessage {
@@ -47,6 +57,34 @@ export type TempMailReadResult =
   | { ok: true; message: TempMailDetail }
   | { ok: false; error: string };
 
+export type TempMailRenewResult =
+  | { ok: true; expiresAt: number; renewedAt: number }
+  | { ok: false; error: string };
+
+/** One saved inbox handed to the main-process renewal scheduler. */
+export interface TempMailSchedule {
+  itemId: string;
+  mailbox: TempMailbox;
+}
+
+export interface TempMailRenewUpdate {
+  itemId: string;
+  address: string;
+  sessionKey: string;
+  expiresAt: number;
+  lastRenewedAt: number;
+}
+
+export interface TempMailScheduleError {
+  itemId: string;
+  address: string;
+  error: string;
+}
+
+export type TempMailScheduleResult =
+  | { ok: true; updates: TempMailRenewUpdate[]; errors: TempMailScheduleError[] }
+  | { ok: false; error: string };
+
 /** A deliberately small check: this is a mailbox address, not a validator. */
 export function isEmailLike(value: string): boolean {
   const address = value.trim();
@@ -69,18 +107,36 @@ export function normaliseTempMailbox(raw: unknown): TempMailbox | null {
   const address = typeof record.address === 'string' ? record.address.trim().toLowerCase() : '';
   if (!isEmailLike(address)) return null;
   const createdAt = finite(record.createdAt) ?? Date.now();
-  const suggestedExpiry = finite(record.expiresAt) ?? createdAt + MOHMAL_LIFETIME_MS;
-  // Never trust a hand-edited record to keep an inbox alive forever.
-  const expiresAt = Math.min(
-    Math.max(suggestedExpiry, createdAt),
-    createdAt + 24 * 60 * 60 * 1000,
-  );
   const sessionKey =
     typeof record.sessionKey === 'string' && SESSION_KEY_RE.test(record.sessionKey.trim())
       ? record.sessionKey.trim().toLowerCase()
       : '';
   if (!sessionKey) return null;
-  return { provider: 'mohmal', address, sessionKey, createdAt, expiresAt };
+  const autoRenewMinutes =
+    typeof record.autoRenewMinutes === 'number' && Number.isFinite(record.autoRenewMinutes)
+      ? Math.max(0, Math.min(MOHMAL_MAX_RENEW_MINUTES, Math.round(record.autoRenewMinutes)))
+      : MOHMAL_DEFAULT_RENEW_MINUTES;
+  const lastRenewedAt = Math.min(
+    Math.max(createdAt, finite(record.lastRenewedAt) ?? createdAt),
+    Date.now(),
+  );
+  // A hand-edited record cannot keep an inbox alive forever, while an inbox
+  // renewed for weeks can still carry a legitimate expiry far past createdAt.
+  // Mohmal's lifetime from the last successful renewal is the real ceiling.
+  const rawExpiry = finite(record.expiresAt);
+  const expiresAt =
+    rawExpiry !== null && rawExpiry >= lastRenewedAt
+      ? Math.min(rawExpiry, lastRenewedAt + MOHMAL_LIFETIME_MS)
+      : lastRenewedAt + MOHMAL_LIFETIME_MS;
+  return {
+    provider: 'mohmal',
+    address,
+    sessionKey,
+    createdAt,
+    expiresAt,
+    autoRenewMinutes,
+    lastRenewedAt,
+  };
 }
 
 export function tempMailIsExpired(mailbox: TempMailbox, now = Date.now()): boolean {
@@ -93,6 +149,20 @@ export function tempMailRemainingLabel(mailbox: TempMailbox, now = Date.now()): 
   if (left <= 0) return 'expired';
   const minutes = Math.max(1, Math.ceil(left / 60_000));
   return `${minutes} min left`;
+}
+
+/** When the next automatic renewal is due, or null when it is switched off. */
+export function tempMailNextRenewAt(mailbox: TempMailbox): number | null {
+  if (mailbox.autoRenewMinutes <= 0) return null;
+  return mailbox.lastRenewedAt + mailbox.autoRenewMinutes * 60_000;
+}
+
+export function tempMailNextRenewLabel(mailbox: TempMailbox, now = Date.now()): string {
+  const next = tempMailNextRenewAt(mailbox);
+  if (next === null) return 'Auto-renew is off.';
+  const left = next - now;
+  if (left <= 0) return 'Renewal is due now.';
+  return `Next renewal in ${Math.max(1, Math.ceil(left / 60_000))} min.`;
 }
 
 /**

@@ -29,7 +29,10 @@ import {
   destroyTempMailWindows,
   listMohmalMessages,
   readMohmalMessage,
+  renewMohmalMailbox,
+  syncTempMailSchedules,
 } from './temp-mail.ts';
+import type { TempMailSchedule } from '../src/lib/temp-mail.ts';
 import { ShareServer } from './share-server.ts';
 import { ShareTunnel, type ShareTunnelStatus } from './share-tunnel.ts';
 // Inlined as a data URL by esbuild (see scripts/electron-build.mjs), so the
@@ -705,6 +708,17 @@ void app.whenReady().then(() => {
         typeof sessionKey === 'string' ? sessionKey : '',
         typeof id === 'string' ? id : '',
       ),
+  );
+  ipcMain.handle(
+    'colax:temp-mail-renew',
+    (_event, address: unknown, sessionKey: unknown) =>
+      renewMohmalMailbox(
+        typeof address === 'string' ? address : '',
+        typeof sessionKey === 'string' ? sessionKey : '',
+      ),
+  );
+  ipcMain.handle('colax:temp-mail-sync', (_event, schedules: unknown) =>
+    syncTempMailSchedules(Array.isArray(schedules) ? (schedules as TempMailSchedule[]) : []),
   );
   ipcMain.handle('colax:mail-list', async (_event, input: unknown) => {
     try {

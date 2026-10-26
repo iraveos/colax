@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  MOHMAL_MAX_RENEW_MINUTES,
   normaliseReusableEmails,
   normaliseTempMailbox,
   pickReusableEmail,
+  tempMailNextRenewAt,
+  tempMailNextRenewLabel,
   tempMailRemainingLabel,
 } from '../src/lib/temp-mail.ts';
 import { loginShowsMail, planMailLinkedOnly } from '../src/vault/site-intel.ts';
@@ -15,6 +18,8 @@ const rawMailbox = {
   sessionKey: 'A1B2C3D4E5F60708',
   createdAt: 1_700_000_000_000,
   expiresAt: 1_700_000_600_000,
+  autoRenewMinutes: 10,
+  lastRenewedAt: 1_700_000_000_000,
 };
 
 test('temporary mailbox metadata is normalised and capped', () => {
@@ -23,6 +28,24 @@ test('temporary mailbox metadata is normalised and capped', () => {
   assert.equal(mailbox.address, 'temp.user@emailnox.live');
   assert.equal(mailbox.sessionKey, 'a1b2c3d4e5f60708');
   assert.equal(mailbox.expiresAt, rawMailbox.expiresAt);
+  assert.equal(mailbox.autoRenewMinutes, 10);
+  assert.equal(mailbox.lastRenewedAt, rawMailbox.createdAt);
+
+  const legacy = normaliseTempMailbox({
+    ...rawMailbox,
+    autoRenewMinutes: undefined,
+    lastRenewedAt: undefined,
+  });
+  assert.equal(legacy?.autoRenewMinutes, 10);
+  assert.equal(legacy?.lastRenewedAt, rawMailbox.createdAt);
+
+  const extended = normaliseTempMailbox({ ...rawMailbox, autoRenewMinutes: 99 });
+  assert.equal(extended?.autoRenewMinutes, MOHMAL_MAX_RENEW_MINUTES);
+  assert.equal(
+    normaliseTempMailbox({ ...rawMailbox, autoRenewMinutes: -4 })?.autoRenewMinutes,
+    0,
+  );
+  assert.equal(normaliseTempMailbox({ ...rawMailbox, lastRenewedAt: 1_700_000_300_000 })?.lastRenewedAt, 1_700_000_300_000);
 
   assert.equal(normaliseTempMailbox({ ...rawMailbox, sessionKey: '' }), null);
   assert.equal(normaliseTempMailbox({ ...rawMailbox, address: 'not-an-address' }), null);
@@ -33,7 +56,27 @@ test('temporary mailbox metadata is normalised and capped', () => {
     expiresAt: rawMailbox.createdAt + 7 * 24 * 60 * 60 * 1000,
   });
   assert.ok(tooLong);
-  assert.equal(tooLong.expiresAt, rawMailbox.createdAt + 24 * 60 * 60 * 1000);
+  assert.equal(tooLong.expiresAt, rawMailbox.createdAt + 45 * 60 * 1000);
+
+  const longLived = normaliseTempMailbox({
+    ...rawMailbox,
+    lastRenewedAt: rawMailbox.createdAt + 25 * 60 * 60 * 1000,
+    expiresAt: rawMailbox.createdAt + 25 * 60 * 60 * 1000 + 45 * 60 * 1000,
+  });
+  assert.ok(longLived);
+  assert.equal(longLived.expiresAt, rawMailbox.createdAt + 25 * 60 * 60 * 1000 + 45 * 60 * 1000);
+});
+
+test('automatic renewal is due on the chosen interval', () => {
+  const mailbox = normaliseTempMailbox(rawMailbox);
+  assert.ok(mailbox);
+  assert.equal(tempMailNextRenewAt(mailbox), rawMailbox.createdAt + 10 * 60_000);
+  assert.equal(tempMailNextRenewLabel(mailbox, rawMailbox.createdAt + 5 * 60_000), 'Next renewal in 5 min.');
+  assert.equal(tempMailNextRenewLabel(mailbox, rawMailbox.createdAt + 11 * 60_000), 'Renewal is due now.');
+  assert.equal(
+    tempMailNextRenewLabel({ ...mailbox, autoRenewMinutes: 0 }, rawMailbox.createdAt),
+    'Auto-renew is off.',
+  );
 });
 
 test('saved emails are deduplicated and reject non-addresses', () => {

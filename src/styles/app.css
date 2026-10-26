@@ -1411,7 +1411,11 @@ to{transform:translate(0)}
 .temp-mail-status{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;margin-top:var(--space-3);padding:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-deep)}
 .temp-mail-status__main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 220px}
 .temp-mail-status__address{font-family:var(--font-mono);font-size:var(--text-sm);overflow-wrap:anywhere;user-select:all}
-.temp-mail-status__actions{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.temp-mail-status__actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:flex-start}
+.temp-mail-renew{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:var(--space-2)}
+.temp-mail-renew .field__label{margin:0}
+.temp-mail-renew__input{width:64px;padding:2px 6px;font-size:var(--text-sm);text-align:center}
+.temp-mail-renew__unit{font-size:var(--text-xs);color:var(--text-muted)}
 .saved-emails{display:flex;flex-direction:column;gap:var(--space-2);margin-top:var(--space-3)}
 .saved-emails__head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
 .saved-emails__list{list-style:none;display:flex;flex-direction:column;gap:var(--space-1);margin:0;padding:0}

@@ -131,6 +131,9 @@ export function TempMailMessages({
           <code className="temp-mail__address">{mailbox.address}</code>
           <span className="field__hint">
             {expiry === 'expired' ? 'This inbox has expired.' : `${expiry[0]?.toUpperCase()}${expiry.slice(1)}.`}{' '}
+            {mailbox.autoRenewMinutes > 0
+              ? `Auto-renews every ${mailbox.autoRenewMinutes} min. `
+              : 'Auto-renew is off. '}
             New mail is checked every few seconds while this window is open.
           </span>
         </div>

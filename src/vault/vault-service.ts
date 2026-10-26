@@ -225,6 +225,19 @@ const next: VaultItem = { ...current, ...patch, id, updatedAt: Date.now() };
     await this.#persist({ ...current, showMail: value });
   }
 
+  /**
+   * Updates only the disposable-inbox metadata after an automatic or manual
+   * renewal. Like setAttention and setShowMail this bypasses updatedAt: a
+   * background renewal is not a login edit, and stamping it would reset the
+   * untouched-login clock and "recently updated" order every ten minutes.
+   */
+  async updateTempMail(id: string, tempMail: VaultItem['tempMail']): Promise<void> {
+    const current = this.#items.find((item) => item.id === id);
+    if (!current) return;
+    if (JSON.stringify(current.tempMail) === JSON.stringify(tempMail)) return;
+    await this.#persist({ ...current, tempMail });
+  }
+
   async deleteItem(id: string): Promise<void> {
     this.#requireHandle();
     await this.#storage.deleteItem(id);

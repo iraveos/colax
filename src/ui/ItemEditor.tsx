@@ -43,13 +43,16 @@ import type { GmailAccount } from '../vault/storage.ts';
 import type { GmailMessage } from './useGmail.ts';
 import { getPlatform } from '../lib/platform.ts';
 import {
+  MOHMAL_MAX_RENEW_MINUTES,
   isEmailLike,
   normaliseReusableEmails,
   pickReusableEmail,
+  tempMailNextRenewLabel,
   tempMailRemainingLabel,
 } from '../lib/temp-mail.ts';
 import {
   BellIcon,
+  ClockIcon,
   CopyIcon,
   DiceIcon,
   EditIcon,
@@ -358,6 +361,8 @@ export function ItemEditor({
   emailSuggestions = [],
   reusableEmails = [],
   onReusableEmailsChange,
+  /** The saved item's current temp inbox, for renewals that happen while editing. */
+  liveTempMail = null,
   gmailAccounts,
   onGmailAccountsChange,
   onCacheMail,
@@ -394,6 +399,7 @@ export function ItemEditor({
   /** Addresses saved for random reuse across new logins. */
   reusableEmails?: string[];
   onReusableEmailsChange?: (next: string[]) => void;
+  liveTempMail?: VaultItem['tempMail'];
   /** Connected mailboxes, shared across the app rather than per-login. */
   gmailAccounts: GmailAccount[];
   onGmailAccountsChange: (next: GmailAccount[]) => void;
@@ -410,7 +416,10 @@ export function ItemEditor({
   /** Which pasted image/video is open full-size, null when none is. */
   const [viewingNote, setViewingNote] = useState<number | null>(null);
   const [tempMailBusy, setTempMailBusy] = useState(false);
+  const [tempRenewBusy, setTempRenewBusy] = useState(false);
   const [savedEmailsOpen, setSavedEmailsOpen] = useState(false);
+  const [, setTempMailClock] = useState(0);
+  const hasTempMail = Boolean(draft.tempMail);
   const [savedDraft, setSavedDraft] = useState('');
   const noteFileInput = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLFormElement>(null);
@@ -454,6 +463,34 @@ export function ItemEditor({
   useEffect(() => {
     panelRef.current?.scrollTo({ top: 0 });
   }, [section]);
+
+  // Auto-renewal updates the saved item while this editor is open. Merge the
+  // newer timestamps into the draft, keeping the user's unsaved interval and
+  // any manual renewal they may have just made.
+  // Refresh "minutes left" and "next renewal" while the panel is open. The
+  // auto-renewal itself is handled in the main process.
+  useEffect(() => {
+    if (!hasTempMail) return;
+    const timer = window.setInterval(() => setTempMailClock((value) => value + 1), 30_000);
+    return () => window.clearInterval(timer);
+  }, [hasTempMail]);
+
+  useEffect(() => {
+    if (!liveTempMail) return;
+    setDraft((current) => {
+      const currentMail = current.tempMail;
+      if (!currentMail || currentMail.address !== liveTempMail.address) return current;
+      if (liveTempMail.lastRenewedAt <= currentMail.lastRenewedAt) return current;
+      return {
+        ...current,
+        tempMail: {
+          ...currentMail,
+          expiresAt: liveTempMail.expiresAt,
+          lastRenewedAt: liveTempMail.lastRenewedAt,
+        },
+      };
+    });
+  }, [liveTempMail]);
 
   const patch = (next: Partial<VaultItem>) => setDraft((current) => ({ ...current, ...next }));
 
@@ -522,6 +559,46 @@ export function ItemEditor({
       );
     } finally {
       setTempMailBusy(false);
+    }
+  }
+
+  function setTempMailAutoRenew(minutes: number): void {
+    const mailbox = draft.tempMail;
+    if (!mailbox) return;
+    const next = Math.max(0, Math.min(MOHMAL_MAX_RENEW_MINUTES, Math.round(minutes)));
+    patch({ tempMail: { ...mailbox, autoRenewMinutes: next } });
+  }
+
+  async function renewTempMailbox(): Promise<void> {
+    const mailbox = draft.tempMail;
+    if (!mailbox) return;
+    const api = getPlatform().tempMail;
+    if (!api?.renew) {
+      onNotify('Temporary Mohmal inboxes need the Colax desktop app.', 'error');
+      return;
+    }
+    setTempRenewBusy(true);
+    try {
+      const result = await api.renew(mailbox.address, mailbox.sessionKey);
+      if (!result.ok) {
+        onNotify(result.error, 'error');
+        return;
+      }
+      patch({
+        tempMail: {
+          ...mailbox,
+          expiresAt: result.expiresAt,
+          lastRenewedAt: result.renewedAt,
+        },
+      });
+      onNotify('Temporary inbox renewed for another 45 minutes');
+    } catch (cause) {
+      onNotify(
+        cause instanceof Error ? cause.message : 'Could not renew the temporary inbox.',
+        'error',
+      );
+    } finally {
+      setTempRenewBusy(false);
     }
   }
 
@@ -899,6 +976,28 @@ export function ItemEditor({
                   })}
                   . The Messages button on this login opens it, and the Inbox tab shows it here.
                 </span>
+                <div className="temp-mail-renew">
+                  <label className="field__label" htmlFor="temp-mail-auto-renew">
+                    Auto-renew every
+                  </label>
+                  <input
+                    id="temp-mail-auto-renew"
+                    className="input temp-mail-renew__input"
+                    type="number"
+                    min={0}
+                    max={MOHMAL_MAX_RENEW_MINUTES}
+                    step={1}
+                    value={tempMail.autoRenewMinutes}
+                    onFocus={(event) => event.currentTarget.select()}
+                    onChange={(event) => setTempMailAutoRenew(Number(event.target.value))}
+                  />
+                  <span className="temp-mail-renew__unit">min</span>
+                  <span className="field__hint">{tempMailNextRenewLabel(tempMail)}</span>
+                </div>
+                <span className="field__hint">
+                  Saved with this login. 0 turns automatic renewal off; choose 1–40 minutes. Mohmal
+                  resets the inbox to 45 minutes each time.
+                </span>
               </div>
               <div className="temp-mail-status__actions">
                 <button
@@ -908,6 +1007,15 @@ export function ItemEditor({
                 >
                   <MailIcon width="13" height="13" />
                   Messages
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm"
+                  disabled={tempRenewBusy}
+                  onClick={() => void renewTempMailbox()}
+                >
+                  {tempRenewBusy ? <span className="spinner" /> : <ClockIcon width="13" height="13" />}
+                  Renew now
                 </button>
                 <button
                   type="button"

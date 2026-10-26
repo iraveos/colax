@@ -275,6 +275,18 @@ const clearHistory = useCallback(() => {
   );
 
   /**
+   * Writes renewal metadata without history or an updatedAt stamp. Automatic
+   * renewal is background maintenance, not a user edit to the login.
+   */
+  const updateTempMail = useCallback(
+    async (id: string, tempMail: VaultItem['tempMail']) => {
+      await service.updateTempMail(id, tempMail);
+      sync();
+    },
+    [service, sync],
+  );
+
+  /**
    * Wipes everything and returns the app to the create screen: the clipboard,
    * the stored ciphertext and header, preferences (tags, channels, folders,
    * alarms, mailboxes, usage counts, appearance — all of it), and the React
@@ -364,6 +376,7 @@ const updatePrefs = useCallback(
     clearHistory,
     resetVault,
     recordUse,
+    updateTempMail,
     updatePrefs,
     updatePrefsWith,
   };

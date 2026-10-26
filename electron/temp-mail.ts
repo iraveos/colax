@@ -15,6 +15,7 @@
 import { BrowserWindow, session } from 'electron';
 import { randomBytes } from 'node:crypto';
 import {
+  MOHMAL_DEFAULT_RENEW_MINUTES,
   MOHMAL_LIFETIME_MS,
   isEmailLike,
   normaliseTempMailbox,
@@ -23,6 +24,12 @@ import {
   type TempMailListResult,
   type TempMailMessage,
   type TempMailReadResult,
+  type TempMailRenewResult,
+  type TempMailSchedule,
+  type TempMailScheduleError,
+  type TempMailScheduleResult,
+  type TempMailRenewUpdate,
+  type TempMailbox,
 } from '../src/lib/temp-mail.ts';
 
 const BASE = 'https://www.mohmal.com';
@@ -173,6 +180,8 @@ export async function createMohmalMailbox(): Promise<TempMailCreateResult> {
         sessionKey,
         createdAt,
         expiresAt: expiryFrom(state.leftSeconds, createdAt),
+        autoRenewMinutes: MOHMAL_DEFAULT_RENEW_MINUTES,
+        lastRenewedAt: createdAt,
       });
       if (!mailbox) throw new Error('Mohmal returned an address Colax could not read.');
       return { ok: true, mailbox };
@@ -227,6 +236,47 @@ export async function listMohmalMessages(
       return {
         ok: false,
         error: cause instanceof Error ? cause.message : 'Could not read the temporary inbox.',
+      };
+    }
+  });
+}
+
+/**
+ * Calls Mohmal's own "Renew" route. `/en/extend` resets the site's validity
+ * timer to the full lifetime and redirects back to the inbox, so the ordinary
+ * page extraction can read the new countdown.
+ */
+export async function renewMohmalMailbox(
+  address: string,
+  sessionKey: string,
+): Promise<TempMailRenewResult> {
+  return enqueue(async () => {
+    const cleanAddress = address.trim().toLowerCase();
+    if (!isEmailLike(cleanAddress) || !sessionKeyIsValid(sessionKey)) {
+      return { ok: false, error: 'That temporary inbox is not valid.' };
+    }
+    const win = windowFor(sessionKey);
+    try {
+      await navigate(win, `${BASE}/en/extend`);
+      await waitForPage(win);
+      const state = await waitForExpression<AddressState>(win, addressExpression);
+      if (state.address !== cleanAddress) {
+        return {
+          ok: false,
+          error: 'This temporary inbox expired or was replaced. Create a new one.',
+        };
+      }
+      const renewedAt = Date.now();
+      return {
+        ok: true,
+        expiresAt: expiryFrom(state.leftSeconds, renewedAt),
+        renewedAt,
+      };
+    } catch (cause) {
+      return {
+        ok: false,
+        error:
+          cause instanceof Error ? cause.message : 'Could not renew the temporary inbox.',
       };
     }
   });
@@ -289,8 +339,197 @@ export async function readMohmalMessage(
   });
 }
 
+/**
+ * Auto-renewal schedules.
+ *
+ * The renderer registers its saved inboxes while the vault is unlocked, but
+ * this scheduler lives in the main process so it keeps running when auto-lock
+ * hides the vault. That is the point of the feature: the default app lock is
+ * five minutes, shorter than the ten-minute renewal interval. Schedules are
+ * dropped when the app quits or the item is removed; they are not persisted,
+ * because the session keys live in the encrypted vault and are re-registered
+ * on the next unlock.
+ */
+interface AutoRenewEntry {
+  itemId: string;
+  mailbox: TempMailbox;
+  timer: NodeJS.Timeout | null;
+  running: boolean;
+  lastError: string;
+  /**
+   * A saved item's expiry only reaches the vault while the renderer is
+   * unlocked. If the app quits while locked after a main-process renewal, the
+   * stored expiry looks older than the live Mohmal session on next launch.
+   * Try one catch-up renewal before treating the vault's timestamp as final.
+   */
+  catchUpAttempted: boolean;
+  /** Backoff after a failed auto-renew, so a 30s sync cannot hammer Mohmal. */
+  nextAttemptAt: number;
+}
+
+const autoRenewals = new Map<string, AutoRenewEntry>();
+const AUTO_RENEW_RETRY_MS = 2 * 60_000;
+
+function clearAutoRenewTimer(entry: AutoRenewEntry): void {
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+}
+
+function scheduleAutoRenew(entry: AutoRenewEntry): void {
+  if (entry.mailbox.autoRenewMinutes <= 0) {
+    clearAutoRenewTimer(entry);
+    return;
+  }
+  const now = Date.now();
+  if (entry.mailbox.expiresAt <= now) {
+    // One catch-up attempt per registration, never an endless retry loop for
+    // a genuinely dead inbox. Leave an already-pending attempt alone: a sync
+    // can arrive inside its one-second delay.
+    if (entry.catchUpAttempted) return;
+    clearAutoRenewTimer(entry);
+    entry.catchUpAttempted = true;
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      void runAutoRenew(entry);
+    }, 1_000);
+    return;
+  }
+  clearAutoRenewTimer(entry);
+  entry.catchUpAttempted = false;
+  const due = entry.mailbox.lastRenewedAt + entry.mailbox.autoRenewMinutes * 60_000;
+  const when = Math.max(due, entry.nextAttemptAt || 0);
+  entry.timer = setTimeout(
+    () => {
+      entry.timer = null;
+      void runAutoRenew(entry);
+    },
+    Math.max(1_000, when - now),
+  );
+}
+
+async function runAutoRenew(entry: AutoRenewEntry): Promise<void> {
+  if (entry.running) return;
+  const key = entry.mailbox.sessionKey;
+  if (autoRenewals.get(key) !== entry) return;
+  if (entry.mailbox.autoRenewMinutes <= 0) return;
+  if (entry.mailbox.expiresAt <= Date.now() && !entry.catchUpAttempted) return;
+  entry.running = true;
+  try {
+    const result = await renewMohmalMailbox(entry.mailbox.address, key);
+    if (autoRenewals.get(key) !== entry) return;
+    if (result.ok) {
+      entry.mailbox = {
+        ...entry.mailbox,
+        expiresAt: result.expiresAt,
+        lastRenewedAt: result.renewedAt,
+      };
+      entry.lastError = '';
+      entry.catchUpAttempted = false;
+      entry.nextAttemptAt = 0;
+    } else {
+      entry.lastError = result.error;
+      entry.nextAttemptAt = Date.now() + AUTO_RENEW_RETRY_MS;
+    }
+  } catch (cause) {
+    if (autoRenewals.get(key) === entry) {
+      entry.lastError =
+        cause instanceof Error ? cause.message : 'Could not renew the temporary inbox.';
+      entry.nextAttemptAt = Date.now() + AUTO_RENEW_RETRY_MS;
+    }
+  } finally {
+    entry.running = false;
+    if (autoRenewals.get(key) !== entry) return;
+    scheduleAutoRenew(entry);
+  }
+}
+
+/**
+ * Replaces the main-process renewal set with the renderer's current saved
+ * inboxes. Returns states the renderer missed while it was locked, plus any
+ * one-shot auto-renew errors to surface in a toast.
+ */
+export function syncTempMailSchedules(schedules: TempMailSchedule[]): TempMailScheduleResult {
+  if (!Array.isArray(schedules)) {
+    return { ok: false, error: 'Bad temporary-mail schedule.' };
+  }
+  const incoming = new Map<string, { itemId: string; mailbox: TempMailbox }>();
+  for (const schedule of schedules) {
+    if (!schedule || typeof schedule.itemId !== 'string' || schedule.itemId === '') continue;
+    const mailbox = normaliseTempMailbox(schedule.mailbox);
+    if (!mailbox) continue;
+    incoming.set(mailbox.sessionKey, { itemId: schedule.itemId, mailbox });
+  }
+
+  for (const [key, entry] of autoRenewals) {
+    if (incoming.has(key)) continue;
+    clearAutoRenewTimer(entry);
+    autoRenewals.delete(key);
+  }
+
+  const updates: TempMailRenewUpdate[] = [];
+  const errors: TempMailScheduleError[] = [];
+  for (const [key, next] of incoming) {
+    let entry = autoRenewals.get(key);
+    if (!entry) {
+      entry = {
+        itemId: next.itemId,
+        mailbox: next.mailbox,
+        timer: null,
+        running: false,
+        lastError: '',
+        catchUpAttempted: false,
+        nextAttemptAt: 0,
+      };
+      autoRenewals.set(key, entry);
+    } else {
+      const current = entry.mailbox;
+      const newer = current.lastRenewedAt > next.mailbox.lastRenewedAt;
+      entry.itemId = next.itemId;
+      // A newer timestamp from the renderer is a manual Renew now that has
+      // already succeeded; clear any stale automatic-renew failure with it.
+      if (next.mailbox.lastRenewedAt > current.lastRenewedAt) {
+        entry.lastError = '';
+        entry.catchUpAttempted = false;
+        entry.nextAttemptAt = 0;
+      }
+      entry.mailbox = {
+        ...next.mailbox,
+        expiresAt: newer ? current.expiresAt : next.mailbox.expiresAt,
+        lastRenewedAt: newer ? current.lastRenewedAt : next.mailbox.lastRenewedAt,
+      };
+    }
+    if (!entry.running) scheduleAutoRenew(entry);
+    if (entry.mailbox.lastRenewedAt > next.mailbox.lastRenewedAt) {
+      updates.push({
+        itemId: entry.itemId,
+        address: entry.mailbox.address,
+        sessionKey: key,
+        expiresAt: entry.mailbox.expiresAt,
+        lastRenewedAt: entry.mailbox.lastRenewedAt,
+      });
+    }
+    if (entry.lastError) {
+      errors.push({
+        itemId: entry.itemId,
+        address: entry.mailbox.address,
+        error: entry.lastError,
+      });
+      entry.lastError = '';
+    }
+  }
+  return { ok: true, updates, errors };
+}
+
+function stopTempMailAutoRenew(): void {
+  for (const entry of autoRenewals.values()) clearAutoRenewTimer(entry);
+  autoRenewals.clear();
+}
+
 /** Called when the app quits; partitions stay on disk so inboxes survive a restart. */
 export function destroyTempMailWindows(): void {
+  stopTempMailAutoRenew();
   for (const win of windows.values()) {
     if (!win.isDestroyed()) win.destroy();
   }

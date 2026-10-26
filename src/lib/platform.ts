@@ -27,6 +27,9 @@ import type {
   TempMailCreateResult,
   TempMailListResult,
   TempMailReadResult,
+  TempMailRenewResult,
+  TempMailSchedule,
+  TempMailScheduleResult,
 } from './temp-mail.ts';
 
 export type { OAuthConnectInput, OAuthConnectResult } from './oauth.ts';
@@ -214,6 +217,14 @@ export interface PlatformAPI {
     create(): Promise<TempMailCreateResult>;
     list(address: string, sessionKey: string): Promise<TempMailListResult>;
     read(address: string, sessionKey: string, id: string): Promise<TempMailReadResult>;
+    /** Resets Mohmal's validity timer, extending the inbox by its lifetime. */
+    renew(address: string, sessionKey: string): Promise<TempMailRenewResult>;
+    /**
+     * Hands the main-process auto-renew scheduler the currently saved inboxes.
+     * Returns renewals the renderer missed while the vault was locked, plus
+     * one-shot auto-renew errors.
+     */
+    syncSchedules(schedules: TempMailSchedule[]): Promise<TempMailScheduleResult>;
   };
   /**
    * Sharing between Colax installs.
