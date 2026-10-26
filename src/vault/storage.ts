@@ -26,6 +26,7 @@ import {
 import { EMPTY_SECURITY, normaliseSecurity, type LoginSecurity } from '../crypto/security.ts';
 import { MAIL_PROVIDERS, providerById, providerForAddress } from '../lib/mail-providers.ts';
 import { normaliseMailOAuth, type MailAuthKind, type MailOAuth } from '../lib/oauth.ts';
+import { normaliseReusableEmails } from '../lib/temp-mail.ts';
 import {
   normaliseOptimizeProfiles,
   readStyle,
@@ -564,9 +565,12 @@ export function historyEventsFor(
    * says so at the point of paste, where the tradeoff is visible.
    */
   const snapshot = (item: VaultItem): VaultItem => {
-    if (!item.attachments?.length) return item;
-    const { attachments: _withoutMedia, ...rest } = item;
-    return { ...rest, attachments: [] };
+    if (!item.attachments?.length && !item.tempMail) return item;
+    // The disposable-inbox address and its hidden-session key are deliberately
+    // left out too: history lives in preferences, which are not encrypted, and
+    // a restored login can create a fresh inbox in seconds.
+    const { attachments: _withoutMedia, tempMail: _withoutTempMail, ...rest } = item;
+    return { ...rest, attachments: [], tempMail: null };
   };
 
   for (const item of after) {
@@ -869,6 +873,11 @@ export interface VaultPreferences {
   // mailbox survives the upgrade without reconnecting.
   gmailAccounts: GmailAccount[];
   /**
+   * Addresses the user wants to reuse for throwaway signups. The editor can
+   * pick one at random; they are just addresses, never credentials.
+   */
+  reusableEmails: string[];
+  /**
    * Messages accumulated from the inbox feeds, per account id.
    *
    * Google's Atom feed only ever returns the ~20 most recent unread messages
@@ -1132,6 +1141,7 @@ export const DEFAULT_PREFERENCES: VaultPreferences = {
   copyToasts: true,
   confirmDeletes: true,
   gmailAccounts: [],
+  reusableEmails: [],
   mailCache: {},
   mailInlineImages: true,
   mailPageSize: 50,
@@ -1394,6 +1404,7 @@ export function normalisePreferences(stored: Partial<VaultPreferences> | undefin
     merged.gmailAccounts = clean;
     delete legacy.gmail;
   }
+  merged.reusableEmails = normaliseReusableEmails(merged.reusableEmails);
   // Message cache: plain objects with string fields only, capped per account
   // so a hand-edited record cannot bloat the stored prefs.
   {

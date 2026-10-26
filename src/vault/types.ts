@@ -2,6 +2,7 @@ import type { SealedBlob } from '../crypto/vault-crypto.ts';
 import { normaliseSecurity, type LoginSecurity } from '../crypto/security.ts';
 import { estimateStrength } from '../crypto/passwords.ts';
 import { normaliseSharedLink, type SharedLink } from '../lib/shares.ts';
+import { normaliseTempMailbox, type TempMailbox } from '../lib/temp-mail.ts';
 
 /** What actually sits in storage: the id in the clear, everything else as ciphertext. */
 export interface StoredItem {
@@ -54,6 +55,14 @@ export interface VaultItem {
    * its editor. Older records default to 'auto', preserving their behavior.
    */
   mailFilter: 'auto' | 'matched' | 'recent';
+
+  /**
+   * A Mohmal disposable inbox created from this login's email field. The
+   * address, its lifetime and the hidden browser-session key ride in the
+   * encrypted item blob; the actual site cookie stays in Electron's partition
+   * storage. Absent on logins without a temporary address.
+   */
+  tempMail: TempMailbox | null;
 
   /**
    * Present when this login was imported from someone else's share. It keeps
@@ -245,6 +254,7 @@ export function emptyItem(id: string, now: number = Date.now()): VaultItem {
     // the editor's Inbox section, next to the control that connected it.
     showMail: false,
     mailFilter: 'auto',
+    tempMail: null,
     shareLink: null,
     tags: [],
     attachments: [],
@@ -286,6 +296,7 @@ export function normaliseItem(raw: Partial<VaultItem> & { id: string }, now: num
     // a choice. Only *new* logins start switched off (see emptyItem).
     showMail: typeof raw.showMail === 'boolean' ? raw.showMail : true,
     mailFilter: raw.mailFilter === 'matched' || raw.mailFilter === 'recent' ? raw.mailFilter : 'auto',
+    tempMail: normaliseTempMailbox(raw.tempMail),
     accentHue: typeof raw.accentHue === 'number' ? raw.accentHue : null,
     reminderDays:
       typeof raw.reminderDays === 'number' && Number.isFinite(raw.reminderDays)

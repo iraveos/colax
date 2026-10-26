@@ -64,6 +64,7 @@ import { Alert, Modal, Toasts } from './primitives.tsx';
 import { BulkSecurityDialog, hasSecurityFactor, withoutSecurityFactor } from './BulkSecurityDialog.tsx';
 import { AnimatedListView, BasicView, GridView, ViewEmptyState, type ViewActions } from './views.tsx';
 import { LoginMessages } from './LoginMessages.tsx';
+import { TempMailMessages } from './TempMailMessages.tsx';
 import { MailboxWindow } from './MailboxWindow.tsx';
 import { MailCenter } from './MailCenter.tsx';
 import {
@@ -665,6 +666,8 @@ export function App() {
   const [mailboxFor, setMailboxFor] = useState<GmailAccount | null>(null);
   /** A login whose messages were opened from a dock slot. */
   const [messagesFor, setMessagesFor] = useState<VaultItem | null>(null);
+  /** A login with its own Mohmal inbox, shown in a message window. */
+  const [tempMessagesFor, setTempMessagesFor] = useState<VaultItem | null>(null);
   /** null = closed; a channel id edits that one; 'new' creates one. */
   const [editingChannel, setEditingChannel] = useState<string | 'new' | null>(null);
   /** null = closed; a folder id edits that one; 'new' creates one. */
@@ -2793,6 +2796,7 @@ const visible = useMemo(() => {
     onDelete: requestDelete,
     onToggleFavorite: (item) => void toggleFavorite(item),
     onToggleAttention: (item) => void toggleAttention(item),
+    onOpenTempMail: (item) => setTempMessagesFor(item),
     // Fresh inbox reads join the persistent per-account cache, so message
     // lists keep reaching further back than Google's ~20-per-read feed.
     onCacheMail: (accountId, messages) => {
@@ -3387,7 +3391,8 @@ label: 'Settings',
             } else if (action === 'edit') {
               requestEdit(item);
             } else if (action === 'messages') {
-              setMessagesFor(item);
+              if (item.tempMail) setTempMessagesFor(item);
+              else setMessagesFor(item);
             } else {
               const line = [item.username.trim(), item.password].filter(Boolean).join(' ');
               if (line) void copy(line, 'Login');
@@ -4876,6 +4881,26 @@ onCreate={vault.create}
         ) : null;
       })()}
 
+      {(() => {
+        const liveItem = tempMessagesFor
+          ? vault.items.find((entry) => entry.id === tempMessagesFor.id)
+          : null;
+        const mailbox = liveItem?.tempMail ?? null;
+        return liveItem && mailbox ? (
+          <Modal
+            title={`Messages · ${liveItem.title || liveItem.username || 'Login'}`}
+            onClose={() => setTempMessagesFor(null)}
+            wide
+          >
+            <TempMailMessages
+              mailbox={mailbox}
+              onNotify={notify}
+              onOpenExternal={(url) => getPlatform().openExternal(url)}
+            />
+          </Modal>
+        ) : null;
+      })()}
+
       {editingChannel ? (
         <ChannelEditor
           // Remount per channel so the draft always matches what is being edited.
@@ -4928,6 +4953,8 @@ onCreate={vault.create}
           item={editing === 'new' ? null : editing}
           tags={prefs.tags}
           emailSuggestions={emailSuggestions}
+          reusableEmails={prefs.reusableEmails}
+          onReusableEmailsChange={(reusableEmails) => void vault.updatePrefs({ reusableEmails })}
           gmailAccounts={prefs.gmailAccounts}
           onGmailAccountsChange={(gmailAccounts) => void vault.updatePrefs({ gmailAccounts })}
           onCacheMail={viewActions.onCacheMail}

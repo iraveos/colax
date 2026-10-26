@@ -23,6 +23,11 @@ import type {
   ShareSyncResult,
   ShareSyncTarget,
 } from './shares.ts';
+import type {
+  TempMailCreateResult,
+  TempMailListResult,
+  TempMailReadResult,
+} from './temp-mail.ts';
 
 export type { OAuthConnectInput, OAuthConnectResult } from './oauth.ts';
 
@@ -199,6 +204,16 @@ export interface PlatformAPI {
      * The PKCE exchange happens entirely in the main process.
      */
     connect(input: OAuthConnectInput): Promise<OAuthConnectResult>;
+  };
+  /**
+   * Mohmal disposable inboxes. Absent on web: the service needs a real browser
+   * session in the main process, and Colax never sends those requests from a
+   * page with its vault open.
+   */
+  tempMail?: {
+    create(): Promise<TempMailCreateResult>;
+    list(address: string, sessionKey: string): Promise<TempMailListResult>;
+    read(address: string, sessionKey: string, id: string): Promise<TempMailReadResult>;
   };
   /**
    * Sharing between Colax installs.

@@ -137,6 +137,11 @@ interface changes.
 - Password generator (random or passphrase) with unbiased character selection, its primary
   **Use this password** action kept above the options, and defaults exposed in Settings
 - New-login email field suggests addresses already used in the vault and connected mailboxes
+- **Mohmal temporary addresses** — one click creates a disposable inbox, fills it into the
+  login, and keeps its messages behind a **Messages** button on the card. The inbox can be read
+  in the editor or in a pop-up message window; it never exposes the Mohmal session to the page
+- **Saved emails** — save addresses you reuse for signups, then let **Random saved** pick one
+  when creating the next login; the list is managed from the same email row
 - Password strength meter with an offline-attack crack-time estimate
 - Reused-password and stale-password detection under **Needs attention**, with an optional
   warning before you open a site whose password is reused
@@ -288,6 +293,9 @@ choose **Manual only**, in **Settings → Sharing → Linked copies**.
   metadata such as code/PIN/token hashes.
 - **Cloudflare tunnel helper:** `%APPDATA%\colax\share-tunnel\cloudflared.exe`, downloaded on
   first Internet sharing use.
+- **Mohmal temporary-inbox sessions:** disposable site cookies in Electron's
+  `%APPDATA%\colax\Partitions\colax-temp-*` folders. The address and expiry are in the encrypted
+  login; the cookie is not copied into the vault or a backup.
 - **Browser build:** the browser profile for that site/origin, not the Electron folder.
 - **Backups:** wherever you chose to save the exported file. Colax does not upload a copy to a
   central server.
@@ -306,6 +314,10 @@ choose **Manual only**, in **Settings → Sharing → Linked copies**.
   before storage, so a 4 MB phone photo typically lands around 10–40 KB. The size caps
   (2 MB per login, 8 MB for the app background) therefore apply to the compressed result.
 - Clearing site data in the browser deletes the vault.
+- **Temporary Mohmal inboxes need the desktop app and a live connection.** Mohmal controls the
+  lifetime (about 45 minutes), and the hidden browser session belongs to this installation, so a
+  backup restored on another machine can show the saved address but will not reopen that inbox.
+  The app never sends Mohmal cookies through the share server.
 - The clipboard clear is best-effort; browsers gate clipboard access behind permissions.
 - The suggested vault password is 7 words from a 150-word list plus 4 digits, which the
   strength meter scores at roughly 60 bits. That is decent, not bulletproof.

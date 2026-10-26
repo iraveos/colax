@@ -24,6 +24,12 @@ import {
 import { redeemShare, syncLinkedShares } from '../src/lib/share-client.ts';
 import { closeMailConnections, fetchFullMail, listInboxMail } from './mail-imap.ts';
 import { connectOAuth } from './oauth.ts';
+import {
+  createMohmalMailbox,
+  destroyTempMailWindows,
+  listMohmalMessages,
+  readMohmalMessage,
+} from './temp-mail.ts';
 import { ShareServer } from './share-server.ts';
 import { ShareTunnel, type ShareTunnelStatus } from './share-tunnel.ts';
 // Inlined as a data URL by esbuild (see scripts/electron-build.mjs), so the
@@ -411,6 +417,9 @@ function createWindow(): BrowserWindow {
   });
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
+    // Hidden temp-mail browsers count as windows; leaving them behind would
+    // keep the app alive after its real window closed.
+    destroyTempMailWindows();
     // The renderer is the only copy of the unlocked snapshot. Never leave the
     // listener or its public tunnel up serving the last one after that
     // document is gone.
@@ -681,6 +690,22 @@ void app.whenReady().then(() => {
       };
     }
   });
+  ipcMain.handle('colax:temp-mail-create', () => createMohmalMailbox());
+  ipcMain.handle('colax:temp-mail-list', (_event, address: unknown, sessionKey: unknown) =>
+    listMohmalMessages(
+      typeof address === 'string' ? address : '',
+      typeof sessionKey === 'string' ? sessionKey : '',
+    ),
+  );
+  ipcMain.handle(
+    'colax:temp-mail-read',
+    (_event, address: unknown, sessionKey: unknown, id: unknown) =>
+      readMohmalMessage(
+        typeof address === 'string' ? address : '',
+        typeof sessionKey === 'string' ? sessionKey : '',
+        typeof id === 'string' ? id : '',
+      ),
+  );
   ipcMain.handle('colax:mail-list', async (_event, input: unknown) => {
     try {
       if (!input || typeof input !== 'object') return { ok: false, error: 'Bad request.' };
@@ -855,6 +880,7 @@ app.on('window-all-closed', () => {
 // Mailbox connections are persistent now: log them out on quit instead of
 // leaving Gmail sessions dangling until they time out server-side.
 app.on('before-quit', () => {
+  destroyTempMailWindows();
   void closeMailConnections();
   // The share server must stop before the window's credentials would be lost.
   // It holds only the in-memory snapshot, so this is the whole cleanup.

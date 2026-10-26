@@ -306,11 +306,15 @@ export function mailboxUsable(account: MailboxLike): boolean {
  * expander uses to decide whose mail it is reading.
  */
 export function loginShowsMail(
-  item: { username: string; showMail: boolean; mailFilter?: string },
+  item: { username: string; showMail: boolean; mailFilter?: string; tempMail?: unknown },
   accounts: MailboxLike[],
   channelAllowsMail = true,
 ): boolean {
   if (!channelAllowsMail) return false;
+  // A login with its own disposable inbox does not depend on any global
+  // mailbox connection, so it keeps its Messages button even before the user
+  // connects an IMAP account.
+  if (item.tempMail && item.showMail !== false) return true;
   const usable = accounts.filter(mailboxUsable);
   if (usable.length === 0) return false;
   // Linked: shown unless switched off by hand. Not linked: hidden unless
@@ -332,14 +336,18 @@ export function loginShowsMail(
  * owns the writes and the one-time stamp. A login switched back on by hand
  * afterwards stays on, because the stamp stops this from ever running twice.
  */
-export function planMailLinkedOnly<TItem extends { id: string; username: string; showMail: boolean }>(
-  items: TItem[],
-  accounts: MailboxLike[],
-): string[] {
+export function planMailLinkedOnly<
+  TItem extends { id: string; username: string; showMail: boolean; tempMail?: unknown },
+>(items: TItem[], accounts: MailboxLike[]): string[] {
   const usable = accounts.filter(mailboxUsable);
   if (usable.length === 0) return [];
   return items
-    .filter((item) => item.showMail !== false && mailboxOwnedBy(item.username, usable) === null)
+    .filter(
+      (item) =>
+        !item.tempMail &&
+        item.showMail !== false &&
+        mailboxOwnedBy(item.username, usable) === null,
+    )
     .map((item) => item.id);
 }
 

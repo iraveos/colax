@@ -38,8 +38,16 @@ import { Alert, Modal, StrengthMeter, Toggle } from './primitives.tsx';
 import { formatLoginCompact } from './login-format.ts';
 import { markClipboardSelfWritten } from './useClipboardWatcher.ts';
 import { InboxSection } from './InboxSection.tsx';
+import { TempMailMessages } from './TempMailMessages.tsx';
 import type { GmailAccount } from '../vault/storage.ts';
 import type { GmailMessage } from './useGmail.ts';
+import { getPlatform } from '../lib/platform.ts';
+import {
+  isEmailLike,
+  normaliseReusableEmails,
+  pickReusableEmail,
+  tempMailRemainingLabel,
+} from '../lib/temp-mail.ts';
 import {
   BellIcon,
   CopyIcon,
@@ -348,6 +356,8 @@ export function ItemEditor({
   onNotify,
   onCommitTags,
   emailSuggestions = [],
+  reusableEmails = [],
+  onReusableEmailsChange,
   gmailAccounts,
   onGmailAccountsChange,
   onCacheMail,
@@ -376,11 +386,14 @@ export function ItemEditor({
    * handing the secret over.
    */
   verified?: boolean;
-  onNotify: (message: string) => void;
+  onNotify: (message: string, tone?: Toast['tone']) => void;
   /** Persists any tags the user created while editing. */
   onCommitTags: (tags: Tag[]) => void;
   /** Email addresses already used in this vault, offered as suggestions. */
   emailSuggestions?: string[];
+  /** Addresses saved for random reuse across new logins. */
+  reusableEmails?: string[];
+  onReusableEmailsChange?: (next: string[]) => void;
   /** Connected mailboxes, shared across the app rather than per-login. */
   gmailAccounts: GmailAccount[];
   onGmailAccountsChange: (next: GmailAccount[]) => void;
@@ -396,6 +409,10 @@ export function ItemEditor({
   const [section, setSection] = useState<string>('identity');
   /** Which pasted image/video is open full-size, null when none is. */
   const [viewingNote, setViewingNote] = useState<number | null>(null);
+  const [tempMailBusy, setTempMailBusy] = useState(false);
+  const [tempInboxOpen, setTempInboxOpen] = useState(false);
+  const [savedEmailsOpen, setSavedEmailsOpen] = useState(false);
+  const [savedDraft, setSavedDraft] = useState('');
   const noteFileInput = useRef<HTMLInputElement>(null);
 
   /** True when this login has a factor that has not been cleared for the form. */
@@ -406,11 +423,19 @@ export function ItemEditor({
   const linked = item?.shareLink && item.shareLink.endedAt === null ? item.shareLink : null;
   const notesShared = Boolean(linked?.fields.notes);
   const attachmentsShared = Boolean(linked?.fields.attachments);
+  const savedEmails = normaliseReusableEmails(reusableEmails);
+  const currentEmail = (draft.username ?? '').trim();
+  const currentIsSaved =
+    isEmailLike(currentEmail) &&
+    savedEmails.some((address) => address.toLowerCase() === currentEmail.toLowerCase());
+  const tempMail = draft.tempMail ?? null;
   const emailChoices = [
     ...new Set(
-      [...emailSuggestions, ...gmailAccounts.map((account) => account.address.trim())].filter(
-        (address) => address.includes('@'),
-      ),
+      [
+        ...emailSuggestions,
+        ...gmailAccounts.map((account) => account.address.trim()),
+        ...savedEmails,
+      ].filter((address) => address.includes('@')),
     ),
   ].slice(0, 300);
 
@@ -424,6 +449,81 @@ export function ItemEditor({
   }, [item]);
 
   const patch = (next: Partial<VaultItem>) => setDraft((current) => ({ ...current, ...next }));
+
+  function updateSavedEmails(next: string[]): void {
+    onReusableEmailsChange?.(normaliseReusableEmails(next));
+  }
+
+  function addSavedEmail(address = currentEmail): void {
+    if (linked) return;
+    if (!isEmailLike(address)) {
+      onNotify('Enter a valid email address first.', 'error');
+      return;
+    }
+    if (savedEmails.some((entry) => entry.toLowerCase() === address.trim().toLowerCase())) {
+      onNotify('That email is already saved.');
+      return;
+    }
+    updateSavedEmails([...savedEmails, address]);
+    onNotify(`Saved ${address.trim()} for reuse`);
+  }
+
+  function removeSavedEmail(address: string): void {
+    updateSavedEmails(savedEmails.filter((entry) => entry.toLowerCase() !== address.toLowerCase()));
+  }
+
+  function useRandomSavedEmail(): void {
+    if (linked) return;
+    const pick = pickReusableEmail(savedEmails, currentEmail);
+    if (!pick) {
+      setSavedEmailsOpen(true);
+      onNotify('Save an email first, then Colax can pick one at random.');
+      return;
+    }
+    patch({ username: pick });
+    onNotify(`Using saved email ${pick}`);
+  }
+
+  async function createTempMailbox(): Promise<void> {
+    if (linked) return;
+    if (tempMail) {
+      onNotify('Remove the current temporary inbox before creating another.', 'error');
+      return;
+    }
+    const api = getPlatform().tempMail;
+    if (!api) {
+      onNotify('Temporary Mohmal inboxes need the Colax desktop app.', 'error');
+      return;
+    }
+    setTempMailBusy(true);
+    try {
+      const result = await api.create();
+      if (!result.ok) {
+        onNotify(result.error, 'error');
+        return;
+      }
+      patch({
+        username: result.mailbox.address,
+        tempMail: result.mailbox,
+        showMail: true,
+      });
+      setTempInboxOpen(true);
+      onNotify(`Temporary inbox ready: ${result.mailbox.address}`);
+    } catch (cause) {
+      onNotify(
+        cause instanceof Error ? cause.message : 'Could not create a temporary inbox.',
+        'error',
+      );
+    } finally {
+      setTempMailBusy(false);
+    }
+  }
+
+  function removeTempMailbox(): void {
+    patch({ tempMail: null });
+    setTempInboxOpen(false);
+    onNotify('Temporary inbox removed from this login. Messages stay at Mohmal until they expire.');
+  }
 
   const attachments = draft.attachments ?? [];
   const mediaAttachments = attachments
@@ -631,6 +731,196 @@ export function ItemEditor({
               </span>
             </>
           ) : null}
+          <div className="editor-mail-tools">
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              disabled={Boolean(linked) || tempMailBusy || Boolean(tempMail)}
+              title={
+                tempMail
+                  ? 'Remove the current temporary inbox first'
+                  : 'Create a Mohmal temporary address and fill it in'
+              }
+              onClick={() => void createTempMailbox()}
+            >
+              {tempMailBusy ? <span className="spinner" /> : <MailIcon width="13" height="13" />}
+              Temp mail
+            </button>
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              disabled={Boolean(linked) || savedEmails.length === 0}
+              title={
+                savedEmails.length === 0
+                  ? 'Save some addresses first'
+                  : 'Pick one of your saved addresses at random'
+              }
+              onClick={useRandomSavedEmail}
+            >
+              <DiceIcon width="13" height="13" />
+              Random saved
+            </button>
+            <button
+              type="button"
+              className="btn btn--quiet btn--sm"
+              disabled={Boolean(linked)}
+              onClick={() => setSavedEmailsOpen(true)}
+            >
+              Saved emails{savedEmails.length > 0 ? ` (${savedEmails.length})` : ''}
+            </button>
+            {!currentIsSaved && isEmailLike(currentEmail) && !linked ? (
+              <button
+                type="button"
+                className="btn btn--quiet btn--sm"
+                onClick={() => addSavedEmail()}
+              >
+                Save email
+              </button>
+            ) : null}
+            {currentIsSaved ? <span className="chip chip--muted">Saved</span> : null}
+          </div>
+
+          {savedEmailsOpen ? (
+            <div className="editor-embed saved-emails">
+              <div className="saved-emails__head">
+                <span className="field__label">Saved emails</span>
+                <button
+                  type="button"
+                  className="btn btn--icon btn--sm"
+                  aria-label="Close saved emails"
+                  onClick={() => setSavedEmailsOpen(false)}
+                >
+                  <XIcon width="13" height="13" />
+                </button>
+              </div>
+              <p className="field__hint">
+                These are offered for random reuse in any new login. They are addresses, not
+                credentials. A temporary Mohmal address keeps its inbox only on the login where
+                it was created.
+              </p>
+              <div className="field-row">
+                <input
+                  className="input"
+                  value={savedDraft}
+                  onChange={(event) => setSavedDraft(event.target.value)}
+                  placeholder="another@example.com"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-label="Email address to save"
+                  list={emailChoices.length > 0 ? 'saved-email-suggestions' : undefined}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter') return;
+                    event.preventDefault();
+                    addSavedEmail(savedDraft);
+                    setSavedDraft('');
+                  }}
+                />
+                {emailChoices.length > 0 ? (
+                  <datalist id="saved-email-suggestions">
+                    {emailChoices.map((address) => (
+                      <option key={address} value={address} />
+                    ))}
+                  </datalist>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => {
+                    addSavedEmail(savedDraft);
+                    setSavedDraft('');
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+              {isEmailLike(currentEmail) && !currentIsSaved ? (
+                <button
+                  type="button"
+                  className="btn btn--quiet btn--sm"
+                  onClick={() => addSavedEmail(currentEmail)}
+                >
+                  Add the email above
+                </button>
+              ) : null}
+              {savedEmails.length > 0 ? (
+                <>
+                  <ul className="saved-emails__list">
+                    {savedEmails.map((address) => (
+                      <li key={address}>
+                        <span title={address}>{address}</span>
+                        <button
+                          type="button"
+                          className="btn btn--icon btn--sm"
+                          aria-label={`Remove ${address}`}
+                          onClick={() => removeSavedEmail(address)}
+                        >
+                          <TrashIcon width="13" height="13" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    className="btn btn--secondary btn--sm"
+                    onClick={() => {
+                      useRandomSavedEmail();
+                      setSavedEmailsOpen(false);
+                    }}
+                  >
+                    <DiceIcon width="13" height="13" />
+                    Use a random saved email
+                  </button>
+                </>
+              ) : (
+                <p className="field__hint">No saved addresses yet.</p>
+              )}
+            </div>
+          ) : null}
+
+          {tempMail ? (
+            <div className="temp-mail-status">
+              <div className="temp-mail-status__main">
+                <span className="field__label">Mohmal temporary inbox</span>
+                <code className="temp-mail-status__address">{tempMail.address}</code>
+                <span className="field__hint">
+                  {tempMailRemainingLabel(tempMail)} · expires{' '}
+                  {new Date(tempMail.expiresAt).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                  . The Messages button on this login opens it.
+                </span>
+              </div>
+              <div className="temp-mail-status__actions">
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm"
+                  aria-expanded={tempInboxOpen}
+                  onClick={() => setTempInboxOpen((open) => !open)}
+                >
+                  <MailIcon width="13" height="13" />
+                  {tempInboxOpen ? 'Hide messages' : 'Messages'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={removeTempMailbox}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {tempInboxOpen && tempMail ? (
+            <div className="editor-embed temp-mail-embed">
+              <TempMailMessages
+                mailbox={tempMail}
+                onNotify={onNotify}
+                onOpenExternal={(url) => getPlatform().openExternal(url)}
+              />
+            </div>
+          ) : null}
         </div>
 
         <div className="field">
@@ -664,9 +954,11 @@ export function ItemEditor({
             >
               {passwordLocked ? <LockIcon /> : revealed ? <EyeOffIcon /> : <EyeIcon />}
             </button>
+          </div>
+          <div className="editor-actions">
             <button
               type="button"
-              className="btn btn--secondary"
+              className="btn btn--secondary btn--sm"
               onClick={() => setShowGenerator((g) => !g)}
               disabled={Boolean(linked)}
             >
@@ -677,7 +969,7 @@ export function ItemEditor({
                 Colax pastes it straight back into a login. */}
             <button
               type="button"
-              className="btn btn--secondary"
+              className="btn btn--secondary btn--sm"
               disabled={Boolean(linked) || (!draft.username && !draft.password)}
               title="Copy a short share block for this login"
               onClick={() => {
@@ -808,6 +1100,13 @@ export function ItemEditor({
 
     inbox: (
       <>
+        {draft.tempMail ? (
+          <Alert tone="info">
+            This login has a Mohmal temporary inbox. The Messages button in Credentials, and on
+            the login card outside the editor, opens it. The IMAP mailbox controls below apply
+            only if you connect a separate mailbox as well.
+          </Alert>
+        ) : null}
         <div className="field">
           <Toggle
             label="Show messages on this login"

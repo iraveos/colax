@@ -59,6 +59,8 @@ export interface ViewActions {
   onItemMenu: (event: React.MouseEvent, item: VaultItem) => void;
   /** Persists one account's fresh inbox read into the message cache. */
   onCacheMail?: (accountId: string, messages: GmailMessage[]) => void;
+  /** Opens a login's own disposable inbox in a message window. */
+  onOpenTempMail?: (item: VaultItem) => void;
   /** Opens a URL in the real browser. Message links use this, never window.open. */
   onOpenExternal?: (url: string) => void;
 /** Global tag catalogue, for the chips on each card. */
@@ -121,6 +123,35 @@ interface CommonViewProps extends ViewActions {
  */
 function mailFor(item: VaultItem, scope: CommonViewProps['mailScope'], accounts: CommonViewProps['gmailAccounts']): boolean {
   return loginShowsMail(item, accounts ?? [], scope?.show !== false);
+}
+
+/**
+ * A login's own Mohmal inbox. Unlike the IMAP expander this opens a window:
+ * the disposable inbox has its own refresh cycle and does not share the
+ * mailbox cache, so expanding it inside a card would put unrelated network
+ * work behind every card render.
+ */
+function TempMailButton({
+  item,
+  onOpen,
+}: {
+  item: VaultItem;
+  onOpen?: (item: VaultItem) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="login-messages__toggle"
+      title={item.tempMail ? `Temporary inbox: ${item.tempMail.address}` : 'Temporary inbox'}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen?.(item);
+      }}
+    >
+      <InboxIcon width="12" height="12" />
+      Messages
+    </button>
+  );
 }
 
 /**
@@ -658,6 +689,7 @@ export function AnimatedListView({
   mailCache,
   mailInlineImages,
   onCacheMail,
+  onOpenTempMail,
   onOpenExternal,
   onCopy,
   onEdit,
@@ -899,7 +931,11 @@ export function AnimatedListView({
                 the card menu instead of competing as icons. */}
             <div className="card-row__actions-row">
               {mailFor(item, mailScope, gmailAccounts) ? (
+                item.tempMail ? (
+                  <TempMailButton item={item} onOpen={onOpenTempMail} />
+                ) : (
                   <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                )
               ) : null}
               {/* The labelled Copy button that used to live here is gone. It
                   only rendered for a login with a password, so half the cards
@@ -948,6 +984,7 @@ showTagChips,
   mailCache,
   mailInlineImages,
   onCacheMail,
+  onOpenTempMail,
   onOpenExternal,
   onEdit,
   onSelect,
@@ -1055,7 +1092,11 @@ style={{ ...itemStyle(item), ...itemBackgroundStyle(item) }}
 
                   <div className="item__actions">
                     {mailFor(item, mailScope, gmailAccounts) ? (
-                      <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                      item.tempMail ? (
+                        <TempMailButton item={item} onOpen={onOpenTempMail} />
+                      ) : (
+                        <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                      )
                     ) : null}
                     {/* No labelled Copy button: see the note in Flow above. */}
                     {!gone('card-edit') ? (
@@ -1157,6 +1198,7 @@ export function GridView({
   mailCache,
   mailInlineImages,
   onCacheMail,
+  onOpenTempMail,
   onOpenExternal,
   onEdit,
   onCopy,
@@ -1337,7 +1379,11 @@ export function GridView({
 
               <div className="grid-cell__actions">
                 {mailFor(item, mailScope, gmailAccounts) ? (
-                <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                  item.tempMail ? (
+                    <TempMailButton item={item} onOpen={onOpenTempMail} />
+                  ) : (
+                    <LoginMessages item={item} accounts={gmailAccounts ?? []} accountScope={mailScope?.account ?? 'all'} cache={mailCache} maskEmails={maskEmails} inlineImages={mailInlineImages} onCacheMessages={onCacheMail} onOpenExternal={onOpenExternal} />
+                  )
                 ) : null}
                 {!gone('card-edit') ? (
                   <button

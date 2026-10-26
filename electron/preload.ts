@@ -22,6 +22,11 @@ import type {
   ShareSyncResult,
   ShareSyncTarget,
 } from '../src/lib/shares.ts';
+import type {
+  TempMailCreateResult,
+  TempMailListResult,
+  TempMailReadResult,
+} from '../src/lib/temp-mail.ts';
 
 declare const COLAX_APP_VERSION: string;
 
@@ -46,6 +51,23 @@ const platform: PlatformAPI = {
   oauth: {
     connect: (input: OAuthConnectInput): Promise<OAuthConnectResult> =>
       ipcRenderer.invoke('colax:oauth-connect', input) as Promise<OAuthConnectResult>,
+  },
+  tempMail: {
+    create: () =>
+      ipcRenderer.invoke('colax:temp-mail-create') as Promise<TempMailCreateResult>,
+    list: (address: string, sessionKey: string) =>
+      ipcRenderer.invoke(
+        'colax:temp-mail-list',
+        address,
+        sessionKey,
+      ) as Promise<TempMailListResult>,
+    read: (address: string, sessionKey: string, id: string) =>
+      ipcRenderer.invoke(
+        'colax:temp-mail-read',
+        address,
+        sessionKey,
+        id,
+      ) as Promise<TempMailReadResult>,
   },
   runtime: {
     setSpellcheck: (enabled: boolean) => {
