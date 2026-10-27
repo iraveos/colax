@@ -347,6 +347,40 @@ const SECTIONS = [
   { id: 'flags', label: 'Flags', hint: 'Sorting, favourites and warnings.', Icon: FlagIcon },
 ] as const;
 
+function EmailUsageRail({
+  names,
+  empty,
+  limit = 4,
+}: {
+  names: string[];
+  empty: string;
+  limit?: number;
+}) {
+  if (names.length === 0) return <span className="email-usage__empty">{empty}</span>;
+  const visible = names.slice(0, limit);
+  return (
+    <ol className="email-usage__rail" aria-label="Logins using this email">
+      {visible.map((name) => (
+        <li
+          className="email-usage__item"
+          key={name}
+          style={{ '--usage-h': String(hueFor(name)) } as React.CSSProperties}
+        >
+          <span className="email-usage__dot" aria-hidden="true" />
+          <span className="email-usage__name" title={name}>
+            {name}
+          </span>
+        </li>
+      ))}
+      {names.length > visible.length ? (
+        <li className="email-usage__item email-usage__item--more" title={names.join(', ')}>
+          +{names.length - visible.length} more
+        </li>
+      ) : null}
+    </ol>
+  );
+}
+
 export function ItemEditor({
   item,
   tags: tagCatalogue,
@@ -359,6 +393,7 @@ export function ItemEditor({
   onNotify,
   onCommitTags,
   emailSuggestions = [],
+  emailUsage = {},
   reusableEmails = [],
   onReusableEmailsChange,
   /** The saved item's current temp inbox, for renewals that happen while editing. */
@@ -398,6 +433,8 @@ export function ItemEditor({
   onCommitTags: (tags: Tag[]) => void;
   /** Email addresses already used in this vault, offered as suggestions. */
   emailSuggestions?: string[];
+  /** Address -> login titles already using it, keyed lower-case. */
+  emailUsage?: Record<string, string[]>;
   /** Addresses saved for random reuse across new logins. */
   reusableEmails?: string[];
   onReusableEmailsChange?: (next: string[]) => void;
@@ -441,6 +478,9 @@ export function ItemEditor({
   const currentIsSaved =
     isEmailLike(currentEmail) &&
     savedEmails.some((address) => address.toLowerCase() === currentEmail.toLowerCase());
+  const usageFor = (address: string): string[] =>
+    isEmailLike(address) ? (emailUsage[address.trim().toLowerCase()] ?? []) : [];
+  const currentUsage = usageFor(currentEmail);
   const tempMail = draft.tempMail ?? null;
   const tempMailIsSaved = Boolean(
     liveTempMail && tempMail && liveTempMail.sessionKey === tempMail.sessionKey,
@@ -747,8 +787,33 @@ export function ItemEditor({
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [viewingNote, draft.attachments]);
 
+  /**
+   * Enter is the primary action everywhere except places that already use it:
+   * notes (plain Enter is a newline; Ctrl/Cmd+Enter saves), the saved-email
+   * builder and the tag builder. Those handlers set defaultPrevented first.
+   */
+  function handlePanelKeyDown(event: React.KeyboardEvent<HTMLFormElement>): void {
+    if (event.key !== 'Enter' || event.defaultPrevented || event.nativeEvent.isComposing) return;
+    const target = event.target as HTMLElement;
+    if (!(target instanceof HTMLInputElement) && !target.isContentEditable) return;
+    // These two builders already own Enter for adding their own row.
+    if (target.closest('.saved-emails, .tag-picker')) return;
+    if (event.altKey) return;
+    if (target instanceof HTMLInputElement) {
+      if (['file', 'checkbox', 'radio', 'range', 'color', 'button', 'submit', 'reset'].includes(target.type)) {
+        return;
+      }
+    } else if (!event.ctrlKey && !event.metaKey) {
+      // Contenteditable notes own plain Enter; Ctrl/Cmd+Enter is the save.
+      return;
+    }
+    event.preventDefault();
+    panelRef.current?.requestSubmit();
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (saving) return;
     setSaving(true);
     try {
       await tempPersistChain.current;
@@ -838,6 +903,22 @@ export function ItemEditor({
                 Start typing to reuse an email already in this vault.
               </span>
             </>
+          ) : null}
+          {isEmailLike(currentEmail) ? (
+            <div className="email-usage" data-empty={currentUsage.length === 0 || undefined}>
+              <div className="email-usage__head">
+                <span className="email-usage__label">
+                  <span className="email-usage__signal" aria-hidden="true" />
+                  {currentUsage.length > 0
+                    ? `Used by ${currentUsage.length} login${currentUsage.length === 1 ? '' : 's'}`
+                    : 'No saved login uses this email yet'}
+                </span>
+              </div>
+              <EmailUsageRail
+                names={currentUsage}
+                empty="Save this login and the address will be linked here."
+              />
+            </div>
           ) : null}
           <div className="editor-mail-tools">
             <button
@@ -953,19 +1034,60 @@ export function ItemEditor({
               {savedEmails.length > 0 ? (
                 <>
                   <ul className="saved-emails__list">
-                    {savedEmails.map((address) => (
-                      <li key={address}>
-                        <span title={address}>{address}</span>
-                        <button
-                          type="button"
-                          className="btn btn--icon btn--sm"
-                          aria-label={`Remove ${address}`}
-                          onClick={() => removeSavedEmail(address)}
-                        >
-                          <TrashIcon width="13" height="13" />
-                        </button>
-                      </li>
-                    ))}
+                    {savedEmails.map((address) => {
+                      const usage = usageFor(address);
+                      return (
+                        <li key={address}>
+                          <button
+                            type="button"
+                            className="saved-emails__pick"
+                            title={`Use ${address}`}
+                            onClick={() => {
+                              patch({ username: address });
+                              setSavedEmailsOpen(false);
+                            }}
+                          >
+                            <span className="saved-emails__address" title={address}>
+                              {address}
+                            </span>
+                            <span className="saved-emails__usage" title={usage.join(', ')}>
+                              {usage.length > 0 ? (
+                                <>
+                                  <span className="saved-emails__usage-label">Used by</span>
+                                  {usage.slice(0, 2).map((name) => (
+                                    <span className="saved-emails__usage-item" key={name}>
+                                      <span
+                                        className="saved-emails__usage-dot"
+                                        aria-hidden="true"
+                                        style={
+                                          { '--usage-h': String(hueFor(name)) } as React.CSSProperties
+                                        }
+                                      />
+                                      {name}
+                                    </span>
+                                  ))}
+                                  {usage.length > 2 ? (
+                                    <span className="saved-emails__usage-more">
+                                      +{usage.length - 2}
+                                    </span>
+                                  ) : null}
+                                </>
+                              ) : (
+                                <span className="saved-emails__usage-label">Not used yet</span>
+                              )}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn--icon btn--sm"
+                            aria-label={`Remove ${address}`}
+                            onClick={() => removeSavedEmail(address)}
+                          >
+                            <TrashIcon width="13" height="13" />
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                   <button
                     type="button"
@@ -1548,9 +1670,17 @@ export function ItemEditor({
           <button className="btn btn--secondary" onClick={onClose} disabled={saving}>
             Cancel
           </button>
-          <button className="btn btn--primary" onClick={submit} disabled={saving}>
+          <button
+            className="btn btn--primary"
+            onClick={submit}
+            disabled={saving}
+            title={item ? 'Save changes (Enter)' : 'Add to vault (Enter)'}
+          >
             {saving ? <span className="spinner" /> : null}
             {item ? 'Save changes' : 'Add to vault'}
+            <kbd className="btn__kbd" aria-hidden="true">
+              ↵
+            </kbd>
           </button>
         </>
       }
@@ -1582,7 +1712,15 @@ export function ItemEditor({
         <div className="editor-window__main">
           <header className="editor-window__head">
             <h3 className="editor-window__title">{active.label}</h3>
-            <p className="editor-window__hint">{activeHint}</p>
+            <p className="editor-window__hint">
+              {activeHint}
+              <span
+                className="editor-window__shortcut"
+                title="Enter saves. In Notes, use Ctrl+Enter to save."
+              >
+                <kbd className="kbd">Enter</kbd> saves
+              </span>
+            </p>
           </header>
           <form
             ref={panelRef}
@@ -1591,6 +1729,7 @@ export function ItemEditor({
             role="tabpanel"
             aria-labelledby={`editor-tab-${section}`}
             onSubmit={submit}
+            onKeyDown={handlePanelKeyDown}
           >
             {linked ? (
               <Alert tone="info">

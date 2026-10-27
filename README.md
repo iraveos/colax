@@ -144,8 +144,11 @@ interface changes.
   and **Renew now** resets Mohmal's 45-minute timer by hand. For a login already in the vault,
   changing the interval or creating/removing its inbox applies immediately; a brand-new login
   only needs to be added once.
-- **Saved emails** — save addresses you reuse for signups, then let **Random saved** pick one
-  when creating the next login; the list is managed from the same email row
+- **Saved emails** - save addresses you reuse for signups, then let **Random saved** pick one
+  when creating the next login; the list is managed from the same email row. Each address shows
+  which saved logins already use it, and clicking the address fills the email field
+- **Fast editing** - Enter saves from any single-line field (and creates a new login immediately);
+  in Notes, Ctrl/Cmd+Enter saves so plain Enter can still make a new line
 - Password strength meter with an offline-attack crack-time estimate
 - Reused-password and stale-password detection under **Needs attention**, with an optional
   warning before you open a site whose password is reused

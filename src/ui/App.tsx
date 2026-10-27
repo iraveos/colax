@@ -962,6 +962,28 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     return [...emails].sort((a, b) => a.localeCompare(b)).slice(0, 300);
   }, [vault.items, vault.prefs.gmailAccounts]);
 
+  // Which logins already use an address. Built from the saved vault, not the
+  // open draft, so the editor can show "used by" without inventing a link that
+  // has not been saved yet.
+  const emailUsage = useMemo(() => {
+    const usage: Record<string, string[]> = {};
+    for (const item of vault.items) {
+      const label = item.title.trim() || item.username.trim() || 'Untitled login';
+      const addresses = new Set<string>();
+      const username = item.username.trim();
+      if (username.includes('@')) addresses.add(username);
+      const tempAddress = item.tempMail?.address?.trim();
+      if (tempAddress && tempAddress.includes('@')) addresses.add(tempAddress);
+      for (const address of addresses) {
+        const key = address.toLowerCase();
+        const names = (usage[key] ??= []);
+        if (!names.includes(label)) names.push(label);
+      }
+    }
+    for (const names of Object.values(usage)) names.sort((a, b) => a.localeCompare(b));
+    return usage;
+  }, [vault.items]);
+
 // Normalised on read so the list is never empty, even for the first render
   // before stored preferences have loaded.
   const channels = useMemo(() => normaliseChannels(prefs.channels), [prefs.channels]);
@@ -4975,6 +4997,7 @@ onCreate={vault.create}
           item={editing === 'new' ? null : editing}
           tags={prefs.tags}
           emailSuggestions={emailSuggestions}
+          emailUsage={emailUsage}
           reusableEmails={prefs.reusableEmails}
           onReusableEmailsChange={(reusableEmails) => void vault.updatePrefs({ reusableEmails })}
           liveTempMail={
