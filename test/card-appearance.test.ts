@@ -229,7 +229,8 @@ test('listTabs keeps known tabs and channels, drops the rest', () => {
 
   assert.deepEqual(out.listTabs.all, ['tab:weak', 'ch_work', 'tab:attention']);
   assert.deepEqual(out.listTabs.ch_work, ['tab:favorites']);
-  // An explicit empty list survives: hiding a scope's strip is a choice.
+  // An old empty entry survives the round-trip, but listTabsFor renders it as
+  // the inherited strip so a workspace cannot lose its tabs.
   assert.deepEqual(out.listTabs['folder:abc'], []);
   assert.equal('broken' in out.listTabs, false);
 });
@@ -312,9 +313,13 @@ test('an unconfigured channel or folder inherits the shipped strip', () => {
   assert.deepEqual(listTabsFor({}, 'all'), DEFAULT_PREFERENCES.listTabs.all);
   assert.deepEqual(listTabsFor({}, 'ch_work'), DEFAULT_PREFERENCES.listTabs.all);
   assert.deepEqual(listTabsFor({}, 'folder:f1'), DEFAULT_PREFERENCES.listTabs.all);
-  // A scope's own strip wins, and an explicit empty list still hides the strip.
+  // A scope's own strip wins, but an empty history entry inherits the shipped
+  // strip rather than leaving the workspace with no tabs at all.
   assert.deepEqual(listTabsFor({ 'folder:f1': ['tab:favorites'] }, 'folder:f1'), ['tab:favorites']);
-  assert.deepEqual(listTabsFor({ 'folder:f1': [] }, 'folder:f1'), []);
+  assert.deepEqual(
+    listTabsFor({ 'folder:f1': [] }, 'folder:f1'),
+    DEFAULT_PREFERENCES.listTabs.all,
+  );
 });
 
 test('carrying a strip into an inherited scope keeps the shipped tabs', () => {

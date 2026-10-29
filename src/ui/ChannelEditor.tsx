@@ -530,6 +530,29 @@ export function ChannelEditor({
         </div>
         <p className="field__hint">{tagsNote}</p>
       </div>
+
+      <div className="field">
+        <label className="field__label" htmlFor="channel-notes">
+          Notes
+        </label>
+        <textarea
+          id="channel-notes"
+          className="input"
+          rows={5}
+          value={draft.notes}
+          placeholder="What this channel is for, rules, links, anything worth keeping one click away…"
+          onChange={(event) => patch({ notes: event.target.value })}
+        />
+        <p className="field__hint">
+          Notes appear from a small button in this channel&apos;s workspace. When the channel is inside a
+          folder with its own notes, both buttons are offered so you can open either one directly.
+        </p>
+        <Toggle
+          label="Show the notes button in this channel"
+          checked={!draft.notesHidden}
+          onChange={(shown) => patch({ notesHidden: !shown })}
+        />
+      </div>
       </>
       ) : (
         <SecurityForm

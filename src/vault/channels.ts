@@ -194,6 +194,10 @@ export interface Channel {
    * id that no longer exists behaves as 'all' rather than showing nothing.
    */
   mailAccount: string;
+  /** Free-form notes, shown from the channel's notes button in the workspace. */
+  notes: string;
+  /** Right-clicking the notes button hides it; this remembers that choice. */
+  notesHidden: boolean;
   /**
    * Optional second factor required to browse this channel, exactly like a
    * folder's. Empty on every shipped channel and on anything stored before the
@@ -719,15 +723,15 @@ export function selectableIds(entries: SidebarEntry[]): string[] {
 const DEFAULT_CHANNEL_HUE = 212;
 
 export const BUILTIN_CHANNELS: Channel[] = [
-  { id: 'all', name: 'All logins', kind: 'all', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: DEFAULT_CHANNEL_HUE, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all', security: EMPTY_SECURITY },
+  { id: 'all', name: 'All logins', kind: 'all', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: DEFAULT_CHANNEL_HUE, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all', notes: '', notesHidden: false, security: EMPTY_SECURITY },
   // Favorites, Needs attention and Weak or reused are tabs inside `all` now —
   // see ALL_LOGIN_TABS. Their kinds are still valid for channels anyone makes.
-  { id: 'dashboard', name: 'Dashboard', kind: 'dashboard', tagIds: [], builtin: true, locked: true, icon: 'grid', hue: 268, accent: 'dusk', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all', security: EMPTY_SECURITY },
-  { id: 'mail', name: 'Mail', kind: 'mail', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: 205, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all', security: EMPTY_SECURITY },
+  { id: 'dashboard', name: 'Dashboard', kind: 'dashboard', tagIds: [], builtin: true, locked: true, icon: 'grid', hue: 268, accent: 'dusk', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: true, mailAccount: 'all', notes: '', notesHidden: false, security: EMPTY_SECURITY },
+  { id: 'mail', name: 'Mail', kind: 'mail', tagIds: [], builtin: true, locked: true, icon: 'inbox', hue: 205, accent: 'slate', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all', notes: '', notesHidden: false, security: EMPTY_SECURITY },
   // The change log is structural like the other two summary screens: there is
   // exactly one, it cannot be deleted, and it can still be renamed, recoloured,
   // moved into a folder or hidden like any other row.
-  { id: 'history', name: 'History', kind: 'history', tagIds: [], builtin: true, locked: true, icon: 'clock', hue: 28, accent: 'clay', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all', security: EMPTY_SECURITY },
+  { id: 'history', name: 'History', kind: 'history', tagIds: [], builtin: true, locked: true, icon: 'clock', hue: 28, accent: 'clay', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all', notes: '', notesHidden: false, security: EMPTY_SECURITY },
 ];
 
 /** Icon keys the sidebar knows how to draw. */
@@ -938,6 +942,8 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
       locked: id === 'all' || kind === 'dashboard' || kind === 'mail' || kind === 'history',
       showMail: raw.showMail !== false,
       mailAccount: typeof raw.mailAccount === 'string' && raw.mailAccount ? raw.mailAccount : 'all',
+      notes: typeof raw.notes === 'string' ? raw.notes : '',
+      notesHidden: raw.notesHidden === true,
       // Shared helper — a channel's factor must survive a reload for the same
       // reason a folder's does, and rebuilding the block by hand is how
       // passcode-only factors were silently dropped elsewhere.
@@ -1023,6 +1029,8 @@ export function createChannel(name: string, patch: Partial<Channel> = {}): Chann
     backgroundDim: DEFAULT_BACKGROUND_LOOK.dim,
     showMail: true,
     mailAccount: 'all',
+    notes: '',
+    notesHidden: false,
     security: EMPTY_SECURITY,
     ...safe,
     // A new channel is never one of the shipped ones, whatever the caller passed.

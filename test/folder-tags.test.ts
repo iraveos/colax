@@ -6,6 +6,7 @@ import {
   channelTagFilter,
   createChannel,
   createFolder,
+  normaliseChannels,
   normaliseFolders,
   parentFolderFor,
   type SidebarEntry,
@@ -36,6 +37,27 @@ test('a folder is created with empty tags, notes and a visible notes button', ()
   assert.deepEqual(fresh.altTagIds, []);
   assert.equal(fresh.notes, '');
   assert.equal(fresh.notesHidden, false);
+});
+
+test('a channel is created with its own notes and a visible notes button', () => {
+  const fresh = createChannel('Work');
+  assert.equal(fresh.notes, '');
+  assert.equal(fresh.notesHidden, false);
+  const withNotes = createChannel('Work', { notes: 'Renew on the first', notesHidden: true });
+  assert.equal(withNotes.notes, 'Renew on the first');
+  assert.equal(withNotes.notesHidden, true);
+});
+
+test('stored channels gain notes fields without losing anything', () => {
+  const [legacy] = normaliseChannels([
+    { id: 'ch_old', name: 'Old', kind: 'all', notes: 'keep me', notesHidden: true } as never,
+  ]);
+  assert.equal(legacy?.notes, 'keep me');
+  assert.equal(legacy?.notesHidden, true);
+
+  const [missing] = normaliseChannels([{ id: 'ch_bare', name: 'Bare', kind: 'all' } as never]);
+  assert.equal(missing?.notes, '');
+  assert.equal(missing?.notesHidden, false);
 });
 
 test('main tags are required; only tags beyond them narrow the channel', () => {

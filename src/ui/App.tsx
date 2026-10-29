@@ -157,6 +157,8 @@ const UNASSIGNED: Channel = {
   locked: false,
   showMail: true,
   mailAccount: 'all',
+  notes: '',
+  notesHidden: false,
   security: EMPTY_SECURITY,
 };
 
@@ -604,10 +606,18 @@ export function App() {
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [tagPickerQuery, setTagPickerQuery] = useState('');
-  /** Whether the open folder's notes are expanded. Per visit, not persisted. */
+  /**
+   * Which workspace notes are open. A channel inside a folder has two sources -
+   * the folder's notes and its own - so the source is remembered alongside the
+   * open state. Both reset per visit rather than being stored.
+   */
   const [notesOpen, setNotesOpen] = useState(false);
+  const [notesSource, setNotesSource] = useState<'folder' | 'channel'>('folder');
+  /** Lets the early sidebar click handler reach the strip carry defined below. */
+  const carryStripRef = useRef<((to: string, via?: string) => void) | null>(null);
   useEffect(() => {
     setNotesOpen(false);
+    setNotesSource('folder');
   }, [activeId]);
   // The tag picker closes on a click anywhere outside it, the way a popover
   // should; leaving it open behind the next click would swallow that click.
@@ -1319,7 +1329,9 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       clearChannelSelection();
       // Through openChannel rather than setActiveId so the merged sections reset:
       // clicking All logins in the rail means the whole list, not whichever
-      // section was left open last time.
+      // section was left open last time. The strip travels with the click too,
+      // otherwise a channel with extra tabs made them vanish on the next row.
+      carryStripRef.current?.(id);
       openChannel(id);
     },
     [clearChannelSelection, openChannel, selectionOrder],
@@ -1476,6 +1488,90 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       !channelsUnlocked.has(activeChannel.id),
   );
 
+  /**
+   * The folder a channel is open from. A channel opened from the rail has no
+   * `activeFolder` of its own, but its parent's notes are still part of that
+   * workspace and should be one click away.
+   */
+  const activeChannelFolder = useMemo(
+    () => (activeChannel ? getParentFolderForChannel(activeChannel.id) ?? null : null),
+    [activeChannel, getParentFolderForChannel],
+  );
+
+  /** The folder whose notes belong to the current screen, if any. */
+  const folderNotesContext = activeFolder ?? activeChannelFolder;
+
+  /**
+   * A secured folder that has not been unlocked this session should not expose
+   * its notes through a child channel's button.
+   */
+  const folderNotesLocked = Boolean(
+    folderNotesContext &&
+      isSecured(folderNotesContext.security) &&
+      !foldersUnlocked.has(folderNotesContext.id),
+  );
+
+  /**
+   * The notes offered in this workspace. On a channel inside a folder both are
+   * offered: the folder's reference material and the channel's own. The buttons
+   * are separate so either one is a single click away; hiding either one is
+   * remembered on its owner (`notesHidden`) and can be undone from its menu.
+   */
+  const workspaceNotes = useMemo(() => {
+    const options: { id: 'folder' | 'channel'; title: string; notes: string }[] = [];
+    if (
+      folderNotesContext &&
+      !folderNotesLocked &&
+      !folderNotesContext.notesHidden &&
+      folderNotesContext.notes.trim()
+    ) {
+      options.push({
+        id: 'folder',
+        title: folderNotesContext.name,
+        notes: folderNotesContext.notes,
+      });
+    }
+    if (activeChannel && !channelLocked && !activeChannel.notesHidden && activeChannel.notes.trim()) {
+      options.push({ id: 'channel', title: activeChannel.name, notes: activeChannel.notes });
+    }
+    return options;
+  }, [folderNotesContext, folderNotesLocked, activeChannel, channelLocked]);
+
+  const openWorkspaceNotes = notesOpen
+    ? workspaceNotes.find((option) => option.id === notesSource) ?? workspaceNotes[0] ?? null
+    : null;
+
+  function toggleWorkspaceNotes(id: 'folder' | 'channel') {
+    if (notesOpen && notesSource === id) {
+      setNotesOpen(false);
+      return;
+    }
+    setNotesSource(id);
+    setNotesOpen(true);
+  }
+
+  function hideWorkspaceNotes(id: 'folder' | 'channel') {
+    setNotesOpen(false);
+    if (id === 'folder' && folderNotesContext) {
+      void vault.updatePrefs({
+        folders: folders.map((entry) =>
+          entry.id === folderNotesContext.id ? { ...entry, notesHidden: true } : entry,
+        ),
+      });
+      notify('Folder notes button hidden - right-click the folder to show it again');
+      return;
+    }
+    if (id === 'channel' && activeChannel) {
+      if (!channels.some((entry) => entry.id === activeChannel.id)) return;
+      void vault.updatePrefs({
+        channels: channels.map((entry) =>
+          entry.id === activeChannel.id ? { ...entry, notesHidden: true } : entry,
+        ),
+      });
+      notify('Channel notes button hidden - right-click the channel to show it again');
+    }
+  }
+
   /* ---- The tab strip, configured per scope ---------------------------------
       `prefs.listTabs` is a record keyed by scope — 'all', a channel id, or
       'folder:<id>' — whose values are tab ids: built-ins are 'tab:all',
@@ -1581,6 +1677,26 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
     [configuredStrip, scopeId, vault],
   );
 
+  useEffect(() => {
+    carryStripRef.current = carryStripTo;
+  }, [carryStripTo]);
+
+  /**
+   * Sidebar navigation carries the strip too.
+   *
+   * Carrying only on strip jumps fixed the case of clicking a tab, but choosing
+   * a channel directly from the rail still landed on that scope's own strip and
+   * made the tabs that were on screen vanish. The rail is the other way people
+   * move between workspaces, so it goes through the same union.
+   */
+  const selectSidebarRow = useCallback(
+    (id: string) => {
+      carryStripTo(id);
+      openChannel(id);
+    },
+    [carryStripTo, openChannel],
+  );
+
   /** What pressing a strip tab does. */
   const openStripTab = useCallback(
     (id: string) => {
@@ -1652,13 +1768,13 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       ];
       const missing = addableLabels.filter((tab) => !current.includes(tab.id));
       const items: MenuItem[] = [];
-      if (tabId) {
+      if (tabId && current.length > 1) {
         items.push({
           kind: 'item',
           label: 'Hide this tab',
           onSelect: () => {
             setStripTabs(scopeId, current);
-            notify('Tab hidden — right-click the strip to bring tabs back');
+            notify('Tab hidden - right-click the strip to bring tabs back');
           },
         });
         items.push({ kind: 'separator' });
@@ -2280,7 +2396,7 @@ const visible = useMemo(() => {
           { kind: 'item', label: 'Unassigned', icon: <InboxIcon />, heading: true },
           { kind: 'item', label: 'Logins with no tags at all', heading: true },
           { kind: 'separator' },
-          { kind: 'item', label: 'Open', icon: <InboxIcon />, onSelect: () => openChannel(channel.id) },
+          { kind: 'item', label: 'Open', icon: <InboxIcon />, onSelect: () => selectSidebarRow(channel.id) },
         ];
       }
       const label = channel.name;
@@ -2291,7 +2407,7 @@ const visible = useMemo(() => {
           kind: 'item',
           label: 'Open',
           icon: <InboxIcon />,
-          onSelect: () => openChannel(channel.id),
+          onSelect: () => selectSidebarRow(channel.id),
         },
         {
           kind: 'item',
@@ -2299,6 +2415,20 @@ const visible = useMemo(() => {
           icon: <EditIcon />,
           shortcut: 'right click',
           onSelect: () => setEditingChannel(channel.id),
+        },
+        {
+          kind: 'item',
+          label: channel.notesHidden ? 'Show notes button' : 'Hide notes button',
+          icon: <EyeOffIcon />,
+          disabled: !channel.notes.trim(),
+          onSelect: () => {
+            autosaveChannel({ ...channel, notesHidden: !channel.notesHidden });
+            notify(
+              channel.notesHidden
+                ? 'Channel notes button shown'
+                : 'Channel notes button hidden - the notes are still saved',
+            );
+          },
         },
         {
           kind: 'submenu',
@@ -2416,7 +2546,7 @@ const visible = useMemo(() => {
         },
       ];
     },
-    [prefs.tags, prefs.hiddenChannels, folders, saveChannel, deleteChannel, notify, moveChannel, addSeparator, openChannel, vault],
+    [prefs.tags, prefs.hiddenChannels, folders, saveChannel, autosaveChannel, deleteChannel, notify, moveChannel, addSeparator, selectSidebarRow, vault],
   );
 
   const parentFolderIdOf = useCallback(
@@ -2438,7 +2568,7 @@ const visible = useMemo(() => {
         kind: 'item',
         label: 'Open',
         icon: <InboxIcon />,
-        onSelect: () => setActiveId(`folder:${folder.id}`),
+        onSelect: () => selectSidebarRow(`folder:${folder.id}`),
       },
       {
         kind: 'item',
@@ -2497,7 +2627,7 @@ const visible = useMemo(() => {
         onSelect: () => deleteFolder(folder.id),
       },
     ],
-    [deleteFolder, toggleFolderCollapse, prefs.hiddenFolders, saveFolder, vault, notify],
+    [deleteFolder, toggleFolderCollapse, prefs.hiddenFolders, saveFolder, selectSidebarRow, vault, notify],
   );
 
   const separatorMenu = useCallback(
@@ -3403,7 +3533,7 @@ label: 'Settings',
           hue: folder.hue,
           key: slot.key,
           active: activeFolder?.id === folder.id,
-          onJump: () => setActiveId(`folder:${folder.id}`),
+          onJump: () => selectSidebarRow(`folder:${folder.id}`),
         });
       } else if (slot.kind === 'login') {
         const item = vault.items.find((entry) => entry.id === slot.ref);
@@ -3470,13 +3600,13 @@ label: 'Settings',
           hue: channel.hue,
           key: slot.key,
           active: activeId === channel.id,
-          onJump: () => openChannel(channel.id),
+          onJump: () => selectSidebarRow(channel.id),
         });
       }
     }
     return resolved;
     },
-    [prefs.gmailAccounts, channelLookup, folders, view, activeChannel, activeFolder, activeId, openChannel, selection, vault, viewActions, copy, mailboxFor, requestEdit],
+    [prefs.gmailAccounts, channelLookup, folders, view, activeChannel, activeFolder, activeId, openChannel, selectSidebarRow, selection, vault, viewActions, copy, mailboxFor, requestEdit],
   );
 
   /** One resolved bar per stored dock. */
@@ -4084,7 +4214,7 @@ onCreate={vault.create}
             event.preventDefault();
             setMenu({ x: event.clientX, y: event.clientY, items: hideChromeMenu(id, () => hideChrome(id), () => openSettings('hidden')) });
           }}
-          onSelect={openChannel}
+          onSelect={selectSidebarRow}
           onReorder={(next) => void vault.updatePrefs({ sidebar: next })}
           onToggleFolder={toggleFolderCollapse}
           selectedRows={channelSelection}
@@ -4411,39 +4541,42 @@ onCreate={vault.create}
               </div>
             ) : null}
 
-            {/* The folder's notes live behind one small pill, not a permanent
-                panel: they are reference material, not part of the list. The
-                panel sits in the flow when open, so the list moves down to
-                make room instead of being covered. Right-click files the pill
-                away; the folder menu and editor bring it back. */}
-            {activeFolder && !folderLocked && !activeFolder.notesHidden && activeFolder.notes.trim() ? (
-              <div className="folder-notes">
-                <button
-                  type="button"
-                  className="btn btn--secondary btn--sm folder-notes__toggle"
-                  aria-expanded={notesOpen}
-                  title={notesOpen ? 'Collapse notes' : 'Show folder notes (right-click to hide this button)'}
-                  onClick={() => setNotesOpen((open) => !open)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setNotesOpen(false);
-                    void vault.updatePrefs({
-                      folders: folders.map((entry) =>
-                        entry.id === activeFolder.id ? { ...entry, notesHidden: true } : entry,
-                      ),
-                    });
-                    notify('Notes button hidden — right-click the folder to show it again');
-                  }}
-                >
-                  <TagIcon width="14" height="14" />
-                  Notes
-                </button>
-                {notesOpen ? (
-                  <div className="folder-notes__panel">
-                    <div className="folder-notes__head">
+            {/* Workspace notes are reference material, not part of the list, so
+                they sit behind small pills and expand into the flow. A channel
+                inside a folder gets two pills - one for each note source - so
+                either is one click away without hiding the other. Right-click
+                files a pill away; that owner's menu and editor bring it back. */}
+            {workspaceNotes.length > 0 ? (
+              <div className="workspace-notes">
+                <div className="workspace-notes__buttons">
+                  {workspaceNotes.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="btn btn--secondary btn--sm workspace-notes__toggle"
+                      aria-expanded={notesOpen && notesSource === option.id}
+                      title={`${option.title} notes (right-click to hide this button)`}
+                      onClick={() => toggleWorkspaceNotes(option.id)}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        hideWorkspaceNotes(option.id);
+                      }}
+                    >
+                      <TagIcon width="14" height="14" />
+                      {workspaceNotes.length > 1
+                        ? option.id === 'folder'
+                          ? 'Folder notes'
+                          : 'Channel notes'
+                        : 'Notes'}
+                    </button>
+                  ))}
+                </div>
+                {openWorkspaceNotes ? (
+                  <div className="workspace-notes__panel">
+                    <div className="workspace-notes__head">
                       <span>
-                        {activeFolder.name} · notes
+                        {openWorkspaceNotes.title} · notes
                       </span>
                       <button
                         type="button"
@@ -4454,7 +4587,7 @@ onCreate={vault.create}
                         <XIcon width="14" height="14" />
                       </button>
                     </div>
-                    <div className="folder-notes__body">{activeFolder.notes}</div>
+                    <div className="workspace-notes__body">{openWorkspaceNotes.notes}</div>
                   </div>
                 ) : null}
               </div>
@@ -4507,7 +4640,7 @@ onCreate={vault.create}
                   focus={dashboardFocus}
                   onFocusHandled={() => setDashboardFocus(null)}
                   history={historyPanel}
-                  onSelectChannel={openChannel}
+                  onSelectChannel={selectSidebarRow}
                   onOpenLogin={(item) => requestEdit(item)}
                   // Same window the dock's mailbox slot opens, so the two are
                   // genuinely the same screen rather than two mail views.

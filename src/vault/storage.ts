@@ -124,7 +124,8 @@ export const DEFAULT_CARD_SIZE: Record<VaultView, CardSizePrefs> = {
  *
  * This is also the strip every channel and folder inherits until it is given
  * a configuration of its own, so tabs do not disappear just because a scope
- * has never been visited. A scope stores an empty list to hide its strip.
+ * has never been visited. An empty list is treated as an inherited strip, never
+ * as a hidden one.
  */
 export const DEFAULT_LIST_TABS: Record<string, string[]> = {
   all: ['tab:all', 'tab:favorites', 'tab:attention', 'tab:weak'],
@@ -135,11 +136,13 @@ export const DEFAULT_LIST_TABS: Record<string, string[]> = {
  *
  * A scope with no record of its own inherits the shipped All-logins strip, so
  * channels and folders are not left without tabs just because nobody has
- * configured them yet. An explicit empty array is preserved: that is how a
- * scope says "hide the strip here".
+ * configured them yet. An empty record is treated the same way: the strip is
+ * part of the workspace chrome, not a per-scope extra, so no channel should
+ * end up looking as though its tabs disappeared.
  */
 export function listTabsFor(listTabs: Record<string, string[]>, scope: string): string[] {
-  return listTabs[scope] ?? DEFAULT_LIST_TABS.all ?? [];
+  const own = listTabs[scope];
+  return own && own.length > 0 ? own : DEFAULT_LIST_TABS.all ?? [];
 }
 
 /**
@@ -166,8 +169,9 @@ export function normaliseListTabs(raw: unknown, channels: Pick<Channel, 'id'>[])
   const clean: Record<string, string[]> = {};
   for (const [scope, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!scope || !Array.isArray(value)) continue;
-    // An empty list is kept: hiding a scope's strip entirely is a user choice,
-    // and dropping it here would resurrect the default on every reload.
+    // An empty list is kept so older preferences round-trip unchanged, but
+    // listTabsFor treats it as "inherit the shipped strip" - a workspace must
+    // never lose its tabs entirely.
     clean[scope] = [...new Set(
       value.filter(
         (id): id is string =>

@@ -149,6 +149,12 @@ interface changes.
   which saved logins already use it, and clicking the address fills the email field
 - **Fast editing** - Enter saves from any single-line field (and creates a new login immediately);
   in Notes, Ctrl/Cmd+Enter saves so plain Enter can still make a new line
+- **Channel and folder notes** - both editors have a Notes field. A workspace exposes a small
+  notes pill; when a channel sits inside a folder with notes, **Folder notes** and **Channel
+  notes** are offered side by side, so either opens with one click. Right-click a pill to hide it
+- **Sticky tab strips** - tabs carry across rail and tab navigation instead of vanishing on some
+  channels; a scope with an empty old tab record falls back to the shipped strip, and the last
+  visible tab cannot be hidden
 - Password strength meter with an offline-attack crack-time estimate
 - Reused-password and stale-password detection under **Needs attention**, with an optional
   warning before you open a site whose password is reused
