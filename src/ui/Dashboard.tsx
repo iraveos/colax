@@ -4,8 +4,10 @@ import { findWeakItems, hostnameOf, relativeTime, staleDaysFor, type VaultItem }
 import { maskEmail } from '../vault/site-intel.ts';
 import { isSecured } from '../crypto/security.ts';
 import { applyChannel, parentFolderFor, sectionTarget, type AllLoginTab, type Channel, type Tag } from '../vault/channels.ts';
+import { buildEmailRoadmap } from '../vault/email-roadmap.ts';
 import type { VaultPreferences } from '../vault/storage.ts';
 import { HistoryPanel, type HistoryPanelProps } from './HistoryPanel.tsx';
+import { EmailRoadmap } from './EmailRoadmap.tsx';
 import { labelOf } from './views.tsx';
 
 /**
@@ -57,6 +59,9 @@ export function Dashboard({
   onAddLogin,
   onNewChannel,
   onBulkAdd,
+  onCopy,
+  onOpenUrl,
+  onOpenExternal,
   /** A section to jump to when the screen opens, set by a notification. */
   focus,
   /** Called once the focus has been honoured. */
@@ -87,6 +92,10 @@ export function Dashboard({
   onNewChannel: () => void;
   /** Opens the bulk-add dialog. */
   onBulkAdd: () => void;
+  /** Copy helpers for the Email Roadmap tab. */
+  onCopy?: (value: string, label: string, item?: VaultItem) => void;
+  onOpenUrl?: (item: VaultItem) => void;
+  onOpenExternal?: (url: string) => void;
   /**
    * The section the screen should reveal on arrival. 'reused' scrolls the
    * reused-password card into view and flashes it, which is where the
@@ -103,7 +112,19 @@ export function Dashboard({
    * one click from the overview it describes. Local rather than persisted: the
    * Dashboard opening on the overview every time is what makes it a dashboard.
    */
-  const [tab, setTab] = useState<'overview' | 'history'>('overview');
+  const [tab, setTab] = useState<'overview' | 'history' | 'roadmap'>('overview');
+
+  /**
+   * The address count behind the Email Roadmap tab. The tab is structural —
+   * it is always here, whether or not the channel row is hidden in the rail —
+   * so the count is computed from the same model the screen renders.
+   */
+  const roadmapCount = useMemo(
+    () =>
+      buildEmailRoadmap(items, prefs.gmailAccounts ?? [], prefs.reusableEmails ?? [], prefs.mailCache ?? {})
+        .identities.length,
+    [items, prefs.gmailAccounts, prefs.reusableEmails, prefs.mailCache],
+  );
 
   // Arriving from the reused-password notification: bring the card into view
   // once, then hand the focus back so a later visit is an ordinary one.
@@ -504,11 +525,40 @@ export function Dashboard({
             History
             {history.events.length > 0 ? <span className="dash-screen__count">{history.events.length}</span> : null}
           </button>
+          <button
+            type="button"
+            role="tab"
+            className="segmented__option"
+            aria-selected={tab === 'roadmap'}
+            aria-pressed={tab === 'roadmap'}
+            title="Every address, the mailbox connected to it, and the logins it opens"
+            onClick={() => setTab('roadmap')}
+          >
+            Email Roadmap
+            {roadmapCount > 0 ? <span className="dash-screen__count">{roadmapCount}</span> : null}
+          </button>
         </div>
       </div>
 
       {tab === 'history' ? (
         <HistoryPanel embedded {...history} />
+      ) : tab === 'roadmap' ? (
+        <EmailRoadmap
+          embedded
+          items={items}
+          accounts={prefs.gmailAccounts ?? []}
+          reusableEmails={prefs.reusableEmails ?? []}
+          mailCache={prefs.mailCache}
+          tags={tags}
+          maskEmails={prefs.maskEmails}
+          onOpenLogin={onOpenLogin}
+          onOpenMailbox={onOpenMailbox}
+          onOpenSettings={onOpenSettings}
+          onAddLogin={onAddLogin}
+          onCopy={onCopy}
+          onOpenUrl={onOpenUrl}
+          onOpenExternal={onOpenExternal}
+        />
       ) : (
         <>
       {/* Compact header: title, one-line subtitle, vault status. */}

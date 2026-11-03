@@ -40,6 +40,7 @@ import {
   moveListTab,
   newDockId,
 } from '../vault/storage.ts';
+import { buildEmailRoadmap } from '../vault/email-roadmap.ts';
 import { captureToDraft, findSimilarTag, mailboxOwnedBy, mailboxUsable, planMailLinkedOnly, tagIdsForDraft } from '../vault/site-intel.ts';
 import { isSecured, requiresVerification, EMPTY_SECURITY } from '../crypto/security.ts';
 import { SecurityGate } from './SecurityGate.tsx';
@@ -53,6 +54,7 @@ import { ItemEditor } from './ItemEditor.tsx';
 import { AppearancePanel } from './AppearancePanel.tsx';
 import { Settings } from './Settings.tsx';
 import { Dashboard } from './Dashboard.tsx';
+import { EmailRoadmap } from './EmailRoadmap.tsx';
 import { HistoryPanel, type HistoryPanelProps } from './HistoryPanel.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { ViewContextMenu, VIEW_OPTIONS, useViewShortcuts } from './ViewMenu.tsx';
@@ -1247,6 +1249,22 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
   /** How long a password may go unchanged before the weak/stale view counts it. */
   const staleDays = prefs.passwordAgeDays;
 
+  /**
+   * The email roadmap model, computed once per change and shared by the rail
+   * badge. The channel's badge is the number of *addresses* it maps, not the
+   * number of logins underneath them, which is the more useful number here.
+   */
+  const emailRoadmap = useMemo(
+    () =>
+      buildEmailRoadmap(
+        vault.items,
+        prefs.gmailAccounts ?? [],
+        prefs.reusableEmails ?? [],
+        prefs.mailCache ?? {},
+      ),
+    [vault.items, prefs.gmailAccounts, prefs.reusableEmails, prefs.mailCache],
+  );
+
   /** Keyed by channel id, for the sidebar badges. The dashboard is a summary
    *  screen rather than a filtered list, so it gets no count. A folder badge is
    *  its own scope, not the sum of its children. */
@@ -1259,10 +1277,14 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       counts[channel.id] =
         channel.kind === 'history'
           ? prefs.history.length
-          // The parent folder goes in, because a channel inside one is scoped by
-          // the folder's tags: without it the badge counts logins the channel
-          // does not list, and a folder child reads as far larger than it is.
-          : applyChannel(channel, vault.items, staleDays, getParentFolderForChannel(channel.id)).length;
+          : channel.kind === 'roadmap'
+            // Addresses, not logins: the roadmap's badge is the number of
+            // identities it maps, which is what the screen counts too.
+            ? emailRoadmap.identities.length
+            // The parent folder goes in, because a channel inside one is scoped by
+            // the folder's tags: without it the badge counts logins the channel
+            // does not list, and a folder child reads as far larger than it is.
+            : applyChannel(channel, vault.items, staleDays, getParentFolderForChannel(channel.id)).length;
     }
     for (const folder of folders) {
       const entry = sidebarBase.find((row) => row.kind === 'folder' && row.id === folder.id);
@@ -1286,7 +1308,7 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
       counts[`folder:${folder.id}`] = seen.size;
     }
     return counts;
-  }, [channelLookup, vault.items, staleDays, folders, sidebarBase, prefs.history, getParentFolderForChannel]);
+  }, [channelLookup, vault.items, staleDays, folders, sidebarBase, prefs.history, getParentFolderForChannel, emailRoadmap.identities.length]);
 
   /* ---- Picking several channels at once ------------------------------------
      Ctrl/Cmd+click toggles one row in and out of the selection, Shift+click
@@ -4629,6 +4651,27 @@ onCreate={vault.create}
               </div>
             ) : activeChannel?.kind === 'history' ? (
               <HistoryPanel {...historyPanel} />
+            ) : activeChannel?.kind === 'roadmap' ? (
+              <div className="content__inner content__inner--dash">
+                <EmailRoadmap
+                  items={vault.items}
+                  accounts={prefs.gmailAccounts ?? []}
+                  reusableEmails={prefs.reusableEmails ?? []}
+                  mailCache={prefs.mailCache}
+                  tags={prefs.tags}
+                  maskEmails={prefs.maskEmails}
+                  onOpenLogin={(item) => requestEdit(item)}
+                  onOpenMailbox={(accountId) => {
+                    const account = prefs.gmailAccounts.find((entry) => entry.id === accountId);
+                    if (account) setMailboxFor(account);
+                  }}
+                  onOpenSettings={(tab) => openSettings(tab)}
+                  onAddLogin={() => setEditing('new')}
+                  onCopy={viewActions.onCopy}
+                  onOpenUrl={openUrl}
+                  onOpenExternal={(url) => getPlatform().openExternal(url)}
+                />
+              </div>
             ) : activeChannel?.kind === 'dashboard' ? (
               <div className="content__inner content__inner--dash">
                 <Dashboard
@@ -4652,6 +4695,9 @@ onCreate={vault.create}
                   onAddLogin={() => setEditing('new')}
                   onNewChannel={() => startNewChannel()}
                   onBulkAdd={() => setBulkAdding(true)}
+                  onCopy={viewActions.onCopy}
+                  onOpenUrl={openUrl}
+                  onOpenExternal={(url) => getPlatform().openExternal(url)}
                 />
               </div>
             ) : showEmpty ? (

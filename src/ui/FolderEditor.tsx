@@ -21,6 +21,7 @@ import {
   KeyIcon,
   LayersIcon,
   LockIcon,
+  RouteIcon,
   ShieldIcon,
   StarIcon,
   TrashIcon,
@@ -37,6 +38,7 @@ const ICON_SET: Record<string, typeof InboxIcon> = {
   cloud: CloudIcon,
   grid: GridIcon,
   folder: FolderIcon,
+  route: RouteIcon,
 };
 
 const ACCENT_HUES: Record<string, number> = { slate: 212, sage: 152, dusk: 268, clay: 28 };

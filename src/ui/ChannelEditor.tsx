@@ -31,6 +31,7 @@ import {
   KeyIcon,
   LayersIcon,
   LockIcon,
+  RouteIcon,
   ShieldIcon,
   StarIcon,
   TrashIcon,
@@ -66,6 +67,7 @@ const ICON_SET: Record<string, typeof InboxIcon> = {
   lock: LockIcon,
   cloud: CloudIcon,
   grid: GridIcon,
+  route: RouteIcon,
 };
 
 export function ChannelEditor({

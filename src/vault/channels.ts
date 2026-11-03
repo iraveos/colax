@@ -38,7 +38,9 @@ export type ChannelKind =
   | 'mail'
   | 'unassigned'
   /** The change log: what was added, edited or deleted, with restore. */
-  | 'history';
+  | 'history'
+  /** The email roadmap: every address and the logins it opens. */
+  | 'roadmap';
 
 /**
  * Human names for the built-in channel kinds.
@@ -59,15 +61,16 @@ export const CHANNEL_KIND_LABELS: Record<ChannelKind, string> = {
   mail: 'Mail',
   unassigned: 'Unassigned',
   history: 'History',
+  roadmap: 'Email roadmap',
 };
 
 /**
  * Kinds that render a purpose-built screen instead of the login list.
  *
- * These three are ordinary scrolling pages, which is why the shell must not
+ * These four are ordinary scrolling pages, which is why the shell must not
  * freeze their overflow the way it does for the Flow list view.
  */
-export const CHANNEL_SCREEN_KINDS: ChannelKind[] = ['dashboard', 'mail', 'history'];
+export const CHANNEL_SCREEN_KINDS: ChannelKind[] = ['dashboard', 'mail', 'history', 'roadmap'];
 
 /** A tab inside the merged All logins channel. */
 export type AllLoginTab = 'all' | 'favorites' | 'attention' | 'weak';
@@ -543,12 +546,13 @@ export function moveManualOrder(
 export const CHANNELS_FOLDER_NAME = 'Channels';
 
 /**
- * Files every channel into one folder, leaving Dashboard and Mail at the top.
+ * Files every channel into one folder, leaving the structural screens on top.
  *
- * The rail was one long list in which the two structural screens, the built-in
+ * The rail was one long list in which the structural screens, the built-in
  * filters and every channel anyone made all sat at the same level. This is the
- * one-time tidy: Dashboard and Mail stay where they are, everything else becomes
- * a single collapsible group whose order is the order the rail already had.
+ * one-time tidy: Dashboard, Mail and Email Roadmap stay where they are,
+ * everything else becomes a single collapsible group whose order is the order
+ * the rail already had.
  *
  * Returns null when there is nothing to do — no channel to move, or they are
  * already in exactly one folder — and the caller stamps the pass either way, so
@@ -560,7 +564,12 @@ export function groupChannelsIntoFolder(
   sidebar: SidebarEntry[],
 ): { folders: Folder[]; sidebar: SidebarEntry[] } | null {
   const kept = new Set(
-    channels.filter((channel) => channel.kind === 'dashboard' || channel.kind === 'mail').map((channel) => channel.id),
+    channels
+      .filter(
+        (channel) =>
+          channel.kind === 'dashboard' || channel.kind === 'mail' || channel.kind === 'roadmap',
+      )
+      .map((channel) => channel.id),
   );
   const movers = channels.filter((channel) => !kept.has(channel.id));
   if (movers.length === 0) return null;
@@ -591,15 +600,29 @@ export function groupChannelsIntoFolder(
     const allInside = ordered.every((id) => childIds.has(id));
     const stray = sidebar.some((entry) => entry.kind === 'channel' && moverIds.has(entry.id));
     const otherFolders = sidebar.filter((entry) => entry.kind === 'folder' && entry.id !== existing.id);
-    if (allInside && !stray && otherFolders.length === 0) return null;
+    // A structural screen that somehow ended up inside the folder has to be
+    // rescued to the root, so the pass is not "already done" while it is buried.
+    const keptAtRoot = new Set(
+      sidebar.filter((entry) => entry.kind === 'channel' && kept.has(entry.id)).map((entry) => entry.id),
+    );
+    const keptStray = [...kept].some((id) => !keptAtRoot.has(id));
+    if (allInside && !stray && otherFolders.length === 0 && !keptStray) return null;
   }
 
   const folder = existing ?? createFolder(CHANNELS_FOLDER_NAME, { icon: 'layers' });
   const nextFolders = existing ? folders : [...folders, folder];
-  // Dashboard and Mail keep their slots, in their current order; the folder is
-  // the one thing appended after them.
+  // The structural screens keep their slots, in their current order, and any
+  // one missing from the root is appended before the folder. The folder is the
+  // one thing after them.
+  const keptAtRoot: SidebarEntry[] = sidebar.filter(
+    (entry) => entry.kind === 'channel' && kept.has(entry.id),
+  );
+  const keptPresent = new Set(keptAtRoot.flatMap((entry) => (entry.kind === 'channel' ? [entry.id] : [])));
   const root: SidebarEntry[] = [
-    ...sidebar.filter((entry) => entry.kind === 'channel' && kept.has(entry.id)),
+    ...keptAtRoot,
+    ...[...kept]
+      .filter((id) => !keptPresent.has(id))
+      .map((id) => ({ kind: 'channel', id }) as SidebarEntry),
     {
       kind: 'folder',
       id: folder.id,
@@ -732,10 +755,15 @@ export const BUILTIN_CHANNELS: Channel[] = [
   // exactly one, it cannot be deleted, and it can still be renamed, recoloured,
   // moved into a folder or hidden like any other row.
   { id: 'history', name: 'History', kind: 'history', tagIds: [], builtin: true, locked: true, icon: 'clock', hue: 28, accent: 'clay', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all', notes: '', notesHidden: false, security: EMPTY_SECURITY },
+  // The email roadmap is a structural screen too. It maps every address to the
+  // logins it opens and the mailbox it is connected to, which is a question no
+  // filtered login list can answer. Hiding the row never removes the Dashboard
+  // tab that shows the same screen.
+  { id: 'roadmap', name: 'Email Roadmap', kind: 'roadmap', tagIds: [], builtin: true, locked: true, icon: 'route', hue: 172, accent: 'sage', backgroundImage: '', ...DEFAULT_BACKGROUND_FIELDS, showMail: false, mailAccount: 'all', notes: '', notesHidden: false, security: EMPTY_SECURITY },
 ];
 
 /** Icon keys the sidebar knows how to draw. */
-export const CHANNEL_ICONS = ['inbox', 'star', 'flag', 'shield', 'layers', 'key', 'lock', 'cloud', 'grid', 'clock'] as const;
+export const CHANNEL_ICONS = ['inbox', 'star', 'flag', 'shield', 'layers', 'key', 'lock', 'cloud', 'grid', 'clock', 'route'] as const;
 
 /** Ids that may be deleted. */
 export const DELETABLE_CHANNEL_KINDS: ChannelKind[] = ['all', 'favorites', 'attention', 'weak'];
@@ -749,7 +777,7 @@ export const DELETABLE_CHANNEL_KINDS: ChannelKind[] = ['all', 'favorites', 'atte
  * deletable list silently rewrote them to `all` on reload, which made the
  * Dashboard channel render the login list instead of the summary screen.
  */
-const VALID_CHANNEL_KINDS: ChannelKind[] = [...DELETABLE_CHANNEL_KINDS, 'tags', 'dashboard', 'mail', 'unassigned', 'history'];
+const VALID_CHANNEL_KINDS: ChannelKind[] = [...DELETABLE_CHANNEL_KINDS, 'tags', 'dashboard', 'mail', 'unassigned', 'history', 'roadmap'];
 
 export function newChannelId(): string {
   return `ch_${crypto.randomUUID().slice(0, 8)}`;
@@ -803,6 +831,20 @@ export function applyChannel(
       break;
     case 'unassigned':
       list = items.filter((item) => item.tags.length === 0);
+      break;
+    case 'roadmap':
+      // The channel's scope is "logins that carry an address": a username
+      // shaped like an email, or a disposable inbox attached to the login.
+      // Unlinked logins still appear in the screen's Unlinked tab, but they are
+      // not what the roadmap is *about*, so the rail badge stays honest.
+      list = items.filter((item) => {
+        const email = item.username.trim();
+        const at = email.indexOf('@');
+        return (
+          (at > 0 && at < email.length - 1) ||
+          Boolean(item.tempMail?.address && item.tempMail.address.includes('@'))
+        );
+      });
       break;
     case 'dashboard':
     case 'mail':
@@ -878,6 +920,8 @@ export function describeChannel(channel: Pick<Channel, 'kind' | 'tagIds'>, tags:
       return '';
     case 'history':
       return 'Everything that changed, newest first';
+    case 'roadmap':
+      return 'Every address, mailbox and the logins it opens';
     case 'tags':
     default: {
       const names = channel.tagIds
@@ -939,7 +983,12 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
       // always be one of each, so none can be deleted or reordered away. They
       // can still be renamed, recoloured, hidden and moved — only deletion is
       // off the table, and `locked` is what the menus read to say so.
-      locked: id === 'all' || kind === 'dashboard' || kind === 'mail' || kind === 'history',
+      locked:
+        id === 'all' ||
+        kind === 'dashboard' ||
+        kind === 'mail' ||
+        kind === 'history' ||
+        kind === 'roadmap',
       showMail: raw.showMail !== false,
       mailAccount: typeof raw.mailAccount === 'string' && raw.mailAccount ? raw.mailAccount : 'all',
       notes: typeof raw.notes === 'string' ? raw.notes : '',
@@ -994,6 +1043,20 @@ export function normaliseChannels(stored: Channel[] | undefined): Channel[] {
       stray.locked = true;
       stray.icon = 'clock';
       stray.hue = BUILTIN_CHANNELS.find((c) => c.kind === 'history')?.hue ?? stray.hue;
+    }
+  }
+
+  // And the email roadmap. A channel somebody already made and named for it has
+  // to become the structural screen rather than sit beside a second copy.
+  if (!channels.some((channel) => channel.kind === 'roadmap')) {
+    const stray = channels.find(
+      (channel) => !channel.builtin && /^(email roadmap|roadmap|email map|address map|identity map)$/i.test(channel.name),
+    );
+    if (stray) {
+      stray.kind = 'roadmap';
+      stray.locked = true;
+      stray.icon = 'route';
+      stray.hue = BUILTIN_CHANNELS.find((c) => c.kind === 'roadmap')?.hue ?? stray.hue;
     }
   }
 

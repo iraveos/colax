@@ -30,7 +30,7 @@ test('the four sections are the tabs of one channel', () => {
 
 test('the merged rows ship no longer as channels of their own', () => {
   const ids = BUILTIN_CHANNELS.map((channel) => channel.id);
-  assert.deepEqual(ids, ['all', 'dashboard', 'mail', 'history']);
+  assert.deepEqual(ids, ['all', 'dashboard', 'mail', 'history', 'roadmap']);
 });
 
 test('a stored copy of a merged row is dropped on load', () => {

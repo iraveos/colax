@@ -147,6 +147,12 @@ interface changes.
 - **Saved emails** - save addresses you reuse for signups, then let **Random saved** pick one
   when creating the next login; the list is managed from the same email row. Each address shows
   which saved logins already use it, and clicking the address fills the email field
+- **Email Roadmap** — a dedicated channel and a mandatory Dashboard tab that maps every address
+  to the logins it opens, the mailbox connected to it (provider, server, cadence) and whether it
+  is saved or disposable. Each address is drawn as a route with its logins as stops; hovering a
+  stop opens a cursor-anchored, scrollable detail card with the full login, while clicking opens
+  the editor. The channel can be hidden from the rail by right-clicking it, and the Dashboard tab
+  stays available either way.
 - **Fast editing** - Enter saves from any single-line field (and creates a new login immediately);
   in Notes, Ctrl/Cmd+Enter saves so plain Enter can still make a new line
 - **Channel and folder notes** - both editors have a Notes field. A workspace exposes a small

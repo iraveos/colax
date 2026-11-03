@@ -134,6 +134,20 @@ export const MailIcon = (props: IconProps) => (
   </Icon>
 );
 
+/**
+ * A route between two points. Email Roadmap's glyph: one address at the start,
+ * the logins it opens along the way, and the destination at the end. Kept to
+ * two nodes and one bend so it still reads at 16px in the rail.
+ */
+export const RouteIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <circle cx="5.6" cy="5.8" r="2.2" />
+    <circle cx="18.4" cy="18.2" r="2.2" />
+    <path d="M7.8 5.8h3.1a3.2 3.2 0 0 1 3.2 3.2v6a3.2 3.2 0 0 0 3.2 3.2h.1" />
+    <path d="M14.1 8.2h.01M14.1 15.8h.01" />
+  </Icon>
+);
+
 export const BellIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M6 10.5a6 6 0 1 1 12 0c0 4 1.6 5.3 1.6 5.3H4.4S6 14.5 6 10.5" />

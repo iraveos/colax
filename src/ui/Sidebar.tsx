@@ -21,6 +21,7 @@ import {
   KeyIcon,
   LayersIcon,
   LockIcon,
+  RouteIcon,
   ShieldIcon,
   StarIcon,
   PlusIcon,
@@ -43,6 +44,7 @@ export const CHANNEL_ICONS_MAP: Record<string, typeof InboxIcon> = {
   grid: GridIcon,
   folder: FolderIcon,
   clock: ClockIcon,
+  route: RouteIcon,
 };
 
 export function Sidebar({
