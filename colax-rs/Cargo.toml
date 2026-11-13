@@ -1,0 +1,26 @@
+[package]
+name = "colax"
+version = "0.1.0"
+edition = "2021"
+description = "Colax, native Rust edition — a local-first, zero-knowledge password vault."
+publish = false
+
+[[bin]]
+name = "colax"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.28"
+egui = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
