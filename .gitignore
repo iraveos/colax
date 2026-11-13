@@ -45,3 +45,6 @@ release-build/
 # Snapshot copies kept out of the repo until they earn a real home.
 lite version/
 main rust version/
+
+# Portable release archives are build output, not source.
+*.zip
