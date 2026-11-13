@@ -329,6 +329,22 @@ choose **Manual only**, in **Settings → Sharing → Linked copies**.
 - **Backups:** wherever you chose to save the exported file. Colax does not upload a copy to a
   central server.
 
+## Build and releases
+
+```bash
+npm run dist:electron   # build, package, copy the setup exe, then write the portable zip
+npm run dist:zip        # rebuild only the portable zip from release/win-unpacked
+```
+
+`npm run dist:electron` leaves two release assets in the project root:
+
+| File | Use |
+| --- | --- |
+| `Colax Setup <version>.exe` | NSIS installer. Running a **newer** setup over an existing install replaces the installed app files in place (same `appId`), keeps shortcuts updated and leaves the vault data and preferences untouched. |
+| `Colax <version> win-x64.zip` | Portable build: only the app itself — `Colax.exe`, the Electron runtime, `locales/` and `resources/app.asar` under a `Colax/` folder. No source, no `node_modules`, no build cache, no installer. |
+
+Either file can be uploaded to a GitHub release as-is; the zip exists so a release never needs a hand-collected folder. The zip is written by `scripts/pack-zip.mjs` with Node's own zlib, so no 7-Zip or PowerShell is required to build it. To update a portable copy, extract the newer zip over the existing folder.
+
 ## Honest limitations
 
 - **A vault password cannot be recovered.** This is what makes the design safe. If you

@@ -15,7 +15,8 @@
     "build:electron": "npm run build && node scripts/electron-build.mjs",
     "check:render": "npm run build:electron && electron . --render-check",
     "check:memory": "npm run build:electron && electron . --memory-report",
-    "dist:electron": "npm run build:electron && electron-builder --win && node scripts/copy-installer.mjs"
+    "dist:electron": "npm run build:electron && electron-builder --win && node scripts/copy-installer.mjs && node scripts/pack-zip.mjs",
+    "dist:zip": "node scripts/pack-zip.mjs"
   },
   "build": {
     "appId": "app.colax.vault",
@@ -38,7 +39,8 @@
       "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Colax"
+      "shortcutName": "Colax",
+      "deleteAppDataOnUninstall": false
     }
   },
   "dependencies": {
