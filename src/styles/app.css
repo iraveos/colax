@@ -2821,3 +2821,25 @@ body.is-reordering,body.is-reordering *{user-select:none !important;cursor:grabb
 .resources__undo{display:flex;gap:6px;margin-left:auto}
 .resources__row .btn{justify-content:center}
 @media(max-width:760px){.resources__row{grid-template-columns:1fr auto}.resources__reading{text-align:left}}
+
+/* Resources, second pass: grouped cards with room for each number and button. */
+.resources{display:flex;flex-direction:column;gap:var(--space-4)}
+.resources__summary{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card)}
+.resources__summary-actions{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto}
+.resource-group{display:flex;flex-direction:column;gap:8px}
+.resource-group__head{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px;padding:2px 4px}
+.resource-group__title{margin:0;font-size:var(--text-sm);font-weight:680;color:var(--text)}
+.resource-group__hint{flex:1;min-width:160px;font-size:var(--text-xs);color:var(--text-faint)}
+.resource-cards{list-style:none;margin:0;padding:0;display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(238px,1fr))}
+.resource-card{position:relative;display:flex;flex-direction:column;gap:7px;padding:12px 14px 13px;border:1px solid var(--card-hairline);border-radius:var(--radius-lg);background:var(--card)}
+.resource-card[data-level=Medium]{border-color:hsl(38 72% 56% / .26)}
+.resource-card[data-level=Heavy]{border-color:hsl(4 70% 55% / .32);background:hsl(4 70% 55% / .045)}
+.resource-card__top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.resource-card__name{font-size:var(--text-sm);font-weight:620;color:var(--text)}
+.resource-card__reading{display:flex;flex-direction:column;gap:1px}
+.resource-card__value{font-family:var(--font-mono);font-size:20px;line-height:1.15;color:var(--text);font-variant-numeric:tabular-nums}
+.resource-card__unit{font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint)}
+.resource-card__detail{margin:0;flex:1;font-size:var(--text-xs);line-height:1.55;color:var(--text-muted)}
+.resource-card__action{width:100%;justify-content:center;min-height:34px;padding:6px 12px;margin-top:2px}
+.resource-card__none{display:block;padding:9px 0 1px;text-align:center;font-size:10px;letter-spacing:.03em;text-transform:uppercase;color:var(--text-faint)}
+@media(max-width:520px){.resource-cards{grid-template-columns:1fr}.resources__summary-actions{margin-left:0;width:100%}}

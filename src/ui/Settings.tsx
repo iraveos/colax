@@ -3212,18 +3212,42 @@ function ResourcesPanel({
 
   const levelOf = (weight: number) => (weight >= 2 ? 'Heavy' : weight === 1 ? 'Medium' : 'Light');
 
+  const groups: { id: string; label: string; hint: string }[] = [
+    { id: 'frame', label: 'Motion & glass', hint: 'What repaints while you move through the app' },
+    { id: 'mail', label: 'Mail & media', hint: 'Network checks and the images they carry' },
+    { id: 'store', label: 'Storage & memory', hint: 'What the vault keeps loaded and on disk' },
+  ];
+
   const rows: {
     key: string;
+    group: string;
     label: string;
-    reading: string;
+    value: string;
+    unit: string;
     detail: string;
     weight: number;
     action?: { label: string; patch: Partial<VaultPreferences> };
   }[] = [
     {
+      key: 'glass',
+      group: 'frame',
+      label: 'Frosted glass',
+      value: prefs.reduceTransparency ? '0' : `${blurred ?? live.blurred}`,
+      unit: 'blurred surfaces',
+      detail: prefs.reduceTransparency
+        ? 'Off. Surfaces are flat, so nothing is blurred every frame.'
+        : 'Each frosted panel paints its backdrop again on every scroll and hover.',
+      weight: prefs.reduceTransparency ? 0 : (blurred ?? live.blurred) > 0 ? 2 : 0,
+      action: prefs.reduceTransparency
+        ? undefined
+        : { label: 'Flatten frosted glass', patch: { reduceTransparency: true } },
+    },
+    {
       key: 'motion',
+      group: 'frame',
       label: 'Animations',
-      reading: `${live.animations} running`,
+      value: `${live.animations}`,
+      unit: 'running now',
       detail:
         prefs.motion === 0
           ? 'Off. Nothing animates or re-lays itself.'
@@ -3232,61 +3256,47 @@ function ResourcesPanel({
       action: prefs.motion === 0 ? undefined : { label: 'Turn animations off', patch: { motion: 0 } },
     },
     {
-      key: 'glass',
-      label: 'Frosted glass',
-      reading: `${prefs.reduceTransparency ? 0 : (blurred ?? live.blurred)} blurred`,
-      detail: prefs.reduceTransparency
-        ? 'Off. Surfaces are flat, so nothing is blurred every frame.'
-        : `${blurred ?? live.blurred} surface${blurred === 1 ? '' : 's'} painting a backdrop blur, ${live.images} images on screen.`,
-      weight: prefs.reduceTransparency ? 0 : (blurred ?? live.blurred) > 0 ? 2 : 0,
-      action: prefs.reduceTransparency
-        ? undefined
-        : { label: 'Flatten frosted glass', patch: { reduceTransparency: true } },
-    },
-    {
       key: 'ambient',
+      group: 'frame',
       label: 'Ambient gradient',
-      reading: `${Math.round(prefs.ambient * 100)}%`,
+      value: `${Math.round(prefs.ambient * 100)}%`,
+      unit: 'intensity',
       detail: prefs.ambient === 0 ? 'Off. The background is a single colour.' : 'A mesh gradient painted behind every screen.',
       weight: prefs.ambient === 0 ? 0 : prefs.ambient > 0.5 ? 2 : 1,
       action: prefs.ambient === 0 ? undefined : { label: 'Turn the gradient off', patch: { ambient: 0 } },
     },
     {
       key: 'background',
+      group: 'frame',
       label: 'Background image',
-      reading: prefs.backgroundImage ? formatBytes(prefs.backgroundImage.length) : '0 B',
+      value: prefs.backgroundImage ? formatBytes(prefs.backgroundImage.length) : 'None',
+      unit: 'app background',
       detail: prefs.backgroundImage
         ? `${Math.round(prefs.backgroundOpacity * 100)}% opacity${prefs.backgroundBlur > 0 ? `, blurred ${prefs.backgroundBlur}px` : ''}.`
-        : 'None. Nothing to decode or repaint.',
+        : 'Nothing to decode or repaint.',
       weight: prefs.backgroundImage ? 2 : 0,
       action: prefs.backgroundImage ? { label: 'Remove the background image', patch: { backgroundImage: '' } } : undefined,
     },
     {
       key: 'shadows',
+      group: 'frame',
       label: 'Card shadows',
-      reading: `${Math.round(prefs.cardDepth * 100)}%`,
+      value: `${Math.round(prefs.cardDepth * 100)}%`,
+      unit: 'depth',
       detail: prefs.cardDepth === 0 ? 'Flat. No shadows are painted.' : 'A shadow per card, restruck whenever the list scrolls.',
       weight: prefs.cardDepth === 0 ? 0 : prefs.cardDepth > 0.6 ? 1 : 0,
       action: prefs.cardDepth === 0 ? undefined : { label: 'Flatten card shadows', patch: { cardDepth: 0 } },
     },
     {
-      key: 'mail-inline',
-      label: 'Inline mail images',
-      reading: `${live.images} images`,
-      detail: prefs.mailInlineImages
-        ? 'On. An opened message can pull up to four images into memory.'
-        : 'Off. Messages open as text, and cid: images show a labelled placeholder.',
-      weight: prefs.mailInlineImages ? 2 : 0,
-      action: prefs.mailInlineImages ? { label: 'Turn inline mail images off', patch: { mailInlineImages: false } } : undefined,
-    },
-    {
       key: 'polling',
+      group: 'mail',
       label: 'Mail polling',
-      reading: `${checksPerHour}/hour`,
+      value: `${checksPerHour}`,
+      unit: 'checks per hour',
       detail:
         polling.length === 0
           ? 'No mailbox polls on a timer.'
-          : `${polling.length} mailbox${polling.length === 1 ? '' : 'es'} · fastest every ${fastestPoll}s${fastestPoll <= 120 ? ', a network request every couple of minutes' : ''}.`,
+          : `${polling.length} mailbox${polling.length === 1 ? '' : 'es'} · fastest every ${fastestPoll}s${fastestPoll <= 120 ? ', a request every couple of minutes' : ''}.`,
       weight: polling.length === 0 ? 0 : fastestPoll <= 120 ? 2 : 1,
       action:
         polling.length === 0
@@ -3303,9 +3313,23 @@ function ResourcesPanel({
             },
     },
     {
+      key: 'mail-inline',
+      group: 'mail',
+      label: 'Inline mail images',
+      value: `${live.images}`,
+      unit: 'images on screen',
+      detail: prefs.mailInlineImages
+        ? 'On. An opened message can pull up to four images into memory.'
+        : 'Off. Messages open as text, and cid: images show a labelled placeholder.',
+      weight: prefs.mailInlineImages ? 2 : 0,
+      action: prefs.mailInlineImages ? { label: 'Turn inline mail images off', patch: { mailInlineImages: false } } : undefined,
+    },
+    {
       key: 'cache',
+      group: 'mail',
       label: 'Message cache',
-      reading: `${cachedMessages} messages`,
+      value: `${cachedMessages}`,
+      unit: 'cached messages',
       detail:
         cachedMessages === 0
           ? 'Empty.'
@@ -3315,43 +3339,54 @@ function ResourcesPanel({
     },
     {
       key: 'media',
+      group: 'store',
       label: 'Images in logins',
-      reading: formatBytes(mediaBytes),
+      value: mediaBytes === 0 ? 'None' : formatBytes(mediaBytes),
+      unit: 'inside records',
       detail: mediaBytes === 0 ? 'No uploaded card art or backgrounds.' : 'Inline images inside login records and their notes.',
       weight: mediaBytes === 0 ? 0 : mediaBytes > 2_000_000 ? 2 : 1,
     },
     {
+      key: 'logins',
+      group: 'store',
+      label: 'Loaded logins',
+      value: `${items.length}`,
+      unit: 'decrypted in memory',
+      detail: 'Locking the vault releases them from memory.',
+      weight: items.length > 2000 ? 2 : items.length > 500 ? 1 : 0,
+    },
+    {
+      key: 'nodes',
+      group: 'store',
+      label: 'Elements on screen',
+      value: `${live.nodes}`,
+      unit: 'DOM nodes',
+      detail: `${blurred ?? live.blurred} blurred surfaces and ${live.images} images inside the current page.`,
+      weight: live.nodes > 4000 ? 2 : live.nodes > 2500 ? 1 : 0,
+    },
+    {
       key: 'history',
+      group: 'store',
       label: 'History log',
-      reading: `${prefs.history.length} events`,
+      value: `${prefs.history.length}`,
+      unit: 'recorded events',
       detail: prefs.history.length === 0 ? 'Empty.' : `About ${formatBytes(historyBytes)} of past edits, kept for the activity list.`,
       weight: historyBytes > 200_000 ? 1 : 0,
     },
     {
       key: 'spellcheck',
+      group: 'store',
       label: 'Spellchecker',
-      reading: prefs.disableSpellcheck ? 'Off' : 'On',
+      value: prefs.disableSpellcheck ? 'Off' : 'On',
+      unit: 'at launch',
       detail: prefs.disableSpellcheck
         ? 'Off. No dictionaries are loaded.'
-        : 'On. Electron loads a dictionary per language at launch.',
+        : 'Electron loads a dictionary per language at launch.',
       weight: prefs.disableSpellcheck ? 0 : 1,
       action: prefs.disableSpellcheck ? undefined : { label: 'Turn the spellchecker off', patch: { disableSpellcheck: true } },
     },
-    {
-      key: 'logins',
-      label: 'Loaded logins',
-      reading: `${items.length} logins`,
-      detail: 'Decrypted in memory while the vault is open. Locking the vault releases them.',
-      weight: items.length > 2000 ? 2 : items.length > 500 ? 1 : 0,
-    },
-    {
-      key: 'nodes',
-      label: 'Elements on screen',
-      reading: `${live.nodes} nodes`,
-      detail: `${blurred ?? live.blurred} blurred surfaces and ${live.images} images inside the current page.`,
-      weight: live.nodes > 4000 ? 2 : live.nodes > 2500 ? 1 : 0,
-    },
   ];
+
   const heavy = rows.filter((row) => row.weight >= 2).length;
   const canUndo = cursor > 0;
   const canRedo = cursor < steps.length;
@@ -3363,26 +3398,26 @@ function ResourcesPanel({
           {heavy === 0 ? 'Nothing heavy is on' : `${heavy} heavy feature${heavy === 1 ? '' : 's'}`}
         </span>
         <span className="resource-chip">
-          {snapshot?.totalBytes ? `${formatBytes(snapshot.totalBytes)} total memory` : 'No process reading in this browser'}
+          {snapshot?.totalBytes ? `${formatBytes(snapshot.totalBytes)} total memory` : 'No process reading here'}
         </span>
         <span className="resource-chip">
           {snapshot?.heapBytes ? `${formatBytes(snapshot.heapBytes)} JS heap` : 'No heap reading'}
         </span>
         <span className="resource-chip">{live.nodes} DOM nodes</span>
         <span className="resource-chip">{live.animations} animations</span>
-        <button
-          type="button"
-          className="btn btn--secondary btn--sm"
-          onClick={() => {
-            setMeasureTick((tick) => tick + 1);
-            onMeasure();
-          }}
-          disabled={measuring}
-        >
-          {measuring ? <span className="spinner" /> : null}
-          Measure again
-        </button>
-        <div className="resources__undo">
+        <div className="resources__summary-actions">
+          <button
+            type="button"
+            className="btn btn--secondary btn--sm"
+            onClick={() => {
+              setMeasureTick((tick) => tick + 1);
+              onMeasure();
+            }}
+            disabled={measuring}
+          >
+            {measuring ? <span className="spinner" /> : null}
+            Measure again
+          </button>
           <button
             type="button"
             className="btn btn--quiet btn--sm"
@@ -3391,7 +3426,7 @@ function ResourcesPanel({
             title="Undo the last change here (Ctrl+Z)"
           >
             Undo
-            <span className="btn__kbd">Z</span>
+            <span className="btn__kbd">Ctrl+Z</span>
           </button>
           <button
             type="button"
@@ -3401,39 +3436,58 @@ function ResourcesPanel({
             title="Redo (Ctrl+Shift+Z or Ctrl+Y)"
           >
             Redo
-            <span className="btn__kbd">⇧Z</span>
+            <span className="btn__kbd">Ctrl+Shift+Z</span>
           </button>
         </div>
       </div>
 
-      <ul className="resources__list" aria-label="Feature costs">
-        {rows.map((row) => (
-          <li className="resources__row" key={row.key} data-level={levelOf(row.weight)}>
-            <span className="resources__name">{row.label}</span>
-            <span className="resources__reading">{row.reading}</span>
-            <span className="resources__detail">{row.detail}</span>
-            <span className="resource-chip" data-level={levelOf(row.weight)}>
-              {levelOf(row.weight)}
-            </span>
-            {row.action ? (
-              <button
-                type="button"
-                className="btn btn--quiet btn--sm"
-                title={row.action.label}
-                onClick={() => apply(row.action!.label, row.action!.patch)}
-              >
-                Fix
-              </button>
-            ) : (
-              <span className="resources__none">—</span>
-            )}
-          </li>
-        ))}
-      </ul>
+      {groups.map((group) => {
+        const groupRows = rows.filter((row) => row.group === group.id).sort((a, b) => b.weight - a.weight);
+        const heavyInGroup = groupRows.filter((row) => row.weight >= 2).length;
+        return (
+          <section className="resource-group" key={group.id} aria-label={group.label}>
+            <header className="resource-group__head">
+              <h4 className="resource-group__title">{group.label}</h4>
+              <span className="resource-group__hint">{group.hint}</span>
+              <span className="resource-chip" data-level={heavyInGroup > 0 ? 'Heavy' : 'Light'}>
+                {heavyInGroup > 0 ? `${heavyInGroup} heavy` : 'All light'}
+              </span>
+            </header>
+            <ul className="resource-cards">
+              {groupRows.map((row) => (
+                <li className="resource-card" key={row.key} data-level={levelOf(row.weight)}>
+                  <div className="resource-card__top">
+                    <span className="resource-card__name">{row.label}</span>
+                    <span className="resource-chip" data-level={levelOf(row.weight)}>
+                      {levelOf(row.weight)}
+                    </span>
+                  </div>
+                  <div className="resource-card__reading">
+                    <span className="resource-card__value">{row.value}</span>
+                    <span className="resource-card__unit">{row.unit}</span>
+                  </div>
+                  <p className="resource-card__detail">{row.detail}</p>
+                  {row.action ? (
+                    <button
+                      type="button"
+                      className="btn btn--secondary btn--sm resource-card__action"
+                      onClick={() => apply(row.action!.label, row.action!.patch)}
+                    >
+                      {row.action.label}
+                    </button>
+                  ) : (
+                    <span className="resource-card__none">Reported only — nothing to switch</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        );
+      })}
+
       <p className="field__hint">
         Every number is measured on this machine or counted from the vault — nothing is estimated.
-        "Heavy" marks a feature that is on and known to cost memory or frames. Undo and redo cover
-        every action on this tab (Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y).
+        Heavy features are listed first in each group. Undo and redo cover every action on this tab.
       </p>
     </div>
   );
