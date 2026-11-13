@@ -55,6 +55,7 @@ export function Dashboard({
   onSelectChannel,
   onOpenLogin,
   onOpenMailbox,
+  onOpenMessages,
   onOpenSettings,
   onAddLogin,
   onNewChannel,
@@ -84,6 +85,8 @@ export function Dashboard({
   onOpenLogin: (item: VaultItem) => void;
   /** Opens one connected mailbox's messages window. Absent: the mail panel hides. */
   onOpenMailbox?: (accountId: string) => void;
+  /** Opens a login's Messages window, for an address with no IMAP mailbox. */
+  onOpenMessages?: (item: VaultItem) => void;
   /** Jumps to a settings tab for management (tags, reminder windows). */
   onOpenSettings: (tab: string) => void;
   /** Starts a new login. Shown only when the vault is empty. */
@@ -553,6 +556,7 @@ export function Dashboard({
           maskEmails={prefs.maskEmails}
           onOpenLogin={onOpenLogin}
           onOpenMailbox={onOpenMailbox}
+          onOpenMessages={onOpenMessages}
           onOpenSettings={onOpenSettings}
           onAddLogin={onAddLogin}
           onCopy={onCopy}

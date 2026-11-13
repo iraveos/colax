@@ -12,8 +12,53 @@ export interface SettingsTab {
   id: string;
   label: string;
   icon: ReactNode;
+  /** One line under the tab title; falls back to the built-in description. */
+  hint?: string;
   render: () => ReactNode;
 }
+
+/**
+ * Where each old settings tab now lives.
+ *
+ * Appearance, Workspace, Security and Data were merged into single rail tabs
+ * with mini-tabs inside. The search index still names the section a control
+ * belongs to, so this one table turns that into the group to open and the
+ * mini-tab to show — without rewriting a hundred index entries.
+ */
+const GROUP_OF: Record<string, string> = {
+  appearance: 'appearance',
+  layout: 'appearance',
+  background: 'appearance',
+  hidden: 'appearance',
+  channels: 'workspace',
+  docks: 'workspace',
+  security: 'security',
+  generator: 'security',
+  alarms: 'security',
+  backup: 'data',
+  theme: 'data',
+  data: 'data',
+  optimize: 'optimize',
+  sharing: 'sharing',
+  desktop: 'desktop',
+  about: 'about',
+};
+
+/** Section ids that no longer have a rail tab of their own. */
+const SECTION_OF: Record<string, string> = {
+  appearance: 'appearance',
+  layout: 'layout',
+  background: 'background',
+  hidden: 'hidden',
+  channels: 'channels',
+  docks: 'docks',
+  security: 'security',
+  generator: 'generator',
+  alarms: 'alarms',
+  backup: 'backup',
+  theme: 'theme',
+  data: 'data',
+};
 
 /**
  * The flat search index for the settings window.
@@ -32,8 +77,11 @@ const SEARCH_INDEX: {
   detail?: string;
   /** Text of the actual control to scroll to when the label differs. */
   scroll?: string;
-  /** Sub-tab inside Sharing, so search lands on the right panel. */
-  section?: 'server' | 'codes' | 'devices' | 'receive' | 'copies';
+  /**
+   * The mini-tab to open: a Sharing inner panel, or one of the merged groups'
+   * sections (obtained from SECTION_OF when omitted).
+   */
+  section?: string;
 }[] = [
   // Appearance
   { tab: 'appearance', label: 'Theme', words: 'light dark system colour mode auto', detail: 'Light · Dark · System' },
@@ -66,7 +114,7 @@ const SEARCH_INDEX: {
   { tab: 'layout', label: 'Rail position', words: 'sidebar left right top bottom dock', detail: 'Left edge · Right edge · Top tabs · Bottom dock' },
   { tab: 'layout', label: 'Rail alignment', words: 'sidebar channels middle bottom vertical align', detail: 'Top · Middle · Bottom' },
   { tab: 'layout', label: 'Card size', words: 'width height min size cards', detail: 'Width · Minimum height · Scale' },
-  { tab: 'layout', label: 'Quick-launch docks', words: 'docks shortcuts quick launch', detail: 'Add · Remove · Reorder' },
+  { tab: 'docks', label: 'Quick-launch docks', words: 'docks shortcuts quick launch', detail: 'Add · Remove · Reorder · Keys' },
   { tab: 'layout', label: 'Hide buttons', words: 'chrome visibility new login bulk add settings lock sidebar', detail: 'New login · Bulk add · Settings · Lock · Sidebar · Dock' },
   // Hidden
   { tab: 'hidden', label: 'Show hidden items', words: 'restore hidden channels folders buttons bars', detail: 'Buttons · Channels · Folders · Show everything' },
@@ -83,6 +131,8 @@ const SEARCH_INDEX: {
   { tab: 'channels', label: 'Tags', words: 'tags labels new tag delete tag catalogue', detail: 'New tag · Rename · Delete · Used by channels' },
   { tab: 'channels', label: 'Folders', words: 'folders group channels move', detail: 'Create · Rename · Move channels · Delete' },
   // Generator
+  { tab: 'generator', label: 'Generator presets', words: 'generator preset pin web login long one click', detail: 'PIN 4 · PIN 6 · Web login · Long' },
+  { tab: 'generator', label: 'Live sample', words: 'generator sample preview example copy', detail: 'New sample · Copy' },
   { tab: 'generator', label: 'Default password length', words: 'generator length characters size', detail: '8–64 characters' },
   { tab: 'generator', label: 'Character sets', words: 'generator lowercase uppercase digits symbols look-alikes', detail: 'Lowercase · Uppercase · Digits · Symbols · Avoid look-alikes' },
   // Security
@@ -108,6 +158,15 @@ const SEARCH_INDEX: {
   { tab: 'security', label: 'Notifications', words: 'toasts errors off silence alerts', detail: 'All · Errors only · Off' },
   // Alarms
   { tab: 'alarms', label: 'Alarms', words: 'reminders clock notifications sound', detail: 'Add · Time · Days · Sound' },
+  { tab: 'alarms', label: 'Mute alarm sounds', words: 'alarms mute silent sound notifications', detail: 'On · Off' },
+  { tab: 'alarms', label: 'Sort alarms', words: 'alarms order earliest next time', detail: 'Next first · As added' },
+  { tab: 'alarms', label: 'Duplicate an alarm', words: 'alarms copy duplicate clone', detail: 'Duplicate' },
+  // Optimize · Resources
+  { tab: 'optimize', label: 'Resources', words: 'memory ram cpu heavy feature slow performance lag cost disk cache blur motion polling', detail: 'Feature costs · DOM nodes · JS heap · Measure again', section: 'resources' },
+  // Data · protected exports
+  { tab: 'backup', label: 'Export with a password', words: 'backup export encrypt password protected aes pbkdf2', detail: 'AES-GCM · PBKDF2' },
+  { tab: 'theme', label: 'Theme backup', words: 'theme export import password colours palette', detail: 'Export · Import · Password' },
+  { tab: 'data', label: 'CSV password', words: 'csv export import password protected encrypt', detail: 'Text-only CSV · Password' },
   // Sharing
   { tab: 'sharing', label: 'Share server', words: 'sharing lan port internet cloudflare tunnel public address local network notify approval', detail: 'Internet: Off · Cloudflare Quick Tunnel · Local network: On/Off · Port · Manual public address · Notify approval', scroll: 'Sharing server', section: 'server' },
   { tab: 'sharing', label: 'Share codes', words: 'sharing share code live link pin expiry device limit revoke tags channel folder approval', detail: 'Copy code · Copy live link · Tags or individual logins · Code only / Code + PIN · Approve new devices · Expiry · Device limit · Notes / 2FA / Attachments', scroll: 'Share codes', section: 'codes' },
@@ -208,6 +267,18 @@ export function SettingsWindow({
     return () => window.removeEventListener('keydown', onKeyDown, true);
   });
 
+  // Another setting can point at a tab that lives somewhere else (the Layout
+  // row that hands docks over to Workspace). It asks for the tab by event so
+  // this window stays the only owner of which tab is showing.
+  useEffect(() => {
+    const onJump = (event: Event) => {
+      const id = (event as CustomEvent<{ tab?: string }>).detail?.tab;
+      if (id && tabs.some((tab) => tab.id === id)) select(id);
+    };
+    window.addEventListener('colax:settings-tab', onJump);
+    return () => window.removeEventListener('colax:settings-tab', onJump);
+  });
+
   function select(id: string) {
     const from = tabs.findIndex((tab) => tab.id === activeId);
     const to = tabs.findIndex((tab) => tab.id === id);
@@ -253,14 +324,24 @@ export function SettingsWindow({
   const tabLabel = (id: string) => tabs.find((tab) => tab.id === id)?.label ?? id;
   const hitTimer = useRef<number | null>(null);
 
-  /** Opens the tab and scrolls the matching control into view with a short flash. */
+  /**
+   * Opens the tab and scrolls the matching control into view with a short flash.
+   *
+   * The old version waited a fixed 160ms. Switching tabs runs an exit animation
+   * and a sub-tab may mount on the frame after that, so the panel was often not
+   * in the document yet: the tab changed but nothing was found, scrolled to or
+   * flashed, which read as "search does nothing". This retries for about a
+   * second, then gives up quietly (the right tab is still open).
+   */
   function revealSetting(label: string): void {
     if (hitTimer.current !== null) window.clearTimeout(hitTimer.current);
-    hitTimer.current = window.setTimeout(() => {
+    const needle = label.trim().toLowerCase();
+    const words = needle.split(/\s+/).filter((word) => word.length > 2);
+    let tries = 0;
+
+    const attempt = () => {
       const panel = bodyRef.current;
       if (!panel) return;
-      const needle = label.trim().toLowerCase();
-      const words = needle.split(/\s+/).filter((word) => word.length > 2);
       const labels = [
         ...panel.querySelectorAll<HTMLElement>(
           '.setting__label, .field__label, .toggle-row__text, .sec__title, .tag-manager__row button, button',
@@ -282,6 +363,13 @@ export function SettingsWindow({
           bestScore = score;
         }
       }
+      // A panel that has not mounted yet has none of the labels above. Keep
+      // checking until it does, or until the attempt budget runs out.
+      if (bestScore < 10 && tries < 10) {
+        tries += 1;
+        hitTimer.current = window.setTimeout(attempt, 110);
+        return;
+      }
       const target =
         bestScore >= 10
           ? (best?.closest<HTMLElement>('.setting, .field, .sharing__sync, .toggle-row, .tag-manager__row') ?? best)
@@ -293,7 +381,9 @@ export function SettingsWindow({
       void target.offsetWidth;
       target.classList.add('settings-search-hit');
       window.setTimeout(() => target.classList.remove('settings-search-hit'), 1_800);
-    }, 160);
+    };
+
+    hitTimer.current = window.setTimeout(attempt, 90);
   }
 
   const searchMenu = (
@@ -309,6 +399,31 @@ export function SettingsWindow({
           if (event.key === 'Escape') {
             event.stopPropagation();
             setSettingsQuery('');
+            return;
+          }
+          // Enter opens the first result, so finding a setting never needs a
+          // trip to the mouse.
+          if (event.key === 'Enter' && searchResults[0]) {
+            event.preventDefault();
+            const entry = searchResults[0];
+            const group = GROUP_OF[entry.tab] ?? entry.tab;
+            const themeRow = entry.tab === 'backup' && /theme/i.test(entry.label);
+            const section = entry.section ?? (themeRow ? 'theme' : (SECTION_OF[entry.tab] ?? entry.tab));
+            select(group);
+            setSettingsQuery('');
+            window.setTimeout(() => {
+              if (section && section !== group) {
+                window.dispatchEvent(
+                  new CustomEvent('colax:settings-subtab', { detail: { tab: group, section } }),
+                );
+              }
+              if (entry.section) {
+                window.dispatchEvent(
+                  new CustomEvent('colax:settings-section', { detail: entry.section }),
+                );
+              }
+            }, 60);
+            revealSetting(entry.scroll ?? entry.label);
           }
         }}
       />
@@ -324,17 +439,30 @@ export function SettingsWindow({
                 role="listitem"
                 className="settings-window__result"
                 onClick={() => {
-                  select(entry.tab);
+                  const group = GROUP_OF[entry.tab] ?? entry.tab;
+                  // The theme export used to live inside the encrypted-backup
+                  // panel; searching for it should land on its own mini-tab.
+                  const themeRow = entry.tab === 'backup' && /theme/i.test(entry.label);
+                  const section = entry.section ?? (themeRow ? 'theme' : (SECTION_OF[entry.tab] ?? entry.tab));
+                  select(group);
                   setSettingsQuery('');
-                  if (entry.section) {
-                    window.setTimeout(() => {
+                  window.setTimeout(() => {
+                    if (section && section !== group) {
+                      window.dispatchEvent(
+                        new CustomEvent('colax:settings-subtab', {
+                          detail: { tab: group, section },
+                        }),
+                      );
+                    }
+                    // Sharing keeps its own event for its inner panels.
+                    if (entry.section) {
                       window.dispatchEvent(
                         new CustomEvent('colax:settings-section', {
                           detail: entry.section,
                         }),
                       );
-                    }, 60);
-                  }
+                    }
+                  }, 60);
                   revealSetting(entry.scroll ?? entry.label);
                 }}
               >
@@ -404,7 +532,7 @@ export function SettingsWindow({
               <header className="settings-window__header">
                 <div>
                   <h2 className="settings-window__title">{active.label}</h2>
-                  <p className="settings-window__hint">{describe(active.id)}</p>
+                  <p className="settings-window__hint">{active.hint ?? describe(active.id)}</p>
                 </div>
                 <button className="btn btn--icon" onClick={onClose} aria-label="Close settings">
                   <XIcon />

@@ -14,16 +14,20 @@ import {
   type VaultView,
 } from '../vault/storage.ts';
 import { downloadBackup, parseBackup, pickBackupFile } from '../vault/backup.ts';
+import { cellAt, columnIndex, csvTable } from '../vault/csv.ts';
 import {
   downloadThemeBackup,
   parseThemeBackup,
+  serializeThemeBackup,
+  themeBackupFilename,
   themeBackupFrom,
   themeBackupPreferences,
 } from '../vault/theme-backup.ts';
+import { isEncryptedExport, openText, sealText } from '../vault/export-crypto.ts';
 import { verifyBackupPassword, type BackupFile, type VaultService } from '../vault/vault-service.ts';
 import type { VaultProtection } from '../crypto/vault-crypto.ts';
 import { openVaultKey, PBKDF2_ITERATIONS, rewrapVaultKey } from '../crypto/vault-crypto.ts';
-import { estimateStrength } from '../crypto/passwords.ts';
+import { estimateStrength, generatePassword } from '../crypto/passwords.ts';
 import { MAX_APP_BACKGROUND_BYTES, MAX_IMAGE_EDGE, type VaultItem } from '../vault/types.ts';
 import { readImageFile } from './card-art.ts';
 import { SettingsWindow, type SettingsTab } from './SettingsWindow.tsx';
@@ -45,7 +49,7 @@ import {
   type OptimizeProfile,
   type OptimizeStyle,
 } from '../vault/optimize.ts';
-import { formatBytes, useEfficiency } from './useEfficiency.ts';
+import { formatBytes, useEfficiency, type EfficiencySnapshot } from './useEfficiency.ts';
 import { Alert, Modal, Select, Toggle } from './primitives.tsx';
 import { buildStamp, getPlatform } from '../lib/platform.ts';
 import type { ShareRedeemResult, ShareServerStatus } from '../lib/shares.ts';
@@ -58,6 +62,7 @@ import {
   BellIcon,
   CheckIcon,
   CloudIcon,
+  CopyIcon,
   DatabaseIcon,
   DownloadIcon,
   EyeOffIcon,
@@ -184,13 +189,51 @@ const SECURITY_GROUPS: readonly { id: SecurityGroup; label: string; hint: string
  * launch-time Chromium trades under Speed, and everything that touches mail
  * under Messages.
  */
-type OptimizeGroup = 'general' | 'look' | 'speed' | 'messages';
+type OptimizeGroup = 'general' | 'resources' | 'look' | 'speed' | 'messages';
 
 const OPTIMIZE_GROUPS: readonly { id: OptimizeGroup; label: string; hint: string }[] = [
   { id: 'general', label: 'General', hint: 'One-click profiles, saved looks and what the app costs right now' },
+  {
+    id: 'resources',
+    label: 'Resources',
+    hint: 'What is taking memory, frames and disk right now, feature by feature, with the switch that fixes it',
+  },
   { id: 'look', label: 'Look & feel', hint: 'Motion, transparency, density, cards and the background' },
   { id: 'speed', label: 'Speed', hint: 'Memory mode, hardware acceleration and spellcheck' },
   { id: 'messages', label: 'Messages', hint: 'Mail polling, inline images, page size and the message cache' },
+];
+
+/** One-click generator presets. Every field is one the generator already has. */
+const GENERATOR_PRESETS: {
+  id: string;
+  label: string;
+  hint: string;
+  options: VaultPreferences['passwordGenerator'];
+}[] = [
+  {
+    id: 'pin4',
+    label: 'PIN 4',
+    hint: 'Four digits, for a card or a door code',
+    options: { length: 4, lower: false, upper: false, digits: true, symbols: false, avoidAmbiguous: false },
+  },
+  {
+    id: 'pin6',
+    label: 'PIN 6',
+    hint: 'Six digits, the common phone / bank shape',
+    options: { length: 6, lower: false, upper: false, digits: true, symbols: false, avoidAmbiguous: false },
+  },
+  {
+    id: 'web',
+    label: 'Web login',
+    hint: '20 characters with every set on',
+    options: { length: 20, lower: true, upper: true, digits: true, symbols: true, avoidAmbiguous: true },
+  },
+  {
+    id: 'long',
+    label: 'Long',
+    hint: '32 characters for a password manager master',
+    options: { length: 32, lower: true, upper: true, digits: true, symbols: true, avoidAmbiguous: false },
+  },
 ];
 
 export function Settings(props: {
@@ -226,6 +269,12 @@ export function Settings(props: {
    */
   onCreateTag?: (name: string) => Tag | null;
   /**
+   * Re-reads the item list after an import wrote through the service directly.
+   * Without it the new logins existed on disk but the screen kept showing the
+   * pre-import vault until a reload.
+   */
+  onItemsChanged?: () => void;
+  /**
    * Opens the appearance panel, optionally switching to a view first so the
    * sliders act on the view the user just clicked rather than the one that
    * happened to be open.
@@ -235,7 +284,7 @@ export function Settings(props: {
   const {
     open, onClose, tab, hideDividers, prefs, service, protection, items, onUpdate, onNotify, onLock, onReset,
     shareServerStatus, onRedeemShare, onSyncShared, onRemoveLinkedCopy, shareSyncing,
-    onEditChannel, onScrubTag, onOpenTuner, onCreateTag,
+    onEditChannel, onScrubTag, onOpenTuner, onCreateTag, onItemsChanged,
   } = props;
   const [changing, setChanging] = useState(false);
   const [enabling, setEnabling] = useState(false);
@@ -251,8 +300,47 @@ export function Settings(props: {
   const set = (patch: Partial<VaultPreferences>) => void onUpdate(patch);
   /** Which group of the Security section is showing. See SECURITY_GROUPS. */
   const [securityGroup, setSecurityGroup] = useState<SecurityGroup>('locking');
+
+  // Settings search can land on a control inside a merged section. The search
+  // index names the section; this turns that into the mini-tab the window
+  // should show. One event name for every group, so adding a group needs no
+  // listener of its own.
+  useEffect(() => {
+    const onSection = (event: Event) => {
+      const detail = (event as CustomEvent<{ tab?: string; section?: string }>).detail;
+      if (!detail?.tab || !detail.section) return;
+      // Optimize keeps its groups in their own state because the Resources tab
+      // also drives the measurement hook.
+      if (detail.tab === 'optimize') {
+        setOptimizeGroup(detail.section as OptimizeGroup);
+        return;
+      }
+      setSubTabs((current) => ({ ...current, [detail.tab as string]: detail.section as string }));
+    };
+    window.addEventListener('colax:settings-subtab', onSection);
+    return () => window.removeEventListener('colax:settings-subtab', onSection);
+  }, []);
   /** Which group of the Optimize section is showing. See OPTIMIZE_GROUPS. */
   const [optimizeGroup, setOptimizeGroup] = useState<OptimizeGroup>('general');
+  /**
+   * Which mini-tab each merged section is showing.
+   *
+   * Appearance, Workspace, Security and Data used to be separate tabs. They are
+   * now one main tab with a strip of mini-tabs inside it, so the rail stays
+   * short without hiding anything: the choice is remembered per section for the
+   * life of the window.
+   */
+  const [subTabs, setSubTabs] = useState<Record<string, string>>({});
+  /** Optional passwords for the plain-text exports (blank = unprotected). */
+  const [csvPassword, setCsvPassword] = useState('');
+  const [themePassword, setThemePassword] = useState('');
+  /** A protected export waiting for its password, and what was typed so far. */
+  const [unlock, setUnlock] = useState<{ kind: 'csv' | 'theme'; text: string } | null>(null);
+  const [unlockPassword, setUnlockPassword] = useState('');
+  /** A sample from the generator, replaced on demand rather than every render. */
+  const [generatorSample, setGeneratorSample] = useState(() =>
+    generatePassword(DEFAULT_PREFERENCES.passwordGenerator),
+  );
 
   /* ---- Optimize ---------------------------------------------------------
      One place to trade eye-candy for CPU, GPU and battery. The app's real
@@ -441,14 +529,19 @@ export function Settings(props: {
     }
   }
 
-  function exportCsv() {
-    // Deliberately plaintext: the point is to move logins into another tool.
+  /** The CSV document, text only. Shared by the plain and the protected export. */
+  function csvText(): string {
     const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
     const tagNames = (item: VaultItem) =>
       item.tags
         .map((id) => prefs.tags.find((tag) => tag.id === id)?.name ?? '')
         .filter(Boolean)
         .join(';');
+    // Text only. The two image columns used to carry data URLs — megabytes per
+    // login, and multiline SVG/base64 payloads that line-based CSV readers turn
+    // into a run of phantom entries. Card images stay in the encrypted backup,
+    // which is the format that round-trips a vault exactly; CSV is for moving
+    // credentials to another tool, and every tool reads these columns.
     const header = [
       'name',
       'url',
@@ -459,8 +552,6 @@ export function Settings(props: {
       'favorite',
       'needsAttention',
       'accentHue',
-      'backgroundImage',
-      'avatarImage',
       'created',
       'updated',
     ];
@@ -475,70 +566,69 @@ export function Settings(props: {
         String(item.favorite),
         String(item.needsAttention),
         item.accentHue === null ? '' : String(item.accentHue),
-        item.backgroundImage ?? '',
-        item.avatarImage ?? '',
         new Date(item.createdAt).toISOString(),
         new Date(item.updatedAt).toISOString(),
       ]
         .map(escape)
         .join(','),
     );
-    const blob = new Blob([[header.join(','), ...rows].join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `colax-vault-${new Date().toISOString().slice(0, 10)}.csv`;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-    onNotify('Plaintext CSV exported — delete it once imported elsewhere');
+    // RFC 4180 line breaks: spreadsheets and importers accept LF, but CRLF is
+    // the one every parser agrees on.
+    return [header.join(','), ...rows].join('\r\n');
   }
 
-  async function importCsv(file: File | undefined) {
-    if (!file) return;
+  async function exportCsv() {
+    const password = csvPassword.trim();
+    try {
+      const text = password ? await sealText('csv', csvText(), password) : csvText();
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadTextFile(
+        `colax-vault-${stamp}${password ? '-protected' : ''}.${password ? 'colax' : 'csv'}`,
+        text,
+        password ? 'application/json' : 'text/csv',
+      );
+      onNotify(
+        password
+          ? 'CSV exported, encrypted with your password'
+          : 'Plaintext CSV exported — delete it once imported elsewhere',
+      );
+    } catch (cause) {
+      onNotify(cause instanceof Error ? cause.message : 'Export failed', 'error');
+    }
+  }
+
+  /** Parses and writes one CSV document. Shared by the file picker and the
+   * password prompt, so a protected export takes the same path once opened. */
+  async function runCsvImport(text: string) {
     setImportingCsv(true);
     try {
-      const text = await file.text();
-      const lines = text.split(/\r?\n/).filter(Boolean);
-      const parseLine = (line: string): string[] => {
-        const cells: string[] = [];
-        let current = '';
-        let quoted = false;
-        for (let i = 0; i < line.length; i += 1) {
-          const char = line[i];
-          if (char === '"') {
-            if (quoted && line[i + 1] === '"') {
-              current += '"';
-              i += 1;
-            } else quoted = !quoted;
-          } else if (char === ',' && !quoted) {
-            cells.push(current);
-            current = '';
-          } else current += char;
-        }
-        cells.push(current);
-        return cells;
-      };
+      // The whole document is parsed as CSV, quotes and embedded newlines
+      // included. Splitting on lines first — which this used to do — turned a
+      // note with a comma or a line break into several phantom logins whose
+      // fields were fragments of that note.
+      const { header, rows } = csvTable(text);
+      if (header.length === 0) {
+        onNotify('That file has no header row, so there is nothing to import.', 'error');
+        return;
+      }
       // Column-driven read: a file exported by this app carries the full set,
-      // one from another tool carries whatever it has. A column name the file
-      // omits simply falls back to its empty default.
-      const header = lines[0] ? parseLine(lines[0]).map((name) => name.trim().toLowerCase()) : [];
-      const column = (name: string) => header.indexOf(name);
+      // one from Chrome, Bitwarden, 1Password or another tool carries different
+      // spellings. A column the file omits simply falls back to its default.
       const at = {
-        name: column('name'),
-        url: column('url'),
-        username: column('username'),
-        password: column('password'),
-        notes: column('notes'),
-        tags: column('tags'),
-        favorite: column('favorite'),
-        needsAttention: column('needsattention'),
-        accentHue: column('accenthue'),
-        backgroundImage: column('backgroundimage'),
-        avatarImage: column('avatarimage'),
-        created: column('created'),
-        updated: column('updated'),
+        name: columnIndex(header, 'name', 'title', 'account'),
+        url: columnIndex(header, 'url', 'website', 'login_uri', 'uri'),
+        username: columnIndex(header, 'username', 'user', 'login', 'email', 'login_username'),
+        password: columnIndex(header, 'password', 'pass', 'login_password'),
+        notes: columnIndex(header, 'notes', 'note', 'comment', 'comments', 'extra'),
+        tags: columnIndex(header, 'tags', 'tag', 'folders', 'folder', 'collections'),
+        favorite: columnIndex(header, 'favorite', 'favourite'),
+        needsAttention: columnIndex(header, 'needsattention', 'needs_attention'),
+        accentHue: columnIndex(header, 'accenthue', 'accent_hue'),
+        backgroundImage: columnIndex(header, 'backgroundimage', 'background_image'),
+        avatarImage: columnIndex(header, 'avatarimage', 'avatar_image'),
+        created: columnIndex(header, 'created', 'created_at'),
+        updated: columnIndex(header, 'updated', 'updated_at', 'modified'),
       };
-      const pick = (cells: string[], index: number) => (index >= 0 ? (cells[index] ?? '') : '');
       // Tag names resolve against the catalogue; missing names are created when
       // App gave us a factory, otherwise the login imports untagged.
       const tagIdFor = (name: string): string | null => {
@@ -550,40 +640,155 @@ export function Settings(props: {
         if (existing) return existing.id;
         return onCreateTag?.(trimmed)?.id ?? null;
       };
-      let imported = 0;
-      for (const line of lines.slice(1)) {
-        const cells = parseLine(line);
-        const rawTags = pick(cells, at.tags)
-          .split(';')
+      /**
+       * A row is a duplicate when the vault already has the same title, URL,
+       * username and password. This is what makes re-importing the same export
+       * an update rather than a second copy of every login, and it also catches
+       * a file that repeats a row internally. Anything that differs — even one
+       * character — is a real login and is kept.
+       */
+      const signature = (value: { title: string; url: string; username: string; password: string }) =>
+        [
+          value.title.trim().toLowerCase(),
+          value.url.trim().toLowerCase().replace(/\/+$/, ''),
+          value.username.trim().toLowerCase(),
+          value.password,
+        ].join('\u0000');
+      const seen = new Set(items.map((item) => signature(item)));
+      const drafts: Partial<VaultItem>[] = [];
+      let duplicates = 0;
+      let skipped = 0;
+      for (const cells of rows) {
+        const draft = {
+          title: cellAt(cells, at.name),
+          url: cellAt(cells, at.url),
+          username: cellAt(cells, at.username),
+          password: cellAt(cells, at.password),
+        };
+        // An empty export row, or a spacer line between groups, is not a login.
+        if (!draft.title.trim() && !draft.url.trim() && !draft.username.trim() && !draft.password.trim()) {
+          skipped += 1;
+          continue;
+        }
+        const key = signature(draft);
+        if (seen.has(key)) {
+          duplicates += 1;
+          continue;
+        }
+        seen.add(key);
+        const rawTags = cellAt(cells, at.tags)
+          .split(/[;,]/)
           .map(tagIdFor)
           .filter((id): id is string => Boolean(id));
-        const createdAt = Date.parse(pick(cells, at.created));
-        const updatedAt = Date.parse(pick(cells, at.updated));
-        const hueText = pick(cells, at.accentHue).trim();
-        const saved = await service.addItem({
-          title: pick(cells, at.name),
-          url: pick(cells, at.url),
-          username: pick(cells, at.username),
-          password: pick(cells, at.password),
-          notes: pick(cells, at.notes),
-          favorite: pick(cells, at.favorite).toLowerCase() === 'true',
-          needsAttention: pick(cells, at.needsAttention).toLowerCase() === 'true',
+        const createdAt = Date.parse(cellAt(cells, at.created));
+        const updatedAt = Date.parse(cellAt(cells, at.updated));
+        const hueText = cellAt(cells, at.accentHue).trim();
+        drafts.push({
+          ...draft,
+          notes: cellAt(cells, at.notes),
+          favorite: cellAt(cells, at.favorite).toLowerCase() === 'true',
+          needsAttention: cellAt(cells, at.needsAttention).toLowerCase() === 'true',
           accentHue: hueText === '' ? null : Number(hueText) || null,
-          backgroundImage: pick(cells, at.backgroundImage),
-          avatarImage: pick(cells, at.avatarImage),
+          backgroundImage: cellAt(cells, at.backgroundImage),
+          avatarImage: cellAt(cells, at.avatarImage),
           tags: rawTags,
           ...(Number.isFinite(createdAt) ? { createdAt } : {}),
           ...(Number.isFinite(updatedAt) ? { updatedAt } : {}),
         });
-        void saved;
-        imported += 1;
-        if (imported % 25 === 0) setImportingCsv(true);
       }
-      onNotify(`Imported ${imported} logins`);
+      // One write for the whole file instead of one per row: a large import
+      // used to mean hundreds of storage commits and re-renders while it ran.
+      const created = await service.addItems(drafts);
+      const imported = created.length;
+      if (imported > 0) onItemsChanged?.();
+      const detail = [
+        duplicates > 0 ? `${duplicates} duplicate${duplicates === 1 ? '' : 's'} skipped` : '',
+        skipped > 0 ? `${skipped} empty row${skipped === 1 ? '' : 's'} skipped` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      onNotify(`Imported ${imported} login${imported === 1 ? '' : 's'}${detail ? ` — ${detail}` : ''}`);
     } catch (cause) {
       onNotify(cause instanceof Error ? cause.message : 'Import failed', 'error');
     } finally {
       setImportingCsv(false);
+    }
+  }
+
+  /** Reads the picked file and either imports it or asks for its password. */
+  async function importCsv(file: File | undefined) {
+    if (!file) return;
+    const text = await file.text().catch(() => null);
+    if (text === null) {
+      onNotify('That file could not be read.', 'error');
+      return;
+    }
+    if (isEncryptedExport(text)) {
+      setUnlock({ kind: 'csv', text });
+      return;
+    }
+    await runCsvImport(text);
+  }
+
+  /** Applies a theme document, whatever produced it. */
+  function applyThemeText(text: string) {
+    const backup = parseThemeBackup(text);
+    set(themeBackupPreferences(backup));
+    onNotify(
+      `Theme imported${backup.label ? ` from “${backup.label}”` : ''} — look, folders, tags and the sidebar are in place`,
+    );
+  }
+
+  async function exportTheme() {
+    const password = themePassword.trim();
+    try {
+      if (password) {
+        const text = await sealText('theme', serializeThemeBackup(themeBackupFrom(prefs)), password);
+        downloadTextFile(
+          `${themeBackupFilename().replace(/\.json$/, '')}-protected.colax`,
+          text,
+          'application/json',
+        );
+        onNotify('Theme exported, encrypted with your password');
+        return;
+      }
+      downloadThemeBackup(themeBackupFrom(prefs));
+      onNotify('Theme backup downloaded');
+    } catch (cause) {
+      onNotify(cause instanceof Error ? cause.message : 'Export failed', 'error');
+    }
+  }
+
+  async function importTheme(file: File | undefined) {
+    if (!file) return;
+    const text = await file.text().catch(() => null);
+    if (text === null) {
+      onNotify('That file could not be read.', 'error');
+      return;
+    }
+    if (isEncryptedExport(text)) {
+      setUnlock({ kind: 'theme', text });
+      return;
+    }
+    try {
+      applyThemeText(text);
+    } catch (cause) {
+      onNotify(cause instanceof Error ? cause.message : 'That theme backup could not be read', 'error');
+    }
+  }
+
+  /** Opens a protected export and hands the plain text to its importer. */
+  async function unlockExport() {
+    if (!unlock) return;
+    try {
+      const plain = await openText(unlock.text, unlockPassword);
+      const kind = unlock.kind;
+      setUnlock(null);
+      setUnlockPassword('');
+      if (kind === 'csv') await runCsvImport(plain);
+      else applyThemeText(plain);
+    } catch (cause) {
+      onNotify(cause instanceof Error ? cause.message : 'That file could not be opened', 'error');
     }
   }
 
@@ -594,7 +799,7 @@ export function Settings(props: {
 
   /* ---- Tabs ------------------------------------------------------------ */
 
-  const tabs: SettingsTab[] = [
+  const sections: SettingsTab[] = [
     {
       id: 'appearance',
       label: 'Appearance',
@@ -781,25 +986,25 @@ export function Settings(props: {
               the user is usually looking at it rather than in Settings. */}
           <Row
             label="Channel labels"
-            hint="The sidebar rail — not the view picker below, which has its own setting. Icons only collapses the rail to a narrow strip you read by shape. Names only drops the glyphs but keeps the colour dot, which is what tells two similar names apart. (Compact mode in the sidebar footer also hides names.)"
-            stacked
+            hint="The sidebar rail — not the view picker, which has its own setting. Icons only collapses the rail to a narrow strip you read by shape. Names only drops the glyphs but keeps the colour dot."
           >
-            <div className="option-cards">
+            <div className="segmented segmented--wrap">
               {(
                 [
-                  { id: 'both', label: 'Icons and names', hint: 'Both, as it is by default' },
-                  { id: 'icon', label: 'Icons only', hint: 'A narrow rail' },
-                  { id: 'name', label: 'Names only', hint: 'A plain list' },
+                  { id: 'both', label: 'Both', hint: 'Icons and names, as it is by default' },
+                  { id: 'icon', label: 'Icons', hint: 'A narrow rail you read by shape' },
+                  { id: 'name', label: 'Names', hint: 'A plain list, no glyphs' },
                 ] as const
               ).map((option) => (
                 <button
                   key={option.id}
-                  className="option-card"
+                  type="button"
+                  className="segmented__option"
+                  title={option.hint}
                   aria-pressed={prefs.sidebarLabels === option.id}
                   onClick={() => set({ sidebarLabels: option.id })}
                 >
-                  <span>{option.label}</span>
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-faint)' }}>{option.hint}</span>
+                  {option.label}
                 </button>
               ))}
             </div>
@@ -807,26 +1012,26 @@ export function Settings(props: {
 
           <Row
             label="Rail position"
-            hint="Where the channel rail sits in the window. Docked top or bottom turns it into a horizontal strip, so folders open inline rather than nesting."
-            stacked
+            hint="Where the channel rail sits. Top or bottom turns it into a horizontal strip, so folders open inline rather than nesting."
           >
-            <div className="option-cards">
+            <div className="segmented segmented--wrap">
               {(
                 [
-                  { id: 'left', label: 'Left edge', hint: 'A vertical rail' },
-                  { id: 'right', label: 'Right edge', hint: 'A vertical rail' },
-                  { id: 'top', label: 'Top tabs', hint: 'A horizontal strip' },
-                  { id: 'bottom', label: 'Bottom dock', hint: 'A horizontal strip' },
+                  { id: 'left', label: 'Left', hint: 'A vertical rail on the left edge' },
+                  { id: 'right', label: 'Right', hint: 'A vertical rail on the right edge' },
+                  { id: 'top', label: 'Top', hint: 'A horizontal strip above the content' },
+                  { id: 'bottom', label: 'Bottom', hint: 'A horizontal strip below the content' },
                 ] as const
               ).map((option) => (
                 <button
                   key={option.id}
-                  className="option-card"
+                  type="button"
+                  className="segmented__option"
+                  title={option.hint}
                   aria-pressed={prefs.sidebarPosition === option.id}
                   onClick={() => set({ sidebarPosition: option.id })}
                 >
-                  <span>{option.label}</span>
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-faint)' }}>{option.hint}</span>
+                  {option.label}
                 </button>
               ))}
             </div>
@@ -834,10 +1039,9 @@ export function Settings(props: {
 
           <Row
             label="Rail alignment"
-            hint="Where the run of channels sits vertically in a side-docked rail. Middle floats the list in the middle; Bottom parks it just above the footer. Ignored when the rail is docked top or bottom."
-            stacked
+            hint="Where the run of channels sits vertically in a side-docked rail. Middle floats the list; Bottom parks it above the footer. Ignored when the rail is docked top or bottom."
           >
-            <div className="option-cards">
+            <div className="segmented segmented--wrap">
               {(
                 [
                   { id: 'top', label: 'Top', hint: 'Channels start at the top' },
@@ -847,12 +1051,13 @@ export function Settings(props: {
               ).map((option) => (
                 <button
                   key={option.id}
-                  className="option-card"
+                  type="button"
+                  className="segmented__option"
+                  title={option.hint}
                   aria-pressed={prefs.railAlign === option.id}
                   onClick={() => set({ railAlign: option.id })}
                 >
-                  <span>{option.label}</span>
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-faint)' }}>{option.hint}</span>
+                  {option.label}
                 </button>
               ))}
             </div>
@@ -860,92 +1065,37 @@ export function Settings(props: {
 
           <Row
             label="Card size"
-            hint="Each view is tuned separately, because a ring card and a list row have different geometry. The appearance panel edits the same values live."
-            stacked
+            hint="Each view is tuned separately, because a ring card and a list row have different geometry. Opens the live tuner; the Appearance panel edits the same values."
           >
-            <div className="option-cards">
+            <div className="field-row">
               {VIEWS.map((view) => (
                 <button
                   key={view.id}
-                  className="option-card"
-                  aria-pressed={false}
+                  type="button"
+                  className="btn btn--quiet btn--sm"
+                  title={`Tune the ${view.label.toLowerCase()} card size`}
                   onClick={() => onOpenTuner?.(view.id)}
                 >
-                  <span>{view.label}</span>
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-faint)' }}>
+                  {view.label}
+                  <span className="field__hint" style={{ margin: 0 }}>
                     {cardSizeSummary(view.id, prefs.cardSize[view.id])}
                   </span>
                 </button>
               ))}
             </div>
           </Row>
-          <Row
-            label="Quick-launch docks"
-            hint="Jump targets on bars, one keypress away — have one bar or several, each dragged anywhere. Keys work bare (no Ctrl) whenever you are not typing or in a dialog; the first bar wins a key two bars claim."
-            stacked
-          >
-            {prefs.docks.map((dock, index) => (
-              <div className="dock-manager" key={dock.id}>
-                <div className="dock-manager__head">
-                  <span className="dock-manager__name">Dock {index + 1}</span>
-                  <Toggle
-                    label={`Show dock ${index + 1}`}
-                    checked={dock.enabled}
-                    onChange={(enabled) =>
-                      set({ docks: prefs.docks.map((entry) => (entry.id === dock.id ? { ...entry, enabled } : entry)) })
-                    }
-                  />
-                  {prefs.docks.length > 1 ? (
-                    <button
-                      type="button"
-                      className="btn btn--quiet btn--sm"
-                      onClick={() => set({ docks: prefs.docks.filter((entry) => entry.id !== dock.id) })}
-                    >
-                      Delete
-                    </button>
-                  ) : null}
-                </div>
-                {dock.enabled ? (
-                  <DockSlotsEditor
-                    slots={dock.slots}
-                    channels={prefs.channels}
-                    folders={prefs.folders}
-                    logins={items}
-                    mailboxes={prefs.gmailAccounts}
-                    onChange={(slots) =>
-                      set({ docks: prefs.docks.map((entry) => (entry.id === dock.id ? { ...entry, slots } : entry)) })
-                    }
-                    onNotify={onNotify}
-                  />
-                ) : null}
-              </div>
-            ))}
-            {prefs.docks.length < MAX_DOCKS ? (
-              <button
-                type="button"
-                className="btn btn--secondary btn--sm"
-                onClick={() =>
-                  set({
-                    docks: [...prefs.docks, { id: newDockId(), slots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })), pos: freeDockSpot(prefs.docks), enabled: true }],
-                  })
-                }
-              >
-                + New dock
-              </button>
-            ) : null}
-          </Row>
-          <Row label="Default view" hint="Remembered the next time you open the app." stacked>
-            <div className="option-cards">
+          <Row label="Default view" hint="Remembered the next time you open the app.">
+            <div className="segmented segmented--wrap">
               {VIEWS.map((view) => (
                 <button
                   key={view.id}
-                  className="option-card"
+                  type="button"
+                  className="segmented__option"
+                  title={view.hint}
                   aria-pressed={prefs.view === view.id}
                   onClick={() => set({ view: view.id })}
                 >
-                  {view.icon}
-                  <span>{view.label}</span>
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-faint)' }}>{view.hint}</span>
+                  {view.label}
                 </button>
               ))}
             </div>
@@ -1341,6 +1491,20 @@ export function Settings(props: {
     },
 
     {
+      id: 'docks',
+      label: 'Docks',
+      icon: <GridIcon />,
+      render: () => (
+        <DocksPanel
+          prefs={prefs}
+          items={items}
+          onChange={(docks) => set({ docks })}
+          onNotify={onNotify}
+        />
+      ),
+    },
+
+    {
       id: 'generator',
       label: 'Generator',
       icon: <WrenchIcon />,
@@ -1348,6 +1512,54 @@ export function Settings(props: {
         const gen = prefs.passwordGenerator;
         return (
           <>
+            <Row label="Presets" hint="One click sets every option below, then shows a sample." stacked>
+              <div className="preset-row">
+                {GENERATOR_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    className="btn btn--secondary btn--sm"
+                    title={preset.hint}
+                    onClick={() => {
+                      set({ passwordGenerator: { ...preset.options } });
+                      setGeneratorSample(generatePassword(preset.options));
+                      onNotify(`${preset.label} preset applied`);
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+            <Row
+              label="Live sample"
+              hint="Generated from exactly these options. Nothing is stored, and a new one is made only when you ask."
+              stacked
+            >
+              <div className="field-row">
+                <code className="generator-sample">{generatorSample}</code>
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => setGeneratorSample(generatePassword(gen))}
+                >
+                  New sample
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--quiet btn--sm"
+                  onClick={() =>
+                    void navigator.clipboard
+                      .writeText(generatorSample)
+                      .then(() => onNotify('Sample copied'))
+                      .catch(() => onNotify('Clipboard blocked by the browser', 'error'))
+                  }
+                >
+                  <CopyIcon width="13" height="13" />
+                  Copy
+                </button>
+              </div>
+            </Row>
             <Row label="Default length" hint="Used when the generator opens.">
               <div className="slider-row" style={{ width: 200 }}>
                 <input
@@ -1603,6 +1815,8 @@ export function Settings(props: {
           alarms={prefs.alarms}
           onChange={(alarms) => set({ alarms })}
           onNotify={onNotify}
+          muted={prefs.soundsMuted}
+          onMutedChange={(soundsMuted) => set({ soundsMuted })}
         />
       ),
     },
@@ -1634,7 +1848,51 @@ export function Settings(props: {
       label: 'Data',
       icon: <DatabaseIcon />,
       render: () => (
-        <>
+        <DataPage
+          icon={<DatabaseIcon />}
+          title="Data"
+          intro="Plain-text CSV in and out, and what this device stores. Card images are never part of a CSV."
+        >
+          <Row
+            label="Export as CSV"
+            hint="Text only — credentials, notes and tags, without card images — for moving to another tool. Delete it afterwards, or give it a file password and keep the encrypted copy."
+            stacked
+          >
+            <div className="field-row">
+              <input
+                className="input"
+                type="password"
+                autoComplete="new-password"
+                value={csvPassword}
+                onChange={(event) => setCsvPassword(event.target.value)}
+                placeholder="Optional file password"
+                aria-label="CSV export password"
+              />
+              <button className="btn btn--secondary" onClick={() => void exportCsv()} disabled={items.length === 0}>
+                <DownloadIcon width="14" height="14" />
+                Export CSV
+              </button>
+            </div>
+          </Row>
+          <Row
+            label="Import from CSV"
+            hint="Expects name, url, username and password, and also reads notes, tags, dates and the Colax export columns. Rows already in the vault are skipped, not duplicated. A protected export asks for its password in a prompt."
+          >
+            <label className="btn btn--secondary">
+              <UploadIcon width="14" height="14" />
+              {importingCsv ? 'Importing…' : 'Import CSV'}
+              <input
+                type="file"
+                accept="text/csv,.csv,application/json,.colax"
+                className="sr-only"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  void importCsv(file);
+                }}
+              />
+            </label>
+          </Row>
           <Row label="Stored logins" hint="Everything lives in this browser's local database.">
             <span className="chip chip--muted">
               {items.length} · about {storageKb} KB
@@ -1648,24 +1906,6 @@ export function Settings(props: {
               {getPlatform().name} · {buildStamp()}
             </span>
           </Row>
-          <Row label="Export as CSV" hint="Plaintext, for moving to another tool. Delete it afterwards.">
-            <button className="btn btn--secondary" onClick={exportCsv} disabled={items.length === 0}>
-              <DownloadIcon width="14" height="14" />
-              Export CSV
-            </button>
-          </Row>
-          <Row label="Import from CSV" hint="Expects the columns name, url, username, password, notes.">
-            <label className="btn btn--secondary">
-              <UploadIcon width="14" height="14" />
-              {importingCsv ? 'Importing…' : 'Import CSV'}
-              <input
-                type="file"
-                accept="text/csv,.csv"
-                className="sr-only"
-                onChange={(event) => void importCsv(event.target.files?.[0])}
-              />
-            </label>
-          </Row>
           <Row
             label="Delete all data"
             hint="Removes every login, tag, channel, folder, alarm, connected mailbox, setting and usage record from this device, and clears the clipboard. There is no undo."
@@ -1675,7 +1915,61 @@ export function Settings(props: {
               Delete everything
             </button>
           </Row>
-        </>
+        </DataPage>
+      ),
+    },
+
+    {
+      id: 'theme',
+      label: 'Theme',
+      icon: <PaletteIcon />,
+      render: () => (
+        <DataPage
+          icon={<PaletteIcon />}
+          title="Theme"
+          intro="The look and the workspace without any logins: appearance, background, card sizes, channels, folders, tags and docks. Safe to share."
+        >
+        <Row
+          label="Theme & layout"
+          hint="Everything except logins. Importing replaces the current channels, folders, tags and look; your logins stay where they are — the way to move a setup to another machine."
+          stacked
+        >
+          <div className="field-row">
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={themePassword}
+              onChange={(event) => setThemePassword(event.target.value)}
+              placeholder="Optional file password"
+              aria-label="Theme export password"
+            />
+            <button type="button" className="btn btn--secondary" onClick={() => void exportTheme()}>
+              <DownloadIcon width="14" height="14" />
+              Export theme
+            </button>
+            <label className="btn btn--secondary">
+              <UploadIcon width="14" height="14" />
+              Import theme
+              <input
+                type="file"
+                accept="application/json,.json,.colax"
+                className="sr-only"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  // Reset so importing the same file twice fires again.
+                  event.target.value = '';
+                  void importTheme(file);
+                }}
+              />
+            </label>
+          </div>
+          <p className="field__hint">
+            A file password encrypts the export (AES-GCM) and the import asks for it. Leave it empty
+            for a readable JSON file.
+          </p>
+        </Row>
+        </DataPage>
       ),
     },
 
@@ -1684,69 +1978,31 @@ export function Settings(props: {
       label: 'Backup',
       icon: <CloudIcon />,
       render: () => (
-        <>
+        <DataPage
+          icon={<CloudIcon />}
+          title="Everything"
+          intro="One encrypted file with every login, tag, channel, folder, mailbox, alarm and preference. The only export that restores a complete vault."
+        >
           <Row
             label="Encrypted backup"
             hint={`Downloads ${items.length} ${items.length === 1 ? 'login' : 'logins'} as ciphertext.${
               hasPassword ? '' : ' Without a vault password, anyone with the file can read it once restored.'
             }`}
           >
-            <button
-              className="btn btn--secondary"
-              onClick={() => (prefs.confirmBeforeExport ? setConfirmExport(true) : void exportVault())}
-            >
-              <DownloadIcon width="14" height="14" />
-              Export
-            </button>
-          </Row>
-          <Row
-            label="Theme & layout backup"
-            hint="Appearance, background, card sizing, channels, folders, their tags and notes, the sidebar tree and bars — everything except logins. Importing replaces the current channels, folders, tags and look; your logins stay where they are. Safe to share, and the way to move a setup to another machine."
-          >
             <div className="field-row" style={{ justifyContent: 'flex-end' }}>
               <button
-                type="button"
                 className="btn btn--secondary"
-                onClick={() => {
-                  downloadThemeBackup(themeBackupFrom(prefs));
-                  onNotify('Theme backup downloaded');
-                }}
+                onClick={() => (prefs.confirmBeforeExport ? setConfirmExport(true) : void exportVault())}
               >
                 <DownloadIcon width="14" height="14" />
-                Export theme
+                Export
               </button>
-              <label className="btn btn--secondary">
-                <UploadIcon width="14" height="14" />
-                Import theme
-                <input
-                  type="file"
-                  accept="application/json,.json"
-                  className="sr-only"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    // Reset so importing the same file twice fires again.
-                    event.target.value = '';
-                    if (!file) return;
-                    void file
-                      .text()
-                      .then((text) => {
-                        const backup = parseThemeBackup(text);
-                        set(themeBackupPreferences(backup));
-                        onNotify(
-                          `Theme imported${backup.label ? ` from “${backup.label}”` : ''} — look, folders, tags and the sidebar are in place`,
-                        );
-                      })
-                      .catch((cause: unknown) =>
-                        onNotify(
-                          cause instanceof Error ? cause.message : 'That theme backup could not be read',
-                          'error',
-                        ),
-                      );
-                  }}
-                />
-              </label>
+              <button className="btn btn--quiet" onClick={() => setConfirmExport(true)}>
+                Export with a password
+              </button>
             </div>
           </Row>
+
           <Row label="Restore from backup" hint="Replaces everything currently in this vault.">
             <button
               className="btn btn--secondary"
@@ -1761,7 +2017,7 @@ export function Settings(props: {
               Restore
             </button>
           </Row>
-        </>
+        </DataPage>
       ),
     },
 
@@ -2053,6 +2309,17 @@ export function Settings(props: {
             </>
           ) : null}
 
+          {optimizeGroup === 'resources' ? (
+            <ResourcesPanel
+              prefs={prefs}
+              items={items}
+              set={set}
+              snapshot={efficiency.snapshot}
+              measuring={efficiency.measuring}
+              onMeasure={() => void efficiency.measure()}
+              onNotify={onNotify}
+            />
+          ) : null}
           {optimizeGroup === 'look' ? (
             <>
           <Row
@@ -2350,6 +2617,124 @@ export function Settings(props: {
     },
   ];
 
+  /* ---- The merged rail -------------------------------------------------
+     Fourteen tabs, most one panel deep, made the rail scroll and hid related
+     settings from each other. Each group below is one rail tab whose panel is
+     chosen by a mini-tab strip, the same pattern Security and Optimize already
+     used. The grouping is defined once, here; every section keeps its own
+     render function untouched.
+  */
+  const sectionById = new Map(sections.map((entry) => [entry.id, entry] as const));
+  const groups: {
+    id: string;
+    label: string;
+    hint: string;
+    icon: ReactNode;
+    tabs: { id: string; label: string; hint?: string }[];
+  }[] = [
+    {
+      id: 'appearance',
+      label: 'Appearance',
+      hint: 'Design, layout, background and what is hidden',
+      icon: <PaletteIcon />,
+      tabs: [
+        { id: 'appearance', label: 'Design', hint: 'Theme, colour, motion and type' },
+        { id: 'layout', label: 'Layout', hint: 'Views, ordering and the chrome around them' },
+        { id: 'background', label: 'Background', hint: 'The image behind the app' },
+        { id: 'hidden', label: 'Hidden', hint: 'Bring back anything hidden by right-click' },
+      ],
+    },
+    {
+      id: 'workspace',
+      label: 'Workspace',
+      hint: 'Channels, tags, folders and the quick-launch bars',
+      icon: <RowsIcon />,
+      tabs: [
+        { id: 'channels', label: 'Channels, tags & folders', hint: 'The rail, the tag catalogue and folders' },
+        { id: 'docks', label: 'Docks', hint: 'Floating quick-launch bars and their slots' },
+      ],
+    },
+    {
+      id: 'security',
+      label: 'Security',
+      hint: 'Locking, clipboard, passwords, reminders and warnings',
+      icon: <ShieldIcon />,
+      tabs: [
+        { id: 'security', label: 'Security', hint: 'Locking, clipboard, health warnings and confirmations' },
+        { id: 'generator', label: 'Generator', hint: 'Defaults, presets and a live sample' },
+        { id: 'alarms', label: 'Alarms', hint: 'Reminders, days, sounds and muting' },
+      ],
+    },
+    {
+      id: 'data',
+      label: 'Data',
+      hint: 'Every export, every import, and what is stored',
+      icon: <DatabaseIcon />,
+      tabs: [
+        { id: 'backup', label: 'Everything', hint: 'Encrypted vault backup and restore' },
+        { id: 'theme', label: 'Theme', hint: 'Look, channels, tags and folders' },
+        { id: 'data', label: 'Data', hint: 'CSV, storage size and version' },
+      ],
+    },
+    {
+      id: 'optimize',
+      label: 'Optimize',
+      hint: 'Profiles, resources, speed and mail loading',
+      icon: <WrenchIcon />,
+      tabs: [{ id: 'optimize', label: 'Optimize' }],
+    },
+    {
+      id: 'sharing',
+      label: 'Sharing',
+      hint: 'Share with another device or a browser, locally or over the internet',
+      icon: <ShareIcon />,
+      tabs: [{ id: 'sharing', label: 'Sharing' }],
+    },
+    ...(getPlatform().name === 'electron'
+      ? [
+          {
+            id: 'desktop',
+            label: 'Desktop',
+            hint: 'Startup, tray and shutting down',
+            icon: <LayersIcon />,
+            tabs: [{ id: 'desktop', label: 'Desktop' }],
+          },
+        ]
+      : []),
+    {
+      id: 'about',
+      label: 'About',
+      hint: 'Diagnostics and resets',
+      icon: <InfoIcon />,
+      tabs: [{ id: 'about', label: 'About' }],
+    },
+  ];
+
+  const tabs: SettingsTab[] = groups.map((group) => {
+    const active = subTabs[group.id] ?? group.tabs[0]?.id ?? '';
+    return {
+      id: group.id,
+      label: group.label,
+      icon: group.icon,
+      hint: group.hint,
+      render: () => {
+        const panel = sectionById.get(active)?.render() ?? null;
+        if (group.tabs.length < 2) return panel;
+        return (
+          <>
+            <SubTabs
+              label={`${group.label} sections`}
+              tabs={group.tabs}
+              active={active}
+              onChange={(next) => setSubTabs((current) => ({ ...current, [group.id]: next }))}
+            />
+            {panel}
+          </>
+        );
+      },
+    };
+  });
+
   return (
     <>
       <SettingsWindow
@@ -2443,6 +2828,60 @@ export function Settings(props: {
               autoComplete="new-password"
               value={exportPassword}
               onChange={(event) => setExportPassword(event.target.value)}
+            />
+          </div>
+        </Modal>
+      ) : null}
+
+      {unlock ? (
+        <Modal
+          title="Protected export"
+          onClose={() => {
+            setUnlock(null);
+            setUnlockPassword('');
+          }}
+          footer={
+            <>
+              <button
+                className="btn btn--secondary"
+                onClick={() => {
+                  setUnlock(null);
+                  setUnlockPassword('');
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn--primary"
+                onClick={() => void unlockExport()}
+                disabled={unlockPassword.length === 0}
+              >
+                Unlock
+              </button>
+            </>
+          }
+        >
+          <Alert tone="info">
+            This file is encrypted. Enter the password that was set when it was exported.
+          </Alert>
+          <div className="field">
+            <label className="field__label" htmlFor="unlock-export-password">
+              File password
+            </label>
+            <input
+              id="unlock-export-password"
+              className="input"
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              value={unlockPassword}
+              onChange={(event) => setUnlockPassword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void unlockExport();
+                }
+              }}
             />
           </div>
         </Modal>
@@ -2625,6 +3064,471 @@ function Row({
  * the section's own content, so it can never take over the window's tab state,
  * and a section that does not need groups simply does not render one.
  */
+/**
+ * The Resource tab: what is actually costing something, and the one switch that
+ * removes it. Every figure is either measured on this machine or counted from
+ * the vault — no invented percentages. A row with no switch is a cost you can
+ * only see (attachments, history), not one the app can cut for you.
+ */
+/** The shared page shell for the three Data mini-tabs, so they read as one place. */
+function DataPage({
+  icon,
+  title,
+  intro,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  intro: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="data-page">
+      <header className="data-page__head">
+        <span className="data-page__icon" aria-hidden="true">
+          {icon}
+        </span>
+        <div className="data-page__text">
+          <h3 className="data-page__title">{title}</h3>
+          <p className="data-page__intro">{intro}</p>
+        </div>
+      </header>
+      <div className="data-page__body">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * The Resource tab: what is actually costing something, and the one switch that
+ * removes it. Every figure is either measured on this machine or counted from
+ * the vault — no invented percentages. Actions here are undoable with Ctrl+Z /
+ * Ctrl+Shift+Z (or Ctrl+Y), with an in-panel history so a wrong switch is one
+ * keystroke away from the state it replaced.
+ */
+function ResourcesPanel({
+  prefs,
+  items,
+  set,
+  snapshot,
+  measuring,
+  onMeasure,
+  onNotify,
+}: {
+  prefs: VaultPreferences;
+  items: VaultItem[];
+  set: (patch: Partial<VaultPreferences>) => void;
+  snapshot: EfficiencySnapshot | null;
+  measuring: boolean;
+  onMeasure: () => void;
+  onNotify: (message: string, tone?: Toast['tone']) => void;
+}) {
+  const cachedMessages = Object.values(prefs.mailCache).reduce((total, list) => total + list.length, 0);
+  const cacheBytes = JSON.stringify(prefs.mailCache).length;
+  const mediaBytes = items.reduce(
+    (total, item) =>
+      total +
+      (item.attachments ?? []).reduce((size, attachment) => size + (attachment.dataUrl?.length ?? 0), 0) +
+      (item.backgroundImage?.length ?? 0) +
+      (item.avatarImage?.length ?? 0),
+    0,
+  );
+  const historyBytes = JSON.stringify(prefs.history).length;
+  const polling = prefs.gmailAccounts.filter((account) => account.enabled && account.refreshSeconds > 0);
+  const fastestPoll = polling.length > 0 ? Math.min(...polling.map((account) => account.refreshSeconds)) : 0;
+  const checksPerHour = polling.reduce(
+    (total, account) => total + Math.round(3600 / Math.max(30, account.refreshSeconds)),
+    0,
+  );
+  const blurred = snapshot?.blurred ?? null;
+
+  // Live readings of the document itself, taken when the tab opens and again
+  // whenever Measure is pressed. These are counts, not estimates.
+  const [measureTick, setMeasureTick] = useState(0);
+  const live = useMemo(() => {
+    if (typeof document === 'undefined') return { nodes: 0, blurred: 0, images: 0, animations: 0 };
+    const all = document.querySelectorAll('*');
+    let painted = 0;
+    const limit = Math.min(all.length, 4000);
+    for (let index = 0; index < limit; index += 1) {
+      const style = getComputedStyle(all[index] as Element);
+      if (style.backdropFilter && style.backdropFilter !== 'none') painted += 1;
+    }
+    return {
+      nodes: all.length,
+      blurred: painted,
+      images: document.images.length,
+      animations: typeof document.getAnimations === 'function' ? document.getAnimations().length : 0,
+    };
+  }, [measureTick]);
+
+  // One history for every action this panel takes. `cursor` is how many entries
+  // are applied, so a new action after an undo drops the redo tail.
+  const [steps, setSteps] = useState<
+    { label: string; undo: Partial<VaultPreferences>; redo: Partial<VaultPreferences> }[]
+  >([]);
+  const [cursor, setCursor] = useState(0);
+
+  function apply(label: string, patch: Partial<VaultPreferences>) {
+    const undo: Record<string, unknown> = {};
+    for (const key of Object.keys(patch)) undo[key] = prefs[key as keyof VaultPreferences];
+    set(patch);
+    setSteps((current) => [...current.slice(0, cursor), { label, undo: undo as Partial<VaultPreferences>, redo: patch }]);
+    setCursor((current) => current + 1);
+    onNotify(`${label} — Ctrl+Z to undo`);
+  }
+
+  function undo() {
+    if (cursor === 0) return;
+    const step = steps[cursor - 1];
+    if (!step) return;
+    set(step.undo);
+    setCursor(cursor - 1);
+    onNotify(`Undid ${step.label.toLowerCase()}`);
+  }
+
+  function redo() {
+    if (cursor >= steps.length) return;
+    const step = steps[cursor];
+    if (!step) return;
+    set(step.redo);
+    setCursor(cursor + 1);
+    onNotify(`Redid ${step.label.toLowerCase()}`);
+  }
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'z' && key !== 'y') return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+      event.preventDefault();
+      if (key === 'y' || event.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  const levelOf = (weight: number) => (weight >= 2 ? 'Heavy' : weight === 1 ? 'Medium' : 'Light');
+
+  const rows: {
+    key: string;
+    label: string;
+    reading: string;
+    detail: string;
+    weight: number;
+    action?: { label: string; patch: Partial<VaultPreferences> };
+  }[] = [
+    {
+      key: 'motion',
+      label: 'Animations',
+      reading: `${live.animations} running`,
+      detail:
+        prefs.motion === 0
+          ? 'Off. Nothing animates or re-lays itself.'
+          : `Intensity ${Math.round(prefs.motion * 100)}%, ${prefs.motionSpeed >= 2 ? 'instant' : prefs.motionSpeed >= 1 ? 'normal' : 'relaxed'} speed.`,
+      weight: prefs.motion === 0 ? 0 : prefs.motion > 0.5 ? 2 : 1,
+      action: prefs.motion === 0 ? undefined : { label: 'Turn animations off', patch: { motion: 0 } },
+    },
+    {
+      key: 'glass',
+      label: 'Frosted glass',
+      reading: `${prefs.reduceTransparency ? 0 : (blurred ?? live.blurred)} blurred`,
+      detail: prefs.reduceTransparency
+        ? 'Off. Surfaces are flat, so nothing is blurred every frame.'
+        : `${blurred ?? live.blurred} surface${blurred === 1 ? '' : 's'} painting a backdrop blur, ${live.images} images on screen.`,
+      weight: prefs.reduceTransparency ? 0 : (blurred ?? live.blurred) > 0 ? 2 : 0,
+      action: prefs.reduceTransparency
+        ? undefined
+        : { label: 'Flatten frosted glass', patch: { reduceTransparency: true } },
+    },
+    {
+      key: 'ambient',
+      label: 'Ambient gradient',
+      reading: `${Math.round(prefs.ambient * 100)}%`,
+      detail: prefs.ambient === 0 ? 'Off. The background is a single colour.' : 'A mesh gradient painted behind every screen.',
+      weight: prefs.ambient === 0 ? 0 : prefs.ambient > 0.5 ? 2 : 1,
+      action: prefs.ambient === 0 ? undefined : { label: 'Turn the gradient off', patch: { ambient: 0 } },
+    },
+    {
+      key: 'background',
+      label: 'Background image',
+      reading: prefs.backgroundImage ? formatBytes(prefs.backgroundImage.length) : '0 B',
+      detail: prefs.backgroundImage
+        ? `${Math.round(prefs.backgroundOpacity * 100)}% opacity${prefs.backgroundBlur > 0 ? `, blurred ${prefs.backgroundBlur}px` : ''}.`
+        : 'None. Nothing to decode or repaint.',
+      weight: prefs.backgroundImage ? 2 : 0,
+      action: prefs.backgroundImage ? { label: 'Remove the background image', patch: { backgroundImage: '' } } : undefined,
+    },
+    {
+      key: 'shadows',
+      label: 'Card shadows',
+      reading: `${Math.round(prefs.cardDepth * 100)}%`,
+      detail: prefs.cardDepth === 0 ? 'Flat. No shadows are painted.' : 'A shadow per card, restruck whenever the list scrolls.',
+      weight: prefs.cardDepth === 0 ? 0 : prefs.cardDepth > 0.6 ? 1 : 0,
+      action: prefs.cardDepth === 0 ? undefined : { label: 'Flatten card shadows', patch: { cardDepth: 0 } },
+    },
+    {
+      key: 'mail-inline',
+      label: 'Inline mail images',
+      reading: `${live.images} images`,
+      detail: prefs.mailInlineImages
+        ? 'On. An opened message can pull up to four images into memory.'
+        : 'Off. Messages open as text, and cid: images show a labelled placeholder.',
+      weight: prefs.mailInlineImages ? 2 : 0,
+      action: prefs.mailInlineImages ? { label: 'Turn inline mail images off', patch: { mailInlineImages: false } } : undefined,
+    },
+    {
+      key: 'polling',
+      label: 'Mail polling',
+      reading: `${checksPerHour}/hour`,
+      detail:
+        polling.length === 0
+          ? 'No mailbox polls on a timer.'
+          : `${polling.length} mailbox${polling.length === 1 ? '' : 'es'} · fastest every ${fastestPoll}s${fastestPoll <= 120 ? ', a network request every couple of minutes' : ''}.`,
+      weight: polling.length === 0 ? 0 : fastestPoll <= 120 ? 2 : 1,
+      action:
+        polling.length === 0
+          ? undefined
+          : {
+              label: 'Slow mail checks to 5 minutes',
+              patch: {
+                gmailAccounts: prefs.gmailAccounts.map((account) =>
+                  account.enabled && account.refreshSeconds > 0
+                    ? { ...account, refreshSeconds: 300 }
+                    : account,
+                ),
+              },
+            },
+    },
+    {
+      key: 'cache',
+      label: 'Message cache',
+      reading: `${cachedMessages} messages`,
+      detail:
+        cachedMessages === 0
+          ? 'Empty.'
+          : `${formatBytes(cacheBytes)} of stored headers and bodies, kept for offline reading.`,
+      weight: cachedMessages === 0 ? 0 : cachedMessages > 500 ? 2 : 1,
+      action: cachedMessages === 0 ? undefined : { label: 'Clear the message cache', patch: { mailCache: {} } },
+    },
+    {
+      key: 'media',
+      label: 'Images in logins',
+      reading: formatBytes(mediaBytes),
+      detail: mediaBytes === 0 ? 'No uploaded card art or backgrounds.' : 'Inline images inside login records and their notes.',
+      weight: mediaBytes === 0 ? 0 : mediaBytes > 2_000_000 ? 2 : 1,
+    },
+    {
+      key: 'history',
+      label: 'History log',
+      reading: `${prefs.history.length} events`,
+      detail: prefs.history.length === 0 ? 'Empty.' : `About ${formatBytes(historyBytes)} of past edits, kept for the activity list.`,
+      weight: historyBytes > 200_000 ? 1 : 0,
+    },
+    {
+      key: 'spellcheck',
+      label: 'Spellchecker',
+      reading: prefs.disableSpellcheck ? 'Off' : 'On',
+      detail: prefs.disableSpellcheck
+        ? 'Off. No dictionaries are loaded.'
+        : 'On. Electron loads a dictionary per language at launch.',
+      weight: prefs.disableSpellcheck ? 0 : 1,
+      action: prefs.disableSpellcheck ? undefined : { label: 'Turn the spellchecker off', patch: { disableSpellcheck: true } },
+    },
+    {
+      key: 'logins',
+      label: 'Loaded logins',
+      reading: `${items.length} logins`,
+      detail: 'Decrypted in memory while the vault is open. Locking the vault releases them.',
+      weight: items.length > 2000 ? 2 : items.length > 500 ? 1 : 0,
+    },
+    {
+      key: 'nodes',
+      label: 'Elements on screen',
+      reading: `${live.nodes} nodes`,
+      detail: `${blurred ?? live.blurred} blurred surfaces and ${live.images} images inside the current page.`,
+      weight: live.nodes > 4000 ? 2 : live.nodes > 2500 ? 1 : 0,
+    },
+  ];
+  const heavy = rows.filter((row) => row.weight >= 2).length;
+  const canUndo = cursor > 0;
+  const canRedo = cursor < steps.length;
+
+  return (
+    <div className="resources">
+      <div className="resources__summary">
+        <span className="resource-chip" data-level={heavy > 0 ? 'Heavy' : 'Light'}>
+          {heavy === 0 ? 'Nothing heavy is on' : `${heavy} heavy feature${heavy === 1 ? '' : 's'}`}
+        </span>
+        <span className="resource-chip">
+          {snapshot?.totalBytes ? `${formatBytes(snapshot.totalBytes)} total memory` : 'No process reading in this browser'}
+        </span>
+        <span className="resource-chip">
+          {snapshot?.heapBytes ? `${formatBytes(snapshot.heapBytes)} JS heap` : 'No heap reading'}
+        </span>
+        <span className="resource-chip">{live.nodes} DOM nodes</span>
+        <span className="resource-chip">{live.animations} animations</span>
+        <button
+          type="button"
+          className="btn btn--secondary btn--sm"
+          onClick={() => {
+            setMeasureTick((tick) => tick + 1);
+            onMeasure();
+          }}
+          disabled={measuring}
+        >
+          {measuring ? <span className="spinner" /> : null}
+          Measure again
+        </button>
+        <div className="resources__undo">
+          <button
+            type="button"
+            className="btn btn--quiet btn--sm"
+            onClick={undo}
+            disabled={!canUndo}
+            title="Undo the last change here (Ctrl+Z)"
+          >
+            Undo
+            <span className="btn__kbd">Z</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn--quiet btn--sm"
+            onClick={redo}
+            disabled={!canRedo}
+            title="Redo (Ctrl+Shift+Z or Ctrl+Y)"
+          >
+            Redo
+            <span className="btn__kbd">⇧Z</span>
+          </button>
+        </div>
+      </div>
+
+      <ul className="resources__list" aria-label="Feature costs">
+        {rows.map((row) => (
+          <li className="resources__row" key={row.key} data-level={levelOf(row.weight)}>
+            <span className="resources__name">{row.label}</span>
+            <span className="resources__reading">{row.reading}</span>
+            <span className="resources__detail">{row.detail}</span>
+            <span className="resource-chip" data-level={levelOf(row.weight)}>
+              {levelOf(row.weight)}
+            </span>
+            {row.action ? (
+              <button
+                type="button"
+                className="btn btn--quiet btn--sm"
+                title={row.action.label}
+                onClick={() => apply(row.action!.label, row.action!.patch)}
+              >
+                Fix
+              </button>
+            ) : (
+              <span className="resources__none">—</span>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="field__hint">
+        Every number is measured on this machine or counted from the vault — nothing is estimated.
+        "Heavy" marks a feature that is on and known to cost memory or frames. Undo and redo cover
+        every action on this tab (Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y).
+      </p>
+    </div>
+  );
+}
+/** Saves a text file from memory, without a round trip through the DOM. */
+function downloadTextFile(name: string, text: string, type: string): void {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/**
+ * The quick-launch bar editor, on its own so Workspace can show it without
+ * pulling Layout's view and ordering rows along with it.
+ */
+function DocksPanel({
+  prefs,
+  items,
+  onChange,
+  onNotify,
+}: {
+  prefs: VaultPreferences;
+  items: VaultItem[];
+  onChange: (docks: VaultPreferences['docks']) => void;
+  onNotify: (message: string, tone?: Toast['tone']) => void;
+}) {
+  return (
+    <Row
+      label="Quick-launch docks"
+      hint="Jump targets on bars, one keypress away — have one bar or several, each dragged anywhere. Keys work bare (no Ctrl) whenever you are not typing or in a dialog; the first bar wins a key two bars claim."
+      stacked
+    >
+      {prefs.docks.map((dock, index) => (
+        <div className="dock-manager" key={dock.id}>
+          <div className="dock-manager__head">
+            <span className="dock-manager__name">Dock {index + 1}</span>
+            <Toggle
+              label={`Show dock ${index + 1}`}
+              checked={dock.enabled}
+              onChange={(enabled) =>
+                onChange(prefs.docks.map((entry) => (entry.id === dock.id ? { ...entry, enabled } : entry)))
+              }
+            />
+            {prefs.docks.length > 1 ? (
+              <button
+                type="button"
+                className="btn btn--quiet btn--sm"
+                onClick={() => onChange(prefs.docks.filter((entry) => entry.id !== dock.id))}
+              >
+                Delete
+              </button>
+            ) : null}
+          </div>
+          {dock.enabled ? (
+            <DockSlotsEditor
+              slots={dock.slots}
+              channels={prefs.channels}
+              folders={prefs.folders}
+              logins={items}
+              mailboxes={prefs.gmailAccounts}
+              onChange={(slots) =>
+                onChange(prefs.docks.map((entry) => (entry.id === dock.id ? { ...entry, slots } : entry)))
+              }
+              onNotify={onNotify}
+            />
+          ) : null}
+        </div>
+      ))}
+      {prefs.docks.length < MAX_DOCKS ? (
+        <button
+          type="button"
+          className="btn btn--secondary btn--sm"
+          onClick={() =>
+            onChange([
+              ...prefs.docks,
+              {
+                id: newDockId(),
+                slots: DEFAULT_DOCK_SLOTS.map((slot) => ({ ...slot })),
+                pos: freeDockSpot(prefs.docks),
+                enabled: true,
+              },
+            ])
+          }
+        >
+          + New dock
+        </button>
+      ) : null}
+    </Row>
+  );
+}
+
 function SubTabs<T extends string>({
   label,
   tabs,

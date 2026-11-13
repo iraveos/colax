@@ -1,19 +1,40 @@
 import { useRef, useState } from 'react';
 import { newAlarmId, type Alarm } from '../vault/storage.ts';
 import { playAlarmSound } from './useAlarms.ts';
-import { TrashIcon } from './icons.tsx';
+import { CopyIcon, TrashIcon } from './icons.tsx';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-/** The reminders list: add, toggle, test the sound, delete. Sounds import from the device. */
+/** Chronological order, every-day reminders first, then by label. */
+function sortAlarms(alarms: Alarm[]): Alarm[] {
+  return [...alarms].sort(
+    (a, b) =>
+      a.time.localeCompare(b.time) ||
+      a.days.length - b.days.length ||
+      a.label.localeCompare(b.label),
+  );
+}
+
+/**
+ * The reminders list: add, toggle, test the sound, duplicate, delete.
+ *
+ * Added with the settings merge: reminders had no ordering (a later alarm always
+ * sat at the bottom), no way to clone one when two differ only by label or
+ * time, and no single switch for sound — muting was buried in Desktop.
+ */
 export function AlarmsPanel({
   alarms,
   onChange,
   onNotify,
+  muted,
+  onMutedChange,
 }: {
   alarms: Alarm[];
   onChange: (next: Alarm[]) => void;
   onNotify: (message: string, tone?: 'ok' | 'error') => void;
+  /** Global alarm sound switch, shared with the Desktop tab. */
+  muted?: boolean;
+  onMutedChange?: (muted: boolean) => void;
 }) {
   const [label, setLabel] = useState('');
   const [time, setTime] = useState('08:00');
@@ -50,7 +71,7 @@ export function AlarmsPanel({
       sound,
       enabled: true,
     };
-    onChange([...alarms, alarm]);
+    onChange(sortAlarms([...alarms, alarm]));
     setLabel('');
     setDays([]);
     setSound(null);
@@ -60,6 +81,32 @@ export function AlarmsPanel({
   return (
     <div className="alarms">
       <p className="field__note">Alarms ring while the app is open. Pick a sound from your device or keep the built-in chime.</p>
+
+      <div className="alarms__tools">
+        <button
+          type="button"
+          className="btn btn--quiet btn--sm"
+          onClick={() => onChange(sortAlarms(alarms))}
+          disabled={alarms.length < 2}
+          title="Order the list by time of day"
+        >
+          Sort by time
+        </button>
+        {onMutedChange ? (
+          <button
+            type="button"
+            className="btn btn--quiet btn--sm"
+            aria-pressed={Boolean(muted)}
+            onClick={() => onMutedChange(!muted)}
+            title="Silences every alarm sound; the reminder itself still appears"
+          >
+            {muted ? 'Sounds muted' : 'Mute all sounds'}
+          </button>
+        ) : null}
+        <span className="alarms__count">
+          {alarms.length} alarm{alarms.length === 1 ? '' : 's'} · {alarms.filter((alarm) => alarm.enabled).length} on
+        </span>
+      </div>
 
       {alarms.length > 0 ? (
         <ul className="alarms__list">
@@ -87,6 +134,21 @@ export function AlarmsPanel({
                 }
               >
                 <span className={`alarms__dot ${alarm.enabled ? 'alarms__dot--on' : ''}`} aria-hidden="true" />
+              </button>
+              <button
+                className="btn btn--icon btn--sm"
+                aria-label={`Duplicate alarm ${alarm.label || alarm.time}`}
+                title="Duplicate this alarm"
+                onClick={() =>
+                  onChange(
+                    sortAlarms([
+                      ...alarms,
+                      { ...alarm, id: newAlarmId(), label: alarm.label ? `${alarm.label} copy` : '' },
+                    ]),
+                  )
+                }
+              >
+                <CopyIcon width="13" height="13" />
               </button>
               <button
                 className="btn btn--icon btn--sm"

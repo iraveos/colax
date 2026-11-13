@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { estimateStrength } from '../crypto/passwords.ts';
 import { findReusedPasswords, hostnameOf, isWeakPassword, type VaultItem } from '../vault/types.ts';
 import {
@@ -604,6 +604,13 @@ export function App() {
    */
   const [allTab, setAllTab] = useState<AllLoginTab>('all');
   const [query, setQuery] = useState('');
+  /**
+   * The search box paints from `query`; the list filters from this deferred
+   * copy. A vault with thousands of logins spent the keystroke rebuilding the
+   * visible list and its sorts, which is why typing could feel a frame behind.
+   * The deferred value catches up immediately after the input has rendered.
+   */
+  const deferredQuery = useDeferredValue(query);
   /** Tags chosen from the search bar's tag picker; any of them matches. */
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
@@ -937,7 +944,9 @@ useHotkeys(
   // Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z. Bound here because useHotkeys deliberately
   // ignores modified keystrokes, which would otherwise swallow them.
   useEffect(() => {
-    if (vault.status !== 'unlocked') return;
+    // Settings keeps its own undo history (Optimize › Resources); the vault's
+    // login history must not fire behind it when Ctrl+Z is pressed there.
+    if (vault.status !== 'unlocked' || showSettings) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       const key = event.key.toLowerCase();
@@ -958,7 +967,7 @@ useHotkeys(
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [vault, notify]);
+  }, [vault, notify, showSettings]);
 
 const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.items]);
   const emailSuggestions = useMemo(() => {
@@ -1836,7 +1845,7 @@ const duplicateIds = useMemo(() => findReusedPasswords(vault.items), [vault.item
   );
 
 const visible = useMemo(() => {
-    const needle = query.trim().toLowerCase();
+    const needle = deferredQuery.trim().toLowerCase();
 
     // A query searches inside the active channel; "entire vault" widens it.
     // (This used to always search everything, but a channel then read as a
@@ -1939,8 +1948,11 @@ const visible = useMemo(() => {
     if (!needle) return tagged;
     // Tag names count as searchable text too, so typing "work" finds a login
     // carrying that tag even when its title and username say nothing about it.
+    // One lookup map for the whole filter: the old `find` per tag per item was
+    // O(items × tags) on every keystroke.
+    const tagNameById = new Map(prefs.tags.map((tag) => [tag.id, tag.name] as const));
     const tagNames = (item: VaultItem) =>
-      item.tags.map((id) => prefs.tags.find((tag) => tag.id === id)?.name ?? '').join(' ');
+      item.tags.map((id) => tagNameById.get(id) ?? '').join(' ');
     return tagged.filter((item) =>
       [item.title, item.username, item.url, item.notes, tagNames(item)].some((field) =>
         (field ?? '').toLowerCase().includes(needle),
@@ -1956,7 +1968,7 @@ const visible = useMemo(() => {
     sidebarBase,
     channelLookup,
     getParentFolderForChannel,
-    query,
+    deferredQuery,
     searchScope,
     prefs.sort,
     prefs.pinFavorites,
@@ -4665,6 +4677,13 @@ onCreate={vault.create}
                     const account = prefs.gmailAccounts.find((entry) => entry.id === accountId);
                     if (account) setMailboxFor(account);
                   }}
+                  onOpenMessages={(item) => {
+                    // A disposable inbox has its own window; every other login
+                    // reads through the shared Messages window. Same split the
+                    // dock's "Show messages" action uses.
+                    if (item.tempMail) setTempMessagesFor(item);
+                    else setMessagesFor(item);
+                  }}
                   onOpenSettings={(tab) => openSettings(tab)}
                   onAddLogin={() => setEditing('new')}
                   onCopy={viewActions.onCopy}
@@ -4690,6 +4709,10 @@ onCreate={vault.create}
                   onOpenMailbox={(accountId) => {
                     const account = prefs.gmailAccounts.find((entry) => entry.id === accountId);
                     if (account) setMailboxFor(account);
+                  }}
+                  onOpenMessages={(item) => {
+                    if (item.tempMail) setTempMessagesFor(item);
+                    else setMessagesFor(item);
                   }}
                   onOpenSettings={(tab) => openSettings(tab)}
                   onAddLogin={() => setEditing('new')}
@@ -4930,6 +4953,7 @@ onCreate={vault.create}
         protection={vault.protection}
         items={vault.items}
         onUpdate={vault.updatePrefs}
+        onItemsChanged={vault.refreshItems}
         onNotify={notify}
         onLock={vault.lock}
         shareServerStatus={shareServerStatus}

@@ -371,6 +371,8 @@ const updatePrefs = useCallback(
     create,
     lock,
     mutate,
+    /** Re-reads the service's items into React state after an external write. */
+    refreshItems: sync,
     undo,
     redo,
     clearHistory,

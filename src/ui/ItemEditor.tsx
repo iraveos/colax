@@ -7,7 +7,14 @@
  * section one click away and the height stable as fields are added.
  */
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { generatePassphrase, generatePassword, type GeneratorOptions } from '../crypto/passwords.ts';
 import { EMPTY_SECURITY, requiresVerification } from '../crypto/security.ts';
 import { SecurityForm } from './SecurityForm.tsx';
@@ -458,6 +465,15 @@ export function ItemEditor({
   const [tempMailBusy, setTempMailBusy] = useState(false);
   const [tempRenewBusy, setTempRenewBusy] = useState(false);
   const [savedEmailsOpen, setSavedEmailsOpen] = useState(false);
+  const [savedEmailFilter, setSavedEmailFilter] = useState('');
+  /**
+   * The email field's own suggestion list, opened by typing rather than on
+   * focus. This replaces the native `<datalist>`: that popup is an OS widget
+   * with no height limit, so a vault with hundreds of addresses opened a menu
+   * taller than the window with no scrollbar.
+   */
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [emailActive, setEmailActive] = useState(-1);
   const [, setTempMailClock] = useState(0);
   const hasTempMail = Boolean(draft.tempMail);
   const [savedDraft, setSavedDraft] = useState('');
@@ -474,6 +490,10 @@ export function ItemEditor({
   const notesShared = Boolean(linked?.fields.notes);
   const attachmentsShared = Boolean(linked?.fields.attachments);
   const savedEmails = normaliseReusableEmails(reusableEmails);
+  const savedEmailQuery = savedEmailFilter.trim().toLowerCase();
+  const visibleSavedEmails = savedEmailQuery
+    ? savedEmails.filter((address) => address.toLowerCase().includes(savedEmailQuery))
+    : savedEmails;
   const currentEmail = (draft.username ?? '').trim();
   const currentIsSaved =
     isEmailLike(currentEmail) &&
@@ -494,6 +514,69 @@ export function ItemEditor({
       ].filter((address) => address.includes('@')),
     ),
   ].slice(0, 300);
+  const emailQuery = (draft.username ?? '').trim().toLowerCase();
+  const emailMatches = (
+    emailQuery
+      ? emailChoices.filter(
+          (address) => address.toLowerCase() !== emailQuery && address.toLowerCase().includes(emailQuery),
+        )
+      : emailChoices
+  ).slice(0, 40);
+
+  const pickEmail = (address: string) => {
+    patch({ username: address });
+    setEmailOpen(false);
+    setEmailActive(-1);
+  };
+
+  // Closing on blur would also fire while the list's own scrollbar is being
+  // dragged (the input loses focus, the menu unmounts mid-gesture). A capture
+  // pointerdown outside the field closes it instead, so scrolling the list and
+  // picking from it both stay possible.
+  useEffect(() => {
+    if (!emailOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.email-suggest') || target?.id === 'username') return;
+      setEmailOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+  }, [emailOpen]);
+
+  const handleEmailKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown') {
+      if (!emailOpen) {
+        setEmailOpen(true);
+        setEmailActive(0);
+        event.preventDefault();
+        return;
+      }
+      if (emailMatches.length === 0) return;
+      event.preventDefault();
+      setEmailActive((current) => (current + 1) % emailMatches.length);
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      if (!emailOpen || emailMatches.length === 0) return;
+      event.preventDefault();
+      setEmailActive((current) => (current <= 0 ? emailMatches.length - 1 : current - 1));
+      return;
+    }
+    if (event.key === 'Enter' && emailOpen && emailActive >= 0 && emailMatches[emailActive]) {
+      // Enter saves the login from any single-line field; while a suggestion is
+      // highlighted it picks that address instead.
+      event.preventDefault();
+      event.stopPropagation();
+      pickEmail(emailMatches[emailActive]!);
+      return;
+    }
+    if (event.key === 'Escape' && emailOpen) {
+      event.preventDefault();
+      setEmailOpen(false);
+      setEmailActive(-1);
+    }
+  };
 
   useEffect(() => {
     setDraft(item ?? {});
@@ -885,24 +968,48 @@ export function ItemEditor({
             id="username"
             className="input"
             value={draft.username ?? ''}
-            onChange={(event) => patch({ username: event.target.value })}
+            onChange={(event) => {
+              patch({ username: event.target.value });
+              setEmailActive(-1);
+              setEmailOpen(true);
+            }}
+            onFocus={() => setEmailActive(-1)}
+            onKeyDown={handleEmailKeyDown}
             placeholder="you@example.com"
             autoComplete="off"
             spellCheck={false}
             readOnly={Boolean(linked)}
-            list={emailChoices.length > 0 ? 'login-email-suggestions' : undefined}
+            aria-autocomplete={emailChoices.length > 0 ? 'list' : undefined}
+            aria-expanded={emailOpen && emailMatches.length > 0}
+            aria-controls={emailOpen && emailMatches.length > 0 ? 'login-email-suggestions' : undefined}
           />
+          {emailOpen && emailMatches.length > 0 ? (
+            <div
+              className="email-suggest"
+              role="listbox"
+              id="login-email-suggestions"
+              aria-label="Email addresses already in this vault"
+            >
+              {emailMatches.map((address, index) => (
+                <button
+                  key={address}
+                  type="button"
+                  role="option"
+                  aria-selected={index === emailActive}
+                  className="email-suggest__option"
+                  // Keep the input focused so the pick lands before blur closes
+                  // the list; the click still runs normally.
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setEmailActive(index)}
+                  onClick={() => pickEmail(address)}
+                >
+                  {address}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {emailChoices.length > 0 ? (
-            <>
-              <datalist id="login-email-suggestions">
-                {emailChoices.map((address) => (
-                  <option key={address} value={address} />
-                ))}
-              </datalist>
-              <span className="field__hint">
-                Start typing to reuse an email already in this vault.
-              </span>
-            </>
+            <span className="field__hint">Start typing to reuse an email already in this vault.</span>
           ) : null}
           {isEmailLike(currentEmail) ? (
             <div className="email-usage" data-empty={currentUsage.length === 0 || undefined}>
@@ -977,7 +1084,10 @@ export function ItemEditor({
                   type="button"
                   className="btn btn--icon btn--sm"
                   aria-label="Close saved emails"
-                  onClick={() => setSavedEmailsOpen(false)}
+                  onClick={() => {
+                    setSavedEmailsOpen(false);
+                    setSavedEmailFilter('');
+                  }}
                 >
                   <XIcon width="13" height="13" />
                 </button>
@@ -996,7 +1106,6 @@ export function ItemEditor({
                   autoComplete="off"
                   spellCheck={false}
                   aria-label="Email address to save"
-                  list={emailChoices.length > 0 ? 'saved-email-suggestions' : undefined}
                   onKeyDown={(event) => {
                     if (event.key !== 'Enter') return;
                     event.preventDefault();
@@ -1004,13 +1113,6 @@ export function ItemEditor({
                     setSavedDraft('');
                   }}
                 />
-                {emailChoices.length > 0 ? (
-                  <datalist id="saved-email-suggestions">
-                    {emailChoices.map((address) => (
-                      <option key={address} value={address} />
-                    ))}
-                  </datalist>
-                ) : null}
                 <button
                   type="button"
                   className="btn btn--secondary btn--sm"
@@ -1033,8 +1135,19 @@ export function ItemEditor({
               ) : null}
               {savedEmails.length > 0 ? (
                 <>
+                  {savedEmails.length > 6 ? (
+                    <input
+                      className="input saved-emails__filter"
+                      value={savedEmailFilter}
+                      onChange={(event) => setSavedEmailFilter(event.target.value)}
+                      placeholder={`Filter ${savedEmails.length} saved addresses…`}
+                      aria-label="Filter saved email addresses"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  ) : null}
                   <ul className="saved-emails__list">
-                    {savedEmails.map((address) => {
+                    {visibleSavedEmails.map((address) => {
                       const usage = usageFor(address);
                       return (
                         <li key={address}>
@@ -1045,6 +1158,7 @@ export function ItemEditor({
                             onClick={() => {
                               patch({ username: address });
                               setSavedEmailsOpen(false);
+                              setSavedEmailFilter('');
                             }}
                           >
                             <span className="saved-emails__address" title={address}>
@@ -1089,6 +1203,9 @@ export function ItemEditor({
                       );
                     })}
                   </ul>
+                  {visibleSavedEmails.length === 0 ? (
+                    <p className="field__hint">No saved address matches “{savedEmailFilter.trim()}”.</p>
+                  ) : null}
                   <button
                     type="button"
                     className="btn btn--secondary btn--sm"

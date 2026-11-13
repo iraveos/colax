@@ -38,6 +38,45 @@ test('an address merges its logins, mailbox and saved flag into one identity', (
   assert.equal(roadmap.counts.saved, 2);
 });
 
+test('the address owner is the first login saved with it, not the newest edit', () => {
+  const items = [
+    // i2 was edited most recently but i1 arrived first: arrival is what makes
+    // i1 the address's main login, so the click target cannot drift every save.
+    { ...emptyItem('i2', 30), title: 'Shop', username: 'me@example.com', updatedAt: 99 },
+    { ...emptyItem('i1', 10), title: 'Bank', username: 'me@example.com', updatedAt: 20 },
+  ];
+  const roadmap = buildEmailRoadmap(items, [], [], {});
+  const identity = roadmap.identities.find((entry) => entry.key === 'me@example.com');
+  assert.ok(identity);
+  assert.equal(identity.mainLogin?.id, 'i1');
+});
+
+test('an address with no own login falls back to the disposable inbox holder', () => {
+  const item = {
+    ...emptyItem('i1', 10),
+    title: 'Trial',
+    username: 'trialuser',
+    tempMail: {
+      provider: 'mohmal' as const,
+      address: 'temp@mohmal.com',
+      sessionKey: '0123456789abcdef',
+      createdAt: 10,
+      expiresAt: 20,
+      autoRenewMinutes: 10,
+      lastRenewedAt: 10,
+    },
+  };
+  const roadmap = buildEmailRoadmap([item], [], [], {});
+  const identity = roadmap.identities.find((entry) => entry.key === 'temp@mohmal.com');
+  assert.ok(identity);
+  assert.equal(identity.mainLogin?.id, 'i1');
+});
+
+test('a connected mailbox with no login has no main login to open', () => {
+  const roadmap = buildEmailRoadmap([], [account('gm_1', 'quiet@example.com')], [], {});
+  assert.equal(roadmap.identities[0]!.mainLogin, null);
+});
+
 test('a disposable inbox links its login even when the username is not an address', () => {
   const item = {
     ...emptyItem('i1', 10),

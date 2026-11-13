@@ -45,16 +45,33 @@ export interface AnimatedListProps<T> {
   initialSelectedIndex?: number;
 }
 
+/**
+ * How many rows get the full entrance/layout motion treatment.
+ *
+ * A vault can hold thousands of logins, and one `motion.div` plus one
+ * `useInView` observer per row is real work — every row subscribes to layout
+ * animation and intersection even when it is nowhere near the viewport. Past
+ * this many items entry motion stops earning its cost: the rows still scroll,
+ * select, drag and open exactly as before, they simply paint immediately. The
+ * first screenful keeps the animation the design is about.
+ */
+const MAX_ANIMATED_ROWS = 60;
+
 interface AnimatedItemProps {
   children: ReactNode;
   delay: number;
   index: number;
   selected: boolean;
-  onMouseEnter: () => void;
+  /**
+   * Hover intentionally does not write selection state. It used to, and every
+   * row crossed by the pointer re-rendered the whole list — on a long vault a
+   * sweep of the mouse was dozens of full-list renders. The card's own hover
+   * CSS is the highlight; keyboard navigation and clicks still set selection.
+   */
   onClick: (event: React.MouseEvent) => void;
 }
 
-function AnimatedItem({ children, delay, index, selected, onMouseEnter, onClick }: AnimatedItemProps) {
+function AnimatedItem({ children, delay, index, selected, onClick }: AnimatedItemProps) {
   const ref = useRef<HTMLDivElement>(null);
   // A low threshold gets the animation started, and a latch stops it ever
   // running backwards. Without the latch, a row that is only partly scrolled
@@ -73,7 +90,6 @@ function AnimatedItem({ children, delay, index, selected, onMouseEnter, onClick 
       className="rb-animated-list__row"
       data-index={index}
       data-selected={selected ? '' : undefined}
-      onMouseEnter={onMouseEnter}
       onClick={onClick}
       // Layout glides rows to their new slots on reorder. The enter stagger
       // must not delay it, so the delay only applies before first paint.
@@ -84,6 +100,30 @@ function AnimatedItem({ children, delay, index, selected, onMouseEnter, onClick 
     >
       {children}
     </motion.div>
+  );
+}
+
+/**
+ * A row with no motion component or observers, used once the list is long
+ * enough that per-row animation stops paying for itself. It deliberately
+ * mirrors the animated row's attributes so drag/reorder/selection code below
+ * cannot tell the difference.
+ */
+function StaticItem({
+  children,
+  index,
+  selected,
+  onClick,
+}: Omit<AnimatedItemProps, 'delay'>) {
+  return (
+    <div
+      className="rb-animated-list__row"
+      data-index={index}
+      data-selected={selected ? '' : undefined}
+      onClick={onClick}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -217,25 +257,33 @@ export function AnimatedList<T>({
         role="listbox"
         aria-label="Vault entries"
       >
-        {items.map((item, index) => (
-          <AnimatedItem
-            key={itemKey ? itemKey(item, index) : index}
-            delay={Math.min(index, 8) * 0.035}
-            index={index}
-            selected={selectedIndex === index}
-            onMouseEnter={() => setSelectedIndex(index)}
-            // Modifier-clicks belong to multi-selection (handled on the card
-            // below): opening here as well would both open and select at once.
-            onClick={(event: React.MouseEvent) => {
-              if (event.ctrlKey || event.metaKey || event.shiftKey) return;
-              select(index);
-            }}
-          >
+        {items.map((item, index) => {
+          const key = itemKey ? itemKey(item, index) : index;
+          const body = (
             <div className={`rb-animated-list__item ${itemClassName}`.trim()} {...rowProps?.(item, index)}>
               {renderItem(item, index, selectedIndex === index)}
             </div>
-          </AnimatedItem>
-        ))}
+          );
+          const handlers = {
+            index,
+            selected: selectedIndex === index,
+            // Modifier-clicks belong to multi-selection (handled on the card
+            // below): opening here as well would both open and select at once.
+            onClick: (event: React.MouseEvent) => {
+              if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+              select(index);
+            },
+          };
+          return index < MAX_ANIMATED_ROWS ? (
+            <AnimatedItem key={key} delay={Math.min(index, 8) * 0.035} {...handlers}>
+              {body}
+            </AnimatedItem>
+          ) : (
+            <StaticItem key={key} {...handlers}>
+              {body}
+            </StaticItem>
+          );
+        })}
       </div>
 
       {showGradients ? (

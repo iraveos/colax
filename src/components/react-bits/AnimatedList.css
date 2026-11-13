@@ -63,6 +63,13 @@
 .rb-animated-list__row {
   margin-bottom: calc(var(--space-3) * var(--density));
   cursor: pointer;
+  /* Off-screen rows skip layout, paint and backdrop-blur entirely. Chromium
+     keeps the last rendered size (the `auto` keyword), so scrolling back to a
+     row does not jump, and a long vault stops paying for cards nobody can see.
+     This is the largest cheap win on a big list: it does not change what is
+     rendered, only when. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--card-min-height, 88px);
 }
 
 /* Card geometry is not set here. The card fills its row, and the row is bounded

@@ -162,6 +162,39 @@ async #persist(item: VaultItem): Promise<VaultItem> {
   }
 
   /**
+   * Adds many logins in one write.
+   *
+   * The CSV importer used to call addItem per row: one IndexedDB transaction,
+   * one React state copy and one whole-vault re-render for every login in the
+   * file. Sealing is still per item (each needs its own nonce), but the storage
+   * write and the in-memory append happen once, so a three-hundred-row import is
+   * one commit instead of three hundred.
+   *
+   * Nothing is written when the list is empty, which keeps a failed/blocked
+   * import from touching storage at all.
+   */
+  async addItems(drafts: readonly Partial<VaultItem>[]): Promise<VaultItem[]> {
+    if (drafts.length === 0) return [];
+    const handle = this.#requireHandle();
+    const now = Date.now();
+    const created: VaultItem[] = [];
+    const stored: StoredItem[] = [];
+    for (const draft of drafts) {
+      const item = { ...emptyItem(newItemId(), now), ...draft };
+      const updated = { ...item, url: normalizeUrl(item.url) };
+      stored.push({
+        id: updated.id,
+        blob: await sealItems(handle, updated.id, updated),
+        updatedAt: updated.updatedAt,
+      });
+      created.push(updated);
+    }
+    await this.#storage.putItems(stored);
+    this.#items = [...this.#items, ...created];
+    return created;
+  }
+
+  /**
    * Writes a login back exactly as it was, id included.
    *
    * History's Restore needs this rather than `addItem`: a restored login has to

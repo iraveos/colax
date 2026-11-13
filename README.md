@@ -149,10 +149,16 @@ interface changes.
   which saved logins already use it, and clicking the address fills the email field
 - **Email Roadmap** — a dedicated channel and a mandatory Dashboard tab that maps every address
   to the logins it opens, the mailbox connected to it (provider, server, cadence) and whether it
-  is saved or disposable. Each address is drawn as a route with its logins as stops; hovering a
-  stop opens a cursor-anchored, scrollable detail card with the full login, while clicking opens
-  the editor. The channel can be hidden from the rail by right-clicking it, and the Dashboard tab
-  stays available either way.
+  is saved or disposable. The first login saved with an address is its owner: it is marked
+  **Main**, leads the route, and is what the address's mail belongs to. Each address is drawn as
+  a route with its logins as stops; clicking the address (or anywhere on its identity block)
+  opens that email's details — main login, mailbox server and cadence, cached mail, every login
+  under it, and the buttons that open its inbox, copy the address, the password or both. Its
+  cached mail shows a count and newest subject on the route itself. Hovering a stop opens a
+  cursor-anchored, scrollable detail card with the full login, clicking opens the editor, and
+  right-clicking the address or any stop offers Copy email, Copy password, Copy email + password,
+  Copy login details, Open login and Open website. The channel can be hidden from the rail by
+  right-clicking it, and the Dashboard tab stays available either way.
 - **Fast editing** - Enter saves from any single-line field (and creates a new login immediately);
   in Notes, Ctrl/Cmd+Enter saves so plain Enter can still make a new line
 - **Channel and folder notes** - both editors have a Notes field. A workspace exposes a small
@@ -167,7 +173,11 @@ interface changes.
 - TOTP codes generated locally from an authenticator seed
 - Favorites, search, five sort orders
 - Keyboard-first (`/`, `N`, `L`, `V`, `?`), auto-lock on idle/blur/tab-hide, clipboard auto-clear
-- Encrypted backup export/restore (optionally re-keyed or made passwordless), CSV import/export
+- Encrypted backup export/restore (optionally re-keyed or made passwordless), and CSV import/export
+  that carries text only — credentials, notes and tags, never card images — skips rows already in
+  the vault, and writes the whole file in one go instead of one login at a time. CSV, theme and
+  backup exports can each be sealed with an optional password (PBKDF2 + AES-GCM) and are asked
+  for that password on import
 - **Direct sharing** — separate Server, Codes, Devices, Open a share and Linked copies tabs;
   create unlimited independent codes or live app links for tags or selected logins; add expiry,
   a device limit, approval and an optional PIN; see every connected/pending device and revoke
@@ -178,21 +188,21 @@ interface changes.
 
 ## Settings
 
-Tabs slide in from the side:
+Tabs slide in from the side. Related tabs share one entry with a strip of mini-tabs inside it,
+so the rail stays short without hiding anything:
 
-| Tab | What it holds |
+| Tab | Mini-tabs and what they hold |
 | --- | --- |
-| Appearance | Theme, accent, animation intensity, glow, text size, roundness, density, transparency, high contrast |
-| Background | App-wide image from URL or upload, plus opacity / blur / dim |
-| Layout | Default view, sort order, show URLs, pin favorites, expand on select, health badges |
-| Generator | Default length and character sets |
-| Vault password | Enable / change / remove, plus the active crypto parameters |
-| Security | Auto-lock, lock on blur, lock on tab hide, clipboard clearing, reveal, reuse warnings, export confirmation |
-| Alarms | Reminder labels, times and sounds |
-| Sharing | Tabs for server, codes/live links, devices, receiving and linked-copy sync; rules, approval and activity |
-| Optimize | One-click resource profiles, launch-time Chromium switches and mail loading |
-| Data | Stored size, CSV export/import, theme backup, delete vault |
+| Appearance | **Design** (theme, accent, motion, glow, type, roundness, density, contrast), **Layout** (view, sort, chrome, quick-launch doorway), **Background** (image, opacity, blur, dim), **Hidden** (what right-click hid) |
+| Workspace | **Channels, tags & folders**, **Docks** (bars, slots and their keys) |
+| Security | **Security** (vault password, auto-lock, clipboard, health warnings, confirmations), **Generator** (presets, live sample, length, character sets), **Alarms** (labels, times, days, sounds, sort, duplicate, mute) |
+| Data | **Everything** (encrypted backup/restore), **Theme** (export/import the look and workspace), **Data** (CSV, stored size, delete vault) |
+| Optimize | **General** (profiles, cost snapshot), **Resources** (feature-by-feature memory, frames, DOM, cache and the switch that fixes each), **Look & feel**, **Speed**, **Messages** |
+| Sharing | Server, codes/live links, devices, receiving and linked-copy sync; rules, approval and activity |
 | About | Version, offline confirmation, diagnostics copy, reset preferences |
+
+The search box filters a hand-built index of every control and opens the tab and mini-tab it
+lives in, then scrolls to and flashes the row. Exports in Data each take an optional file password.
 
 Preferences are stored unencrypted (they are not secret) and every value is re-validated on
 load, so hand-edited or stale data cannot break the UI. That includes migrating the six

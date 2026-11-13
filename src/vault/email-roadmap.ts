@@ -44,6 +44,18 @@ export interface EmailIdentity {
   ownLogins: VaultItem[];
   /** Logins whose disposable inbox is this address. */
   tempLogins: VaultItem[];
+  /**
+   * The login this address "belongs" to: the first one saved that carried it
+   * as its own address (or, failing that, the first one that created this
+   * disposable inbox).
+   *
+   * The roadmap otherwise reads as a flat list of logins under an address, and
+   * there was no way to tell which of them a mailbox was connected for. The
+   * earliest `createdAt` is the one that existed when the address entered the
+   * vault, so it is the natural owner — the click target for opening the
+   * address's mail.
+   */
+  mainLogin: VaultItem | null;
   /** The address is in the reusable-emails list. */
   saved: boolean;
   /** Hostnames of the services those logins open. */
@@ -191,28 +203,57 @@ export function buildEmailRoadmap(
 
     for (const status of statuses) counts[status] += 1;
 
-    const domains: string[] = [];
-    const tagIds: string[] = [];
+    // Sets, not `includes` on arrays: a login with many tags used to rescan the
+    // whole collected list per tag, and the roadmap rebuilds on every change.
+    const domainSet = new Set<string>();
+    const tagSet = new Set<string>();
     let lastUpdated = 0;
     let weakCount = 0;
     let securedCount = 0;
     for (const item of logins) {
       linkedIds.add(item.id);
       const host = hostnameOf(item.url);
-      if (host) {
-        const clean = host.replace(/^www\./i, '').toLowerCase();
-        if (!domains.includes(clean)) domains.push(clean);
-      }
-      for (const tagId of item.tags) if (!tagIds.includes(tagId)) tagIds.push(tagId);
+      if (host) domainSet.add(host.replace(/^www\./i, '').toLowerCase());
+      for (const tagId of item.tags) tagSet.add(tagId);
       if (item.updatedAt > lastUpdated) lastUpdated = item.updatedAt;
       if (isWeakPassword(item)) weakCount += 1;
       if (item.totpSecret || isSecured(item.security)) securedCount += 1;
     }
+    const domains = [...domainSet];
+    const tagIds = [...tagSet];
 
-    const latestMail =
-      [...bucket.mail.values()].sort(
-        (a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''),
-      )[0] ?? null;
+    // One pass instead of sorting the whole cache: the only question is which
+    // message is newest, and a mailbox can hold hundreds of them.
+    let latestMail: CachedMailMessage | null = null;
+    let latestStamp = Number.NEGATIVE_INFINITY;
+    for (const message of bucket.mail.values()) {
+      const stamp = Date.parse(message.issued || '');
+      if (latestMail === null || stamp > latestStamp) {
+        latestMail = message;
+        latestStamp = stamp;
+      }
+    }
+
+    /**
+     * The first login saved with this address owns it. Own-address logins win
+     * over disposable-inbox holders, because the address in the vault column is
+     * what a user means by "the login for this email"; a disposable address
+     * only ever has the one login that created it.
+     *
+     * Ties are broken by id so the result is stable across renders and tests.
+     */
+    const firstSaved = (candidates: VaultItem[]): VaultItem | null =>
+      candidates.length === 0
+        ? null
+        : [...candidates].sort(
+            (a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+          )[0] ?? null;
+    const mainLogin = firstSaved([...bucket.own.values()]) ?? firstSaved([...bucket.temp.values()]);
+    // The owner leads its own route: the first login saved with the address is
+    // the one its mail belongs to, so it reads first and the rest follow as
+    // stops. Nothing is dropped; only the order changes.
+    const orderedLogins =
+      mainLogin === null ? logins : [mainLogin, ...logins.filter((item) => item.id !== mainLogin.id)];
 
     identities.push({
       key: bucket.key,
@@ -220,9 +261,10 @@ export function buildEmailRoadmap(
       statuses,
       primary: STATUS_ORDER.find((status) => statuses.includes(status)) ?? 'vault',
       accounts: [...bucket.accounts.values()],
-      logins,
+      logins: orderedLogins,
       ownLogins: [...bucket.own.values()],
       tempLogins: [...bucket.temp.values()],
+      mainLogin,
       saved: bucket.saved,
       domains,
       tagIds,

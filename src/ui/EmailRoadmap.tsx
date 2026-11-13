@@ -22,6 +22,7 @@
 
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -43,6 +44,12 @@ import {
 } from '../vault/email-roadmap.ts';
 import type { CachedMailMessage, GmailAccount } from '../vault/storage.ts';
 import { accentOf, hostnameOf, isWeakPassword, relativeTime, type VaultItem } from '../vault/types.ts';
+import { formatLoginCompact } from './login-format.ts';
+import {
+  ContextMenu,
+  type ContextMenuState,
+  type MenuItem,
+} from './context-menu.tsx';
 import { avatarSrc } from './card-art.ts';
 import { hasMailCreds } from './useGmail.ts';
 import {
@@ -101,6 +108,12 @@ interface HoverState {
 interface RoadmapActions {
   onOpenLogin: (item: VaultItem) => void;
   onOpenMailbox?: (accountId: string) => void;
+  /**
+   * Opens a login's Messages window. Used when the address has no connected
+   * IMAP mailbox but its main login still has a readable inbox (a disposable
+   * one, or a mailbox the login is linked to).
+   */
+  onOpenMessages?: (item: VaultItem) => void;
   onOpenSettings?: (tab: string) => void;
   onAddLogin?: () => void;
   onCopy?: (value: string, label: string, item?: VaultItem) => void;
@@ -124,6 +137,7 @@ export function EmailRoadmap({
   embedded = false,
   onOpenLogin,
   onOpenMailbox,
+  onOpenMessages,
   onOpenSettings,
   onAddLogin,
   onCopy,
@@ -144,6 +158,10 @@ export function EmailRoadmap({
   const [filter, setFilter] = useState<IdentityFilter>('all');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [hover, setHover] = useState<HoverState | null>(null);
+  /** The address whose detail sheet is open, if any. */
+  const [details, setDetails] = useState<EmailIdentity | null>(null);
+  /** Right-click menu for an address or one of its stops. */
+  const [menu, setMenu] = useState<ContextMenuState | null>(null);
 
   const hoverRef = useRef<HoverState | null>(null);
   hoverRef.current = hover;
@@ -155,10 +173,11 @@ export function EmailRoadmap({
     [items, accounts, reusableEmails, mailCache],
   );
 
-  const tagName = useCallback(
-    (tagId: string) => tags.find((tag) => tag.id === tagId)?.name ?? '',
-    [tags],
-  );
+  // A map rather than a find per chip: the roadmap draws one row per address
+  // and each row can carry several tags, so the old scan was O(addresses ×
+  // tags × chips) every time the filter changed.
+  const tagNamesById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag.name] as const)), [tags]);
+  const tagName = useCallback((tagId: string) => tagNamesById.get(tagId) ?? '', [tagNamesById]);
 
   const clearOpen = useCallback(() => {
     if (openTimer.current !== null) {
@@ -235,7 +254,11 @@ export function EmailRoadmap({
 
   const hoverControls: HoverControls = { show: showHover, showAt: showHoverAt, hide: hideHover };
 
-  const query = search.trim().toLowerCase();
+  // Filtering a big roadmap on every keystroke is what made the search box feel
+  // sticky on a large vault. Deferring the expensive part lets the input paint
+  // first; the list catches up a frame later.
+  const deferredSearch = useDeferredValue(search);
+  const query = deferredSearch.trim().toLowerCase();
   const matchesQuery = useCallback(
     (identity: EmailIdentity): boolean => {
       if (!query) return true;
@@ -285,6 +308,70 @@ export function EmailRoadmap({
       `${item.title} ${item.username} ${item.url}`.toLowerCase().includes(query),
     );
   }, [roadmap.unlinked, query]);
+
+  /** Right-click on an address: everything one email identity can be copied for. */
+  const identityMenu = useCallback(
+    (identity: EmailIdentity): MenuItem[] => {
+      const account = identity.accounts[0] ?? null;
+      const main = identity.mainLogin;
+      const items: MenuItem[] = [
+        { kind: 'item', label: 'Email details…', onSelect: () => setDetails(identity) },
+        { kind: 'separator' },
+        { kind: 'item', label: 'Copy email', onSelect: () => onCopy?.(identity.address, 'Email address') },
+      ];
+      if (main) {
+        items.push(
+          { kind: 'item', label: 'Copy password', onSelect: () => onCopy?.(main.password, 'Password', main) },
+          {
+            kind: 'item',
+            label: 'Copy email + password',
+            onSelect: () => onCopy?.(`${identity.address}\n${main.password}`, 'Email and password', main),
+          },
+          {
+            kind: 'item',
+            label: 'Copy login details',
+            onSelect: () => onCopy?.(formatLoginCompact(main), 'Login', main),
+          },
+          { kind: 'separator' },
+          { kind: 'item', label: 'Open main login', onSelect: () => onOpenLogin(main) },
+        );
+        if (main.url && onOpenUrl) {
+          items.push({ kind: 'item', label: 'Open website', onSelect: () => onOpenUrl(main) });
+        }
+      }
+      if (account) {
+        items.push({ kind: 'item', label: 'Open inbox', onSelect: () => onOpenMailbox?.(account.id) });
+      } else if (main && onOpenMessages) {
+        items.push({ kind: 'item', label: 'Open messages', onSelect: () => onOpenMessages(main) });
+      }
+      return items;
+    },
+    [onCopy, onOpenLogin, onOpenMailbox, onOpenMessages, onOpenUrl],
+  );
+
+  /** Right-click on one stop: the same actions scoped to that login. */
+  const stopMenu = useCallback(
+    (item: VaultItem): MenuItem[] => {
+      const items: MenuItem[] = [
+        { kind: 'item', label: 'Copy email', disabled: !item.username, onSelect: () => onCopy?.(item.username, 'Email', item) },
+        { kind: 'item', label: 'Copy password', disabled: !item.password, onSelect: () => onCopy?.(item.password, 'Password', item) },
+        {
+          kind: 'item',
+          label: 'Copy email + password',
+          disabled: !item.username && !item.password,
+          onSelect: () => onCopy?.(`${item.username}\n${item.password}`, 'Email and password', item),
+        },
+        { kind: 'item', label: 'Copy login details', onSelect: () => onCopy?.(formatLoginCompact(item), 'Login', item) },
+        { kind: 'separator' },
+        { kind: 'item', label: 'Open login', onSelect: () => onOpenLogin(item) },
+      ];
+      if (item.url && onOpenUrl) {
+        items.push({ kind: 'item', label: 'Open website', onSelect: () => onOpenUrl(item) });
+      }
+      return items;
+    },
+    [onCopy, onOpenLogin, onOpenUrl],
+  );
 
   const stats = [
     { label: 'Addresses', value: roadmap.identities.length, note: 'in the roadmap' },
@@ -415,7 +502,10 @@ export function EmailRoadmap({
                       tagName={tagName}
                       maskEmails={maskEmails}
                       hover={hoverControls}
-                      actions={{ onOpenLogin, onOpenMailbox, onOpenSettings, onAddLogin, onCopy, onOpenUrl, onOpenExternal }}
+                      actions={{ onOpenLogin, onOpenMailbox, onOpenMessages, onOpenSettings, onAddLogin, onCopy, onOpenUrl, onOpenExternal }}
+                      onDetails={setDetails}
+                      onMenu={(target, x, y) => setMenu({ x, y, items: identityMenu(target) })}
+                      onStopMenu={(target, x, y) => setMenu({ x, y, items: stopMenu(target) })}
                     />
                   ))}
                 </div>
@@ -533,6 +623,8 @@ export function EmailRoadmap({
                               maskEmails={maskEmails}
                               hover={hoverControls}
                               onOpen={onOpenLogin}
+                              mainId={identity.mainLogin?.id ?? null}
+                              onMenu={(target, x, y) => setMenu({ x, y, items: stopMenu(target) })}
                             />
                           ))}
                         </div>
@@ -636,11 +728,268 @@ export function EmailRoadmap({
               onStay={stayHover}
               onLeave={hideHover}
               onClose={closeHover}
-              actions={{ onOpenLogin, onOpenMailbox, onOpenSettings, onAddLogin, onCopy, onOpenUrl, onOpenExternal }}
+              actions={{ onOpenLogin, onOpenMailbox, onOpenMessages, onOpenSettings, onAddLogin, onCopy, onOpenUrl, onOpenExternal }}
             />,
             document.body,
           )
         : null}
+
+      {details
+        ? createPortal(
+            <IdentityDetails
+              identity={details}
+              messages={details.accounts[0] ? (mailCache?.[details.accounts[0].id] ?? []) : []}
+              maskEmails={maskEmails}
+              onClose={() => setDetails(null)}
+              actions={{ onOpenLogin, onOpenMailbox, onOpenMessages, onOpenSettings, onAddLogin, onCopy, onOpenUrl, onOpenExternal }}
+            />,
+            document.body,
+          )
+        : null}
+
+      <ContextMenu state={menu} onClose={() => setMenu(null)} />
+    </div>
+  );
+}
+
+/**
+ * The address's own sheet: who owns it, what it is connected to, the mail that
+ * is already cached and every login under it — with the copy actions a login
+ * row would have. Opened by clicking the address or its identity block.
+ */
+function IdentityDetails({
+  identity,
+  messages,
+  maskEmails,
+  onClose,
+  actions,
+}: {
+  identity: EmailIdentity;
+  messages: CachedMailMessage[];
+  maskEmails: boolean;
+  onClose: () => void;
+  actions: RoadmapActions;
+}) {
+  const account = identity.accounts[0] ?? null;
+  const main = identity.mainLogin;
+  const connection = account ? resolveConnection(account) : null;
+  const display = maskEmails ? maskEmail(identity.address) : identity.address;
+  const recent = messages.slice(0, 6);
+
+  const copyBoth = () => {
+    if (!main) return;
+    actions.onCopy?.(`${identity.address}\n${main.password}`, 'Email and password', main);
+  };
+
+  /**
+   * Opens something else (the editor, Messages, an inbox) after closing this
+   * sheet. Both are overlays; leaving this one open put the new window behind
+   * it, which is what made "Open main login" look like it did nothing.
+   */
+  const then = (action?: () => void) => () => {
+    onClose();
+    action?.();
+  };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="overlay"
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+    >
+      <div
+        className="modal modal--wide eroad-details"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Email details for ${identity.address}`}
+      >
+        <header className="eroad-details__head">
+          <span className="eroad-route__badge" data-status={identity.primary} aria-hidden="true">
+            <MailIcon width="16" height="16" />
+          </span>
+          <div className="eroad-details__identity">
+            <h2 className="eroad-details__address" title={identity.address}>{display}</h2>
+            <div className="eroad-details__chips">
+              {identity.statuses.map((status) => (
+                <span className="eroad-chip" data-tone={status} key={status}>
+                  {EMAIL_IDENTITY_LABELS[status]}
+                </span>
+              ))}
+              <span className="eroad-chip">{identity.logins.length} login{identity.logins.length === 1 ? '' : 's'}</span>
+              {identity.lastUpdated ? <span className="eroad-chip">Updated {relativeTime(identity.lastUpdated)}</span> : null}
+            </div>
+          </div>
+          <button type="button" className="btn btn--icon" aria-label="Close email details" onClick={onClose}>
+            <XIcon width="15" height="15" />
+          </button>
+        </header>
+
+        <div className="eroad-details__body">
+          <section className="eroad-details__section">
+            <h3 className="eroad-details__title">Main login</h3>
+            {main ? (
+              <div className="eroad-details__main">
+                <div className="eroad-details__main-text">
+                  <span className="eroad-details__strong">
+                    {main.title || main.username || hostnameOf(main.url) || 'Untitled login'}
+                  </span>
+                  <span className="eroad-details__muted">
+                    {hostnameOf(main.url) ?? 'No website'} · added {relativeTime(main.createdAt)}
+                  </span>
+                </div>
+                <span className="eroad-chip eroad-chip--main">Main</span>
+                <div className="eroad-details__row-actions">
+                  <button type="button" className="btn btn--quiet btn--sm" onClick={then(() => actions.onOpenLogin(main))}>
+                    <EditIcon width="12" height="12" />
+                    Open
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--quiet btn--sm"
+                    disabled={!main.password}
+                    onClick={() => actions.onCopy?.(main.password, 'Password', main)}
+                  >
+                    <CopyIcon width="12" height="12" />
+                    Password
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="eroad-details__muted">No login carries this address yet.</p>
+            )}
+          </section>
+
+          <section className="eroad-details__section">
+            <h3 className="eroad-details__title">Mailbox</h3>
+            {account && connection ? (
+              <p className="eroad-details__muted">
+                {accountLabel(account)} · {connection.host}:{connection.port} ·{' '}
+                {account.refreshSeconds <= 0 ? 'manual checks' : `every ${Math.max(1, Math.round(account.refreshSeconds / 60))} min`}
+              </p>
+            ) : (
+              <p className="eroad-details__muted">
+                No IMAP mailbox is connected to this address. Its mail opens through the main login's
+                Messages window.
+              </p>
+            )}
+            <div className="eroad-details__row-actions">
+              {account ? (
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm"
+                  onClick={then(() => actions.onOpenMailbox?.(account.id))}
+                  disabled={!actions.onOpenMailbox}
+                >
+                  <InboxIcon width="13" height="13" />
+                  Open inbox
+                </button>
+              ) : main && actions.onOpenMessages ? (
+                <button type="button" className="btn btn--secondary btn--sm" onClick={then(() => actions.onOpenMessages?.(main))}>
+                  <InboxIcon width="13" height="13" />
+                  Open messages
+                </button>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="eroad-details__section">
+            <h3 className="eroad-details__title">
+              Mail{messages.length > 0 ? ` · ${messages.length} cached` : ''}
+            </h3>
+            {recent.length === 0 ? (
+              <p className="eroad-details__muted">
+                Nothing cached yet. Open the inbox and the newest mail lands here.
+              </p>
+            ) : (
+              <ul className="eroad-details__mail">
+                {recent.map((message) => (
+                  <li key={message.id}>
+                    <span className="eroad-details__mail-title">{message.title || '(no subject)'}</span>
+                    <span className="eroad-details__muted">
+                      {message.author || message.email || 'Unknown sender'}
+                      {Number.isFinite(Date.parse(message.issued || ''))
+                        ? ` · ${relativeTime(Date.parse(message.issued))}`
+                        : ''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="eroad-details__section">
+            <h3 className="eroad-details__title">Logins</h3>
+            <ul className="eroad-details__logins">
+              {identity.logins.map((item) => (
+                <li key={item.id}>
+                  <span className="eroad-details__strong">
+                    {item.title || item.username || hostnameOf(item.url) || 'Untitled login'}
+                  </span>
+                  <span className="eroad-details__muted">{hostnameOf(item.url) ?? item.username ?? 'No website'}</span>
+                  {identity.mainLogin?.id === item.id ? (
+                    <span className="eroad-chip eroad-chip--main">Main</span>
+                  ) : null}
+                  <span className="eroad-details__row-actions">
+                    <button
+                      type="button"
+                      className="btn btn--quiet btn--sm"
+                      disabled={!item.password}
+                      onClick={() => actions.onCopy?.(item.password, 'Password', item)}
+                    >
+                      <CopyIcon width="12" height="12" />
+                      Password
+                    </button>
+                    <button type="button" className="btn btn--quiet btn--sm" onClick={then(() => actions.onOpenLogin(item))}>
+                      Open
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+
+        <footer className="eroad-details__actions">
+          <button
+            type="button"
+            className="btn btn--champagne btn--sm"
+            onClick={() => actions.onCopy?.(identity.address, 'Email address')}
+          >
+            <CopyIcon width="13" height="13" />
+            Copy email
+          </button>
+          {main ? (
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              disabled={!main.password}
+              onClick={() => actions.onCopy?.(main.password, 'Password', main)}
+            >
+              <CopyIcon width="13" height="13" />
+              Copy password
+            </button>
+          ) : null}
+          {main ? (
+            <button type="button" className="btn btn--secondary btn--sm" onClick={copyBoth}>
+              <CopyIcon width="13" height="13" />
+              Copy email + password
+            </button>
+          ) : null}
+          {main ? (
+            <button type="button" className="btn btn--quiet btn--sm" onClick={then(() => actions.onOpenLogin(main))}>
+              <EditIcon width="13" height="13" />
+              Open main login
+            </button>
+          ) : null}
+        </footer>
+      </div>
     </div>
   );
 }
@@ -652,28 +1001,60 @@ function IdentityRoute({
   maskEmails,
   hover,
   actions,
+  onDetails,
+  onMenu,
+  onStopMenu,
 }: {
   identity: EmailIdentity;
   tagName: (tagId: string) => string;
   maskEmails: boolean;
   hover: HoverControls;
   actions: RoadmapActions;
+  /** Opens the address's detail sheet. */
+  onDetails: (identity: EmailIdentity) => void;
+  /** Right-click on the identity block. */
+  onMenu: (identity: EmailIdentity, x: number, y: number) => void;
+  /** Right-click on one of the logins under it. */
+  onStopMenu: (item: VaultItem, x: number, y: number) => void;
 }) {
   const account = identity.accounts[0];
   const connection = account ? resolveConnection(account) : null;
   const display = maskEmails ? maskEmail(identity.address) : identity.address;
   const tagNames = identity.tagIds.map(tagName).filter(Boolean).slice(0, 3);
-
+  const main = identity.mainLogin;
   return (
     <article className="eroad-route" data-status={identity.primary}>
-      <div className="eroad-route__identity">
+      {/* The whole identity block opens the address's details, not just the
+          12px address text. The address button inside stays the keyboard
+          control, and a right-click offers the copy actions. */}
+      <div
+        className="eroad-route__identity"
+        data-clickable=""
+        onClick={(event) => {
+          const target = event.target as HTMLElement;
+          if (target.closest('button, a, input, select, textarea')) return;
+          onDetails(identity);
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onMenu(identity, event.clientX, event.clientY);
+        }}
+      >
         <span className="eroad-route__badge" aria-hidden="true">
           {account ? <MailIcon width="15" height="15" /> : identity.tempLogins.length > 0 ? <ClockIcon width="15" height="15" /> : <RouteIcon width="15" height="15" />}
         </span>
         <div className="eroad-route__name">
-          <span className="eroad-route__address" title={identity.address}>
-            {display}
-          </span>
+          <button
+            type="button"
+            className="eroad-route__address eroad-route__address--action"
+            title={`Email details for ${identity.address}`}
+            aria-haspopup="dialog"
+            onClick={() => onDetails(identity)}
+          >
+            <span>{display}</span>
+            <MailIcon width="12" height="12" aria-hidden="true" />
+          </button>
           <span className="eroad-route__chips">
             {identity.statuses.map((status) => (
               <span className="eroad-chip" data-tone={status} key={status}>
@@ -696,6 +1077,27 @@ function IdentityRoute({
                 </span>
               ))}
             </span>
+          ) : null}
+          {/* What the address's mailbox already holds. New mail lives behind
+              this door; the subject says whether it is worth opening. */}
+          {account && identity.mailCount > 0 ? (
+            <button
+              type="button"
+              className="eroad-route__mail"
+              title={`Open the ${identity.mailCount} cached message${identity.mailCount === 1 ? '' : 's'} for ${identity.address}`}
+              onClick={() => actions.onOpenMailbox?.(account.id)}
+              disabled={!actions.onOpenMailbox}
+            >
+              <MailIcon width="10" height="10" />
+              <span>
+                {identity.mailCount} mail{identity.mailCount === 1 ? '' : 's'}
+              </span>
+              {identity.latestMail ? (
+                <span className="eroad-route__mail-subject">
+                  {identity.latestMail.title || '(no subject)'}
+                </span>
+              ) : null}
+            </button>
           ) : null}
         </div>
         <div className="eroad-route__meta">
@@ -728,6 +1130,8 @@ function IdentityRoute({
               maskEmails={maskEmails}
               hover={hover}
               onOpen={actions.onOpenLogin}
+              mainId={identity.mainLogin?.id ?? null}
+              onMenu={onStopMenu}
             />
           ))
         )}
@@ -744,6 +1148,16 @@ function IdentityRoute({
           >
             <InboxIcon width="13" height="13" />
             Inbox
+          </button>
+        ) : main && actions.onOpenMessages ? (
+          <button
+            type="button"
+            className="btn btn--secondary btn--sm"
+            onClick={() => actions.onOpenMessages?.(main)}
+            title={`Read the mail for ${identity.address} through its main login`}
+          >
+            <InboxIcon width="13" height="13" />
+            Messages
           </button>
         ) : null}
         {actions.onCopy ? (
@@ -769,27 +1183,41 @@ function LoginStop({
   maskEmails,
   hover,
   onOpen,
+  mainId,
+  onMenu,
 }: {
   item: VaultItem;
   identity: EmailIdentity;
   maskEmails: boolean;
   hover: HoverControls;
   onOpen: (item: VaultItem) => void;
+  /** The address's first-saved login, marked "Main" on its stop. */
+  mainId?: string | null;
+  /** Right-click actions for this login. */
+  onMenu?: (item: VaultItem, x: number, y: number) => void;
 }) {
   const host = hostnameOf(item.url);
   const weak = isWeakPassword(item);
   const secured = Boolean(item.totpSecret) || isSecured(item.security);
+  const isMain = mainId === item.id;
   return (
     <button
       type="button"
       className="eroad-stop"
-      title={`${item.title || item.username || host || 'Login'} — hover for details, click to open`}
+      data-main={isMain || undefined}
+      title={`${item.title || item.username || host || 'Login'} — ${isMain ? 'main login for this address, ' : ''}hover for details, click to open`}
       onMouseEnter={(event: ReactMouseEvent) => hover.show(item, identity, event.clientX, event.clientY)}
       onMouseMove={(event: ReactMouseEvent) => hover.show(item, identity, event.clientX, event.clientY)}
       onMouseLeave={hover.hide}
       onFocus={(event) => hover.showAt(item, identity, event.currentTarget)}
       onBlur={hover.hide}
       onClick={() => onOpen(item)}
+      onContextMenu={(event) => {
+        if (!onMenu) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onMenu(item, event.clientX, event.clientY);
+      }}
     >
       <span className="eroad-stop__dot" style={{ '--stop-h': String(accentOf(item)) } as CSSProperties} aria-hidden="true" />
       <span className="eroad-stop__body">
@@ -799,6 +1227,7 @@ function LoginStop({
         </span>
       </span>
       <span className="eroad-stop__flags">
+        {isMain ? <span className="eroad-chip eroad-chip--main">Main</span> : null}
         {weak ? <span className="eroad-stop__flag" data-tone="weak" title="Weak or reused password">!</span> : null}
         {secured ? <ShieldIcon width="11" height="11" className="eroad-stop__shield" aria-label="Second factor" /> : null}
       </span>
@@ -826,8 +1255,14 @@ function MailboxCard({
   const connection = resolveConnection(account);
   const provider = providerById(connection.provider);
   const ready = account.enabled && hasMailCreds(account);
+  // Newest cached message, without copying and sorting the whole cache on
+  // every render of the mailbox card.
   const latest =
-    [...cached].sort((a, b) => Date.parse(b.issued || '') - Date.parse(a.issued || ''))[0] ?? null;
+    cached.length === 0
+      ? null
+      : cached.reduce((newest, message) =>
+          Date.parse(message.issued || '') > Date.parse(newest.issued || '') ? message : newest,
+        );
   const cadence =
     account.refreshSeconds <= 0
       ? 'Manual checks'
@@ -1033,7 +1468,12 @@ function LoginHoverCard({
   const hue = accentOf(item);
   const secured = Boolean(item.totpSecret) || isSecured(item.security);
   const weak = isWeakPassword(item);
-  const tagNames = item.tags.map((tagId) => tags.find((tag) => tag.id === tagId)?.name ?? '').filter(Boolean);
+  // One lookup for the card's tags: the old `find` per tag ran on every hover
+  // move, which is the one interaction that must stay cheap.
+  const tagNames = useMemo(() => {
+    const byId = new Map(tags.map((tag) => [tag.id, tag.name] as const));
+    return item.tags.map((tagId) => byId.get(tagId) ?? '').filter(Boolean);
+  }, [item.tags, tags]);
   const account = identity?.accounts[0] ?? null;
   const mailbox = account ? resolveConnection(account) : null;
   const tempExpiry = item.tempMail
