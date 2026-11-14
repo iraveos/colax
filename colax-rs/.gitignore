@@ -1,3 +1,6 @@
 /target
 /run.log
 /run.pid
+/build-check.log
+/Colax Rust Setup *.exe
+/ui-preview

@@ -119,8 +119,9 @@ pub fn show(ctx: &egui::Context, app: &mut crate::app::App) {
         .collapsible(false)
         .resizable(true)
         .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-        .default_width(640.0)
-        .max_height(760.0)
+        // No max height: with one, the Delete/Save row was laid out past the
+        // bottom edge and never drawn at all.
+        .default_width(660.0)
         .frame(
             egui::Frame::none()
                 .fill(theme.surface())
@@ -136,7 +137,10 @@ pub fn show(ctx: &egui::Context, app: &mut crate::app::App) {
                 .inner_margin(egui::Margin::same(18.0)),
         )
         .show(ctx, |ui| {
-            ui.set_width(600.0);
+            // A fixed body height, with the footer's space taken out of the
+            // scroll area. Auto-sizing clipped the Delete/Save row entirely.
+            ui.set_width(620.0);
+            ui.set_height(700.0);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(
@@ -165,7 +169,11 @@ pub fn show(ctx: &egui::Context, app: &mut crate::app::App) {
             ui.separator();
             ui.add_space(10.0);
 
-            egui::ScrollArea::vertical().max_height(560.0).show(ui, |ui| {
+            let body_height = (ui.available_height() - 64.0).max(220.0);
+            egui::ScrollArea::vertical()
+                .max_height(body_height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
                 field_row(ui, &theme, "Title", &mut draft.title, false, "GitHub");
                 field_row(ui, &theme, "Website", &mut draft.url, false, "https://github.com");
                 field_row(ui, &theme, "Email or username", &mut draft.username, false, "you@example.com");
@@ -195,8 +203,43 @@ pub fn show(ctx: &egui::Context, app: &mut crate::app::App) {
                 strength_bar(ui, &theme, &draft.password);
                 ui.add_space(6.0);
 
-                // TOTP + reminder
-                field_row(ui, &theme, "Authenticator seed", &mut draft.totp_secret, false, "JBSWY3DPEHPK3PXP");
+                // TOTP: the seed is checked and turned into a live code as it is
+                // typed, so a mistyped seed is caught here instead of on the card.
+                ui.horizontal(|ui| {
+                    ui.add_sized(vec2(150.0, 20.0), egui::Label::new(label(&theme, "Authenticator seed")));
+                    ui.add_sized(
+                        vec2(430.0, 30.0),
+                        egui::TextEdit::singleline(&mut draft.totp_secret)
+                            .hint_text("JBSWY3DPEHPK3PXP or an otpauth:// link"),
+                    );
+                    if !draft.totp_secret.trim().is_empty() {
+                        let now = crate::totp::now_unix();
+                        match crate::totp::code_at(&draft.totp_secret, now) {
+                            Some(code) => {
+                                let text = crate::totp::grouped(&code);
+                                if ui
+                                    .button(RichText::new(&text).monospace().size(11.5).color(theme.accent_text()))
+                                    .on_hover_text("Copy this code")
+                                    .clicked()
+                                {
+                                    app.copy(ctx, &code, "2FA code");
+                                }
+                                ui.label(
+                                    RichText::new(format!("{}s left", crate::totp::seconds_remaining(now)))
+                                        .size(10.0)
+                                        .color(theme.text_faint()),
+                                );
+                            }
+                            None => {
+                                ui.label(
+                                    RichText::new("not a base32 seed")
+                                        .size(10.0)
+                                        .color(theme.warn()),
+                                );
+                            }
+                        }
+                    }
+                });
                 ui.horizontal(|ui| {
                     ui.add_sized(vec2(150.0, 20.0), egui::Label::new(label(&theme, "Rotation reminder")));
                     if ui.checkbox(&mut app.editor.reminder_open, "Only this login").changed() {
@@ -205,7 +248,7 @@ pub fn show(ctx: &egui::Context, app: &mut crate::app::App) {
                         }
                     }
                     if app.editor.reminder_open {
-                        ui.add(egui::DragValue::new(&mut draft.reminder_days).speed(1.0).clamp_range(0.0..=3650.0));
+                        ui.add(egui::DragValue::new(&mut draft.reminder_days).speed(1.0).range(0.0..=3650.0));
                         ui.label(RichText::new("days").size(10.5).color(theme.text_muted()));
                     } else {
                         ui.label(
@@ -388,6 +431,14 @@ pub fn show(ctx: &egui::Context, app: &mut crate::app::App) {
                 hostname_of(&draft.url).unwrap_or_else(|| "Untitled login".into())
             };
         }
+        // Store the seed in one canonical shape, so a pasted URL or a spaced
+        // grouping opens the same on the card next time.
+        draft.totp_secret = crate::totp::normalize_seed(&draft.totp_secret);
+        if !draft.totp_secret.is_empty() && !crate::totp::valid_seed(&draft.totp_secret) {
+            app.editor.error = "That authenticator seed is not valid base32 — check it for typos".into();
+            app.editor.draft = Some(draft);
+            return;
+        }
         let is_new = app.editor.is_new;
         if !is_new {
             draft.updated_at = now_ms();
@@ -437,13 +488,13 @@ fn field_row(ui: &mut egui::Ui, theme: &Theme, title: &str, value: &mut String, 
 
 fn strength_bar(ui: &mut egui::Ui, theme: &Theme, password: &str) {
     let score = password_score(password);
-    let (label_text, color) = match score {
-        0 => ("No password", theme.text_faint()),
-        1 => ("Weak", theme.danger()),
-        2 => ("Fair", theme.warn()),
-        3 => ("Good", theme.accent()),
-        _ => ("Strong", theme.accent()),
+    let color = match score {
+        0 => theme.text_faint(),
+        1 => theme.danger(),
+        2 => theme.warn(),
+        _ => theme.accent(),
     };
+    let label_text = if score == 0 { "No password" } else { password_label(score) };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
     let bar = egui::Rect::from_min_size(rect.min, vec2(rect.width() * 0.55, 5.0));
     ui.painter().rect_filled(bar, egui::Rounding::same(3.0), theme.plate(1.4));

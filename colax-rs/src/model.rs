@@ -781,11 +781,6 @@ impl VaultData {
         !item.password.is_empty() && password_score(&item.password) <= 1
     }
 
-    pub fn needs_attention(&self, item: &VaultItem) -> bool {
-        item.needs_attention
-            || self.reused_passwords().contains(&item.password)
-            || self.sender_is_weak(item)
-    }
 }
 
 /// A small strength heuristic: the Electron build scores entropy; this keeps the

@@ -84,14 +84,19 @@ impl Density {
             Density::Spacious => 1.22,
         }
     }
+}
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Density::Compact => "Compact",
-            Density::Comfortable => "Comfortable",
-            Density::Spacious => "Spacious",
-        }
-    }
+/// `hsl(h s% l% / a)`: the translucent channel tints in the token sheet.
+pub fn hsl_alpha(hue: f32, saturation: f32, lightness: f32, alpha: f32) -> Color32 {
+    let opaque = hsl(hue, saturation, lightness);
+    // `mix` drops alpha at its `from_rgb`, so it cannot build a translucent
+    // tint: the chip came out opaque near-black instead of a 14% wash.
+    Color32::from_rgba_unmultiplied(
+        opaque.r(),
+        opaque.g(),
+        opaque.b(),
+        (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
 }
 
 /// HSL to RGB, matching the CSS `hsl(h s% l%)` values in the token sheet.
@@ -149,6 +154,8 @@ pub struct Theme {
     pub text_scale: f32,
     pub reduce_transparency: bool,
     pub high_contrast: bool,
+    /// `--card-depth`: 0 flat, 1 deep. Drives every lift in the app.
+    pub card_depth: f32,
 }
 
 impl Default for Theme {
@@ -161,8 +168,56 @@ impl Default for Theme {
             text_scale: 1.0,
             reduce_transparency: false,
             high_contrast: true,
+            card_depth: 0.4,
         }
     }
+}
+
+/// The display face for page titles, matching `--font-display`: Georgia on a
+/// stock Windows machine, which is in the stylesheet's own fallback stack.
+pub fn display() -> egui::FontFamily {
+    egui::FontFamily::Name("display".into())
+}
+
+/// Loads the same faces the Electron build resolves on Windows: Segoe UI for
+/// text, Georgia for display headings, Consolas for mono. egui ships its own
+/// fonts, which is why the port looked like a demo instead of this product.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let load = |name: &str, file: &str| -> Option<egui::FontData> {
+        let path = std::path::Path::new("C:\\Windows\\Fonts").join(file);
+        std::fs::read(path).ok().map(|bytes| {
+            let _ = name;
+            egui::FontData::from_owned(bytes)
+        })
+    };
+    if let Some(data) = load("segoe", "segoeui.ttf") {
+        fonts.font_data.insert("segoe".into(), data);
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, "segoe".into());
+    }
+    if let Some(data) = load("georgia", "georgia.ttf") {
+        fonts.font_data.insert("georgia".into(), data);
+        fonts.families.insert(display(), vec!["georgia".into()]);
+        // Display headings fall back to the body face rather than egui's own.
+        fonts
+            .families
+            .entry(display())
+            .or_default()
+            .push("segoe".into());
+    }
+    if let Some(data) = load("consolas", "consola.ttf") {
+        fonts.font_data.insert("consolas".into(), data);
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .insert(0, "consolas".into());
+    }
+    ctx.set_fonts(fonts);
 }
 
 impl Theme {
@@ -200,11 +255,13 @@ impl Theme {
         }
     }
 
+    /// Same linear-blend correction as `glass`: composited over the page so a
+    /// 5% plate stays a 5% plate.
     pub fn plate(&self, factor: f32) -> Color32 {
         if self.dark {
-            alpha(Color32::WHITE, 0.05 * factor)
+            mix(self.bg(), Color32::WHITE, 0.05 * factor)
         } else {
-            alpha(hsl(222.0, 20.0, 12.0), 0.045 * factor)
+            mix(self.bg(), hsl(222.0, 20.0, 12.0), 0.045 * factor)
         }
     }
 
@@ -213,6 +270,51 @@ impl Theme {
             hsl(220.0, 18.0, 12.0)
         } else {
             hsl(0.0, 0.0, 100.0)
+        }
+    }
+
+    /// `--surface-raised`, the search well in the topbar.
+    pub fn surface_raised(&self) -> Color32 {
+        if self.dark {
+            hsl(220.0, 18.0, 15.0)
+        } else {
+            hsl(0.0, 0.0, 100.0)
+        }
+    }
+
+    /// `--glass`: the translucent card surface the ambient gradient reads
+    /// through. At 5% white it is barely a tint, which is the point.
+    /// Composited, not translucent. This renderer blends in linear space, where
+    /// a 5% alpha reads as roughly a quarter white and turned every card into a
+    /// grey slab; mixing the same 5% over the page colour in sRGB gives the
+    /// colour the stylesheet actually resolves to.
+    pub fn glass(&self, strong: bool) -> Color32 {
+        if self.reduce_transparency {
+            return self.surface();
+        }
+        let factor = if self.dark {
+            if strong { 0.085 } else { 0.05 }
+        } else if strong {
+            0.8
+        } else {
+            0.62
+        };
+        mix(self.bg(), Color32::WHITE, factor)
+    }
+
+    /// The four-layer lift `--card-shadow` describes, collapsed to the one
+    /// shadow egui draws.
+    pub fn card_shadow(&self) -> egui::epaint::Shadow {
+        let depth = self.card_depth.clamp(0.0, 1.0);
+        egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 8.0 * depth),
+            blur: 28.0 * depth,
+            spread: 0.0,
+            color: if self.dark {
+                Color32::from_black_alpha((110.0 * depth) as u8)
+            } else {
+                Color32::from_black_alpha((28.0 * depth) as u8)
+            },
         }
     }
 
@@ -234,7 +336,7 @@ impl Theme {
 
     pub fn border(&self) -> Color32 {
         if self.dark {
-            alpha(Color32::WHITE, if self.high_contrast { 0.2 } else { 0.09 })
+            mix(self.bg(), Color32::WHITE, if self.high_contrast { 0.2 } else { 0.09 })
         } else if self.high_contrast {
             hsl(210.0, 18.0, 74.0)
         } else {
@@ -244,7 +346,7 @@ impl Theme {
 
     pub fn border_strong(&self) -> Color32 {
         if self.dark {
-            alpha(Color32::WHITE, if self.high_contrast { 0.34 } else { 0.17 })
+            mix(self.bg(), Color32::WHITE, if self.high_contrast { 0.34 } else { 0.17 })
         } else {
             hsl(210.0, 16.0, 76.0)
         }
@@ -252,9 +354,9 @@ impl Theme {
 
     pub fn hairline(&self) -> Color32 {
         if self.dark {
-            alpha(Color32::WHITE, 0.08)
+            mix(self.bg(), Color32::WHITE, 0.08)
         } else {
-            alpha(hsl(222.0, 20.0, 12.0), 0.1)
+            mix(self.bg(), hsl(222.0, 20.0, 12.0), 0.1)
         }
     }
 
@@ -303,8 +405,18 @@ impl Theme {
     }
 
     pub fn accent_soft(&self) -> Color32 {
-        let (_h, _) = self.hues;
-        alpha(self.accent(), if self.dark { 0.16 } else { 0.12 })
+        mix(self.bg(), self.accent(), if self.dark { 0.16 } else { 0.12 })
+    }
+
+    /// `--grad-soft`: the wash under the current rail row, from the accent hue
+    /// to the second one. Composited for the same reason as `glass`.
+    pub fn accent_gradient_soft(&self) -> (Color32, Color32) {
+        let (h1, h2) = self.hues;
+        let (first, second) = if self.dark { (0.22, 0.10) } else { (0.18, 0.08) };
+        (
+            mix(self.bg(), hsl(h1, 44.0, 58.0), first),
+            mix(self.bg(), hsl(h2, 40.0, 62.0), second),
+        )
     }
 
     pub fn accent_text(&self) -> Color32 {
@@ -342,7 +454,7 @@ impl Theme {
     }
 
     pub fn danger_soft(&self) -> Color32 {
-        alpha(self.danger(), 0.14)
+        mix(self.bg(), self.danger(), 0.14)
     }
 
     pub fn warn(&self) -> Color32 {
@@ -354,7 +466,7 @@ impl Theme {
     }
 
     pub fn warn_soft(&self) -> Color32 {
-        alpha(self.warn(), 0.14)
+        mix(self.bg(), self.warn(), 0.14)
     }
 
     /* ---- Geometry ------------------------------------------------------- */
@@ -367,10 +479,6 @@ impl Theme {
     /// Radius tokens: 8 / 12 / 18 / 26 / 34, scaled by the roundness setting.
     pub fn radius(&self, base: f32) -> Rounding {
         Rounding::same((base * self.roundness).clamp(2.0, 40.0))
-    }
-
-    pub fn stroke(&self) -> Stroke {
-        Stroke::new(1.0_f32, self.border())
     }
 
     pub fn font_size(&self, base: f32) -> f32 {
@@ -424,13 +532,15 @@ impl Theme {
         widgets.open.fg_stroke = Stroke::new(1.0_f32, self.text());
         style.visuals = visuals;
 
-        let body = self.font_size(13.5) * system_scale;
+        // The Electron type scale, in px: xs 11, sm 13, base 15, lg 17, xl 22,
+        // 2xl 32, with display headings in the serif face.
+        let body = self.font_size(15.0) * system_scale;
         style.text_styles = [
-            (egui::TextStyle::Heading, egui::FontId::new(body * 1.9, egui::FontFamily::Proportional)),
+            (egui::TextStyle::Heading, egui::FontId::new(body * 2.13, display())),
             (egui::TextStyle::Body, egui::FontId::new(body, egui::FontFamily::Proportional)),
             (egui::TextStyle::Button, egui::FontId::new(body, egui::FontFamily::Proportional)),
-            (egui::TextStyle::Small, egui::FontId::new(body * 0.8, egui::FontFamily::Proportional)),
-            (egui::TextStyle::Monospace, egui::FontId::new(body * 0.94, egui::FontFamily::Monospace)),
+            (egui::TextStyle::Small, egui::FontId::new(body * 0.73, egui::FontFamily::Proportional)),
+            (egui::TextStyle::Monospace, egui::FontId::new(body * 0.87, egui::FontFamily::Monospace)),
         ]
         .into();
         style.spacing.item_spacing = egui::vec2(self.space(0.45), self.space(0.4));

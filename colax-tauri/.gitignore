@@ -1,0 +1,5 @@
+# Cargo output. Everything else here is small enough to commit: the folder builds
+# on its own (dist/ is the committed frontend bundle, release/ the installer).
+src-tauri/target/
+# Release assets (setup exe) are uploaded to GitHub Releases, not committed.
+release/

@@ -8,10 +8,11 @@
 use eframe::egui;
 use egui::{pos2, vec2, Align2, Color32, Rect, RichText, Sense, Stroke};
 
-use crate::app::{paint_gradient, App, Confirm, Scope};
+use crate::app::{paint_gradient, App, Scope};
 use crate::icon::draw as icon_draw;
 use crate::model::*;
 use crate::theme::{hsl, Theme};
+use crate::totp;
 
 pub fn login_list(ui: &mut egui::Ui, app: &mut App, items: &[VaultItem]) {
     if items.is_empty() {
@@ -19,6 +20,12 @@ pub fn login_list(ui: &mut egui::Ui, app: &mut App, items: &[VaultItem]) {
         return;
     }
     let reused = app.data.reused_passwords();
+    // Whether the whole list needs the notes and health lines. Reserving a slot
+    // per list rather than per card keeps rows even and still lets a vault with
+    // no notes drop the line from every card instead of paying for empty space
+    // on all six. Electron's cards only carry the rows they use.
+    let notes_slot = app.data.prefs.show_notes
+        && items.iter().any(|item| !item.notes.trim().is_empty());
     match app.data.prefs.view {
         VaultView::List => {
             for item in items {
@@ -26,14 +33,46 @@ pub fn login_list(ui: &mut egui::Ui, app: &mut App, items: &[VaultItem]) {
                 ui.add_space(app.theme.space(0.35));
             }
         }
-        VaultView::Grid | VaultView::Animated => {
-            let card_width = 296.0;
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(app.theme.space(0.8), app.theme.space(0.8));
-                for item in items {
-                    card(ui, app, item, reused.contains(&item.password), card_width);
-                }
-            });
+        VaultView::Animated => {
+            // Flow: one column of full-width cards. Rendering Flow and Grid as
+            // the same tiled grid is why switching views looked like it did
+            // nothing.
+            for item in items {
+                card(
+                    ui,
+                    app,
+                    item,
+                    reused.contains(&item.password),
+                    ui.available_width(),
+                    notes_slot,
+                );
+                ui.add_space(app.theme.space(0.6));
+            }
+        }
+        VaultView::Grid => {
+            // A hand-rolled wrapped grid. `horizontal_wrapped` let a fixed-width
+            // card run past the right edge instead of starting a second row, so
+            // the last card of a row was clipped by the window.
+            let spacing = app.theme.space(0.8);
+            let card_width = 288.0;
+            let available = ui.available_width();
+            let columns = (((available + spacing) / (card_width + spacing)).floor() as usize).max(1);
+            for row in items.chunks(columns) {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(spacing, spacing);
+                    for item in row {
+                        card(
+                            ui,
+                            app,
+                            item,
+                            reused.contains(&item.password),
+                            card_width,
+                            notes_slot,
+                        );
+                    }
+                });
+                ui.add_space(spacing);
+            }
         }
     }
 }
@@ -83,23 +122,33 @@ fn empty_state(ui: &mut egui::Ui, app: &mut App) {
     });
 }
 
-fn card(ui: &mut egui::Ui, app: &mut App, item: &VaultItem, reused: bool, width: f32) {
+fn card(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    item: &VaultItem,
+    reused: bool,
+    width: f32,
+    notes_slot: bool,
+) {
     let theme = app.theme;
     let hue = item.hue();
     let weak = app.data.sender_is_weak(item);
     let attention = item.needs_attention || reused || weak;
 
+    // A frosted card: 5% white over the ambient gradient, a strong hairline and
+    // the depth-scaled lift, exactly the stack `.item` describes in app.css.
     let frame = egui::Frame::none()
-        .fill(theme.card())
-        .rounding(theme.radius(16.0))
-        .stroke(Stroke::new(1.0_f32, theme.hairline()))
-        .inner_margin(egui::Margin::same(14.0));
+        .fill(theme.glass(false))
+        .rounding(theme.radius(18.0))
+        .stroke(Stroke::new(1.0_f32, theme.border_strong()))
+        .shadow(theme.card_shadow())
+        .inner_margin(egui::Margin::same(12.0));
 
     let inner = frame.show(ui, |ui| {
-        ui.set_width(width - 28.0);
+        ui.set_width(width - 24.0);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(38.0, 38.0), Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
                 let from = hsl(hue, if theme.dark { 46.0 } else { 50.0 }, if theme.dark { 58.0 } else { 62.0 });
                 let to = hsl(hue + 24.0, 40.0, if theme.dark { 46.0 } else { 48.0 });
                 paint_gradient(ui.painter(), rect, from, to, 12.0);
@@ -111,31 +160,37 @@ fn card(ui: &mut egui::Ui, app: &mut App, item: &VaultItem, reused: bool, width:
                     Color32::WHITE,
                 );
                 ui.add_space(4.0);
-                ui.vertical(|ui| {
-                    ui.add_sized(
-                        vec2(width - 130.0, 18.0),
-                        egui::Label::new(
-                            RichText::new(item.display_title())
-                                .size(13.5 * theme.text_scale)
-                                .strong()
-                                .color(theme.text()),
-                        )
-                        .truncate(),
-                    );
-                    ui.add_sized(
-                        vec2(width - 130.0, 15.0),
-                        egui::Label::new(
-                            RichText::new(if app.data.prefs.show_urls && !item.host().is_empty() {
-                                item.host()
-                            } else {
-                                item.username.clone()
-                            })
-                            .size(10.5 * theme.text_scale)
-                            .color(theme.text_muted()),
-                        )
-                        .truncate(),
-                    );
-                });
+                // `add_sized` centres its widget, which is why the title and host
+                // sat in the middle of every card. A left-to-right slot keeps
+                // them against the avatar where they belong.
+                let text_width = (width - 122.0).max(90.0);
+                ui.allocate_ui_with_layout(
+                    vec2(text_width, 30.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(item.display_title())
+                                    .size(13.5 * theme.text_scale)
+                                    .strong()
+                                    .color(theme.text()),
+                            )
+                            .truncate(),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(if app.data.prefs.show_urls && !item.host().is_empty() {
+                                    item.host()
+                                } else {
+                                    item.username.clone()
+                                })
+                                .size(10.5 * theme.text_scale)
+                                .color(theme.text_muted()),
+                            )
+                            .truncate(),
+                        );
+                    },
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                     let star = if item.favorite { "★" } else { "☆" };
                     let response = ui.add(
@@ -155,49 +210,78 @@ fn card(ui: &mut egui::Ui, app: &mut App, item: &VaultItem, reused: bool, width:
                 });
             });
 
-            if !item.tags.is_empty() && app.data.prefs.show_tag_chips {
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-                    for id in item.tags.iter().take(4) {
-                        let name = app.data.prefs.tag_name(id);
-                        chip(ui, &theme, &name, theme.accent_text(), theme.accent_soft());
+            // Every optional row gets a fixed-height slot, empty or not, so a
+            // card with notes or a badge does not push its own action row below
+            // its neighbour's. That is what made the grid look ragged.
+            ui.add_space(6.0);
+            ui.allocate_ui_with_layout(
+                vec2(width - 24.0, 18.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
+                    if app.data.prefs.show_tag_chips {
+                        for id in item.tags.iter().take(4) {
+                            let name = app.data.prefs.tag_name(id);
+                            chip(ui, &theme, &name, theme.accent_text(), theme.accent_soft());
+                        }
                     }
-                });
-            }
-
-            if app.data.prefs.show_notes && !item.notes.is_empty() {
-                ui.add_space(8.0);
-                ui.add_sized(
-                    vec2(width - 28.0, 32.0),
-                    egui::Label::new(
-                        RichText::new(item.notes.lines().next().unwrap_or(""))
-                            .size(10.5 * theme.text_scale)
-                            .color(theme.text_faint()),
-                    )
-                    .truncate(),
+                    // Health reads on this line too, the way Electron keeps its
+                    // badges beside the tags. As its own row it was a 20px band
+                    // of nothing on every card that was not flagged.
+                    if app.data.prefs.show_health_badges && attention {
+                        if reused {
+                            chip(ui, &theme, "Reused password", theme.warn(), theme.warn_soft());
+                        } else if weak {
+                            chip(ui, &theme, "Weak", theme.danger(), theme.danger_soft());
+                        }
+                        if item.needs_attention {
+                            chip(ui, &theme, "Needs attention", theme.warn(), theme.warn_soft());
+                        }
+                    }
+                    // The age lives on this row, where the space exists; in the
+                    // action row it was drawn over the 2FA pill.
+                    // In a 288px grid cell the chips and the timestamp collide on
+                    // one line; the age is the least useful of the two there.
+                    let when = if width >= 340.0 {
+                        relative_time(item.updated_at)
+                    } else {
+                        String::new()
+                    };
+                    if !when.is_empty() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(when).size(9.0).color(theme.text_faint()));
+                        });
+                    }
+                },
+            );
+            if notes_slot {
+                ui.allocate_ui_with_layout(
+                    vec2(width - 24.0, 16.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        if !item.notes.is_empty() {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(item.notes.lines().next().unwrap_or(""))
+                                        .size(10.5 * theme.text_scale)
+                                        .color(theme.text_faint()),
+                                )
+                                .truncate(),
+                            );
+                        }
+                    },
                 );
             }
-
-            if attention && app.data.prefs.show_health_badges {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if reused {
-                        chip(ui, &theme, "Reused password", theme.warn(), theme.warn_soft());
-                    } else if weak {
-                        chip(ui, &theme, "Weak", theme.danger(), theme.danger_soft());
-                    }
-                    if item.needs_attention {
-                        chip(ui, &theme, "Needs attention", theme.warn(), theme.warn_soft());
-                    }
-                });
-            }
-
-            ui.add_space(10.0);
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 if icon_action(ui, &theme, "copy", "Copy the password").clicked() {
                     app.copy(ui.ctx(), &item.password, "Password");
+                }
+                if let Some(code) = app.totp_code(item) {
+                    if totp_button(ui, &theme, &code).clicked() {
+                        app.copy(ui.ctx(), &code, "2FA code");
+                    }
                 }
                 if icon_action(ui, &theme, "user", "Copy the username").clicked() {
                     app.copy(ui.ctx(), &item.username, "Username");
@@ -208,10 +292,6 @@ fn card(ui: &mut egui::Ui, app: &mut App, item: &VaultItem, reused: bool, width:
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if app.text_button(ui, "Edit").clicked() {
                         app.edit_login(&item.id);
-                    }
-                    let when = relative_time(item.updated_at);
-                    if !when.is_empty() {
-                        ui.label(RichText::new(when).size(9.5).color(theme.text_faint()));
                     }
                 });
             });
@@ -225,7 +305,9 @@ fn card(ui: &mut egui::Ui, app: &mut App, item: &VaultItem, reused: bool, width:
     if body.double_clicked() {
         app.edit_login(&item.id);
     }
-    card_menu(&body, app, item);
+    // The right-click menu resolves by geometry (see App::open_menu_at_pointer),
+    // so the card only has to publish where it was drawn.
+    app.register_card(inner.response.rect, &item.id);
     if body.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -236,14 +318,15 @@ fn list_row(ui: &mut egui::Ui, app: &mut App, item: &VaultItem, reused: bool) {
     let hue = item.hue();
     let weak = app.data.sender_is_weak(item);
     let frame = egui::Frame::none()
-        .fill(theme.card())
+        .fill(theme.glass(false))
+        .shadow(theme.card_shadow())
         .rounding(theme.radius(12.0))
         .stroke(Stroke::new(1.0_f32, theme.hairline()))
-        .inner_margin(egui::Margin::symmetric(12.0, 8.0));
+        .inner_margin(egui::Margin::symmetric(12.0, 6.0));
     let inner = frame.show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
             let from = hsl(hue, 46.0, if theme.dark { 58.0 } else { 62.0 });
             paint_gradient(ui.painter(), rect, from, theme.accent_second(), 9.0);
             ui.painter().text(
@@ -254,21 +337,32 @@ fn list_row(ui: &mut egui::Ui, app: &mut App, item: &VaultItem, reused: bool) {
                 Color32::WHITE,
             );
             ui.add_space(6.0);
-            ui.vertical(|ui| {
-                ui.label(RichText::new(item.display_title()).size(12.5).strong().color(theme.text()));
-                let subtitle = if app.data.prefs.show_urls && !item.host().is_empty() {
-                    format!("{} · {}", item.username, item.host())
-                } else {
-                    item.username.clone()
-                };
-                ui.label(RichText::new(subtitle).size(10.0).color(theme.text_muted()));
-            });
+            // The identity column is bounded. Left unbounded it claimed the whole
+            // row and the action chain was painted over it.
+            ui.allocate_ui_with_layout(
+                vec2((ui.available_width() - 300.0).max(140.0), 30.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.label(RichText::new(item.display_title()).size(13.5).strong().color(theme.text()));
+                    let subtitle = if app.data.prefs.show_urls && !item.host().is_empty() {
+                        format!("{} · {}", item.username, item.host())
+                    } else {
+                        item.username.clone()
+                    };
+                    ui.label(RichText::new(subtitle).size(10.0).color(theme.text_muted()));
+                },
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icon_action(ui, &theme, "external", "Open the site").clicked() {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(item.url.clone()));
                 }
                 if icon_action(ui, &theme, "copy", "Copy the password").clicked() {
                     app.copy(ui.ctx(), &item.password, "Password");
+                }
+                if let Some(code) = app.totp_code(item) {
+                    if totp_button(ui, &theme, &code).clicked() {
+                        app.copy(ui.ctx(), &code, "2FA code");
+                    }
                 }
                 if icon_action(ui, &theme, "key", "Edit this login").clicked() {
                     app.edit_login(&item.id);
@@ -297,152 +391,60 @@ fn list_row(ui: &mut egui::Ui, app: &mut App, item: &VaultItem, reused: bool) {
     if body.double_clicked() {
         app.edit_login(&item.id);
     }
-    card_menu(&body, app, item);
-}
-
-fn card_menu(response: &egui::Response, app: &mut App, item: &VaultItem) {
-    let mut action: Option<MenuAction> = None;
-    response.context_menu(|ui| {
-        ui.set_min_width(210.0);
-        let address = if item.username.trim().is_empty() { item.title.clone() } else { item.username.clone() };
-        if menu_item(ui, app, "Email details / edit", "key", true) {
-            action = Some(MenuAction::Edit);
-        }
-        ui.separator();
-        if menu_item(ui, app, "Copy email", "copy", !address.is_empty()) {
-            action = Some(MenuAction::Copy(address.clone(), "Email".into()));
-        }
-        if menu_item(ui, app, "Copy password", "copy", !item.password.is_empty()) {
-            action = Some(MenuAction::Copy(item.password.clone(), "Password".into()));
-        }
-        if menu_item(ui, app, "Copy email + password", "copy", !item.password.is_empty()) {
-            action = Some(MenuAction::Copy(format!("{address}\n{}", item.password), "Email and password".into()));
-        }
-        if menu_item(ui, app, "Copy login details", "copy", true) {
-            action = Some(MenuAction::Copy(login_compact(item), "Login details".into()));
-        }
-        ui.separator();
-        if menu_item(ui, app, "Open website", "external", !item.url.is_empty()) {
-            action = Some(MenuAction::OpenSite);
-        }
-        if menu_item(ui, app, "Open / edit", "key", true) {
-            action = Some(MenuAction::Edit);
-        }
-        if menu_item(ui, app, if item.favorite { "Remove favorite" } else { "Add to favorites" }, "star", true) {
-            action = Some(MenuAction::Favorite);
-        }
-        if menu_item(ui, app, "Needs attention", "alert", true) {
-            action = Some(MenuAction::Attention);
-        }
-        ui.separator();
-        if menu_item(ui, app, "Delete", "trash", true) {
-            action = Some(MenuAction::Delete);
-        }
-    });
-    if let Some(action) = action {
-        match action {
-            MenuAction::Copy(text, what) => app.copy(ui_context(response), &text, &what),
-            MenuAction::OpenSite => {
-                let ctx = ui_context(response);
-                ctx.open_url(egui::OpenUrl::new_tab(item.url.clone()));
-            }
-            MenuAction::Edit => app.edit_login(&item.id),
-            MenuAction::Favorite => {
-                if let Some(existing) = app.data.item_mut(&item.id) {
-                    existing.favorite = !existing.favorite;
-                }
-                app.mark_dirty();
-            }
-            MenuAction::Attention => {
-                if let Some(existing) = app.data.item_mut(&item.id) {
-                    existing.needs_attention = !existing.needs_attention;
-                }
-                app.mark_dirty();
-            }
-            MenuAction::Delete => app.confirm = Some(Confirm::DeleteItem(item.id.clone())),
-        }
-    }
-}
-
-enum MenuAction {
-    Copy(String, String),
-    OpenSite,
-    Edit,
-    Favorite,
-    Attention,
-    Delete,
-}
-
-/// Menu rows are custom so their icons and hover fill match the rest of the app.
-fn menu_item(ui: &mut egui::Ui, app: &mut App, label: &str, icon: &str, enabled: bool) -> bool {
-    let theme = app.theme;
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width().max(190.0), 26.0), Sense::click());
-    if !enabled {
-        let color = theme.text_faint();
-        icon_draw(
-            ui.painter(),
-            icon,
-            Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), vec2(12.0, 12.0)),
-            color,
-            1.4,
-        );
-        ui.painter().text(
-            pos2(rect.left() + 32.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            label,
-            egui::FontId::proportional(11.5),
-            color,
-        );
-        return false;
-    }
-    if response.hovered() {
-        ui.painter().rect_filled(rect, theme.radius(6.0), theme.accent_soft());
-    }
-    icon_draw(
-        ui.painter(),
-        icon,
-        Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), vec2(12.0, 12.0)),
-        theme.text_muted(),
-        1.4,
-    );
-    ui.painter().text(
-        pos2(rect.left() + 32.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(11.5),
-        theme.text(),
-    );
-    response.clicked()
-}
-
-fn ui_context(response: &egui::Response) -> &egui::Context {
-    &response.ctx
-}
-
-fn login_compact(item: &VaultItem) -> String {
-    format!(
-        "{}\n{}\n{}\n{}",
-        item.display_title(),
-        item.username,
-        item.password,
-        item.url
-    )
+    // The right-click menu resolves by geometry (see App::open_menu_at_pointer),
+    // so the card only has to publish where it was drawn.
+    app.register_card(inner.response.rect, &item.id);
 }
 
 fn chip(ui: &mut egui::Ui, theme: &Theme, label: &str, text: Color32, fill: Color32) {
+    // `--text-xs` (11px), not 9.5: below that the label thins out to a tint on
+    // the light theme, where the same colour at 11px is perfectly readable.
+    let size = 10.5 * theme.text_scale;
     let galley = ui.fonts(|fonts| {
-        fonts.layout_no_wrap(label.to_string(), egui::FontId::proportional(9.5 * theme.text_scale), text)
+        fonts.layout_no_wrap(label.to_string(), egui::FontId::proportional(size), text)
     });
-    let size = galley.size() + vec2(12.0, 5.0);
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let chip_size = galley.size() + vec2(12.0, 5.0);
+    let (rect, _) = ui.allocate_exact_size(chip_size, Sense::hover());
     ui.painter().rect_filled(rect, egui::Rounding::same(999.0), fill);
     ui.painter().text(
         rect.center(),
         Align2::CENTER_CENTER,
         label,
-        egui::FontId::proportional(9.5 * theme.text_scale),
+        egui::FontId::proportional(size),
         text,
     );
+}
+
+/// A one-tap 2FA code: the six digits grouped the way an authenticator shows
+/// them, a hairline countdown along the bottom edge, and the seconds left in the
+/// tooltip. Clicking copies it, like every other copy action on a card.
+fn totp_button(ui: &mut egui::Ui, theme: &Theme, code: &str) -> egui::Response {
+    let now = totp::now_unix();
+    let seconds_left = totp::seconds_remaining(now);
+    let text = totp::grouped(code);
+    let (rect, response) = ui.allocate_exact_size(vec2(58.0, 24.0), Sense::click());
+    let fill = if response.hovered() { theme.accent_soft() } else { theme.plate(1.0) };
+    ui.painter()
+        .rect(rect, theme.radius(7.0), fill, Stroke::new(1.0_f32, theme.hairline()));
+    ui.painter().text(
+        rect.center() - vec2(0.0, 2.0),
+        Align2::CENTER_CENTER,
+        &text,
+        egui::FontId::monospace(10.5),
+        theme.accent_text(),
+    );
+    let track = Rect::from_min_size(
+        pos2(rect.left() + 4.0, rect.bottom() - 4.0),
+        vec2(rect.width() - 8.0, 2.0),
+    );
+    ui.painter().rect_filled(track, egui::Rounding::same(1.0), theme.plate(1.7));
+    let width = track.width() * totp::fraction_remaining(now);
+    ui.painter().rect_filled(
+        Rect::from_min_size(track.min, vec2(width.max(1.0), 2.0)),
+        egui::Rounding::same(1.0),
+        theme.accent(),
+    );
+    response.on_hover_text(format!("{text} · {seconds_left}s left — click to copy"))
 }
 
 fn icon_action(ui: &mut egui::Ui, theme: &Theme, icon: &str, tooltip: &str) -> egui::Response {
@@ -478,9 +480,7 @@ pub fn dashboard(ui: &mut egui::Ui, app: &mut App) {
         .map(|item| item.username.to_lowercase())
         .collect();
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(theme.space(0.6), theme.space(0.6));
-        let cards: Vec<(&str, String, String, Color32)> = vec![
+    let cards: Vec<(&str, String, String, Color32)> = vec![
             ("Logins", total.to_string(), "in the vault".to_string(), theme.accent()),
             ("Favorites", favorites.to_string(), "pinned".to_string(), theme.warn()),
             ("Reused", reused.len().to_string(), "passwords".to_string(), theme.danger()),
@@ -488,11 +488,20 @@ pub fn dashboard(ui: &mut egui::Ui, app: &mut App) {
             ("With password", protected.to_string(), "saved secrets".to_string(), theme.accent_second()),
             ("Addresses", addresses.len().to_string(), "in the roadmap".to_string(), theme.accent()),
             ("Channels", channels.to_string(), format!("{tags} tags"), theme.text_muted()),
-        ];
-        for (label, value, hint, tone) in cards {
-            stat_card(ui, &theme, label, &value, &hint, tone);
-        }
-    });
+    ];
+    // Chunked by hand: `horizontal_wrapped` measured each framed tile as
+    // zero-width and let the row run off the right edge of the window.
+    let spacing = theme.space(0.6);
+    let columns = (((ui.available_width() + spacing) / (172.0 + spacing)).floor() as usize).max(1);
+    for row in cards.chunks(columns) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = vec2(spacing, spacing);
+            for (label, value, hint, tone) in row {
+                stat_card(ui, &theme, label, value, hint, *tone);
+            }
+        });
+        ui.add_space(spacing);
+    }
 
     ui.add_space(theme.space(1.0));
     ui.horizontal(|ui| {

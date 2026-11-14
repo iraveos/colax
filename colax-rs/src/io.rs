@@ -139,6 +139,25 @@ pub fn unlock(envelope: &str, password: &str) -> Result<VaultData, String> {
     serde_json::from_slice(&plaintext).map_err(|error| format!("the decrypted vault is not readable: {error}"))
 }
 
+/* ---- File dialogs -------------------------------------------------------- */
+
+/// The real Windows Open dialog (`rfd` drives `IFileDialog`), because a text
+/// field asking for a path is a developer convenience and a user-hostile one.
+pub fn pick_open(title: &str, description: &str, extensions: &[&str]) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title(title)
+        .add_filter(description, extensions)
+        .pick_file()
+}
+
+pub fn pick_save(title: &str, description: &str, extensions: &[&str], name: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title(title)
+        .add_filter(description, extensions)
+        .set_file_name(name)
+        .save_file()
+}
+
 /* ---- CSV ----------------------------------------------------------------- */
 
 const CSV_HEADER: [&str; 6] = ["Title", "Url", "Username", "Password", "Notes", "Tags"];

@@ -1,6 +1,6 @@
 [package]
 name = "colax"
-version = "0.1.0"
+version = "0.2.9"
 edition = "2021"
 description = "Colax, native Rust edition — a local-first, zero-knowledge password vault."
 publish = false
@@ -17,6 +17,13 @@ serde_json = "1"
 rand = "0.8"
 aes-gcm = "0.10"
 argon2 = "0.5"
+sha1 = "0.10"
+# Windows-only build: the portal backend is not needed, and disabling the
+# default features keeps the dependency graph to the OS dialog itself.
+rfd = { version = "0.16", default-features = false }
+# Only the PNG encoder: `--screenshot` writes what the app rendered, without
+# capturing the screen the user is working on.
+image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 
 [profile.release]

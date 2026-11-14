@@ -161,7 +161,7 @@ const INDEX: &[(&str, SettingsGroup, &str, &str, &str)] = &[
     ("Share server", SettingsGroup::Sharing, "sharing", "lan tunnel codes devices", "Electron only"),
     ("Tray", SettingsGroup::Desktop, "desktop", "startup tray minimise quit", "On · Off"),
     ("Sounds", SettingsGroup::Desktop, "desktop", "mute alarm chime", "On · Off"),
-    ("Version", SettingsGroup::About, "about", "build diagnostics update", "0.1.0"),
+    ("Version", SettingsGroup::About, "about", "build diagnostics update", "This build"),
 ];
 
 pub fn show(ctx: &egui::Context, app: &mut App) {
@@ -170,6 +170,18 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
     }
     let theme = app.theme;
     let mut open = true;
+
+    // A dim behind the panel, the way the Electron settings page sits over the
+    // vault instead of floating loose on top of the list.
+    egui::Area::new(egui::Id::new("settings-scrim"))
+        .fixed_pos(ctx.screen_rect().min)
+        .order(egui::Order::Middle)
+        .interactable(false)
+        .show(ctx, |ui| {
+            let rect = ctx.screen_rect();
+            ui.painter()
+                .rect_filled(rect, 0.0, Color32::from_black_alpha(120));
+        });
 
     egui::Window::new("settings-window")
         .title_bar(false)
@@ -193,17 +205,27 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
                 })
                 .inner_margin(egui::Margin::same(0.0)),
         )
+        .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            ui.set_width(1060.0);
-            ui.set_height(700.0);
+            // A clamped size. Unbounded `available_width` inside the window let
+            // the two columns grow past the screen and pushed the rail off the
+            // left edge, leaving the body spread over the whole display.
+            ui.set_min_width(1040.0);
+            ui.set_max_width(1040.0);
+            ui.set_min_height(688.0);
+            ui.set_max_height(688.0);
             ui.horizontal_top(|ui| {
                 // ---- Rail -------------------------------------------------
+                ui.allocate_ui_with_layout(
+                    vec2(224.0, 688.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
                 egui::Frame::none()
                     .fill(theme.plate(0.35))
                     .inner_margin(egui::Margin::symmetric(12.0, 14.0))
                     .show(ui, |ui| {
-                        ui.set_width(210.0);
-                        ui.set_height(672.0);
+                        ui.set_width(200.0);
+                        ui.set_height(660.0);
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Settings")
@@ -211,11 +233,6 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
                                     .strong()
                                     .color(theme.text()),
                             );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if close_button(ui, &theme).clicked() {
-                                    app.settings.open = false;
-                                }
-                            });
                         });
                         ui.add_space(8.0);
                         let search = ui.add(
@@ -271,15 +288,30 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
                             });
                         }
                     });
+                    },
+                );
 
                 ui.separator();
 
                 // ---- Body -------------------------------------------------
+                ui.allocate_ui_with_layout(
+                    vec2(ui.available_width().max(560.0), 688.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
                 egui::Frame::none()
                     .inner_margin(egui::Margin::symmetric(20.0, 16.0))
                     .show(ui, |ui| {
-                        ui.set_width(818.0);
-                        ui.set_height(668.0);
+                        ui.set_width(ui.available_width());
+                        // 626, not 656: the close row added 30px above the tabs and
+                        // the old height pushed the last card past the window edge.
+                        ui.set_height(626.0);
+                        // A window's close belongs in its top-right corner, not in
+                        // the rail header where it read as a rail control.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            if close_button(ui, &theme).clicked() {
+                                app.settings.open = false;
+                            }
+                        });
                         let group = app.settings.group;
                         let tabs = sections(group);
                         ui.horizontal(|ui| {
@@ -297,7 +329,12 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
                                 .color(theme.text_muted()),
                         );
                         ui.add_space(8.0);
-                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        // Sized from what is left after the close row and tabs,
+                        // so the last card is not clipped by the window edge.
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .max_height((ui.available_height() - 6.0).max(200.0))
+                            .show(ui, |ui| {
                             match (group, app.settings.section.as_str()) {
                                 (SettingsGroup::Appearance, "design") => design(ui, app),
                                 (SettingsGroup::Appearance, "layout") => layout(ui, app),
@@ -323,6 +360,8 @@ pub fn show(ctx: &egui::Context, app: &mut App) {
                             }
                         });
                     });
+                    },
+                );
             });
         });
     if !open {
@@ -1216,7 +1255,7 @@ fn security(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Auto-lock after").size(11.5).color(theme.text()));
             let mut minutes = app.data.prefs.auto_lock_minutes;
-            if ui.add(egui::DragValue::new(&mut minutes).speed(1.0).clamp_range(0..=240)).changed() {
+            if ui.add(egui::DragValue::new(&mut minutes).speed(1.0).range(0..=240)).changed() {
                 app.data.prefs.auto_lock_minutes = minutes;
                 changed = true;
             }
@@ -1229,7 +1268,7 @@ fn security(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Clear after").size(11.5).color(theme.text()));
             let mut seconds = app.data.prefs.clear_clipboard_seconds;
-            if ui.add(egui::DragValue::new(&mut seconds).speed(5.0).clamp_range(0..=300)).changed() {
+            if ui.add(egui::DragValue::new(&mut seconds).speed(5.0).range(0..=300)).changed() {
                 app.data.prefs.clear_clipboard_seconds = seconds;
                 changed = true;
             }
@@ -1248,7 +1287,7 @@ fn security(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Stale password after").size(11.5).color(theme.text()));
             let mut days = app.data.prefs.password_age_days;
-            if ui.add(egui::DragValue::new(&mut days).speed(5.0).clamp_range(0..=3650)).changed() {
+            if ui.add(egui::DragValue::new(&mut days).speed(5.0).range(0..=3650)).changed() {
                 app.data.prefs.password_age_days = days;
                 changed = true;
             }
@@ -1257,7 +1296,7 @@ fn security(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Stale email after").size(11.5).color(theme.text()));
             let mut days = app.data.prefs.email_age_days;
-            if ui.add(egui::DragValue::new(&mut days).speed(5.0).clamp_range(0..=3650)).changed() {
+            if ui.add(egui::DragValue::new(&mut days).speed(5.0).range(0..=3650)).changed() {
                 app.data.prefs.email_age_days = days;
                 changed = true;
             }
@@ -1349,8 +1388,8 @@ fn alarms(ui: &mut egui::Ui, app: &mut App) {
                 vec2(220.0, 28.0),
                 egui::TextEdit::singleline(&mut app.settings.new_alarm_label).hint_text("Label"),
             );
-            ui.add(egui::DragValue::new(&mut app.settings.alarm_hour).clamp_range(0..=23).prefix("h "));
-            ui.add(egui::DragValue::new(&mut app.settings.alarm_minute).clamp_range(0..=59).prefix("m "));
+            ui.add(egui::DragValue::new(&mut app.settings.alarm_hour).range(0..=23).prefix("h "));
+            ui.add(egui::DragValue::new(&mut app.settings.alarm_minute).range(0..=59).prefix("m "));
             if ui.button("Add").clicked() {
                 app.data.prefs.alarms.push(Alarm {
                     id: new_id("alarm"),
@@ -1385,8 +1424,8 @@ fn alarms(ui: &mut egui::Ui, app: &mut App) {
                 }
                 let mut hour = alarm.hour;
                 let mut minute = alarm.minute;
-                if ui.add(egui::DragValue::new(&mut hour).clamp_range(0..=23).suffix("h")).changed()
-                    | ui.add(egui::DragValue::new(&mut minute).clamp_range(0..=59).suffix("m")).changed()
+                if ui.add(egui::DragValue::new(&mut hour).range(0..=23).suffix("h")).changed()
+                    | ui.add(egui::DragValue::new(&mut minute).range(0..=59).suffix("m")).changed()
                 {
                     alarm.hour = hour;
                     alarm.minute = minute;
@@ -1445,19 +1484,25 @@ fn backup(ui: &mut egui::Ui, app: &mut App) {
                 );
                 if ui.button("Export backup").clicked() {
                     let password = app.settings.backup_password.clone();
-                    let path = crate::io::data_dir().join(format!("colax-backup-{}.colax", now_ms()));
-                    let _ = std::fs::create_dir_all(crate::io::data_dir());
-                    let written: Result<(), String> = if password.is_empty() {
-                        std::fs::write(&path, serde_json::to_string_pretty(&app.data).unwrap_or_default())
-                            .map_err(|error| error.to_string())
-                    } else {
-                        crate::io::seal(&app.data, &password).and_then(|text| {
-                            std::fs::write(&path, text).map_err(|error| error.to_string())
-                        })
-                    };
-                    match written {
-                        Ok(()) => app.settings.backup_message = format!("Saved to {}", path.display()),
-                        Err(error) => app.settings.backup_message = format!("Export failed: {error}"),
+                    let suggested = format!("colax-backup-{}.colax", now_ms());
+                    if let Some(path) = crate::io::pick_save(
+                        "Save a Colax backup",
+                        "Colax backup",
+                        &["colax"],
+                        &suggested,
+                    ) {
+                        let written: Result<(), String> = if password.is_empty() {
+                            std::fs::write(&path, serde_json::to_string_pretty(&app.data).unwrap_or_default())
+                                .map_err(|error| error.to_string())
+                        } else {
+                            crate::io::seal(&app.data, &password).and_then(|text| {
+                                std::fs::write(&path, text).map_err(|error| error.to_string())
+                            })
+                        };
+                        match written {
+                            Ok(()) => app.settings.backup_message = format!("Saved to {}", path.display()),
+                            Err(error) => app.settings.backup_message = format!("Export failed: {error}"),
+                        }
                     }
                 }
             });
@@ -1475,15 +1520,25 @@ fn backup(ui: &mut egui::Ui, app: &mut App) {
         ui,
         &theme,
         "Restore from backup",
-        "Enter the full path to a .colax file. Restoring replaces the vault in memory; press Save is not needed — it is written at once.",
+        "Choose a .colax file. Restoring replaces the vault at once, so there is no second save step.",
         |ui| {
             ui.horizontal(|ui| {
-                ui.add_sized(
-                    vec2(460.0, 28.0),
-                    egui::TextEdit::singleline(&mut app.settings.import_path)
-                        .hint_text(r"C:\Users\you\colax-backup-123.colax"),
-                );
-                if ui.button("Restore").clicked() {
+                if ui.button("Choose file…").clicked() {
+                    if let Some(path) = crate::io::pick_open(
+                        "Open a Colax backup",
+                        "Colax backup",
+                        &["colax", "json"],
+                    ) {
+                        app.settings.import_path = path.display().to_string();
+                    }
+                }
+                let chosen = if app.settings.import_path.is_empty() {
+                    "No file chosen".to_string()
+                } else {
+                    app.settings.import_path.clone()
+                };
+                ui.label(RichText::new(chosen).size(10.0).color(theme.text_faint()));
+                if !app.settings.import_path.is_empty() && ui.button("Restore").clicked() {
                     match std::fs::read_to_string(app.settings.import_path.trim()) {
                         Ok(text) => {
                             let parsed = if text.trim_start().starts_with('{') && text.contains("\"ciphertext\"") {
@@ -1525,29 +1580,32 @@ fn theme_backup(ui: &mut egui::Ui, app: &mut App) {
                 if ui.button("Export theme").clicked() {
                     let mut prefs = app.data.prefs.clone();
                     prefs.docks = Vec::new();
-                    let path = crate::io::data_dir().join("colax-theme.json");
-                    let _ = std::fs::create_dir_all(crate::io::data_dir());
-                    match std::fs::write(&path, serde_json::to_string_pretty(&prefs).unwrap_or_default()) {
-                        Ok(()) => app.info(format!("Theme saved to {}", path.display())),
-                        Err(error) => app.error(format!("Could not export: {error}")),
+                    if let Some(path) = crate::io::pick_save(
+                        "Save the Colax look",
+                        "Colax theme",
+                        &["json"],
+                        "colax-theme.json",
+                    ) {
+                        match std::fs::write(&path, serde_json::to_string_pretty(&prefs).unwrap_or_default()) {
+                            Ok(()) => app.info(format!("Theme saved to {}", path.display())),
+                            Err(error) => app.error(format!("Could not export: {error}")),
+                        }
                     }
                 }
-                ui.add_sized(
-                    vec2(420.0, 28.0),
-                    egui::TextEdit::singleline(&mut app.settings.import_path).hint_text("Path to a theme JSON"),
-                );
-                if ui.button("Import theme").clicked() {
-                    match std::fs::read_to_string(app.settings.import_path.trim()) {
-                        Ok(text) => match serde_json::from_str::<Preferences>(&text) {
-                            Ok(mut prefs) => {
-                                prefs.docks = app.data.prefs.docks.clone();
-                                app.data.prefs = prefs;
-                                app.mark_dirty();
-                                app.info("Theme imported");
-                            }
-                            Err(error) => app.error(format!("That is not a theme file: {error}")),
-                        },
-                        Err(error) => app.error(format!("Could not read that file: {error}")),
+                if ui.button("Import theme…").clicked() {
+                    if let Some(path) = crate::io::pick_open("Open a Colax theme", "Colax theme", &["json"]) {
+                        match std::fs::read_to_string(path) {
+                            Ok(text) => match serde_json::from_str::<Preferences>(&text) {
+                                Ok(mut prefs) => {
+                                    prefs.docks = app.data.prefs.docks.clone();
+                                    app.data.prefs = prefs;
+                                    app.mark_dirty();
+                                    app.info("Theme imported");
+                                }
+                                Err(error) => app.error(format!("That is not a theme file: {error}")),
+                            },
+                            Err(error) => app.error(format!("Could not read that file: {error}")),
+                        }
                     }
                 }
             });
@@ -1566,26 +1624,29 @@ fn data(ui: &mut egui::Ui, app: &mut App) {
     card(ui, &theme, "CSV", "Text only — credentials, notes and tags, never images.", |ui| {
         ui.horizontal(|ui| {
             if ui.button("Export CSV").clicked() {
-                let path = crate::io::data_dir().join("colax-export.csv");
-                let _ = std::fs::create_dir_all(crate::io::data_dir());
-                match std::fs::write(&path, crate::io::csv_export(&app.data)) {
-                    Ok(()) => app.info(format!("CSV saved to {}", path.display())),
-                    Err(error) => app.error(format!("Could not export: {error}")),
+                if let Some(path) = crate::io::pick_save(
+                    "Save a CSV of your logins",
+                    "CSV",
+                    &["csv"],
+                    "colax-export.csv",
+                ) {
+                    match std::fs::write(&path, crate::io::csv_export(&app.data)) {
+                        Ok(()) => app.info(format!("CSV saved to {}", path.display())),
+                        Err(error) => app.error(format!("Could not export: {error}")),
+                    }
                 }
             }
-            ui.add_sized(
-                vec2(420.0, 28.0),
-                egui::TextEdit::singleline(&mut app.settings.import_path).hint_text("Path to a CSV file"),
-            );
-            if ui.button("Import CSV").clicked() {
-                match std::fs::read_to_string(app.settings.import_path.trim()) {
-                    Ok(text) => {
-                        let added = crate::io::csv_import(&text, &mut app.data);
-                        app.data.log("Imported CSV", &format!("{added} logins"));
-                        app.mark_dirty();
-                        app.info(format!("{added} logins imported"));
+            if ui.button("Import CSV…").clicked() {
+                if let Some(path) = crate::io::pick_open("Open a CSV of logins", "CSV", &["csv"]) {
+                    match std::fs::read_to_string(path) {
+                        Ok(text) => {
+                            let added = crate::io::csv_import(&text, &mut app.data);
+                            app.data.log("Imported CSV", &format!("{added} logins"));
+                            app.mark_dirty();
+                            app.info(format!("{added} logins imported"));
+                        }
+                        Err(error) => app.error(format!("Could not read that file: {error}")),
                     }
-                    Err(error) => app.error(format!("Could not read that file: {error}")),
                 }
             }
         });
@@ -1879,12 +1940,46 @@ fn sharing(ui: &mut egui::Ui, app: &mut App) {
 fn desktop(ui: &mut egui::Ui, app: &mut App) {
     let theme = app.theme;
     let mut changed = false;
-    card(ui, &theme, "Desktop", "Stored with the vault so a backup carries them; the native window honours close-to-tray only when a tray is added.", |ui| {
-        changed |= toggle(ui, &theme, "System tray", "", &mut app.data.prefs.tray_enabled);
-        changed |= toggle(ui, &theme, "Minimise to tray on close", "", &mut app.data.prefs.close_to_tray);
-        changed |= toggle(ui, &theme, "Launch at sign-in", "", &mut app.data.prefs.launch_at_login);
-        changed |= toggle(ui, &theme, "Mute sounds", "", &mut app.data.prefs.sounds_muted);
-    });
+    card(
+        ui,
+        &theme,
+        "Desktop",
+        "These travel with the vault, so a backup carries them to another machine.",
+        |ui| {
+            let mut launch = app.data.prefs.launch_at_login;
+            if toggle(
+                ui,
+                &theme,
+                "Launch at sign-in",
+                "Your own Run key — no administrator rights needed.",
+                &mut launch,
+            ) {
+                app.data.prefs.launch_at_login = launch;
+                changed = true;
+                match crate::autostart::apply(launch) {
+                    Ok(()) => app.info(if launch {
+                        "Colax will start at sign-in"
+                    } else {
+                        "Colax will no longer start at sign-in"
+                    }),
+                    Err(error) => {
+                        // Put the switch back: a preference that claims
+                        // something the OS refused is worse than no switch.
+                        app.data.prefs.launch_at_login = !launch;
+                        app.error(error);
+                    }
+                }
+            }
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "No system tray and no alarm chime in this build: closing the window quits Colax (the vault is written first), and alarms show as a toast. Those settings stay in the vault until the tray and sound work lands.",
+                )
+                .size(10.0)
+                .color(theme.text_faint()),
+            );
+        },
+    );
     if changed {
         app.mark_dirty();
     }
@@ -1893,7 +1988,11 @@ fn desktop(ui: &mut egui::Ui, app: &mut App) {
 fn about(ui: &mut egui::Ui, app: &mut App) {
     let theme = app.theme;
     card(ui, &theme, "Colax, native edition", "A Rust port of the Electron app: same vault model, same tokens, same interactions.", |ui| {
-        ui.label(RichText::new("Version 0.1.0 · egui + eframe").size(10.5).color(theme.text_muted()));
+        ui.label(
+            RichText::new(format!("Version {} · egui + eframe", env!("CARGO_PKG_VERSION")))
+                .size(10.5)
+                .color(theme.text_muted()),
+        );
         ui.add_space(4.0);
         ui.label(
             RichText::new(format!("Vault: {}", crate::io::vault_path().display()))
@@ -1930,7 +2029,8 @@ fn about(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             if ui.button("Copy a report").clicked() {
                 let report = format!(
-                    "Colax native 0.1.0\nlogins: {}\ntags: {}\nchannels: {}\ndocks: {}\nvault: {}\nencrypted: {}",
+                    "Colax native {}\nlogins: {}\ntags: {}\nchannels: {}\ndocks: {}\nvault: {}\nencrypted: {}",
+                    env!("CARGO_PKG_VERSION"),
                     app.data.items.len(),
                     app.data.prefs.tags.len(),
                     app.data.prefs.channels.len(),
