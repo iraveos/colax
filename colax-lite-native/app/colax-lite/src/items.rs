@@ -444,7 +444,7 @@ pub fn build_sidebar(items: &[VaultItem], selected: &str, prefs: &VaultPreferenc
             id: channel.id.clone().into(),
             kind: 0,
             label: channel.name.clone().into(),
-            icon: channel.icon.clone().into(),
+            icon: crate::channels_ops::glyph_for(&channel.icon).into(),
             hue: hue_color(channel.hue),
             count,
             depth: 0,

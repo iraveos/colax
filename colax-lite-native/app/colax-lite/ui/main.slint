@@ -804,33 +804,60 @@ component rail-row inherits Rectangle {
     in property <bool> compact: false;
     callback picked(id: string);
 
-    border-radius: Theme.radius-sm;
+    border-radius: Theme.radius-md;
     background: root.entry.selected ? Theme.accent-soft
         : (rail-touch.has-hover ? Theme.row-hover : #00000000);
-    // `.nav-item` (app.css L80, L1086): background and colour over `--fast`.
     animate background { duration: Theme.fast; }
+
+    // `.nav-item[aria-current]:before`: a 3px gradient bar in the gutter,
+    // outside the pill, which is why it sits at a negative x.
+    if (root.entry.selected) : Rectangle {
+        x: -10px;
+        y: (parent.height - 18px) / 2;
+        width: 3px;
+        height: 18px;
+        border-radius: 2px;
+        background: @linear-gradient(180deg, Theme.grad-from, Theme.grad-to);
+    }
 
     rail-touch := TouchArea {
         clicked => { root.picked(root.entry.id); }
     }
 
+    // The Electron row, in order: the channel's own 7px hue dot, its glyph in
+    // a 26px chip tinted with that hue, the name, then the count. The chip is
+    // what makes the rail read as channels rather than as an icon list.
     HorizontalLayout {
-        padding-left: root.compact ? 14px : 10px;
-        padding-right: root.compact ? 14px : 10px;
-        spacing: root.compact ? 0px : 10px;
+        alignment: center;
+        padding-left: 12px + root.entry.depth * 14px;
+        padding-right: 12px;
+        spacing: root.compact ? 0px : 12px;
+
+        if (root.labels-mode != "name" && !root.compact) : Rectangle {
+            width: 7px;
+            height: 7px;
+            border-radius: 3.5px;
+            background: root.entry.hue;
+        }
 
         if (root.labels-mode != "name") : Rectangle {
-            width: 16px;
-            height: 16px;
-            border-radius: 8px;
-            background: root.entry.hue;
-            opacity: root.entry.selected ? 1.0 : 0.65;
-            animate opacity { duration: Theme.fast; }
+            width: 26px;
+            height: 26px;
+            border-radius: 13px;
+            background: root.entry.hue.with-alpha(root.entry.selected ? 0.20 : 0.14);
+
+            Text {
+                text: root.entry.icon;
+                color: root.entry.selected ? Theme.accent-text : root.entry.hue;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
 
         if (root.labels-mode != "icon" && !root.compact) : Text {
             text: root.entry.label;
-            color: root.entry.selected ? Theme.text : Theme.muted;
+            color: root.entry.selected ? Theme.accent-text : Theme.text;
             font-size: 13px;
             font-weight: root.entry.selected ? 600 : 500;
             overflow: elide;
@@ -843,7 +870,7 @@ component rail-row inherits Rectangle {
         if (root.entry.count > 0 && !root.compact) : Text {
             text: root.entry.count;
             color: root.entry.selected ? Theme.accent-text : Theme.faint;
-            font-size: 12px;
+            font-size: 11px;
             vertical-alignment: center;
         }
     }
@@ -2098,7 +2125,7 @@ export component MainWindow inherits Window {
                     // summary screens. A separator is `kind: 2` and has no id —
                     // nothing can select it.
                     for row in root.sidebar : Rectangle {
-                        height: row.kind == 2 ? 20px : 34px;
+                        height: row.kind == 2 ? 20px : 42px;
 
                         if (row.kind == 2) : Rectangle {
                             x: 8px;
